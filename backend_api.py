@@ -25,6 +25,14 @@ DEFAULT_NIGHTLY_TIME = "22:00"
 DEFAULT_MAX_AC_CAP = 5.0
 MAX_HISTORY = 30
 
+PV_QUALITY_COLORS = {
+    "Excellent": "#2a9d8f",
+    "Good": "#52b788",
+    "Mixed": "#f4a261",
+    "Poor": "#e76f51",
+    "Very low": "#d62828",
+}
+
 
 class SettingsPayload(BaseModel):
     config: dict
@@ -193,6 +201,8 @@ class BackendState:
             if pv_quality["score"] >= threshold:
                 pv_quality["label"] = label
                 break
+
+        pv_quality["color"] = PV_QUALITY_COLORS.get(pv_quality.get("label", "Very low"), "#d62828")
 
         savings = core.compute_euro_savings_no_battery_vs_plan(
             pv_df=pv,
