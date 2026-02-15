@@ -24,7 +24,9 @@ INPUT_TOOLTIPS = {
     "yesterday_kwh": "This is your total home usage yesterday. It matters because the app uses it to estimate tomorrow's hourly load. Example: if yesterday was 18 kWh, tomorrow's hourly load profile scales to 18 kWh.",
     "buffer_percent": "This adds a safety margin to the target SOC. It matters when forecasts are uncertain. Example: 3% means the target cutoff SOC is increased by 3 percentage points.",
     "performance_ratio": "This is overall PV system efficiency after real-world losses. It matters because lower efficiency means lower expected production. Example: 0.85 means around 85% of ideal output.",
-    "inverter_eff": "This is inverter conversion efficiency from DC to AC. It matters because some energy is lost in conversion. Example: 0.97 means around 3% conversion loss.",
+    "inverter_eff": "This is inverter conversion efficiency from DC to AC. It matters when PV loss model is split; in combined mode it is ignored in PV calculations.",
+    "pv_loss_model": "Choose how PV losses are applied: split = performance ratio × inverter efficiency, combined = performance ratio only.",
+    "pv_calibration_factor": "Optional tuning factor to match forecasts to reality without changing pvlib assumptions. 1.00 = unchanged.",
     "max_ac_user_cap": "The app computes a recommended AC charge power from required energy and off-peak window hours. This field is your safety cap: final used value is min(recommended, your cap, inverter/battery limits).",
 }
 
@@ -934,9 +936,35 @@ with left:
 
             row4_col1, row4_col2 = st.columns(2)
             with row4_col1:
-                cfg_inverter_eff = st.number_input("Inverter efficiency", min_value=0.50, max_value=1.00, value=float(cfg_pv["inverter_eff"]), step=0.01)
+                cfg_inverter_eff = st.number_input(
+                    "Inverter efficiency",
+                    min_value=0.50,
+                    max_value=1.00,
+                    value=float(cfg_pv["inverter_eff"]),
+                    step=0.01,
+                    help=INPUT_TOOLTIPS["inverter_eff"],
+                )
             with row4_col2:
                 cfg_inverter_ac_kw_limit = st.number_input("Inverter AC limit (kW)", min_value=0.1, value=float(cfg_pv["inverter_ac_kw_limit"]), step=0.1)
+
+            row5_col1, row5_col2 = st.columns(2)
+            with row5_col1:
+                cfg_pv_loss_model = st.selectbox(
+                    "PV loss model",
+                    options=["split", "combined"],
+                    index=["split", "combined"].index(str(cfg_pv.get("pv_loss_model", "split")).strip().lower() if str(cfg_pv.get("pv_loss_model", "split")).strip().lower() in {"split", "combined"} else "split"),
+                    help=INPUT_TOOLTIPS["pv_loss_model"],
+                )
+            with row5_col2:
+                cfg_pv_calibration_factor = st.number_input(
+                    "PV calibration factor",
+                    min_value=0.70,
+                    max_value=1.30,
+                    value=float(cfg_pv.get("pv_calibration_factor", 1.0)),
+                    step=0.01,
+                    format="%.2f",
+                    help=INPUT_TOOLTIPS["pv_calibration_factor"],
+                )
 
             st.markdown("#### Battery")
             bat_col1, bat_col2 = st.columns(2)
@@ -1026,6 +1054,8 @@ with left:
                         "azimuth_south_deg": float(cfg_azimuth_south_deg),
                         "performance_ratio": float(cfg_performance_ratio),
                         "inverter_eff": float(cfg_inverter_eff),
+                        "pv_loss_model": str(cfg_pv_loss_model),
+                        "pv_calibration_factor": float(cfg_pv_calibration_factor),
                         "inverter_ac_kw_limit": float(cfg_inverter_ac_kw_limit),
                     },
                     "battery": {

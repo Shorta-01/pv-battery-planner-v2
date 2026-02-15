@@ -22,6 +22,7 @@ import json
 import copy
 import os
 import tempfile
+import warnings
 import datetime as dt
 from dataclasses import dataclass
 from pathlib import Path
@@ -75,6 +76,8 @@ AZIMUTH_SOUTH_DEG = 180.0
 # Systeemfactoren (tunen met eigen metingen)
 PERFORMANCE_RATIO = 0.82
 INVERTER_EFF = 0.97
+PV_LOSS_MODEL = "split"
+PV_CALIBRATION_FACTOR = 1.00
 PV_GAMMA_PDC = -0.003
 
 # Irradiance consistency controls
@@ -137,6 +140,8 @@ DEFAULT_CONFIG = {
         "azimuth_south_deg": AZIMUTH_SOUTH_DEG,
         "performance_ratio": PERFORMANCE_RATIO,
         "inverter_eff": INVERTER_EFF,
+        "pv_loss_model": PV_LOSS_MODEL,
+        "pv_calibration_factor": PV_CALIBRATION_FACTOR,
         "inverter_ac_kw_limit": INVERTER_AC_KW_LIMIT,
     },
     "battery": {
@@ -287,6 +292,21 @@ def validate_config(cfg: dict) -> None:
         raise ValueError("pv.performance_ratio must be in (0, 1].")
     if not (0.0 < float(pv["inverter_eff"]) <= 1.0):
         raise ValueError("pv.inverter_eff must be in (0, 1].")
+    pv_loss_model = str(pv.get("pv_loss_model", "split")).strip().lower()
+    if pv_loss_model not in {"split", "combined"}:
+        raise ValueError("pv.pv_loss_model must be either 'split' or 'combined'.")
+    pv_calibration_factor = float(pv.get("pv_calibration_factor", 1.0))
+    if not (0.7 <= pv_calibration_factor <= 1.3):
+        raise ValueError("pv.pv_calibration_factor must be in [0.7, 1.3].")
+
+    loss_combo = float(pv["performance_ratio"]) * float(pv["inverter_eff"])
+    if loss_combo < 0.65 or loss_combo > 0.95:
+        warnings.warn(
+            "Suspicious PV loss settings: performance_ratio * inverter_eff "
+            f"= {loss_combo:.3f} (expected about 0.65..0.95).",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     if int(pv["array_south_panels"]) <= 0 or int(pv["array_east_panels"]) <= 0:
         raise ValueError("pv.array_south_panels and pv.array_east_panels must be > 0.")
     if int(pv["panel_wp"]) <= 0:
@@ -338,7 +358,7 @@ def apply_config(cfg: dict) -> None:
     global USE_GEOCODING, ADDRESS_QUERY, LATITUDE, LONGITUDE, TIMEZONE
     global PANEL_WP, ARRAY_SOUTH_PANELS, ARRAY_EAST_PANELS
     global TILT_EAST_DEG, TILT_SOUTH_DEG, AZIMUTH_EAST_DEG, AZIMUTH_SOUTH_DEG
-    global PERFORMANCE_RATIO, INVERTER_EFF, INVERTER_AC_KW_LIMIT
+    global PERFORMANCE_RATIO, INVERTER_EFF, PV_LOSS_MODEL, PV_CALIBRATION_FACTOR, INVERTER_AC_KW_LIMIT
     global BATTERY_KWH, MIN_SOC_PERCENT, MAX_CUTOFF_SOC_PERCENT
     global BATTERY_MAX_CHARGE_KW, BATTERY_MAX_DISCHARGE_KW, MAX_AC_CHARGE_KW_HARD_LIMIT
     global LOAD_PROFILE, MIN_SOC, MAX_CUTOFF_SOC, EFFECTIVE_CFG, OFFPEAK_WINDOWS_BY_DOW
@@ -365,6 +385,8 @@ def apply_config(cfg: dict) -> None:
     AZIMUTH_SOUTH_DEG = float(pv["azimuth_south_deg"])
     PERFORMANCE_RATIO = float(pv["performance_ratio"])
     INVERTER_EFF = float(pv["inverter_eff"])
+    PV_LOSS_MODEL = str(pv.get("pv_loss_model", "split")).strip().lower()
+    PV_CALIBRATION_FACTOR = float(pv.get("pv_calibration_factor", 1.0))
     INVERTER_AC_KW_LIMIT = float(pv["inverter_ac_kw_limit"])
 
     BATTERY_KWH = float(battery["battery_kwh"])
@@ -896,6 +918,8 @@ def quick_sanity_checks() -> None:
         assert ARRAY_EAST_PANELS > 0 and ARRAY_SOUTH_PANELS > 0
         assert 0 < PERFORMANCE_RATIO <= 1
         assert 0 < INVERTER_EFF <= 1
+        assert PV_LOSS_MODEL in {"split", "combined"}
+        assert 0.7 <= PV_CALIBRATION_FACTOR <= 1.3
         assert 0 < BATTERY_AC_CHARGE_EFF <= 1
         assert 0 < BATTERY_PV_CHARGE_EFF <= 1
         assert 0 < BATTERY_DISCHARGE_EFF <= 1
@@ -1288,6 +1312,7 @@ def estimate_pv_with_pvlib(
     temp_air = pd.to_numeric(df_local["temp_air_c"], errors="coerce").ffill().bfill().fillna(10.0)
 
     dt_h = timestep_hours(df_local.index)
+    loss_multiplier = PERFORMANCE_RATIO if PV_LOSS_MODEL == "combined" else (PERFORMANCE_RATIO * INVERTER_EFF)
 
     def array_energy(tilt: float, az: float, pdc0_kw: float) -> Tuple["pd.Series", "pd.Series", "pd.Series", "pd.Series"]:
         irr = pvlib.irradiance.get_total_irradiance(
@@ -1312,7 +1337,7 @@ def estimate_pv_with_pvlib(
         )
         dc_kw = (dc_w / 1000.0).clip(lower=0)
         dc_kwh = (dc_kw * dt_h).fillna(0).clip(lower=0)
-        ac_kw_unclipped = (dc_kw * PERFORMANCE_RATIO * INVERTER_EFF).fillna(0).clip(lower=0)
+        ac_kw_unclipped = (dc_kw * loss_multiplier).fillna(0).clip(lower=0)
         ac_kwh_unclipped = (ac_kw_unclipped * dt_h).fillna(0).clip(lower=0)
         return (
             dc_kw.astype(float),
@@ -1333,6 +1358,14 @@ def estimate_pv_with_pvlib(
 
     total_ac_kw_clipped = total_ac_kw_unclipped.clip(upper=INVERTER_AC_KW_LIMIT)
     total_ac_kwh_clipped = (total_ac_kw_clipped * dt_h).fillna(0).clip(lower=0)
+
+    east_ac_kwh_unclipped = (east_ac_kwh_unclipped * PV_CALIBRATION_FACTOR).fillna(0).clip(lower=0)
+    south_ac_kwh_unclipped = (south_ac_kwh_unclipped * PV_CALIBRATION_FACTOR).fillna(0).clip(lower=0)
+    total_ac_kwh_unclipped = (total_ac_kwh_unclipped * PV_CALIBRATION_FACTOR).fillna(0).clip(lower=0)
+    total_ac_kwh_clipped = (total_ac_kwh_clipped * PV_CALIBRATION_FACTOR).fillna(0).clip(lower=0)
+
+    east_ac_kw_unclipped = (east_ac_kwh_unclipped / dt_h.replace(0.0, float("nan"))).fillna(0).clip(lower=0)
+    south_ac_kw_unclipped = (south_ac_kwh_unclipped / dt_h.replace(0.0, float("nan"))).fillna(0).clip(lower=0)
 
     return (
         east_ac_kw_unclipped.astype(float),
@@ -1398,6 +1431,10 @@ def validate_pv_outputs(out: "pd.DataFrame") -> None:
         raise ValueError("PERFORMANCE_RATIO must be within (0, 1].")
     if not (0 < INVERTER_EFF <= 1.0):
         raise ValueError("INVERTER_EFF must be within (0, 1].")
+    if PV_LOSS_MODEL not in {"split", "combined"}:
+        raise ValueError("PV_LOSS_MODEL must be either 'split' or 'combined'.")
+    if not (0.7 <= PV_CALIBRATION_FACTOR <= 1.3):
+        raise ValueError("PV_CALIBRATION_FACTOR must be within [0.7, 1.3].")
 
     eps = 1e-9
     for col in ["pv_east_kwh", "pv_south_kwh", "pv_total_unclipped_kwh", "pv_total_kwh", "pv_clipped_kwh"]:
