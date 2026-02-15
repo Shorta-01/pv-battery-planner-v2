@@ -44,7 +44,7 @@ CHART_TOOLTIPS = {
 TABLE_TOOLTIPS = {
     "Weather inputs used": "This table shows the weather data used for the forecast, hour by hour. It matters because PV results depend directly on these values.",
     "Hourly planning output": "This table combines hourly PV, load, battery SOC, and grid flows. It helps you inspect exactly what the planner expects each hour.",
-    "History log": "This table stores one forecast record per run date, with the latest run overwriting older runs for the same date.",
+    "History log": "By default this table shows the latest run per date. Enable \"Show all runs\" to view every run.",
 }
 
 RUN_HISTORY_PATH = Path("run_history_log.json")
@@ -477,34 +477,44 @@ def series_from_split(payload: dict) -> pd.Series:
     return pd.Series(dtype=float)
 
 
-def run_history_from_backend() -> pd.DataFrame:
+def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.DataFrame:
     history_columns = [
         "Date",
+        "Run at",
         "AC charge cutoff SOC (%)",
         "Allowed AC charge power (kW)",
         "PV forecast total (kWh)",
         "Consumption forecast total (kWh)",
     ]
     try:
-        items = api_get("/v1/results/history?days=30").get("items", [])
+        show_all_text = "true" if show_all_runs else "false"
+        items = api_get(f"/v1/results/history?days={max(1, int(days))}&show_all_runs={show_all_text}").get("items", [])
     except Exception:
         return pd.DataFrame(columns=history_columns)
+
     rows = []
     for item in items:
         metrics = item.get("metrics", {})
+        cutoff_soc = float(metrics.get("cutoff_soc", 0.0))
         rows.append({
             "Date": item.get("target_date"),
-            "AC charge cutoff SOC (%)": round((float(metrics.get("cutoff_soc", 0.0)) * 100.0) if float(metrics.get("cutoff_soc", 0.0)) <= 1.0 else float(metrics.get("cutoff_soc", 0.0)), 1),
+            "Run at": item.get("run_at"),
+            "AC charge cutoff SOC (%)": round((cutoff_soc * 100.0) if cutoff_soc <= 1.0 else cutoff_soc, 1),
             "Allowed AC charge power (kW)": round(float(metrics.get("charge_kw", 0.0)), 2),
             "PV forecast total (kWh)": round(float(metrics.get("pv_forecast_kwh", 0.0)), 2),
             "Consumption forecast total (kWh)": round(float(metrics.get("cons_forecast_kwh", 0.0)), 2),
         })
+
     if not rows:
         return pd.DataFrame(columns=history_columns)
+
     history_df = pd.DataFrame(rows)
     history_df["Date"] = pd.to_datetime(history_df["Date"], errors="coerce")
-    history_df = history_df.dropna(subset=["Date"]).sort_values("Date")
+    history_df["Run at"] = pd.to_datetime(history_df["Run at"], errors="coerce")
+    history_df = history_df.dropna(subset=["Date"])
+    history_df = history_df.sort_values(["Date", "Run at"], ascending=[True, True])
     history_df["Date"] = history_df["Date"].dt.date.astype(str)
+    history_df["Run at"] = history_df["Run at"].dt.strftime("%Y-%m-%d %H:%M:%S").fillna("")
     return history_df
 
 
@@ -1110,7 +1120,9 @@ if run:
             if charge_note.startswith("Warning"):
                 st.warning(charge_note)
 
-            history_df = run_history_from_backend()
+            history_show_all_runs = st.toggle("Show all runs", value=False, help="Off = latest run per date. On = all runs.")
+            history_show_run_at = st.checkbox("Show 'Run at' column", value=True)
+            history_df = run_history_from_backend(show_all_runs=history_show_all_runs, days=365)
 
             st.markdown("### Forecast summary")
             c1, c2, c3, c4 = st.columns(4)
@@ -1161,7 +1173,16 @@ if run:
 
             tooltip_heading("History log", TABLE_TOOLTIPS["History log"])
             with st.expander("History log"):
-                st.dataframe(history_df.reset_index(drop=True), use_container_width=True)
+                history_export_df = history_df.reset_index(drop=True)
+                history_display_df = history_export_df.drop(columns=["Run at"]) if (not history_show_run_at and "Run at" in history_export_df.columns) else history_export_df
+                st.dataframe(history_display_df, use_container_width=True)
+                st.download_button(
+                    "📥 Export history CSV",
+                    history_export_df.to_csv(index=False).encode("utf-8"),
+                    file_name="history_log.csv",
+                    mime="text/csv",
+                    help="Exports exactly the current history view (latest per day or all runs).",
+                )
 
             with st.expander("Debug stats"):
                 debug_stats = fetch_debug_stats()

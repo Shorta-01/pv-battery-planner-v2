@@ -335,6 +335,81 @@ def fetch_recent_run_summaries(db_path: str, limit: int = 30) -> list[dict]:
     return items
 
 
+def _summary_from_row(row: sqlite3.Row) -> dict:
+    return {
+        "target_date": row["target_date"],
+        "metrics": {
+            "charge_kw": float(row["charge_kw"] or 0.0),
+            "cutoff_soc": float(row["cutoff_soc"] or 0.0) / 100.0,
+            "pv_forecast_kwh": float(row["pv_forecast_kwh"] or 0.0),
+            "cons_forecast_kwh": float(row["cons_forecast_kwh"] or 0.0),
+        },
+        "run_at": row["run_at_utc"],
+        "run_type": row["run_type"] or "manual",
+    }
+
+
+def fetch_history_latest_per_day(db_path: str, limit_days: int | None = None) -> list[dict]:
+    params: list[Any] = []
+    where_clauses = ["rn = 1"]
+    if limit_days is not None:
+        safe_days = max(1, int(limit_days))
+        where_clauses.append(
+            "target_date IN (SELECT target_date FROM forecast_runs GROUP BY target_date ORDER BY target_date DESC LIMIT ?)"
+        )
+        params.append(safe_days)
+
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            WITH ranked AS (
+                SELECT
+                    run_id,
+                    target_date,
+                    run_at_utc,
+                    created_at_utc,
+                    run_type,
+                    charge_kw,
+                    cutoff_soc,
+                    pv_forecast_kwh,
+                    cons_forecast_kwh,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY target_date
+                        ORDER BY run_at_utc DESC, COALESCE(created_at_utc, run_at_utc) DESC, run_id DESC
+                    ) AS rn
+                FROM forecast_runs
+            )
+            SELECT target_date, run_at_utc, run_type, charge_kw, cutoff_soc, pv_forecast_kwh, cons_forecast_kwh
+            FROM ranked
+            WHERE {' AND '.join(where_clauses)}
+            ORDER BY target_date ASC
+            """,
+            params,
+        ).fetchall()
+    return [_summary_from_row(row) for row in rows]
+
+
+def fetch_history_all_runs(db_path: str, limit_days: int | None = None) -> list[dict]:
+    params: list[Any] = []
+    date_filter_sql = ""
+    if limit_days is not None:
+        safe_days = max(1, int(limit_days))
+        date_filter_sql = "WHERE target_date IN (SELECT target_date FROM forecast_runs GROUP BY target_date ORDER BY target_date DESC LIMIT ?)"
+        params.append(safe_days)
+
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT target_date, run_at_utc, run_type, charge_kw, cutoff_soc, pv_forecast_kwh, cons_forecast_kwh
+            FROM forecast_runs
+            {date_filter_sql}
+            ORDER BY target_date ASC, run_at_utc ASC, COALESCE(created_at_utc, run_at_utc) ASC, run_id ASC
+            """,
+            params,
+        ).fetchall()
+    return [_summary_from_row(row) for row in rows]
+
+
 def fetch_latest_full_run(db_path: str) -> dict | None:
     with _connect(db_path) as conn:
         row = conn.execute(
