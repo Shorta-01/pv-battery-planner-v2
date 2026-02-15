@@ -4,8 +4,10 @@ import copy
 import datetime as dt
 import gc
 import json
+import os
 import secrets
 import threading
+import tempfile
 import uuid
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -181,11 +183,26 @@ class BackendState:
             return copy.deepcopy(default)
         try:
             return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except json.JSONDecodeError:
+            print(f"Warning: invalid JSON in {path.name}; using defaults")
+            return copy.deepcopy(default)
+        except OSError:
             return copy.deepcopy(default)
 
     def _write_json(self, path: Path, payload: dict | list) -> None:
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            delete=False,
+        ) as tmp:
+            json.dump(payload, tmp, indent=2)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp_path = Path(tmp.name)
+
+        os.replace(tmp_path, path)
 
     def _load_settings(self) -> dict:
         if SETTINGS_PATH.exists():
