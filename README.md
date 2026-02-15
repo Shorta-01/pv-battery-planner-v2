@@ -102,6 +102,22 @@ gevraagd en krijgt een tekstuele samenvatting + FusionSolar‑instellingen in de
 
 ---
 
+### Aanbevolen backend/UI startup (stabiele single-process runtime)
+
+Voor dagelijks gebruik op Windows (of lokaal algemeen), start backend en UI in aparte terminals:
+
+```bash
+uvicorn backend_api:app --host 127.0.0.1 --port 8787 --workers 1
+streamlit run app.py
+```
+
+Gebruik **geen `--reload`** in normaal gebruik: auto-reload start extra processen en verhoogt het geheugengebruik.
+
+### Troubleshooting geheugen
+
+- Een baseline van ongeveer **100–300 MB** is normaal voor deze stack (`pandas`/`numpy`/`pvlib`/`plotly`).
+- Belangrijker dan de baseline is het gedrag over tijd: geheugen mag niet onbeperkt blijven stijgen bij herhaalde runs.
+- Controleer geheugen tijdens 20–30 opeenvolgende forecasts; de verwachting is dat het gebruik na verloop van tijd stabiliseert.
 ### 4. Configuratie
 
 De basisconfiguratie staat in `config.json`. Belangrijke blokken:

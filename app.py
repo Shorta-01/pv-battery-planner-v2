@@ -103,13 +103,13 @@ def save_run_history_entry(run_date: dt.date, cutoff_soc_pct: float, allowed_cha
     return history_df
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, max_entries=4)
 def cached_fetch_weather(lat: float, lon: float, tz: str, tomorrow_iso: str) -> core.ForecastResult:
     loc = core.Location(name="Configured", latitude=lat, longitude=lon)
     return core.fetch_tomorrow_weather(loc, tz=tz)
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, max_entries=4)
 def cached_pv_forecast(weather_json: str, lat: float, lon: float, tz: str, config_json: str) -> pd.DataFrame:
     loc = core.Location(name="Configured", latitude=lat, longitude=lon)
     weather_df = pd.read_json(weather_json, orient="split")
@@ -440,20 +440,28 @@ def api_headers() -> dict:
     return {"Authorization": f"Bearer {load_api_token()}"}
 
 
+
+
+@st.cache_resource
+def http_session() -> requests.Session:
+    session = requests.Session()
+    return session
+
+
 def api_get(path: str) -> dict:
-    response = requests.get(f"{API_BASE_URL}{path}", headers=api_headers(), timeout=30)
+    response = http_session().get(f"{API_BASE_URL}{path}", headers=api_headers(), timeout=30)
     response.raise_for_status()
     return response.json()
 
 
 def api_put(path: str, payload: dict) -> dict:
-    response = requests.put(f"{API_BASE_URL}{path}", headers=api_headers(), json=payload, timeout=30)
+    response = http_session().put(f"{API_BASE_URL}{path}", headers=api_headers(), json=payload, timeout=30)
     response.raise_for_status()
     return response.json()
 
 
 def api_post(path: str, payload: dict) -> dict:
-    response = requests.post(f"{API_BASE_URL}{path}", headers=api_headers(), json=payload, timeout=120)
+    response = http_session().post(f"{API_BASE_URL}{path}", headers=api_headers(), json=payload, timeout=120)
     response.raise_for_status()
     return response.json()
 
@@ -489,6 +497,20 @@ def run_history_from_backend() -> pd.DataFrame:
     history_df = history_df.dropna(subset=["Date"]).sort_values("Date")
     history_df["Date"] = history_df["Date"].dt.date.astype(str)
     return history_df
+
+
+def fetch_debug_stats() -> dict:
+    try:
+        history_items = api_get("/v1/results/history?days=365").get("items", [])
+    except Exception:
+        history_items = []
+    return {
+        "history_items": len(history_items),
+        "cache_ttl_seconds": 3600,
+        "cache_max_entries": 4,
+    }
+
+
 def make_chart_pv_load(df: pd.DataFrame, soc: pd.Series, cutoff_soc: float) -> go.Figure:
     working = df.copy()
     if "pv_clipped_kwh" not in working.columns:
@@ -1131,6 +1153,10 @@ if run:
             tooltip_heading("History log", TABLE_TOOLTIPS["History log"])
             with st.expander("History log"):
                 st.dataframe(history_df.reset_index(drop=True), use_container_width=True)
+
+            with st.expander("Debug stats"):
+                debug_stats = fetch_debug_stats()
+                st.json(debug_stats)
 
             for warning in result.get("warnings", []):
                 st.warning(f"Nightly context warning: {warning}")
