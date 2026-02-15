@@ -994,7 +994,19 @@ with left:
             step=0.1,
             help=INPUT_TOOLTIPS["max_ac_user_cap"],
         )
-        nightly_run_time = st.text_input("Nightly run time (HH:MM)", value=str(backend_settings.get("nightly_run_time", "22:00")))
+        nightly_time_str = str(backend_settings.get("nightly_run_time", "22:00"))
+        try:
+            nightly_time_value = parse_hhmm(nightly_time_str)
+        except ValueError:
+            nightly_time_value = parse_hhmm("22:00")
+            st.warning("Stored nightly run time was invalid, so 22:00 is shown instead.")
+
+        nightly_run_time = st.time_input(
+            "Nightly run time (HH:MM)",
+            value=nightly_time_value,
+            step=dt.timedelta(minutes=5),
+            help="Pick the nightly scheduler trigger time.",
+        ).strftime("%H:%M")
         if st.button("Save nightly schedule settings"):
             try:
                 api_put(
