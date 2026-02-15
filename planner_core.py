@@ -122,6 +122,8 @@ LOAD_PROFILE = [
     0.065, 0.070, 0.065, 0.055, 0.045, 0.040   # 18-23
 ]
 
+ENABLE_INVARIANT_CHECKS = False
+
 DEFAULT_CONFIG = {
     "location": {
         "use_geocoding": USE_GEOCODING,
@@ -168,6 +170,9 @@ DEFAULT_CONFIG = {
             [["00:00", "24:00"]],  # Saturday
             [["00:00", "24:00"]],  # Sunday
         ]
+    },
+    "system": {
+        "enable_invariant_checks": ENABLE_INVARIANT_CHECKS,
     },
 }
 
@@ -283,6 +288,7 @@ def validate_config(cfg: dict) -> None:
     battery = cfg["battery"]
     load_profile = cfg["load_profile"]
     tariff = cfg["tariff"]
+    system = cfg.get("system", {})
 
     if not (-90.0 <= float(location["latitude"]) <= 90.0):
         raise ValueError("location.latitude must be in [-90, 90].")
@@ -353,6 +359,10 @@ def validate_config(cfg: dict) -> None:
 
     parse_offpeak_windows_by_dow(tariff["offpeak_windows_by_dow"])
 
+    enable_invariant_checks = system.get("enable_invariant_checks", ENABLE_INVARIANT_CHECKS)
+    if not isinstance(enable_invariant_checks, bool):
+        raise ValueError("system.enable_invariant_checks must be a boolean.")
+
 
 def apply_config(cfg: dict) -> None:
     global USE_GEOCODING, ADDRESS_QUERY, LATITUDE, LONGITUDE, TIMEZONE
@@ -363,12 +373,14 @@ def apply_config(cfg: dict) -> None:
     global BATTERY_MAX_CHARGE_KW, BATTERY_MAX_DISCHARGE_KW, MAX_AC_CHARGE_KW_HARD_LIMIT
     global LOAD_PROFILE, MIN_SOC, MAX_CUTOFF_SOC, EFFECTIVE_CFG, OFFPEAK_WINDOWS_BY_DOW
     global PEAK_GRID_PRICE_EUR_PER_KWH, OFFPEAK_GRID_PRICE_EUR_PER_KWH, INJECTION_GRID_PRICE_EUR_PER_KWH
+    global ENABLE_INVARIANT_CHECKS
 
     location = cfg["location"]
     pv = cfg["pv"]
     battery = cfg["battery"]
     load_profile = cfg["load_profile"]
     tariff = cfg["tariff"]
+    system = cfg.get("system", {})
 
     USE_GEOCODING = bool(location["use_geocoding"])
     ADDRESS_QUERY = str(location["address_query"])
@@ -401,6 +413,7 @@ def apply_config(cfg: dict) -> None:
     OFFPEAK_GRID_PRICE_EUR_PER_KWH = float(tariff["offpeak_grid_price_eur_per_kwh"])
     INJECTION_GRID_PRICE_EUR_PER_KWH = float(tariff["injection_grid_price_eur_per_kwh"])
     OFFPEAK_WINDOWS_BY_DOW = parse_offpeak_windows_by_dow(tariff["offpeak_windows_by_dow"])
+    ENABLE_INVARIANT_CHECKS = bool(system.get("enable_invariant_checks", ENABLE_INVARIANT_CHECKS))
     MIN_SOC = MIN_SOC_PERCENT / 100.0
     MAX_CUTOFF_SOC = MAX_CUTOFF_SOC_PERCENT / 100.0
     EFFECTIVE_CFG = copy.deepcopy(cfg)
@@ -422,6 +435,80 @@ def save_config_file(cfg: dict, path: Path) -> None:
         tmp.write("\n")
         tmp_path = Path(tmp.name)
     os.replace(tmp_path, path)
+
+
+def validate_flow_invariants(flows_df: "pd.DataFrame", context: str, *, tol: float = 1e-6) -> None:
+    if flows_df.empty:
+        return
+
+    soc_lo = (MIN_SOC * 100.0) - tol
+    soc_hi = (MAX_CUTOFF_SOC * 100.0) + tol
+
+    def _as_float(row: "pd.Series", col: str) -> float:
+        return float(row[col]) if col in row else 0.0
+
+    kwh_cols = [c for c in flows_df.columns if c.endswith("_kwh")]
+
+    for ts, row in flows_df.iterrows():
+        ts_text = str(ts)
+        soc_start = _as_float(row, "soc_start_pct")
+        soc_end = _as_float(row, "soc_end_pct")
+
+        if soc_start < soc_lo or soc_start > soc_hi:
+            raise RuntimeError(
+                "Invariant failed (SOC bounds): "
+                f"context={context}, timestamp={ts_text}, soc_start_pct={soc_start:.6f}, "
+                f"expected_range=[{soc_lo:.6f}, {soc_hi:.6f}]"
+            )
+        if soc_end < soc_lo or soc_end > soc_hi:
+            raise RuntimeError(
+                "Invariant failed (SOC bounds): "
+                f"context={context}, timestamp={ts_text}, soc_end_pct={soc_end:.6f}, "
+                f"expected_range=[{soc_lo:.6f}, {soc_hi:.6f}]"
+            )
+
+        for col in kwh_cols:
+            value = _as_float(row, col)
+            if value < -tol:
+                raise RuntimeError(
+                    "Invariant failed (non-negativity): "
+                    f"context={context}, timestamp={ts_text}, {col}={value:.9f}, min_allowed={-tol:.9f}"
+                )
+
+        load_kwh = _as_float(row, "load_kwh")
+        pv_to_load_kwh = _as_float(row, "pv_to_load_kwh")
+        batt_discharge_kwh = _as_float(row, "batt_discharge_kwh")
+        grid_import_kwh = _as_float(row, "grid_import_kwh")
+        batt_charge_kwh = _as_float(row, "batt_charge_kwh")
+
+        is_pure_night_charge_row = (
+            load_kwh <= tol
+            and pv_to_load_kwh <= tol
+            and batt_discharge_kwh <= tol
+            and batt_charge_kwh > tol
+        )
+
+        if context in {"full_day", "expensive_hours"} and not is_pure_night_charge_row:
+            delivered_from_batt = batt_discharge_kwh * BATTERY_DISCHARGE_EFF
+            rhs = pv_to_load_kwh + delivered_from_batt + grid_import_kwh
+            diff = load_kwh - rhs
+            if abs(diff) > tol:
+                raise RuntimeError(
+                    "Invariant failed (load balance): "
+                    f"context={context}, timestamp={ts_text}, load_kwh={load_kwh:.9f}, "
+                    f"pv_to_load_kwh={pv_to_load_kwh:.9f}, delivered_from_batt_kwh={delivered_from_batt:.9f}, "
+                    f"grid_import_kwh={grid_import_kwh:.9f}, diff={diff:.9f}, tol={tol:.1e}"
+                )
+
+        if context == "night":
+            expected_grid_import = batt_charge_kwh / BATTERY_AC_CHARGE_EFF if BATTERY_AC_CHARGE_EFF > 0 else 0.0
+            diff = grid_import_kwh - expected_grid_import
+            if abs(diff) > tol:
+                raise RuntimeError(
+                    "Invariant failed (night charging balance): "
+                    f"context={context}, timestamp={ts_text}, grid_import_kwh={grid_import_kwh:.9f}, "
+                    f"expected_grid_import_kwh={expected_grid_import:.9f}, diff={diff:.9f}, tol={tol:.1e}"
+                )
 
 
 def set_user_config(user_cfg: dict) -> dict:
@@ -1757,6 +1844,8 @@ def simulate_expensive_hours_detailed(
         })
 
     detail_df = pd.DataFrame(rows).set_index("time")
+    if ENABLE_INVARIANT_CHECKS:
+        validate_flow_invariants(detail_df, "expensive_hours")
     if import_with_high_soc_due_to_power_limit:
         print(
             "Warning: expensive-hour imports occurred while SOC was high due to battery power limits "
@@ -1815,7 +1904,10 @@ def simulate_night_charging_series(
             }
         )
 
-    return pd.DataFrame(rows).set_index("time")
+    night_df = pd.DataFrame(rows).set_index("time")
+    if ENABLE_INVARIANT_CHECKS:
+        validate_flow_invariants(night_df, "night")
+    return night_df
 
 
 def simulate_full_day_soc(
@@ -1912,6 +2004,9 @@ def simulate_full_day_soc(
 
     if BATTERY_KWH > 0 and not full_soc.empty:
         full_soc.iloc[0] = soc_00 * 100.0
+
+    if ENABLE_INVARIANT_CHECKS:
+        validate_flow_invariants(full_flows, "full_day")
 
     return full_soc, full_flows
 
