@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import gc
 import json
 import secrets
 import threading
@@ -32,6 +33,29 @@ PV_QUALITY_COLORS = {
     "Poor": "#e76f51",
     "Very low": "#d62828",
 }
+
+FULL_RESULT_HEAVY_KEYS = {"weather", "pv", "detail", "flows", "soc"}
+
+
+def _to_history_summary(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+    pv_quality = payload.get("pv_quality") if isinstance(payload.get("pv_quality"), dict) else {}
+    slim_pv_quality = {
+        "score": pv_quality.get("score"),
+        "label": pv_quality.get("label"),
+        "ratio": pv_quality.get("ratio"),
+        "color": pv_quality.get("color"),
+        "is_fallback": pv_quality.get("is_fallback"),
+    }
+    return {
+        "target_date": payload.get("target_date"),
+        "metrics": payload.get("metrics", {}),
+        "pv_quality": {k: v for k, v in slim_pv_quality.items() if v is not None},
+        "warnings": payload.get("warnings", []),
+        "run_at": payload.get("run_at"),
+        "run_type": payload.get("run_type", "manual"),
+    }
 
 
 class SettingsPayload(BaseModel):
@@ -65,8 +89,32 @@ class BackendState:
         self.settings = self._load_settings()
         self.last_inputs = self._read_json(INPUTS_PATH, default={})
         self.latest_result = self._read_json(LATEST_RESULT_PATH, default={})
-        self.history = self._read_json(HISTORY_PATH, default=[])
+        self.history = self._load_history()
         self._apply_config(self.settings["config"])
+
+    def _is_heavy_history_item(self, item: dict) -> bool:
+        if not isinstance(item, dict):
+            return False
+        return any(key in item for key in FULL_RESULT_HEAVY_KEYS)
+
+    def _load_history(self) -> list[dict]:
+        raw_history = self._read_json(HISTORY_PATH, default=[])
+        if not isinstance(raw_history, list):
+            return []
+
+        migrated = False
+        summaries: list[dict] = []
+        for item in raw_history:
+            if not isinstance(item, dict):
+                continue
+            if self._is_heavy_history_item(item):
+                migrated = True
+            summaries.append(_to_history_summary(item))
+
+        summaries = summaries[-MAX_HISTORY:]
+        if migrated:
+            self._write_json(HISTORY_PATH, summaries)
+        return summaries
 
     def _load_or_create_token(self) -> str:
         if TOKEN_PATH.exists():
@@ -113,7 +161,8 @@ class BackendState:
 
     def _save_results(self) -> None:
         self._write_json(LATEST_RESULT_PATH, self.latest_result)
-        self._write_json(HISTORY_PATH, self.history[-MAX_HISTORY:])
+        self.history = self.history[-MAX_HISTORY:]
+        self._write_json(HISTORY_PATH, self.history)
 
     def _apply_config(self, config: dict) -> dict:
         merged = core.set_user_config(config)
@@ -240,11 +289,13 @@ class BackendState:
             "run_type": "manual",
         }
         self.latest_result = payload
-        self.history.append(payload)
+        self.history.append(_to_history_summary(payload))
         self.history = self.history[-MAX_HISTORY:]
         self.settings["last_successful_for_target_date"] = target_date.isoformat()
         self._save_results()
         self._save_settings()
+        del detail_df, flows_df, pv, weather
+        gc.collect()
         return payload
 
     def run_now(self, payload: RunNowPayload) -> dict:
@@ -262,6 +313,8 @@ class BackendState:
             result = self._run(dt.date.today() + dt.timedelta(days=1), soc, ykwh, float(payload.buffer_percent), cap)
             result["run_type"] = "manual"
             self.latest_result = result
+            if self.history:
+                self.history[-1]["run_type"] = "manual"
             self._save_results()
             return {"ran": True, "result": result}
         finally:
@@ -294,6 +347,9 @@ class BackendState:
             result["warnings"] = warnings
             result["run_type"] = "nightly"
             self.latest_result = result
+            if self.history:
+                self.history[-1]["warnings"] = warnings
+                self.history[-1]["run_type"] = "nightly"
             self._save_results()
             return {"ran": True, "reason": "ran", "target_date": target_date.isoformat(), "warnings": warnings, "result": result}
         finally:
