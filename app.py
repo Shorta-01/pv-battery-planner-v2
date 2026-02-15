@@ -205,6 +205,24 @@ def tooltip_heading(label: str, help_text: str) -> None:
     )
 
 
+def build_column_config(df: pd.DataFrame, candidates: dict) -> dict:
+    if df is None or df.empty:
+        return {}
+    return {k: v for k, v in candidates.items() if k in df.columns}
+
+
+def render_modern_table(df: pd.DataFrame, column_config: dict | None = None) -> None:
+    if df is None or df.empty:
+        st.info("No data available.")
+        return
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config=column_config,
+    )
+
+
 def metric_with_help(container, label: str, value: str) -> None:
     if "help" in inspect.signature(st.metric).parameters:
         container.metric(label, value, help=METRIC_TOOLTIPS[label])
@@ -603,20 +621,21 @@ def _render_history_log_block() -> None:
         )
 
         with c3:
-            csv_bytes = prepared.to_csv(index=False).encode("utf-8") if not prepared.empty else b""
-            st.download_button(
-                "⬇️ Export CSV",
-                data=csv_bytes,
-                file_name="history_log.csv",
-                mime="text/csv",
-                disabled=prepared.empty,
-                help="Download the history table you see here as CSV.",
-            )
+            st.caption("")
 
         if prepared.empty:
             st.info("No history records yet. Run a forecast to create the first record.")
         else:
-            st.dataframe(prepared, use_container_width=True)
+            history_column_config = build_column_config(
+                prepared,
+                {
+                    "AC charge cutoff SOC (%)": st.column_config.NumberColumn(format="%.1f"),
+                    "Allowed AC charge power (kW)": st.column_config.NumberColumn(format="%.2f"),
+                    "PV forecast total (kWh)": st.column_config.NumberColumn(format="%.2f"),
+                    "Consumption forecast total (kWh)": st.column_config.NumberColumn(format="%.2f"),
+                },
+            )
+            render_modern_table(prepared, column_config=history_column_config)
 
 
 if hasattr(st, "fragment"):
@@ -626,18 +645,6 @@ if hasattr(st, "fragment"):
 else:
     def render_history_fragment() -> None:
         _render_history_log_block()
-
-
-def fetch_debug_stats() -> dict:
-    try:
-        history_items = api_get("/v1/results/history?days=365").get("items", [])
-    except Exception:
-        history_items = []
-    return {
-        "history_items": len(history_items),
-        "cache_ttl_seconds": 3600,
-        "cache_max_entries": 4,
-    }
 
 
 def make_chart_pv_load(df: pd.DataFrame, soc: pd.Series, cutoff_soc: float) -> go.Figure:
@@ -1264,8 +1271,22 @@ if run:
                 st.write("Hourly columns: temperature_2m, cloud_cover, shortwave_radiation, direct_normal_irradiance, diffuse_radiation, wind_speed_10m")
                 weather_display = weather_df.copy()
                 weather_display.insert(0, "Hour", format_hour_from_index(weather_display.index, "%H:00").values)
-                weather_display = weather_display.reset_index(drop=True)
-                st.dataframe(weather_display.head(24), use_container_width=True)
+                weather_display = weather_display.head(24).reset_index(drop=True)
+                weather_column_config = build_column_config(
+                    weather_display,
+                    {
+                        "temperature_2m": st.column_config.NumberColumn(format="%.1f"),
+                        "wind_speed_10m": st.column_config.NumberColumn(format="%.1f"),
+                        "cloud_cover": st.column_config.NumberColumn(format="%.0f"),
+                        "ghi": st.column_config.NumberColumn(format="%.0f"),
+                        "dni": st.column_config.NumberColumn(format="%.0f"),
+                        "dhi": st.column_config.NumberColumn(format="%.0f"),
+                        "shortwave_radiation": st.column_config.NumberColumn(format="%.0f"),
+                        "direct_normal_irradiance": st.column_config.NumberColumn(format="%.0f"),
+                        "diffuse_radiation": st.column_config.NumberColumn(format="%.0f"),
+                    },
+                )
+                render_modern_table(weather_display, weather_column_config)
 
             combined = pv.join(flows_df[["soc_end_pct", "grid_import_kwh", "grid_export_kwh", "curtailed_kwh"]], how="left")
             combined_display = combined.copy()
@@ -1273,15 +1294,22 @@ if run:
             combined_display = combined_display.reset_index(drop=True)
             tooltip_heading("Hourly planning output", TABLE_TOOLTIPS["Hourly planning output"])
             with st.expander("Hourly planning output"):
-                st.dataframe(combined_display, use_container_width=True)
-                st.download_button("Download CSV", combined.to_csv().encode("utf-8"), file_name="pv_battery_plan.csv", mime="text/csv", help="Download the full hourly planning table as CSV.")
-                st.download_button("Download JSON", combined.reset_index().to_json(orient="records", date_format="iso", indent=2), file_name="pv_battery_plan.json", mime="application/json", help="Download the full hourly planning table as JSON.")
+                hourly_column_config = build_column_config(
+                    combined_display,
+                    {
+                        "pv_total_kwh": st.column_config.NumberColumn(format="%.2f"),
+                        "load_kwh": st.column_config.NumberColumn(format="%.2f"),
+                        "grid_import_kwh": st.column_config.NumberColumn(format="%.2f"),
+                        "grid_export_kwh": st.column_config.NumberColumn(format="%.2f"),
+                        "batt_charge_kwh": st.column_config.NumberColumn(format="%.2f"),
+                        "batt_discharge_kwh": st.column_config.NumberColumn(format="%.2f"),
+                        "soc_pct": st.column_config.NumberColumn(format="%.1f"),
+                        "soc_end_pct": st.column_config.NumberColumn(format="%.1f"),
+                    },
+                )
+                render_modern_table(combined_display, hourly_column_config)
 
             render_history_fragment()
-
-            with st.expander("Debug stats"):
-                debug_stats = fetch_debug_stats()
-                st.json(debug_stats)
 
             for warning in result.get("warnings", []):
                 st.warning(f"Nightly context warning: {warning}")
