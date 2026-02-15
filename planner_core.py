@@ -26,6 +26,7 @@ import datetime as dt
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -1002,10 +1003,8 @@ def _build_geocode_query_candidates(query: str) -> list[str]:
     return deduped
 
 
-def fetch_tomorrow_weather(loc: Location, tz: str | None = None) -> ForecastResult:
+def _fetch_weather_payload(loc: Location, target_date: dt.date, tz_use: str) -> ForecastResult:
     service = "open-meteo-weather"
-    tz_use = tz or TIMEZONE
-    tomorrow = dt.date.today() + dt.timedelta(days=1)
     url = "https://api.open-meteo.com/v1/ecmwf"
     params = {
         "latitude": loc.latitude,
@@ -1014,8 +1013,8 @@ def fetch_tomorrow_weather(loc: Location, tz: str | None = None) -> ForecastResu
         "wind_speed_unit": "ms",
         "temperature_unit": "celsius",
         "timeformat": "iso8601",
-        "start_date": tomorrow.isoformat(),
-        "end_date": tomorrow.isoformat(),
+        "start_date": target_date.isoformat(),
+        "end_date": target_date.isoformat(),
         "hourly": ",".join([
             "temperature_2m",
             "cloud_cover",
@@ -1024,7 +1023,7 @@ def fetch_tomorrow_weather(loc: Location, tz: str | None = None) -> ForecastResu
             "diffuse_radiation",
             "wind_speed_10m",
         ]),
-        "daily": "sunrise,sunset",
+        "daily": ",".join(["sunrise", "sunset"]),
     }
 
     data = _request_json(service=service, url=url, params=params)
@@ -1079,7 +1078,7 @@ def fetch_tomorrow_weather(loc: Location, tz: str | None = None) -> ForecastResu
 
     df = normalize_hourly_forecast_index(
         df[["temp_air_c", "ghi_wm2", "dni_wm2", "dhi_wm2", "cloud_cover_pct", "wind_speed_ms"]],
-        tomorrow,
+        target_date,
         tz_use,
     )
 
@@ -1148,6 +1147,18 @@ def fetch_tomorrow_weather(loc: Location, tz: str | None = None) -> ForecastResu
     sunrise = sunrise_ts.to_pydatetime()
     sunset = sunset_ts.to_pydatetime()
     return ForecastResult(df=df, sunrise=sunrise, sunset=sunset)
+
+
+def fetch_weather_for_date(loc: Location, target_date: dt.date, tz: str | None = None) -> ForecastResult:
+    tz_use = tz or TIMEZONE
+    return _fetch_weather_payload(loc, target_date, tz_use)
+
+
+def fetch_tomorrow_weather(loc: Location, tz: str | None = None) -> ForecastResult:
+    tz_use = tz or TIMEZONE
+    today_local = dt.datetime.now(ZoneInfo(tz_use)).date()
+    tomorrow = today_local + dt.timedelta(days=1)
+    return fetch_weather_for_date(loc, tomorrow, tz=tz_use)
 
 
 def normalize_hourly_forecast_index(df: "pd.DataFrame", date: dt.date, tz: str) -> "pd.DataFrame":
