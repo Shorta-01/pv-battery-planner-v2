@@ -478,10 +478,17 @@ def series_from_split(payload: dict) -> pd.Series:
 
 
 def run_history_from_backend() -> pd.DataFrame:
+    history_columns = [
+        "Date",
+        "AC charge cutoff SOC (%)",
+        "Allowed AC charge power (kW)",
+        "PV forecast total (kWh)",
+        "Consumption forecast total (kWh)",
+    ]
     try:
         items = api_get("/v1/results/history?days=30").get("items", [])
     except Exception:
-        return pd.DataFrame(columns=["Date", "AC charge cutoff SOC (%)", "Allowed AC charge power (kW)"])
+        return pd.DataFrame(columns=history_columns)
     rows = []
     for item in items:
         metrics = item.get("metrics", {})
@@ -489,9 +496,11 @@ def run_history_from_backend() -> pd.DataFrame:
             "Date": item.get("target_date"),
             "AC charge cutoff SOC (%)": round(float(metrics.get("cutoff_soc", 0.0)) * 100.0, 1),
             "Allowed AC charge power (kW)": round(float(metrics.get("charge_kw", 0.0)), 2),
+            "PV forecast total (kWh)": round(float(metrics.get("pv_forecast_kwh", 0.0)), 2),
+            "Consumption forecast total (kWh)": round(float(metrics.get("cons_forecast_kwh", 0.0)), 2),
         })
     if not rows:
-        return pd.DataFrame(columns=["Date", "AC charge cutoff SOC (%)", "Allowed AC charge power (kW)"])
+        return pd.DataFrame(columns=history_columns)
     history_df = pd.DataFrame(rows)
     history_df["Date"] = pd.to_datetime(history_df["Date"], errors="coerce")
     history_df = history_df.dropna(subset=["Date"]).sort_values("Date")

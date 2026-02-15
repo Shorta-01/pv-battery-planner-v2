@@ -266,6 +266,13 @@ class BackendState:
         )
         pv_quality.update(savings)
 
+        pv_forecast_kwh = float(pv["pv_total_kwh"].fillna(0.0).sum()) if "pv_total_kwh" in pv.columns else 0.0
+        cons_forecast_kwh = (
+            float(pv["load_kwh"].fillna(0.0).sum())
+            if "load_kwh" in pv.columns
+            else float(yesterday_kwh)
+        )
+
         payload = {
             "target_date": target_date.isoformat(),
             "weather": self._serialize_df(weather.df),
@@ -282,6 +289,8 @@ class BackendState:
                 "charge_note": charge_note,
                 "grid_import": float(grid_import),
                 "grid_export": float(grid_export),
+                "pv_forecast_kwh": pv_forecast_kwh,
+                "cons_forecast_kwh": cons_forecast_kwh,
             },
             "pv_quality": pv_quality,
             "warnings": [],
