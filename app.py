@@ -52,6 +52,9 @@ LOCAL_STATE_DIR = Path("local_state")
 API_BASE_URL = os.getenv("PVBP_BACKEND_URL", "http://127.0.0.1:8787")
 API_TOKEN_FILE = LOCAL_STATE_DIR / "api_token.txt"
 
+st.session_state.setdefault("history_all_runs", False)
+st.session_state.setdefault("history_show_run_at", False)
+
 PV_QUALITY_THRESHOLDS = {
     "Excellent": 75,
     "Good": 55,
@@ -516,6 +519,113 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
     history_df["Date"] = history_df["Date"].dt.date.astype(str)
     history_df["Run at"] = history_df["Run at"].dt.strftime("%Y-%m-%d %H:%M:%S").fillna("")
     return history_df
+
+
+def _prepare_history_df(df: pd.DataFrame, all_runs: bool, show_run_at: bool) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    working = df.copy()
+
+    colmap = {}
+    for c in working.columns:
+        lc = c.strip().lower()
+        if lc in ("run_at", "run at", "runat", "created_at", "created at"):
+            colmap[c] = "Run at"
+        if lc in ("date", "target_date", "target date"):
+            colmap[c] = "Date"
+    if colmap:
+        working = working.rename(columns=colmap)
+
+    if "Date" in working.columns:
+        working["Date"] = pd.to_datetime(working["Date"], errors="coerce").dt.date
+
+    if "Run at" in working.columns:
+        working["Run at"] = pd.to_datetime(working["Run at"], errors="coerce")
+
+    if not all_runs:
+        if "Date" in working.columns and "Run at" in working.columns:
+            working = working.sort_values(["Date", "Run at"]).groupby("Date", as_index=False).tail(1)
+        elif "Date" in working.columns:
+            working = working.drop_duplicates(subset=["Date"], keep="last")
+
+    sort_cols: list[str] = []
+    if "Date" in working.columns:
+        sort_cols.append("Date")
+    if all_runs and "Run at" in working.columns:
+        sort_cols.append("Run at")
+    if sort_cols:
+        working = working.sort_values(sort_cols, ascending=True)
+
+    if (not show_run_at) and ("Run at" in working.columns):
+        working = working.drop(columns=["Run at"])
+
+    if "Date" in working.columns:
+        working["Date"] = working["Date"].astype(str)
+    if "Run at" in working.columns:
+        try:
+            working["Run at"] = working["Run at"].dt.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            working["Run at"] = working["Run at"].astype(str)
+
+    return working.reset_index(drop=True)
+
+
+def _render_history_log_block() -> None:
+    tooltip_heading("History log", TABLE_TOOLTIPS["History log"])
+
+    with st.expander("History log", expanded=True):
+        c1, c2, c3 = st.columns([1.2, 1.2, 1.6])
+
+        with c1:
+            st.toggle(
+                "All runs",
+                key="history_all_runs",
+                help="Off = only the latest run per forecast day. On = show every run you made.",
+            )
+
+        with c2:
+            if st.session_state.get("history_all_runs", False):
+                st.checkbox(
+                    "Show run time",
+                    key="history_show_run_at",
+                    help="Shows when you pressed Run forecast / when the nightly job ran. Useful if you have multiple runs for the same day.",
+                )
+            else:
+                st.session_state["history_show_run_at"] = False
+                st.caption("")
+
+        raw = run_history_from_backend(show_all_runs=st.session_state["history_all_runs"], days=365)
+        prepared = _prepare_history_df(
+            raw,
+            all_runs=st.session_state["history_all_runs"],
+            show_run_at=st.session_state["history_show_run_at"],
+        )
+
+        with c3:
+            csv_bytes = prepared.to_csv(index=False).encode("utf-8") if not prepared.empty else b""
+            st.download_button(
+                "⬇️ Export CSV",
+                data=csv_bytes,
+                file_name="history_log.csv",
+                mime="text/csv",
+                disabled=prepared.empty,
+                help="Download the history table you see here as CSV.",
+            )
+
+        if prepared.empty:
+            st.info("No history records yet. Run a forecast to create the first record.")
+        else:
+            st.dataframe(prepared, use_container_width=True)
+
+
+if hasattr(st, "fragment"):
+    @st.fragment
+    def render_history_fragment() -> None:
+        _render_history_log_block()
+else:
+    def render_history_fragment() -> None:
+        _render_history_log_block()
 
 
 def fetch_debug_stats() -> dict:
@@ -1120,10 +1230,6 @@ if run:
             if charge_note.startswith("Warning"):
                 st.warning(charge_note)
 
-            history_show_all_runs = st.toggle("Show all runs", value=False, help="Off = latest run per date. On = all runs.")
-            history_show_run_at = st.checkbox("Show 'Run at' column", value=True)
-            history_df = run_history_from_backend(show_all_runs=history_show_all_runs, days=365)
-
             st.markdown("### Forecast summary")
             c1, c2, c3, c4 = st.columns(4)
             metric_with_help(c1, "Forecast total PV (kWh)", f"{pv['pv_total_kwh'].sum():.2f}")
@@ -1171,18 +1277,7 @@ if run:
                 st.download_button("Download CSV", combined.to_csv().encode("utf-8"), file_name="pv_battery_plan.csv", mime="text/csv", help="Download the full hourly planning table as CSV.")
                 st.download_button("Download JSON", combined.reset_index().to_json(orient="records", date_format="iso", indent=2), file_name="pv_battery_plan.json", mime="application/json", help="Download the full hourly planning table as JSON.")
 
-            tooltip_heading("History log", TABLE_TOOLTIPS["History log"])
-            with st.expander("History log"):
-                history_export_df = history_df.reset_index(drop=True)
-                history_display_df = history_export_df.drop(columns=["Run at"]) if (not history_show_run_at and "Run at" in history_export_df.columns) else history_export_df
-                st.dataframe(history_display_df, use_container_width=True)
-                st.download_button(
-                    "📥 Export history CSV",
-                    history_export_df.to_csv(index=False).encode("utf-8"),
-                    file_name="history_log.csv",
-                    mime="text/csv",
-                    help="Exports exactly the current history view (latest per day or all runs).",
-                )
+            render_history_fragment()
 
             with st.expander("Debug stats"):
                 debug_stats = fetch_debug_stats()
