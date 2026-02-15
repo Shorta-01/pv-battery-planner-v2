@@ -6,6 +6,7 @@ import gc
 import json
 import secrets
 import threading
+import uuid
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -14,12 +15,15 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 import planner_core as core
+from db_sqlite import compute_config_hash, fetch_latest_full_run, fetch_recent_run_summaries, init_db, insert_forecast_run
 
 LOCAL_STATE_DIR = Path("local_state")
 SETTINGS_PATH = LOCAL_STATE_DIR / "settings.json"
 INPUTS_PATH = LOCAL_STATE_DIR / "last_inputs.json"
 LATEST_RESULT_PATH = LOCAL_STATE_DIR / "latest_result.json"
 HISTORY_PATH = LOCAL_STATE_DIR / "results_history.json"
+SQLITE_PATH = LOCAL_STATE_DIR / "planner_history.sqlite"
+RUN_HISTORY_PATH = Path("run_history_log.json")
 TOKEN_PATH = LOCAL_STATE_DIR / "api_token.txt"
 TIMEZONE = ZoneInfo("Europe/Brussels")
 DEFAULT_NIGHTLY_TIME = "22:00"
@@ -84,6 +88,7 @@ class NightlyTickPayload(BaseModel):
 class BackendState:
     def __init__(self) -> None:
         LOCAL_STATE_DIR.mkdir(parents=True, exist_ok=True)
+        init_db(str(SQLITE_PATH))
         self._lock = threading.Lock()
         self.api_token = self._load_or_create_token()
         self.settings = self._load_settings()
@@ -91,6 +96,48 @@ class BackendState:
         self.latest_result = self._read_json(LATEST_RESULT_PATH, default={})
         self.history = self._load_history()
         self._apply_config(self.settings["config"])
+        self._migrate_json_history_to_sqlite()
+
+    def _migrate_json_history_to_sqlite(self) -> None:
+        payloads: list[dict] = []
+        raw_history = self._read_json(HISTORY_PATH, default=[])
+        if isinstance(raw_history, list):
+            payloads.extend([item for item in raw_history if isinstance(item, dict)])
+        latest_payload = self._read_json(LATEST_RESULT_PATH, default={})
+        if isinstance(latest_payload, dict) and latest_payload:
+            payloads.append(latest_payload)
+
+        run_history_log = self._read_json(RUN_HISTORY_PATH, default=[])
+        fallback_by_date: dict[str, dict] = {}
+        if isinstance(run_history_log, list):
+            for row in run_history_log:
+                if not isinstance(row, dict):
+                    continue
+                d = str(row.get("Date") or "")
+                if not d:
+                    continue
+                fallback_by_date[d] = row
+
+        for payload in payloads:
+            if "metrics" not in payload or not isinstance(payload.get("metrics"), dict):
+                payload["metrics"] = {}
+            metrics = payload["metrics"]
+            date_key = str(payload.get("target_date") or "")
+            fb = fallback_by_date.get(date_key, {})
+            if "charge_kw" not in metrics and fb:
+                metrics["charge_kw"] = float(fb.get("Allowed AC charge power (kW)", 0.0) or 0.0)
+            if "cutoff_soc" not in metrics and fb:
+                cutoff_pct = float(fb.get("AC charge cutoff SOC (%)", 0.0) or 0.0)
+                metrics["cutoff_soc"] = cutoff_pct / 100.0
+            payload.setdefault("run_id", str(uuid.uuid4()))
+            payload.setdefault("run_at_utc", dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat())
+            payload.setdefault("config", self.settings.get("config", {}))
+            if "inputs_used" not in payload and self.last_inputs:
+                payload["inputs_used"] = {
+                    "soc_at_22_percent": self.last_inputs.get("soc_at_22_percent"),
+                    "yesterday_consumption_kwh": self.last_inputs.get("yesterday_consumption_kwh"),
+                }
+            insert_forecast_run(str(SQLITE_PATH), payload)
 
     def _is_heavy_history_item(self, item: dict) -> bool:
         if not isinstance(item, dict):
@@ -273,7 +320,23 @@ class BackendState:
             else float(yesterday_kwh)
         )
 
+        run_at_utc = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+        run_id = str(uuid.uuid4())
+        system_snapshot = {
+            "lat": loc_cfg.get("latitude"),
+            "lon": loc_cfg.get("longitude"),
+            "timezone": tz,
+            "tilt": cfg.get("arrays", {}).get("south", {}).get("tilt_deg"),
+            "azimuth": cfg.get("arrays", {}).get("south", {}).get("azimuth_deg"),
+            "dc_kwp": cfg.get("arrays", {}).get("south", {}).get("dc_capacity_kwp"),
+            "battery_kwh": cfg.get("battery", {}).get("capacity_kwh"),
+            "inverter_ac_limit_kw": cfg.get("inverter", {}).get("ac_limit_kw"),
+            "loss_factor": cfg.get("system", {}).get("loss_factor"),
+        }
+        config_hash = compute_config_hash(cfg)
+
         payload = {
+            "run_id": run_id,
             "target_date": target_date.isoformat(),
             "weather": self._serialize_df(weather.df),
             "pv": self._serialize_df(pv),
@@ -295,8 +358,21 @@ class BackendState:
             "pv_quality": pv_quality,
             "warnings": [],
             "run_at": dt.datetime.now(TIMEZONE).isoformat(),
+            "run_at_utc": run_at_utc,
             "run_type": "manual",
+            "timezone": tz,
+            "inputs_used": {
+                "soc_at_22_percent": float(soc_percent),
+                "yesterday_consumption_kwh": float(yesterday_kwh),
+            },
+            "system_snapshot": {k: v for k, v in system_snapshot.items() if v is not None},
+            "planner_version": "v2",
+            "config_hash": config_hash,
+            "config_json": json.dumps(cfg, sort_keys=True),
+            "config": cfg,
+            "created_at_utc": run_at_utc,
         }
+        insert_forecast_run(str(SQLITE_PATH), payload)
         self.latest_result = payload
         self.history.append(_to_history_summary(payload))
         self.history = self.history[-MAX_HISTORY:]
@@ -422,10 +498,16 @@ def run_nightly(payload: NightlyTickPayload, authorization: str | None = Header(
 @app.get("/v1/results/latest")
 def latest_result(authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
+    db_payload = fetch_latest_full_run(str(SQLITE_PATH))
+    if db_payload is not None:
+        return db_payload
     return state.latest_result
 
 
 @app.get("/v1/results/history")
 def history(days: int = 30, authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
+    items = fetch_recent_run_summaries(str(SQLITE_PATH), limit=max(1, days))
+    if items:
+        return {"items": items}
     return {"items": state.history[-max(1, days):]}
