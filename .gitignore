@@ -4,3 +4,4 @@ __pycache__/
 .idea/
 .streamlit/
 run_history_log.json
+local_state/
