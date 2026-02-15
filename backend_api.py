@@ -32,7 +32,6 @@ HISTORY_PATH = LOCAL_STATE_DIR / "results_history.json"
 SQLITE_PATH = LOCAL_STATE_DIR / "planner_history.sqlite"
 RUN_HISTORY_PATH = Path("run_history_log.json")
 TOKEN_PATH = LOCAL_STATE_DIR / "api_token.txt"
-TIMEZONE = ZoneInfo("Europe/Brussels")
 DEFAULT_NIGHTLY_TIME = "22:00"
 DEFAULT_MAX_AC_CAP = 5.0
 MAX_HISTORY = 30
@@ -218,6 +217,13 @@ class BackendState:
         self.history = self.history[-MAX_HISTORY:]
         self._write_json(HISTORY_PATH, self.history)
 
+    def _tzinfo(self) -> ZoneInfo:
+        tz_name = str(self.settings.get("timezone") or "Europe/Brussels")
+        try:
+            return ZoneInfo(tz_name)
+        except Exception:
+            return ZoneInfo("Europe/Brussels")
+
     def _apply_config(self, config: dict) -> dict:
         merged = core.set_user_config(config)
         self.settings["config"] = merged
@@ -239,7 +245,7 @@ class BackendState:
         return self.settings
 
     def update_inputs(self, payload: InputsPayload) -> dict:
-        now_local = dt.datetime.now(TIMEZONE).isoformat()
+        now_local = dt.datetime.now(self._tzinfo()).isoformat()
         self.last_inputs = {
             "soc_at_22_percent": float(payload.soc_at_22_percent),
             "yesterday_consumption_kwh": float(payload.yesterday_consumption_kwh),
@@ -364,7 +370,7 @@ class BackendState:
             },
             "pv_quality": pv_quality,
             "warnings": [],
-            "run_at": dt.datetime.now(TIMEZONE).isoformat(),
+            "run_at": dt.datetime.now(self._tzinfo()).isoformat(),
             "run_at_utc": run_at_utc,
             "run_type": "manual",
             "timezone": tz,
@@ -416,7 +422,7 @@ class BackendState:
         if not self._lock.acquire(blocking=False):
             raise HTTPException(status_code=423, detail="Run already in progress")
         try:
-            local_now = dt.datetime.now(TIMEZONE)
+            local_now = dt.datetime.now(self._tzinfo())
             target_date = local_now.date() + dt.timedelta(days=1)
             trigger_time = dt.datetime.strptime(self.settings.get("nightly_run_time", DEFAULT_NIGHTLY_TIME), "%H:%M").time()
             if not payload.force and local_now.time() < trigger_time:
@@ -463,7 +469,7 @@ def _require_token(authorization: str | None) -> None:
 @app.get("/v1/health")
 def health(authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
-    return {"status": "ok", "time": dt.datetime.now(TIMEZONE).isoformat()}
+    return {"status": "ok", "time": dt.datetime.now(state._tzinfo()).isoformat()}
 
 
 @app.get("/v1/settings")
