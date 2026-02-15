@@ -1,0 +1,356 @@
+from __future__ import annotations
+
+import copy
+import datetime as dt
+import json
+import secrets
+import threading
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel, Field
+
+import planner_core as core
+
+LOCAL_STATE_DIR = Path("local_state")
+SETTINGS_PATH = LOCAL_STATE_DIR / "settings.json"
+INPUTS_PATH = LOCAL_STATE_DIR / "last_inputs.json"
+LATEST_RESULT_PATH = LOCAL_STATE_DIR / "latest_result.json"
+HISTORY_PATH = LOCAL_STATE_DIR / "results_history.json"
+TOKEN_PATH = LOCAL_STATE_DIR / "api_token.txt"
+TIMEZONE = ZoneInfo("Europe/Brussels")
+DEFAULT_NIGHTLY_TIME = "22:00"
+DEFAULT_MAX_AC_CAP = 5.0
+MAX_HISTORY = 30
+
+
+class SettingsPayload(BaseModel):
+    config: dict
+    nightly_run_time: str = DEFAULT_NIGHTLY_TIME
+    timezone: str = "Europe/Brussels"
+    max_ac_charge_power_kw_default: float = DEFAULT_MAX_AC_CAP
+
+
+class InputsPayload(BaseModel):
+    soc_at_22_percent: float = Field(..., ge=0.0, le=100.0)
+    yesterday_consumption_kwh: float = Field(..., gt=0.0)
+
+
+class RunNowPayload(BaseModel):
+    soc_at_22_percent: float | None = Field(default=None, ge=0.0, le=100.0)
+    yesterday_consumption_kwh: float | None = Field(default=None, gt=0.0)
+    buffer_percent: float = Field(default=0.0, ge=0.0, le=10.0)
+    user_max_ac_kw: float | None = Field(default=None, ge=0.0)
+
+
+class NightlyTickPayload(BaseModel):
+    force: bool = False
+
+
+class BackendState:
+    def __init__(self) -> None:
+        LOCAL_STATE_DIR.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self.api_token = self._load_or_create_token()
+        self.settings = self._load_settings()
+        self.last_inputs = self._read_json(INPUTS_PATH, default={})
+        self.latest_result = self._read_json(LATEST_RESULT_PATH, default={})
+        self.history = self._read_json(HISTORY_PATH, default=[])
+        self._apply_config(self.settings["config"])
+
+    def _load_or_create_token(self) -> str:
+        if TOKEN_PATH.exists():
+            return TOKEN_PATH.read_text(encoding="utf-8").strip()
+        token = secrets.token_urlsafe(32)
+        TOKEN_PATH.write_text(token, encoding="utf-8")
+        return token
+
+    def _read_json(self, path: Path, default):
+        if not path.exists():
+            return copy.deepcopy(default)
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return copy.deepcopy(default)
+
+    def _write_json(self, path: Path, payload: dict | list) -> None:
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _load_settings(self) -> dict:
+        if SETTINGS_PATH.exists():
+            loaded = self._read_json(SETTINGS_PATH, {})
+            if isinstance(loaded, dict) and "config" in loaded:
+                return loaded
+
+        cfg = core.DEFAULT_CONFIG
+        if core.CONFIG_PATH.exists():
+            cfg = core.load_config_file(core.CONFIG_PATH)
+        merged = core.set_user_config(cfg)
+        settings = {
+            "config": merged,
+            "nightly_run_time": DEFAULT_NIGHTLY_TIME,
+            "timezone": "Europe/Brussels",
+            "max_ac_charge_power_kw_default": DEFAULT_MAX_AC_CAP,
+        }
+        self._write_json(SETTINGS_PATH, settings)
+        return settings
+
+    def _save_settings(self) -> None:
+        self._write_json(SETTINGS_PATH, self.settings)
+
+    def _save_inputs(self) -> None:
+        self._write_json(INPUTS_PATH, self.last_inputs)
+
+    def _save_results(self) -> None:
+        self._write_json(LATEST_RESULT_PATH, self.latest_result)
+        self._write_json(HISTORY_PATH, self.history[-MAX_HISTORY:])
+
+    def _apply_config(self, config: dict) -> dict:
+        merged = core.set_user_config(config)
+        self.settings["config"] = merged
+        return merged
+
+    def update_settings(self, payload: SettingsPayload) -> dict:
+        _ = ZoneInfo(payload.timezone)
+        dt.datetime.strptime(payload.nightly_run_time, "%H:%M")
+        merged = self._apply_config(payload.config)
+        self.settings.update(
+            {
+                "config": merged,
+                "nightly_run_time": payload.nightly_run_time,
+                "timezone": payload.timezone,
+                "max_ac_charge_power_kw_default": float(payload.max_ac_charge_power_kw_default),
+            }
+        )
+        self._save_settings()
+        return self.settings
+
+    def update_inputs(self, payload: InputsPayload) -> dict:
+        now_local = dt.datetime.now(TIMEZONE).isoformat()
+        self.last_inputs = {
+            "soc_at_22_percent": float(payload.soc_at_22_percent),
+            "yesterday_consumption_kwh": float(payload.yesterday_consumption_kwh),
+            "last_inputs_updated_at": now_local,
+        }
+        self._save_inputs()
+        return self.last_inputs
+
+    def _serialize_df(self, df: pd.DataFrame) -> dict:
+        return json.loads(df.to_json(date_format="iso", orient="split"))
+
+    def _serialize_series(self, s: pd.Series) -> dict:
+        frame = s.to_frame(name="value")
+        return self._serialize_df(frame)
+
+    def _run(self, target_date: dt.date, soc_percent: float, yesterday_kwh: float, buffer_percent: float, user_max_ac_kw: float) -> dict:
+        cfg = self.settings["config"]
+        loc_cfg = cfg["location"]
+        tz = str(loc_cfg.get("timezone", "Europe/Brussels"))
+        loc = core.Location(name="Configured", latitude=float(loc_cfg["latitude"]), longitude=float(loc_cfg["longitude"]))
+        weather = core.fetch_tomorrow_weather(loc, tz=tz)
+        pv = core.build_pv_forecast(weather.df, loc, tz=tz)
+        pv = core.apply_daylight_clamp(pv, weather.sunrise, weather.sunset).sort_index()
+        pv = core.add_sun_percent(pv, weather.sunrise, weather.sunset)
+        pv = core.add_load_and_surplus_columns(pv, yesterday_kwh)
+
+        soc_low = core.compute_soc_low_timing_aware(pv, yesterday_kwh, target_date)
+        _, soc_high = core.compute_soc_high_headroom(pv, yesterday_kwh, target_date)
+        cutoff_soc_raw, cutoff_reason = core.choose_cutoff_soc(target_date, soc_low, soc_high)
+        cutoff_soc = min(max(cutoff_soc_raw + (buffer_percent / 100.0), core.MIN_SOC), core.MAX_CUTOFF_SOC)
+
+        _, charge_kw, charge_note, achieved_soc_start = core.plan_charge_power(
+            soc_percent / 100.0, cutoff_soc, dt.date.today(), user_cap_kw=user_max_ac_kw
+        )
+        detail_df, grid_import, grid_export, _, _ = core.simulate_expensive_hours_detailed(
+            pv, yesterday_kwh, achieved_soc_start, target_date
+        )
+        soc_series, flows_df = core.simulate_full_day_soc(
+            pv, yesterday_kwh, soc_percent / 100.0, charge_kw, cutoff_soc, target_date
+        )
+
+        try:
+            clear_df = pd.DataFrame(index=weather.df.index)
+            clear_df["temp_air_c"] = pd.to_numeric(weather.df.get("temp_air_c"), errors="coerce").fillna(10.0)
+            clear_df["wind_speed_ms"] = pd.to_numeric(weather.df.get("wind_speed_ms"), errors="coerce").fillna(1.0).clip(lower=0.0)
+            clear_df["cloud_cover_pct"] = 0.0
+            _, _, _, _, _, pv_ac_limited_kwh = core.estimate_pv_with_pvlib(clear_df, loc, tz=tz)
+            clear_kwh = float(pv_ac_limited_kwh.sum())
+            pv_total_kwh = float(pd.to_numeric(pv.get("pv_total_kwh", 0.0), errors="coerce").fillna(0.0).sum())
+            score = int(min(max(round(100 * pv_total_kwh / max(clear_kwh, 0.1)), 0), 100))
+            pv_quality = {"score": score, "pv_total_kwh": pv_total_kwh, "ratio": score / 100.0, "is_fallback": False}
+        except Exception:
+            pv_quality = {"score": 0, "pv_total_kwh": float(pv["pv_total_kwh"].sum()), "ratio": 0.0, "is_fallback": True}
+
+        for label, threshold in {
+            "Excellent": 75,
+            "Good": 55,
+            "Mixed": 35,
+            "Poor": 15,
+            "Very low": 0,
+        }.items():
+            if pv_quality["score"] >= threshold:
+                pv_quality["label"] = label
+                break
+
+        savings = core.compute_euro_savings_no_battery_vs_plan(
+            pv_df=pv,
+            flows_df=flows_df,
+            soc_at_22=soc_percent / 100.0,
+            charge_kw=float(charge_kw),
+            cutoff_soc=float(cutoff_soc),
+            today_date=dt.date.today(),
+            tomorrow_date=target_date,
+            total_consumption_kwh=yesterday_kwh,
+            tariff_cfg=cfg.get("tariff", core.DEFAULT_CONFIG["tariff"]),
+        )
+        pv_quality.update(savings)
+
+        payload = {
+            "target_date": target_date.isoformat(),
+            "weather": self._serialize_df(weather.df),
+            "pv": self._serialize_df(pv),
+            "detail": self._serialize_df(detail_df),
+            "flows": self._serialize_df(flows_df),
+            "soc": self._serialize_series(soc_series),
+            "sunrise": pd.Timestamp(weather.sunrise).isoformat(),
+            "sunset": pd.Timestamp(weather.sunset).isoformat(),
+            "metrics": {
+                "charge_kw": float(charge_kw),
+                "cutoff_soc": float(cutoff_soc),
+                "cutoff_reason": cutoff_reason,
+                "charge_note": charge_note,
+                "grid_import": float(grid_import),
+                "grid_export": float(grid_export),
+            },
+            "pv_quality": pv_quality,
+            "warnings": [],
+            "run_at": dt.datetime.now(TIMEZONE).isoformat(),
+            "run_type": "manual",
+        }
+        self.latest_result = payload
+        self.history.append(payload)
+        self.history = self.history[-MAX_HISTORY:]
+        self.settings["last_successful_for_target_date"] = target_date.isoformat()
+        self._save_results()
+        self._save_settings()
+        return payload
+
+    def run_now(self, payload: RunNowPayload) -> dict:
+        if not self._lock.acquire(blocking=False):
+            raise HTTPException(status_code=423, detail="Run already in progress")
+        try:
+            source = self.last_inputs
+            soc = float(payload.soc_at_22_percent if payload.soc_at_22_percent is not None else source.get("soc_at_22_percent", 45.0))
+            ykwh = float(
+                payload.yesterday_consumption_kwh
+                if payload.yesterday_consumption_kwh is not None
+                else source.get("yesterday_consumption_kwh", 18.0)
+            )
+            cap = float(payload.user_max_ac_kw if payload.user_max_ac_kw is not None else self.settings["max_ac_charge_power_kw_default"])
+            result = self._run(dt.date.today() + dt.timedelta(days=1), soc, ykwh, float(payload.buffer_percent), cap)
+            result["run_type"] = "manual"
+            self.latest_result = result
+            self._save_results()
+            return {"ran": True, "result": result}
+        finally:
+            self._lock.release()
+
+    def run_nightly_tick(self, payload: NightlyTickPayload) -> dict:
+        if not self._lock.acquire(blocking=False):
+            raise HTTPException(status_code=423, detail="Run already in progress")
+        try:
+            local_now = dt.datetime.now(TIMEZONE)
+            target_date = local_now.date() + dt.timedelta(days=1)
+            trigger_time = dt.datetime.strptime(self.settings.get("nightly_run_time", DEFAULT_NIGHTLY_TIME), "%H:%M").time()
+            if not payload.force and local_now.time() < trigger_time:
+                return {"ran": False, "reason": "before_window", "target_date": target_date.isoformat(), "local_now": local_now.isoformat()}
+            if not payload.force and self.settings.get("last_successful_for_target_date") == target_date.isoformat():
+                return {"ran": False, "reason": "already_ran", "target_date": target_date.isoformat()}
+
+            warnings: list[str] = []
+            soc = float(self.last_inputs.get("soc_at_22_percent", 45.0))
+            ykwh = float(self.last_inputs.get("yesterday_consumption_kwh", 18.0))
+            if not self.last_inputs:
+                warnings.append("missing inputs")
+            updated_at_raw = self.last_inputs.get("last_inputs_updated_at")
+            if updated_at_raw:
+                updated_at = dt.datetime.fromisoformat(updated_at_raw)
+                if (local_now - updated_at) > dt.timedelta(hours=24):
+                    warnings.append("stale inputs")
+
+            result = self._run(target_date, soc, ykwh, 0.0, float(self.settings["max_ac_charge_power_kw_default"]))
+            result["warnings"] = warnings
+            result["run_type"] = "nightly"
+            self.latest_result = result
+            self._save_results()
+            return {"ran": True, "reason": "ran", "target_date": target_date.isoformat(), "warnings": warnings, "result": result}
+        finally:
+            self._lock.release()
+
+
+app = FastAPI(title="PV Battery Planner Backend")
+state = BackendState()
+
+
+def _require_token(authorization: str | None) -> None:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    token = authorization.split(" ", 1)[1].strip()
+    if token != state.api_token:
+        raise HTTPException(status_code=401, detail="Invalid bearer token")
+
+
+@app.get("/v1/health")
+def health(authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return {"status": "ok", "time": dt.datetime.now(TIMEZONE).isoformat()}
+
+
+@app.get("/v1/settings")
+def get_settings(authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return state.settings
+
+
+@app.put("/v1/settings")
+def put_settings(payload: SettingsPayload, authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return state.update_settings(payload)
+
+
+@app.get("/v1/inputs/last")
+def get_last_inputs(authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return state.last_inputs
+
+
+@app.put("/v1/inputs/last")
+def put_last_inputs(payload: InputsPayload, authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return state.update_inputs(payload)
+
+
+@app.post("/v1/run/now")
+def run_now(payload: RunNowPayload, authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return state.run_now(payload)
+
+
+@app.post("/v1/run/nightly")
+def run_nightly(payload: NightlyTickPayload, authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return state.run_nightly_tick(payload)
+
+
+@app.get("/v1/results/latest")
+def latest_result(authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return state.latest_result
+
+
+@app.get("/v1/results/history")
+def history(days: int = 30, authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return {"items": state.history[-max(1, days):]}

@@ -4,10 +4,12 @@ import datetime as dt
 import hashlib
 import inspect
 import json
+import os
 from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
+import requests
 import streamlit as st
 
 import planner_core as core
@@ -46,6 +48,9 @@ TABLE_TOOLTIPS = {
 }
 
 RUN_HISTORY_PATH = Path("run_history_log.json")
+LOCAL_STATE_DIR = Path("local_state")
+API_BASE_URL = os.getenv("PVBP_BACKEND_URL", "http://127.0.0.1:8787")
+API_TOKEN_FILE = LOCAL_STATE_DIR / "api_token.txt"
 
 PV_QUALITY_THRESHOLDS = {
     "Excellent": 75,
@@ -420,6 +425,70 @@ def windows_to_segments(windows: list[tuple[str, str]]) -> list[tuple[int, int]]
 def clamp_pct(x: float) -> float:
     return max(0.0, min(x, 100.0))
 
+
+
+def load_api_token() -> str:
+    env_token = os.getenv("PVBP_API_TOKEN", "").strip()
+    if env_token:
+        return env_token
+    if API_TOKEN_FILE.exists():
+        return API_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    raise RuntimeError("Missing API token. Set PVBP_API_TOKEN or create local_state/api_token.txt.")
+
+
+def api_headers() -> dict:
+    return {"Authorization": f"Bearer {load_api_token()}"}
+
+
+def api_get(path: str) -> dict:
+    response = requests.get(f"{API_BASE_URL}{path}", headers=api_headers(), timeout=30)
+    response.raise_for_status()
+    return response.json()
+
+
+def api_put(path: str, payload: dict) -> dict:
+    response = requests.put(f"{API_BASE_URL}{path}", headers=api_headers(), json=payload, timeout=30)
+    response.raise_for_status()
+    return response.json()
+
+
+def api_post(path: str, payload: dict) -> dict:
+    response = requests.post(f"{API_BASE_URL}{path}", headers=api_headers(), json=payload, timeout=120)
+    response.raise_for_status()
+    return response.json()
+
+
+def df_from_split(payload: dict) -> pd.DataFrame:
+    return pd.read_json(json.dumps(payload), orient="split")
+
+
+def series_from_split(payload: dict) -> pd.Series:
+    frame = df_from_split(payload)
+    if "value" in frame.columns:
+        return frame["value"]
+    return pd.Series(dtype=float)
+
+
+def run_history_from_backend() -> pd.DataFrame:
+    try:
+        items = api_get("/v1/results/history?days=30").get("items", [])
+    except Exception:
+        return pd.DataFrame(columns=["Date", "AC charge cutoff SOC (%)", "Allowed AC charge power (kW)"])
+    rows = []
+    for item in items:
+        metrics = item.get("metrics", {})
+        rows.append({
+            "Date": item.get("target_date"),
+            "AC charge cutoff SOC (%)": round(float(metrics.get("cutoff_soc", 0.0)) * 100.0, 1),
+            "Allowed AC charge power (kW)": round(float(metrics.get("charge_kw", 0.0)), 2),
+        })
+    if not rows:
+        return pd.DataFrame(columns=["Date", "AC charge cutoff SOC (%)", "Allowed AC charge power (kW)"])
+    history_df = pd.DataFrame(rows)
+    history_df["Date"] = pd.to_datetime(history_df["Date"], errors="coerce")
+    history_df = history_df.dropna(subset=["Date"]).sort_values("Date")
+    history_df["Date"] = history_df["Date"].dt.date.astype(str)
+    return history_df
 def make_chart_pv_load(df: pd.DataFrame, soc: pd.Series, cutoff_soc: float) -> go.Figure:
     working = df.copy()
     if "pv_clipped_kwh" not in working.columns:
@@ -599,6 +668,17 @@ st.set_page_config(page_title="PV Battery Planner", layout="wide")
 inject_tooltip_css()
 st.title("PV Battery Planner")
 
+try:
+    health_payload = api_get("/v1/health")
+    backend_settings = api_get("/v1/settings")
+except Exception as exc:
+    st.error(
+        f"Backend unavailable at {API_BASE_URL}. Start backend with: "
+        "uvicorn backend_api:app --host 127.0.0.1 --port 8787. "
+        f"Details: {exc}"
+    )
+    st.stop()
+
 if "last_soc" not in st.session_state:
     st.session_state.last_soc = 45.0
 if "last_kwh" not in st.session_state:
@@ -606,7 +686,7 @@ if "last_kwh" not in st.session_state:
 
 left, right = st.columns([1, 2])
 with left:
-    effective_cfg = core.get_effective_config()
+    effective_cfg = backend_settings.get("config", core.DEFAULT_CONFIG)
     loc_cfg = effective_cfg["location"]
     apply_pending_location_state()
     if "loc_address_query" not in st.session_state:
@@ -870,22 +950,35 @@ with left:
                     },
                 }
                 try:
-                    merged_cfg = core.set_user_config(new_cfg)
-                    core.save_config_file(new_cfg, core.CONFIG_PATH)
-                    core.apply_config(merged_cfg)
+                    updated = api_put(
+                        "/v1/settings",
+                        {
+                            "config": new_cfg,
+                            "nightly_run_time": backend_settings.get("nightly_run_time", "22:00"),
+                            "timezone": backend_settings.get("timezone", "Europe/Brussels"),
+                            "max_ac_charge_power_kw_default": backend_settings.get("max_ac_charge_power_kw_default", 5.0),
+                        },
+                    )
                     st.cache_data.clear()
-                    st.session_state["_pending_location_state"] = merged_cfg["location"]
-                    st.session_state["_settings_flash"] = f"Saved settings to {core.CONFIG_PATH}"
+                    st.session_state["_pending_location_state"] = updated["config"]["location"]
+                    st.session_state["_settings_flash"] = "Saved settings to backend"
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Could not save settings: {exc}")
 
         if reset_defaults:
             try:
-                core.save_config_file(core.DEFAULT_CONFIG, core.CONFIG_PATH)
-                core.set_user_config(core.DEFAULT_CONFIG)
+                updated = api_put(
+                    "/v1/settings",
+                    {
+                        "config": core.DEFAULT_CONFIG,
+                        "nightly_run_time": backend_settings.get("nightly_run_time", "22:00"),
+                        "timezone": backend_settings.get("timezone", "Europe/Brussels"),
+                        "max_ac_charge_power_kw_default": backend_settings.get("max_ac_charge_power_kw_default", 5.0),
+                    },
+                )
                 st.cache_data.clear()
-                st.session_state["_pending_location_state"] = core.DEFAULT_CONFIG["location"]
+                st.session_state["_pending_location_state"] = updated["config"]["location"]
                 st.session_state["_settings_flash"] = "Reset settings to defaults."
                 st.rerun()
             except Exception as exc:
@@ -897,10 +990,25 @@ with left:
             "Max allowed AC charge power (kW)",
             min_value=0.0,
             max_value=10.0,
-            value=5.0,
+            value=float(backend_settings.get("max_ac_charge_power_kw_default", 5.0)),
             step=0.1,
             help=INPUT_TOOLTIPS["max_ac_user_cap"],
         )
+        nightly_run_time = st.text_input("Nightly run time (HH:MM)", value=str(backend_settings.get("nightly_run_time", "22:00")))
+        if st.button("Save nightly schedule settings"):
+            try:
+                api_put(
+                    "/v1/settings",
+                    {
+                        "config": effective_cfg,
+                        "nightly_run_time": nightly_run_time,
+                        "timezone": "Europe/Brussels",
+                        "max_ac_charge_power_kw_default": float(user_max_ac_kw),
+                    },
+                )
+                st.success("Saved nightly schedule settings.")
+            except Exception as exc:
+                st.error(f"Could not save nightly settings: {exc}")
 
     run = st.button("Run forecast", type="primary", help="Click to fetch tomorrow weather and recompute all charts and recommendations.")
 
@@ -908,91 +1016,38 @@ if run:
     st.session_state.last_soc = soc_percent
     st.session_state.last_kwh = yesterday_kwh
     try:
-        with st.spinner("Fetching weather and computing PV forecast..."):
-            tomorrow = dt.date.today() + dt.timedelta(days=1)
-            lat = float(st.session_state.get("loc_latitude", core.LATITUDE))
-            lon = float(st.session_state.get("loc_longitude", core.LONGITUDE))
-            tz = str(st.session_state.get("loc_timezone", core.TIMEZONE))
-            weather = cached_fetch_weather(lat, lon, tz, tomorrow.isoformat())
-            loc = core.Location(name="Configured", latitude=lat, longitude=lon)
-            wx_json = weather.df.to_json(date_format="iso", orient="split")
-            effective_cfg = core.get_effective_config()
-            cfg = {
-                "effective_config": effective_cfg,
-                "weather_hash": weather_hash(weather.df),
-            }
-            pv = cached_pv_forecast(wx_json, lat, lon, tz, json.dumps(cfg, sort_keys=True))
-            pv = core.apply_daylight_clamp(pv, weather.sunrise, weather.sunset).sort_index()
-            pv = core.add_sun_percent(pv, weather.sunrise, weather.sunset)
-            pv = core.add_load_and_surplus_columns(pv, float(yesterday_kwh))
-
-            soc_low = core.compute_soc_low_timing_aware(pv, float(yesterday_kwh), tomorrow)
-            _, soc_high = core.compute_soc_high_headroom(pv, float(yesterday_kwh), tomorrow)
-            cutoff_soc_raw, cutoff_reason = core.choose_cutoff_soc(tomorrow, soc_low, soc_high)
-            cutoff_soc = min(max(cutoff_soc_raw + (buffer_percent / 100.0), core.MIN_SOC), core.MAX_CUTOFF_SOC)
-            cutoff_reason_ui = cutoff_reason
-            if buffer_percent > 0:
-                cutoff_reason_ui += f" Buffer applied: +{buffer_percent:.0f}%, final cutoff {cutoff_soc * 100:.1f}%."
-            if cutoff_soc != cutoff_soc_raw:
-                cutoff_reason_ui += (
-                    f" Clamped to allowed range [{core.MIN_SOC * 100:.1f}%, {core.MAX_CUTOFF_SOC * 100:.1f}%]."
-                )
-
-            _, charge_kw, charge_note, achieved_soc_start = core.plan_charge_power(
-                float(soc_percent) / 100.0,
-                cutoff_soc,
-                dt.date.today(),
-                user_cap_kw=float(user_max_ac_kw),
+        with st.spinner("Calling backend and loading results..."):
+            api_put(
+                "/v1/inputs/last",
+                {
+                    "soc_at_22_percent": float(soc_percent),
+                    "yesterday_consumption_kwh": float(yesterday_kwh),
+                },
             )
-
-            detail_df, grid_import, grid_export, _, _ = core.simulate_expensive_hours_detailed(
-                pv, float(yesterday_kwh), achieved_soc_start, tomorrow
+            run_response = api_post(
+                "/v1/run/now",
+                {
+                    "buffer_percent": float(buffer_percent),
+                    "user_max_ac_kw": float(user_max_ac_kw),
+                },
             )
-            soc_series, flows_df = core.simulate_full_day_soc(
-                pv,
-                float(yesterday_kwh),
-                float(soc_percent) / 100.0,
-                float(charge_kw),
-                float(cutoff_soc),
-                tomorrow,
-            )
-
-            try:
-                pv_clear_kwh = compute_clear_sky_reference_kwh(weather.df, loc, tz=tz)
-                pv_quality = compute_pv_quality(pv, pv_clear_kwh)
-                pv_quality["is_fallback"] = False
-            except Exception:
-                pv_total_kwh = float(pd.to_numeric(pv.get("pv_total_kwh", 0.0), errors="coerce").fillna(0.0).sum())
-                dc_kwp = core.dc_kwp(core.ARRAY_EAST_PANELS + core.ARRAY_SOUTH_PANELS)
-                specific_yield = pv_total_kwh / max(float(dc_kwp), 0.1)
-                fallback_score = int(min(max(round(20 * specific_yield), 0), 100))
-                pv_quality = {
-                    "score": fallback_score,
-                    "label": "Very low",
-                    "ratio": fallback_score / 100.0,
-                    "pv_total_kwh": pv_total_kwh,
-                    "color": PV_QUALITY_COLORS["Very low"],
-                    "is_fallback": True,
-                }
-                for candidate, threshold in PV_QUALITY_THRESHOLDS.items():
-                    if fallback_score >= threshold:
-                        pv_quality["label"] = candidate
-                        pv_quality["color"] = PV_QUALITY_COLORS.get(candidate, "#d62828")
-                        break
-
-            tariff_cfg = effective_cfg.get("tariff", core.DEFAULT_CONFIG["tariff"])
-            savings = core.compute_euro_savings_no_battery_vs_plan(
-                pv_df=pv,
-                flows_df=flows_df,
-                soc_at_22=float(soc_percent) / 100.0,
-                charge_kw=float(charge_kw),
-                cutoff_soc=float(cutoff_soc),
-                today_date=dt.date.today(),
-                tomorrow_date=tomorrow,
-                total_consumption_kwh=float(yesterday_kwh),
-                tariff_cfg=tariff_cfg,
-            )
-            pv_quality.update(savings)
+            result = run_response["result"]
+            tomorrow = dt.date.fromisoformat(result["target_date"])
+            weather_df = df_from_split(result["weather"])
+            pv = df_from_split(result["pv"])
+            detail_df = df_from_split(result["detail"])
+            flows_df = df_from_split(result["flows"])
+            soc_series = series_from_split(result["soc"])
+            sunrise = pd.Timestamp(result["sunrise"])
+            sunset = pd.Timestamp(result["sunset"])
+            metrics = result.get("metrics", {})
+            pv_quality = result.get("pv_quality", {})
+            cutoff_soc = float(metrics.get("cutoff_soc", 0.0))
+            charge_kw = float(metrics.get("charge_kw", 0.0))
+            charge_note = str(metrics.get("charge_note", ""))
+            cutoff_reason_ui = str(metrics.get("cutoff_reason", ""))
+            grid_import = float(metrics.get("grid_import", 0.0))
+            grid_export = float(metrics.get("grid_export", 0.0))
 
         with right:
             top_left, top_right = st.columns([4, 3], gap="large")
@@ -1009,11 +1064,7 @@ if run:
             if charge_note.startswith("Warning"):
                 st.warning(charge_note)
 
-            history_df = save_run_history_entry(
-                run_date=tomorrow,
-                cutoff_soc_pct=cutoff_soc * 100.0,
-                allowed_charge_kw=charge_kw,
-            )
+            history_df = run_history_from_backend()
 
             st.markdown("### Forecast summary")
             c1, c2, c3, c4 = st.columns(4)
@@ -1024,30 +1075,30 @@ if run:
 
             tooltip_heading("PV production vs Load (hourly)", CHART_TOOLTIPS["PV production vs Load (hourly)"])
             pv_load_fig = make_chart_pv_load(pv, soc_series, cutoff_soc)
-            add_tariff_and_sun_markers(pv_load_fig, tomorrow, weather.sunrise, weather.sunset)
+            add_tariff_and_sun_markers(pv_load_fig, tomorrow, sunrise, sunset)
             st.plotly_chart(pv_load_fig, use_container_width=True)
 
             chart_left, chart_right = st.columns(2, gap="large")
             with chart_left:
                 tooltip_heading("Surplus vs Deficit (hourly)", CHART_TOOLTIPS["Surplus vs Deficit (hourly)"])
                 surplus_fig = make_chart_surplus(pv)
-                add_tariff_and_sun_markers(surplus_fig, tomorrow, weather.sunrise, weather.sunset)
+                add_tariff_and_sun_markers(surplus_fig, tomorrow, sunrise, sunset)
                 st.plotly_chart(surplus_fig, use_container_width=True)
 
             with chart_right:
                 tooltip_heading("Grid import/export + curtailment", CHART_TOOLTIPS["Grid import/export + curtailment"])
                 grid_fig = make_chart_grid(flows_df)
-                add_tariff_and_sun_markers(grid_fig, tomorrow, weather.sunrise, weather.sunset)
+                add_tariff_and_sun_markers(grid_fig, tomorrow, sunrise, sunset)
                 st.plotly_chart(grid_fig, use_container_width=True)
 
             tooltip_heading("Weather inputs used", TABLE_TOOLTIPS["Weather inputs used"])
             with st.expander("Weather inputs used"):
                 st.write("Source: Open-Meteo ECMWF")
                 st.write(f"Address query: {st.session_state.get('loc_address_query', '')}")
-                st.write(f"Latitude/Longitude: {lat:.5f}, {lon:.5f}")
-                st.write(f"Timezone: {tz}")
+                st.write(f"Latitude/Longitude: {float(st.session_state.get('loc_latitude', core.LATITUDE)):.5f}, {float(st.session_state.get('loc_longitude', core.LONGITUDE)):.5f}")
+                st.write(f"Timezone: {st.session_state.get('loc_timezone', core.TIMEZONE)}")
                 st.write("Hourly columns: temperature_2m, cloud_cover, shortwave_radiation, direct_normal_irradiance, diffuse_radiation, wind_speed_10m")
-                weather_display = weather.df.copy()
+                weather_display = weather_df.copy()
                 weather_display.insert(0, "Hour", format_hour_from_index(weather_display.index, "%H:00").values)
                 weather_display = weather_display.reset_index(drop=True)
                 st.dataframe(weather_display.head(24), use_container_width=True)
@@ -1065,8 +1116,13 @@ if run:
             tooltip_heading("History log", TABLE_TOOLTIPS["History log"])
             with st.expander("History log"):
                 st.dataframe(history_df.reset_index(drop=True), use_container_width=True)
+
+            for warning in result.get("warnings", []):
+                st.warning(f"Nightly context warning: {warning}")
     except ImportError as exc:
         st.error(f"Missing dependency: {exc}. Install with: python -m pip install -r requirements.txt")
+    except requests.RequestException as exc:
+        st.error(f"Backend API call failed: {exc}")
     except core.ExternalServiceError as exc:
         st.error(f"Weather fetch failed: {exc.category}")
         st.info(exc.hint)

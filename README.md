@@ -272,3 +272,56 @@ Use this to run syntax checks, bytecode compilation, and the smoke test in one c
 ```bash
 python scripts/full_check.py
 ```
+
+## Local backend API (phase 1, same laptop)
+
+This project now uses a local backend API as the source of truth.
+
+### Start backend
+
+```powershell
+python -m uvicorn backend_api:app --host 127.0.0.1 --port 8787
+```
+
+- Backend listens on `127.0.0.1:8787`.
+- Backend stores state in `local_state/` (gitignored): settings, last inputs, latest result, history, API token.
+- On first run, backend bootstraps settings from `config.json` if present.
+
+### Start Streamlit GUI
+
+```powershell
+python -m streamlit run app.py
+```
+
+The GUI keeps the same charts/tables, but now calls backend APIs instead of writing local config directly.
+
+### Auth token
+
+- Backend token is created in `local_state/api_token.txt`.
+- GUI and scheduler use either:
+  - `PVBP_API_TOKEN` env var, or
+  - `local_state/api_token.txt` file.
+
+### Nightly scheduler (Pattern B)
+
+Use Windows Task Scheduler with trigger every 10–15 minutes and wake enabled. The task calls:
+
+```powershell
+python .\scripts\nightly_tick.py
+```
+
+Recommended Task Scheduler settings:
+
+- Trigger: Daily, repeat every **10 or 15 minutes**, indefinitely.
+- Conditions:
+  - Enable **Wake the computer to run this task**.
+  - Allow running on battery power.
+- Action: Start a program (`python`) with argument `scripts\nightly_tick.py`.
+
+`/v1/run/nightly` behavior:
+- Uses `nightly_run_time` (default `22:00`, configurable in GUI).
+- Computes **tomorrow** only.
+- Runs when local Europe/Brussels time is at/after nightly time and target date was not already computed.
+- Uses last GUI inputs (`soc_at_22_percent`, `yesterday_consumption_kwh`).
+- If inputs are older than 24h, run still proceeds with a `stale inputs` warning.
+- If inputs are missing, run still proceeds with safe fallback values and a `missing inputs` warning.
