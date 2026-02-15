@@ -15,7 +15,14 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 import planner_core as core
-from db_sqlite import compute_config_hash, fetch_latest_full_run, fetch_recent_run_summaries, init_db, insert_forecast_run
+from db_sqlite import (
+    compute_config_hash,
+    fetch_history_all_runs,
+    fetch_history_latest_per_day,
+    fetch_latest_full_run,
+    init_db,
+    insert_forecast_run,
+)
 
 LOCAL_STATE_DIR = Path("local_state")
 SETTINGS_PATH = LOCAL_STATE_DIR / "settings.json"
@@ -505,9 +512,13 @@ def latest_result(authorization: str | None = Header(default=None)) -> dict:
 
 
 @app.get("/v1/results/history")
-def history(days: int = 30, authorization: str | None = Header(default=None)) -> dict:
+def history(days: int = 30, show_all_runs: bool = False, authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
-    items = fetch_recent_run_summaries(str(SQLITE_PATH), limit=max(1, days))
+    limit_days = max(1, days)
+    if show_all_runs:
+        items = fetch_history_all_runs(str(SQLITE_PATH), limit_days=limit_days)
+    else:
+        items = fetch_history_latest_per_day(str(SQLITE_PATH), limit_days=limit_days)
     if items:
         return {"items": items}
-    return {"items": state.history[-max(1, days):]}
+    return {"items": state.history[-limit_days:]}
