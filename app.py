@@ -996,10 +996,13 @@ with left:
         )
         nightly_time_str = str(backend_settings.get("nightly_run_time", "22:00"))
         try:
-            nightly_time_value = parse_hhmm(nightly_time_str)
+            nightly_minutes = parse_hhmm(nightly_time_str)
         except ValueError:
-            nightly_time_value = parse_hhmm("22:00")
+            nightly_minutes = parse_hhmm("22:00")
             st.warning("Stored nightly run time was invalid, so 22:00 is shown instead.")
+
+        nightly_hour, nightly_minute = divmod(nightly_minutes, 60)
+        nightly_time_value = dt.time(hour=nightly_hour, minute=nightly_minute)
 
         nightly_run_time = st.time_input(
             "Nightly run time (HH:MM)",
