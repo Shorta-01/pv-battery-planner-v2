@@ -1,0 +1,106 @@
+{
+  "battery": {
+    "battery_kwh": 14.0,
+    "battery_max_charge_kw": 5.0,
+    "battery_max_discharge_kw": 5.0,
+    "max_ac_charge_kw_hard_limit": 5.0,
+    "max_cutoff_soc_percent": 100.0,
+    "min_soc_percent": 5.0
+  },
+  "load_profile": {
+    "load_profile_24h": [
+      0.035,
+      0.03,
+      0.028,
+      0.026,
+      0.026,
+      0.03,
+      0.04,
+      0.05,
+      0.045,
+      0.04,
+      0.038,
+      0.038,
+      0.04,
+      0.04,
+      0.04,
+      0.042,
+      0.045,
+      0.055,
+      0.065,
+      0.07,
+      0.065,
+      0.055,
+      0.045,
+      0.04
+    ]
+  },
+  "location": {
+    "address_query": "Voetvolkstraat 14, 1502 Lembeek, Belgium",
+    "latitude": 50.71864,
+    "longitude": 4.21247,
+    "timezone": "Europe/Brussels",
+    "use_geocoding": false
+  },
+  "pv": {
+    "array_east_panels": 7,
+    "array_south_panels": 11,
+    "azimuth_east_deg": 90.0,
+    "azimuth_south_deg": 180.0,
+    "inverter_ac_kw_limit": 4.6,
+    "inverter_eff": 0.97,
+    "panel_wp": 440,
+    "performance_ratio": 0.82,
+    "tilt_east_deg": 35.0,
+    "tilt_south_deg": 35.0
+  },
+  "tariff": {
+    "injection_grid_price_eur_per_kwh": 0.01,
+    "offpeak_grid_price_eur_per_kwh": 0.2,
+    "offpeak_windows_by_dow": [
+      [
+        [
+          "22:00",
+          "07:00"
+        ]
+      ],
+      [
+        [
+          "22:00",
+          "07:00"
+        ]
+      ],
+      [
+        [
+          "22:00",
+          "07:00"
+        ]
+      ],
+      [
+        [
+          "22:00",
+          "07:00"
+        ]
+      ],
+      [
+        [
+          "22:00",
+          "07:00"
+        ]
+      ],
+      [
+        [
+          "00:00",
+          "24:00"
+        ]
+      ],
+      [
+        [
+          "00:00",
+          "24:00"
+        ]
+      ]
+    ],
+    "peak_grid_price_eur_per_kwh": 0.3
+  }
+}

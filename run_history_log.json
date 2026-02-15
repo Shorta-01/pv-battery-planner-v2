@@ -1,0 +1,17 @@
+[
+  {
+    "Date":"2026-02-13",
+    "AC charge cutoff SOC (%)":64.7,
+    "Allowed AC charge power (kW)":0.33
+  },
+  {
+    "Date":"2026-02-14",
+    "AC charge cutoff SOC (%)":5.0,
+    "Allowed AC charge power (kW)":0.0
+  },
+  {
+    "Date":"2026-02-15",
+    "AC charge cutoff SOC (%)":5.0,
+    "Allowed AC charge power (kW)":0.0
+  }
+]
