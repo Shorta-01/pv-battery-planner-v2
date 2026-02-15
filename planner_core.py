@@ -1281,7 +1281,7 @@ def normalize_hourly_forecast_index(df: "pd.DataFrame", date: dt.date, tz: str) 
     if idx.isna().all():
         raise RuntimeError("Open-Meteo hourly forecast index is invalid.")
     if idx.tz is None:
-        idx = idx.tz_localize(tz)
+        idx = idx.tz_localize(tz, ambiguous="infer", nonexistent="shift_forward")
     else:
         idx = idx.tz_convert(tz)
 
@@ -1290,8 +1290,8 @@ def normalize_hourly_forecast_index(df: "pd.DataFrame", date: dt.date, tz: str) 
     out = out[~out.index.duplicated(keep="last")].sort_index()
 
     day_start = pd.Timestamp(dt.datetime.combine(date, dt.time(0, 0)), tz=tz)
-    day_end = pd.Timestamp(dt.datetime.combine(date, dt.time(23, 0)), tz=tz)
-    expected_index = pd.date_range(start=day_start, end=day_end, freq="h")
+    next_day = pd.Timestamp(dt.datetime.combine(date + dt.timedelta(days=1), dt.time(0, 0)), tz=tz)
+    expected_index = pd.date_range(day_start, next_day, freq="h", inclusive="left")
     out = out.reindex(expected_index)
 
     irr_cols = [c for c in ["ghi_wm2", "dni_wm2", "dhi_wm2", "cloud_cover_pct"] if c in out.columns]
