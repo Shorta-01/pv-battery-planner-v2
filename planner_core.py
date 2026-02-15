@@ -105,9 +105,6 @@ INVERTER_AC_KW_LIMIT = 4.6
 BATTERY_MAX_CHARGE_KW = 5.0
 BATTERY_MAX_DISCHARGE_KW = 5.0
 
-# Veiligheidsbuffer (forecast-fouten). bv. 0.03 = +3% SOC extra
-FORECAST_BUFFER_SOC = 0.00
-
 # Tariff prices (all-in €/kWh)
 PEAK_GRID_PRICE_EUR_PER_KWH = 0.30
 OFFPEAK_GRID_PRICE_EUR_PER_KWH = 0.20
@@ -575,6 +572,8 @@ class PlannerOutput:
     grid_export_expensive_kwh: float
     curtailed_expensive_kwh: float
     cutoff_note: str
+    cutoff_reason: str
+    charge_note: str
 
 
 @dataclass
@@ -1627,7 +1626,12 @@ def validate_array_orientation_logic(df: "pd.DataFrame", sunrise: dt.datetime, s
 # CORE: timing-aware SOC & charge plan
 # ============================================================
 
-def compute_soc_low_timing_aware(df: "pd.DataFrame", total_consumption_kwh: float, for_date: dt.date) -> float:
+def compute_soc_low_timing_aware(
+    df: "pd.DataFrame",
+    total_consumption_kwh: float,
+    for_date: dt.date,
+    buffer_soc: float = 0.0,
+) -> float:
     expensive_windows = get_expensive_windows(for_date)
     if not expensive_windows:
         return MIN_SOC
@@ -1649,8 +1653,84 @@ def compute_soc_low_timing_aware(df: "pd.DataFrame", total_consumption_kwh: floa
     required_from_batt_kwh = max(0.0, max_cum) / BATTERY_DISCHARGE_EFF
     soc_low = MIN_SOC + (required_from_batt_kwh / BATTERY_KWH)
     soc_low = min(max(soc_low, MIN_SOC), 1.0)
-    soc_low = min(1.0, soc_low + FORECAST_BUFFER_SOC)
+    soc_low = min(1.0, soc_low + float(buffer_soc))
     return soc_low
+
+
+def run_forecast_pipeline(
+    cfg: dict,
+    target_date: dt.date,
+    soc_at_22_percent: float,
+    yesterday_kwh: float,
+    buffer_percent: float,
+    user_max_ac_kw: float,
+) -> PlannerOutput:
+    quick_sanity_checks()
+
+    loc_cfg = cfg.get("location", {})
+    tz = str(loc_cfg.get("timezone", TIMEZONE))
+    loc = Location(
+        name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
+        latitude=float(loc_cfg["latitude"]),
+        longitude=float(loc_cfg["longitude"]),
+    )
+
+    weather = fetch_weather_for_date(loc, target_date, tz=tz)
+    pv = build_pv_forecast(weather.df, loc, tz=tz)
+    pv = apply_daylight_clamp(pv, weather.sunrise, weather.sunset).sort_index()
+    pv = add_sun_percent(pv, weather.sunrise, weather.sunset)
+    pv = add_load_and_surplus_columns(pv, yesterday_kwh)
+
+    soc_low = compute_soc_low_timing_aware(pv, yesterday_kwh, target_date)
+    _, soc_high = compute_soc_high_headroom(pv, yesterday_kwh, target_date)
+    cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high)
+    cutoff_soc = cutoff_soc_raw + (float(buffer_percent) / 100.0)
+
+    old_cutoff_soc = cutoff_soc
+    cutoff_soc = min(max(cutoff_soc, MIN_SOC), MAX_CUTOFF_SOC)
+    cutoff_note = (
+        f"Cutoff capped to {MAX_CUTOFF_SOC_PERCENT:.1f}% (was {old_cutoff_soc*100:.1f}%)."
+        if abs(cutoff_soc - old_cutoff_soc) > 1e-9 else ""
+    )
+
+    charge_date = target_date - dt.timedelta(days=1)
+    _, charge_kw, charge_note, achieved_soc_start = plan_charge_power(
+        soc_at_22_percent / 100.0,
+        cutoff_soc,
+        charge_date,
+        user_cap_kw=user_max_ac_kw,
+    )
+
+    detail_df, grid_import, grid_export, _, _ = simulate_expensive_hours_detailed(
+        pv, yesterday_kwh, achieved_soc_start, target_date
+    )
+    full_soc, full_flows = simulate_full_day_soc(
+        pv,
+        yesterday_kwh,
+        soc_at_22_percent / 100.0,
+        charge_kw,
+        cutoff_soc,
+        target_date,
+    )
+
+    return PlannerOutput(
+        location=loc,
+        tomorrow_date=target_date,
+        weather=weather,
+        hourly_df=pv,
+        expensive_detail_df=detail_df,
+        full_day_soc=full_soc,
+        full_day_flows_df=full_flows,
+        cutoff_soc=cutoff_soc,
+        charge_kw=charge_kw,
+        achieved_soc_start=achieved_soc_start,
+        grid_import_expensive_kwh=float(grid_import),
+        grid_export_expensive_kwh=float(grid_export),
+        curtailed_expensive_kwh=float(detail_df["curtailed_kwh"].sum()) if not detail_df.empty else 0.0,
+        cutoff_note=cutoff_note,
+        cutoff_reason=cutoff_reason,
+        charge_note=charge_note,
+    )
 
 
 def compute_soc_high_headroom(df: "pd.DataFrame", total_consumption_kwh: float, for_date: dt.date) -> Tuple[float, float]:
@@ -2012,70 +2092,16 @@ def simulate_full_day_soc(
 
 
 def run_planner(inputs: PlannerInputs) -> PlannerOutput:
-    quick_sanity_checks()
     tomorrow = dt.date.today() + dt.timedelta(days=1)
-
-    try:
-        loc = geocode_address(ADDRESS_QUERY) if USE_GEOCODING else Location(
-            name=ADDRESS_QUERY,
-            latitude=float(LATITUDE),
-            longitude=float(LONGITUDE),
-        )
-        fc = fetch_tomorrow_weather(loc)
-    except ExternalServiceError:
-        raise
-
-    global FORECAST_BUFFER_SOC
-    prev_buffer = FORECAST_BUFFER_SOC
-    FORECAST_BUFFER_SOC = float(inputs.forecast_buffer_soc)
-    try:
-        pv = build_pv_forecast(fc.df, loc)
-        pv = apply_daylight_clamp(pv, fc.sunrise, fc.sunset).sort_index()
-        pv = add_sun_percent(pv, fc.sunrise, fc.sunset)
-        pv = add_load_and_surplus_columns(pv, inputs.yesterday_consumption_kwh)
-
-        soc_low = compute_soc_low_timing_aware(pv, inputs.yesterday_consumption_kwh, tomorrow)
-        _, soc_high = compute_soc_high_headroom(pv, inputs.yesterday_consumption_kwh, tomorrow)
-        cutoff_soc, _ = choose_cutoff_soc(tomorrow, soc_low, soc_high)
-
-        old_cutoff_soc = cutoff_soc
-        cutoff_soc = min(max(cutoff_soc, MIN_SOC), MAX_CUTOFF_SOC)
-        cutoff_note = (
-            f"Cutoff capped to {MAX_CUTOFF_SOC_PERCENT:.1f}% (was {old_cutoff_soc*100:.1f}%)."
-            if abs(cutoff_soc - old_cutoff_soc) > 1e-9 else ""
-        )
-
-        _, charge_kw, _, achieved_soc_start = plan_charge_power(inputs.soc_at_22, cutoff_soc, dt.date.today())
-
-        detail_df, grid_import, grid_export, _, _ = simulate_expensive_hours_detailed(
-            pv, inputs.yesterday_consumption_kwh, achieved_soc_start, tomorrow
-        )
-        full_soc, full_flows = simulate_full_day_soc(
-            pv,
-            inputs.yesterday_consumption_kwh,
-            inputs.soc_at_22,
-            charge_kw,
-            cutoff_soc,
-            tomorrow,
-        )
-        return PlannerOutput(
-            location=loc,
-            tomorrow_date=tomorrow,
-            weather=fc,
-            hourly_df=pv,
-            expensive_detail_df=detail_df,
-            full_day_soc=full_soc,
-            full_day_flows_df=full_flows,
-            cutoff_soc=cutoff_soc,
-            charge_kw=charge_kw,
-            achieved_soc_start=achieved_soc_start,
-            grid_import_expensive_kwh=float(grid_import),
-            grid_export_expensive_kwh=float(grid_export),
-            curtailed_expensive_kwh=float(detail_df["curtailed_kwh"].sum()) if not detail_df.empty else 0.0,
-            cutoff_note=cutoff_note,
-        )
-    finally:
-        FORECAST_BUFFER_SOC = prev_buffer
+    cfg = get_effective_config()
+    return run_forecast_pipeline(
+        cfg=cfg,
+        target_date=tomorrow,
+        soc_at_22_percent=float(inputs.soc_at_22) * 100.0,
+        yesterday_kwh=float(inputs.yesterday_consumption_kwh),
+        buffer_percent=float(inputs.forecast_buffer_soc) * 100.0,
+        user_max_ac_kw=float(cfg["battery"].get("max_ac_charge_kw_hard_limit", MAX_AC_CHARGE_KW_HARD_LIMIT)),
+    )
 
 # ============================================================
 # OUTPUT
@@ -2166,7 +2192,7 @@ def format_fusionsolar_actions(cutoff_soc: float, charge_kw: float) -> str:
 def main() -> int:
     quick_sanity_checks()
 
-    soc_at_22 = ask_required_soc("Battery SOC at 22:00 from FusionSolar (%): ")
+    soc_at_22_percent = ask_required_soc("Battery SOC at 22:00 from FusionSolar (%): ") * 100.0
 
     while True:
         yesterday_consumption_kwh = ask_required_float("Total consumption yesterday from FusionSolar (kWh): ")
@@ -2175,59 +2201,30 @@ def main() -> int:
         print("Consumption must be > 0.")
 
     tomorrow = dt.date.today() + dt.timedelta(days=1)
+    cfg = get_effective_config()
+    out = run_forecast_pipeline(
+        cfg=cfg,
+        target_date=tomorrow,
+        soc_at_22_percent=soc_at_22_percent,
+        yesterday_kwh=yesterday_consumption_kwh,
+        buffer_percent=0.0,
+        user_max_ac_kw=float(cfg["battery"].get("max_ac_charge_kw_hard_limit", MAX_AC_CHARGE_KW_HARD_LIMIT)),
+    )
 
-    if USE_GEOCODING:
-        loc = geocode_address(ADDRESS_QUERY)
-    else:
-        loc = Location(
-            name=ADDRESS_QUERY,
-            latitude=float(LATITUDE),
-            longitude=float(LONGITUDE),
-        )
-    fc = fetch_tomorrow_weather(loc)
-
-    print(f"Location: {loc.latitude:.5f}, {loc.longitude:.5f}")
+    print(f"Location: {out.location.latitude:.5f}, {out.location.longitude:.5f}")
     print("Inputs:")
-    print(f"- SOC at 22:00 (%): {soc_at_22*100:.1f}")
+    print(f"- SOC at 22:00 (%): {soc_at_22_percent:.1f}")
     print(f"- Yesterday consumption (kWh): {yesterday_consumption_kwh:.2f}")
     print(f"- Inverter AC limit (kW): {INVERTER_AC_KW_LIMIT:.2f}")
     print(f"- Battery max charge/discharge (kW): {BATTERY_MAX_CHARGE_KW:.2f}/{BATTERY_MAX_DISCHARGE_KW:.2f}")
-    print(f"Sunrise/Sunset: {fc.sunrise.strftime('%Y-%m-%d %H:%M %Z')} / {fc.sunset.strftime('%Y-%m-%d %H:%M %Z')}")
-
-    pv = build_pv_forecast(fc.df, loc)
-    pv = apply_daylight_clamp(pv, fc.sunrise, fc.sunset)
-    pv = pv.sort_index()
-    print("Load model: default profile scaled to yesterday total kWh")
-    _hourly_profile = hourly_load_kwh(yesterday_consumption_kwh)
-    if len(_hourly_profile) != 24:
-        raise ValueError("Default hourly load profile must contain exactly 24 values.")
-
-    pv = add_sun_percent(pv, fc.sunrise, fc.sunset)
-    pv = add_load_and_surplus_columns(pv, yesterday_consumption_kwh)
-    validate_array_orientation_logic(pv, fc.sunrise, fc.sunset)
-
-    print_hourly_pv(pv, fc.sunrise, fc.sunset)
-
-    soc_low = compute_soc_low_timing_aware(pv, yesterday_consumption_kwh, tomorrow)
-    _surplus_sum, soc_high = compute_soc_high_headroom(pv, yesterday_consumption_kwh, tomorrow)
-    cutoff_soc, _ = choose_cutoff_soc(tomorrow, soc_low, soc_high)
-
-    old_cutoff_soc = cutoff_soc
-    cutoff_soc = min(cutoff_soc, MAX_CUTOFF_SOC)
-    cutoff_soc = max(cutoff_soc, MIN_SOC)
-    if abs(cutoff_soc - old_cutoff_soc) > 1e-9:
-        cutoff_note = f"Cutoff capped to {MAX_CUTOFF_SOC_PERCENT:.1f}% (was {old_cutoff_soc*100:.1f}%)."
-    else:
-        cutoff_note = ""
-
-    _, charge_kw, _, achieved_soc_start = plan_charge_power(soc_at_22, cutoff_soc, dt.date.today())
-
-    detail_df, _, _, _, _ = simulate_expensive_hours_detailed(
-        pv, yesterday_consumption_kwh, achieved_soc_start, tomorrow
+    print(
+        f"Sunrise/Sunset: {out.weather.sunrise.strftime('%Y-%m-%d %H:%M %Z')} / "
+        f"{out.weather.sunset.strftime('%Y-%m-%d %H:%M %Z')}"
     )
-    print_expensive_hourly_flow(detail_df, tomorrow)
 
-    print_fusionsolar_actions(cutoff_soc, charge_kw, cutoff_note)
+    print_hourly_pv(out.hourly_df, out.weather.sunrise, out.weather.sunset)
+    print_expensive_hourly_flow(out.expensive_detail_df, tomorrow)
+    print_fusionsolar_actions(out.cutoff_soc, out.charge_kw, out.cutoff_note)
 
     return 0
 

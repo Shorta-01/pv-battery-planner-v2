@@ -280,30 +280,30 @@ class BackendState:
 
     def _run(self, target_date: dt.date, soc_percent: float, yesterday_kwh: float, buffer_percent: float, user_max_ac_kw: float) -> dict:
         cfg = self.settings["config"]
+        run = core.run_forecast_pipeline(
+            cfg=cfg,
+            target_date=target_date,
+            soc_at_22_percent=soc_percent,
+            yesterday_kwh=yesterday_kwh,
+            buffer_percent=buffer_percent,
+            user_max_ac_kw=user_max_ac_kw,
+        )
+        loc = run.location
+        weather = run.weather
+        pv = run.hourly_df
+        detail_df = run.expensive_detail_df
+        flows_df = run.full_day_flows_df
+        soc_series = run.full_day_soc
+        cutoff_soc = run.cutoff_soc
+        cutoff_reason = run.cutoff_reason
+        charge_note = run.charge_note
+        charge_kw = run.charge_kw
+        grid_import = run.grid_import_expensive_kwh
+        grid_export = run.grid_export_expensive_kwh
+
         loc_cfg = cfg["location"]
         tz = str(loc_cfg.get("timezone", "Europe/Brussels"))
-        loc = core.Location(name="Configured", latitude=float(loc_cfg["latitude"]), longitude=float(loc_cfg["longitude"]))
-        weather = core.fetch_weather_for_date(loc, target_date, tz=tz)
-        pv = core.build_pv_forecast(weather.df, loc, tz=tz)
-        pv = core.apply_daylight_clamp(pv, weather.sunrise, weather.sunset).sort_index()
-        pv = core.add_sun_percent(pv, weather.sunrise, weather.sunset)
-        pv = core.add_load_and_surplus_columns(pv, yesterday_kwh)
-
-        soc_low = core.compute_soc_low_timing_aware(pv, yesterday_kwh, target_date)
-        _, soc_high = core.compute_soc_high_headroom(pv, yesterday_kwh, target_date)
-        cutoff_soc_raw, cutoff_reason = core.choose_cutoff_soc(target_date, soc_low, soc_high)
-        cutoff_soc = min(max(cutoff_soc_raw + (buffer_percent / 100.0), core.MIN_SOC), core.MAX_CUTOFF_SOC)
-
         charge_date = target_date - dt.timedelta(days=1)
-        _, charge_kw, charge_note, achieved_soc_start = core.plan_charge_power(
-            soc_percent / 100.0, cutoff_soc, charge_date, user_cap_kw=user_max_ac_kw
-        )
-        detail_df, grid_import, grid_export, _, _ = core.simulate_expensive_hours_detailed(
-            pv, yesterday_kwh, achieved_soc_start, target_date
-        )
-        soc_series, flows_df = core.simulate_full_day_soc(
-            pv, yesterday_kwh, soc_percent / 100.0, charge_kw, cutoff_soc, target_date
-        )
 
         try:
             clear_df = pd.DataFrame(index=weather.df.index)
