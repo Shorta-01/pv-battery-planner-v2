@@ -494,7 +494,7 @@ def run_history_from_backend() -> pd.DataFrame:
         metrics = item.get("metrics", {})
         rows.append({
             "Date": item.get("target_date"),
-            "AC charge cutoff SOC (%)": round(float(metrics.get("cutoff_soc", 0.0)) * 100.0, 1),
+            "AC charge cutoff SOC (%)": round((float(metrics.get("cutoff_soc", 0.0)) * 100.0) if float(metrics.get("cutoff_soc", 0.0)) <= 1.0 else float(metrics.get("cutoff_soc", 0.0)), 1),
             "Allowed AC charge power (kW)": round(float(metrics.get("charge_kw", 0.0)), 2),
             "PV forecast total (kWh)": round(float(metrics.get("pv_forecast_kwh", 0.0)), 2),
             "Consumption forecast total (kWh)": round(float(metrics.get("cons_forecast_kwh", 0.0)), 2),
