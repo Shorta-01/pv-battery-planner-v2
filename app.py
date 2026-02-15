@@ -4,12 +4,15 @@ import datetime as dt
 import inspect
 import json
 import os
+import time
 from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 import planner_core as core
 from tariff_time import compute_offpeak_segments, make_summary_lines, parse_hhmm
@@ -364,6 +367,19 @@ def api_headers() -> dict:
 @st.cache_resource
 def http_session() -> requests.Session:
     session = requests.Session()
+    retry = Retry(
+        total=3,
+        connect=3,
+        read=3,
+        status=3,
+        backoff_factor=0.4,
+        status_forcelist=(502, 503, 504),
+        allowed_methods=frozenset(["GET", "PUT"]),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
     return session
 
 
@@ -380,9 +396,28 @@ def api_put(path: str, payload: dict) -> dict:
 
 
 def api_post(path: str, payload: dict) -> dict:
-    response = http_session().post(f"{API_BASE_URL}{path}", headers=api_headers(), json=payload, timeout=120)
-    response.raise_for_status()
-    return response.json()
+    url = f"{API_BASE_URL}{path}"
+    delays = [0.5, 1.0, 2.0]
+
+    for attempt, delay in enumerate([0.0] + delays):
+        if delay:
+            time.sleep(delay)
+
+        try:
+            response = http_session().post(url, headers=api_headers(), json=payload, timeout=120)
+            if response.status_code == 423:
+                if attempt < len(delays):
+                    continue
+                raise RuntimeError("Backend is busy running a forecast. Try again.")
+
+            response.raise_for_status()
+            return response.json()
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            if attempt < len(delays):
+                continue
+            raise
+
+    raise RuntimeError("Could not complete backend request.")
 
 
 def df_from_split(payload: dict) -> pd.DataFrame:
@@ -1213,6 +1248,10 @@ if run:
                 st.warning(f"Nightly context warning: {warning}")
     except ImportError as exc:
         st.error(f"Missing dependency: {exc}. Install with: python -m pip install -r requirements.txt")
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+        st.error("Backend unreachable. Is backend running?")
+    except RuntimeError as exc:
+        st.error(str(exc))
     except requests.RequestException as exc:
         st.error(f"Backend API call failed: {exc}")
     except core.ExternalServiceError as exc:
