@@ -266,7 +266,7 @@ class BackendState:
         loc_cfg = cfg["location"]
         tz = str(loc_cfg.get("timezone", "Europe/Brussels"))
         loc = core.Location(name="Configured", latitude=float(loc_cfg["latitude"]), longitude=float(loc_cfg["longitude"]))
-        weather = core.fetch_tomorrow_weather(loc, tz=tz)
+        weather = core.fetch_weather_for_date(loc, target_date, tz=tz)
         pv = core.build_pv_forecast(weather.df, loc, tz=tz)
         pv = core.apply_daylight_clamp(pv, weather.sunrise, weather.sunset).sort_index()
         pv = core.add_sun_percent(pv, weather.sunrise, weather.sunset)
@@ -277,8 +277,9 @@ class BackendState:
         cutoff_soc_raw, cutoff_reason = core.choose_cutoff_soc(target_date, soc_low, soc_high)
         cutoff_soc = min(max(cutoff_soc_raw + (buffer_percent / 100.0), core.MIN_SOC), core.MAX_CUTOFF_SOC)
 
+        charge_date = target_date - dt.timedelta(days=1)
         _, charge_kw, charge_note, achieved_soc_start = core.plan_charge_power(
-            soc_percent / 100.0, cutoff_soc, dt.date.today(), user_cap_kw=user_max_ac_kw
+            soc_percent / 100.0, cutoff_soc, charge_date, user_cap_kw=user_max_ac_kw
         )
         detail_df, grid_import, grid_export, _, _ = core.simulate_expensive_hours_detailed(
             pv, yesterday_kwh, achieved_soc_start, target_date
@@ -319,7 +320,7 @@ class BackendState:
             soc_at_22=soc_percent / 100.0,
             charge_kw=float(charge_kw),
             cutoff_soc=float(cutoff_soc),
-            today_date=dt.date.today(),
+            today_date=charge_date,
             tomorrow_date=target_date,
             total_consumption_kwh=yesterday_kwh,
             tariff_cfg=cfg.get("tariff", core.DEFAULT_CONFIG["tariff"]),
@@ -408,7 +409,9 @@ class BackendState:
                 else source.get("yesterday_consumption_kwh", 18.0)
             )
             cap = float(payload.user_max_ac_kw if payload.user_max_ac_kw is not None else self.settings["max_ac_charge_power_kw_default"])
-            result = self._run(dt.date.today() + dt.timedelta(days=1), soc, ykwh, float(payload.buffer_percent), cap)
+            local_today = dt.datetime.now(self._tzinfo()).date()
+            target_date = local_today + dt.timedelta(days=1)
+            result = self._run(target_date, soc, ykwh, float(payload.buffer_percent), cap)
             result["run_type"] = "manual"
             self.latest_result = result
             if self.history:
