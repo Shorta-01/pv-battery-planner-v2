@@ -764,6 +764,7 @@ st.title("PV Battery Planner")
 try:
     health_payload = api_get("/v1/health")
     backend_settings = api_get("/v1/settings")
+    weather_models_catalog = api_get("/v1/weather/models").get("items", [])
 except Exception as exc:
     st.error(
         f"Backend unavailable at {API_BASE_URL}. Start backend with: "
@@ -1146,7 +1147,66 @@ with left:
             except Exception as exc:
                 st.error(f"Could not save nightly settings: {exc}")
 
-    run = st.button("Run forecast", type="primary", help="Click to fetch tomorrow weather and recompute all charts and recommendations.")
+    with st.expander("Weather models", expanded=True):
+        mode_label = st.radio(
+            "Forecast mode",
+            options=["Accuracy (Recommended)", "Custom (Advanced)"],
+            index=0,
+            horizontal=True,
+        )
+        default_model_ids = [
+            m.get("id")
+            for m in weather_models_catalog
+            if m.get("id") in {"knmi_harmonie_arome", "dwd_icon_d2", "ecmwf_ifs"}
+        ]
+        if not default_model_ids:
+            default_model_ids = [m.get("id") for m in weather_models_catalog if isinstance(m.get("id"), str)]
+
+        model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
+        selected_models: list[str] = []
+        ensemble_method = st.selectbox(
+            "Ensemble method",
+            options=["weighted", "mean", "median"],
+            index=0,
+            help="Weighted is Belgium-tuned default; mean/median are robust alternatives.",
+        )
+        show_uncertainty = st.checkbox("Show PV uncertainty (P10/P50/P90)", value=False)
+        fast_run = st.checkbox("Fast run (limit to 2 models)", value=False)
+
+        if mode_label == "Accuracy (Recommended)":
+            st.caption("Recommended for Belgium: KNMI + ICON-D2 + ECMWF")
+            for model_id in default_model_ids:
+                model = model_options.get(model_id, {"label": model_id, "badges": []})
+                checked = st.checkbox(
+                    f"{model.get('label', model_id)} {' '.join(model.get('badges', []))}".strip(),
+                    value=True,
+                    key=f"wm_accuracy_{model_id}",
+                )
+                if checked:
+                    selected_models.append(model_id)
+        else:
+            for model_id, model in model_options.items():
+                checked = st.checkbox(
+                    f"{model.get('label', model_id)} {' '.join(model.get('badges', []))}".strip(),
+                    value=model_id in default_model_ids,
+                    key=f"wm_custom_{model_id}",
+                )
+                if checked:
+                    selected_models.append(model_id)
+
+        if fast_run and {"knmi_harmonie_arome", "dwd_icon_d2"}.issubset(set(model_options.keys())):
+            selected_models = ["knmi_harmonie_arome", "dwd_icon_d2"]
+
+        st.caption("⭐ recommended for Belgium. 🟩 full irradiance fields. 🧩 derived/approximated components.")
+        if not selected_models:
+            st.error("Select at least one weather model.")
+
+    run = st.button(
+        "Run forecast",
+        type="primary",
+        disabled=not bool(selected_models),
+        help="Click to fetch tomorrow weather and recompute all charts and recommendations.",
+    )
 
 if run:
     st.session_state.last_soc = soc_percent
@@ -1165,6 +1225,9 @@ if run:
                 {
                     "buffer_percent": float(buffer_percent),
                     "user_max_ac_kw": float(user_max_ac_kw),
+                    "weather_models": selected_models,
+                    "ensemble_method": ensemble_method,
+                    "pv_uncertainty": bool(show_uncertainty),
                 },
             )
             result = run_response["result"]
@@ -1184,6 +1247,7 @@ if run:
             cutoff_reason_ui = str(metrics.get("cutoff_reason", ""))
             grid_import = float(metrics.get("grid_import", 0.0))
             grid_export = float(metrics.get("grid_export", 0.0))
+            weather_ensemble = result.get("weather_ensemble", {}) if isinstance(result.get("weather_ensemble"), dict) else {}
 
         with right:
             top_left, top_right = st.columns([4, 3], gap="large")
@@ -1206,6 +1270,16 @@ if run:
             metric_with_help(c2, "Forecast total load (kWh)", f"{pv['load_kwh'].sum():.2f}")
             metric_with_help(c3, "Estimated grid import (expensive h)", f"{grid_import:.2f}")
             metric_with_help(c4, "Estimated export/curtailment (kWh)", f"{(grid_export + detail_df['curtailed_kwh'].sum() if not detail_df.empty else 0.0):.2f}")
+            pv_totals = weather_ensemble.get("pv_totals_kwh") if isinstance(weather_ensemble.get("pv_totals_kwh"), dict) else {}
+            if pv_totals:
+                st.caption(
+                    f"PV forecast P50: {float(pv_totals.get('p50', 0.0)):.2f} kWh"
+                    + (
+                        f" · Range P10–P90: {float(pv_totals.get('p10', 0.0)):.2f}–{float(pv_totals.get('p90', 0.0)):.2f} kWh"
+                        if show_uncertainty
+                        else ""
+                    )
+                )
 
             tooltip_heading("PV production vs Load (hourly)", CHART_TOOLTIPS["PV production vs Load (hourly)"])
             pv_load_fig = make_chart_pv_load(pv, soc_series, cutoff_soc)
@@ -1227,7 +1301,13 @@ if run:
 
             tooltip_heading("Weather inputs used", TABLE_TOOLTIPS["Weather inputs used"])
             with st.expander("Weather inputs used"):
-                st.write("Source: Open-Meteo ECMWF")
+                labels_by_id = {m.get("id"): m.get("label", m.get("id")) for m in weather_models_catalog}
+                selected_ids = weather_ensemble.get("selected_models", []) if isinstance(weather_ensemble.get("selected_models"), list) else []
+                selected_labels = [str(labels_by_id.get(mid, mid)) for mid in selected_ids]
+                st.write(
+                    f"PV forecast built from {len(selected_labels)} models: {', '.join(selected_labels)} "
+                    f"(method: {weather_ensemble.get('ensemble_method', 'weighted')})"
+                )
                 st.write(f"Address query: {st.session_state.get('loc_address_query', '')}")
                 st.write(f"Latitude/Longitude: {float(st.session_state.get('loc_latitude', core.LATITUDE)):.5f}, {float(st.session_state.get('loc_longitude', core.LONGITUDE)):.5f}")
                 st.write(f"Timezone: {st.session_state.get('loc_timezone', core.TIMEZONE)}")
