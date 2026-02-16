@@ -501,6 +501,7 @@ class BackendState:
                 "missing_vars_by_model": ensemble.missing_vars_by_model,
                 "derived_irradiance_by_model": ensemble.derived_irradiance_by_model,
                 "failed_models": ensemble.failed_models,
+                "failed_model_reasons": ensemble.failed_model_reasons,
                 "fast_mode": bool(fast_mode),
             },
         }

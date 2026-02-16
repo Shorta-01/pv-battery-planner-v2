@@ -85,8 +85,24 @@ class EnsembleWeatherResult:
     missing_vars_by_model: dict[str, list[str]]
     derived_irradiance_by_model: dict[str, bool]
     failed_models: list[str]
+    failed_model_reasons: dict[str, dict[str, Any]]
     selected_models: list[str]
     weights_used: dict[str, float] | None
+
+
+class WeatherProviderError(RuntimeError):
+    def __init__(self, *, category: str, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.category = category
+        self.status = status
+        self.message = message
+
+    def to_reason(self) -> dict[str, Any]:
+        return {
+            "category": self.category,
+            "status": self.status,
+            "message": self.message,
+        }
 
 
 def weather_models_payload() -> list[dict[str, Any]]:
@@ -130,18 +146,38 @@ def _request_open_meteo(url: str, params: dict[str, Any], model_id: str) -> dict
     except requests.HTTPError as exc:
         status = exc.response.status_code if exc.response is not None else None
         category = "rate_limited" if status == 429 else "provider_down" if status in {500, 502, 503, 504} else "http_error"
-        raise RuntimeError(f"Open-Meteo request failed ({category}) for {model_id} status={status}") from exc
+        raise WeatherProviderError(
+            category=category,
+            status=status,
+            message=f"Open-Meteo request failed ({category}) for {model_id} status={status}",
+        ) from exc
     except requests.Timeout as exc:
-        raise RuntimeError(f"Open-Meteo request timeout for {model_id}") from exc
+        raise WeatherProviderError(
+            category="timeout",
+            status=None,
+            message=f"Open-Meteo request timeout for {model_id}",
+        ) from exc
     except requests.RequestException as exc:
-        raise RuntimeError(f"Open-Meteo network error for {model_id}: {exc}") from exc
+        raise WeatherProviderError(
+            category="network_error",
+            status=None,
+            message=f"Open-Meteo network error for {model_id}: {exc}",
+        ) from exc
 
     try:
         data = response.json()
     except ValueError as exc:
-        raise RuntimeError(f"Malformed JSON from Open-Meteo for {model_id}") from exc
+        raise WeatherProviderError(
+            category="malformed_json",
+            status=response.status_code,
+            message=f"Malformed JSON from Open-Meteo for {model_id}",
+        ) from exc
     if not isinstance(data, dict):
-        raise RuntimeError("Unexpected weather payload shape")
+        raise WeatherProviderError(
+            category="invalid_payload",
+            status=response.status_code,
+            message=f"Unexpected weather payload shape for {model_id}",
+        )
     return data
 
 
@@ -383,6 +419,7 @@ def build_ensemble_forecast(
     missing_vars_by_model: dict[str, list[str]] = {}
     derived_irradiance_by_model: dict[str, bool] = {}
     failed_models: list[str] = []
+    failed_model_reasons: dict[str, dict[str, Any]] = {}
     weather_ok: dict[str, core.ForecastResult] = {}
 
     for model_id in selected:
@@ -415,8 +452,21 @@ def build_ensemble_forecast(
             missing_vars_by_model[model_id] = missing_vars
             derived_irradiance_by_model[model_id] = bool(derived_irradiance)
             weather_ok[model_id] = weather
-        except Exception:
+        except WeatherProviderError as exc:
             failed_models.append(model_id)
+            failed_model_reasons[model_id] = exc.to_reason()
+            print(
+                "[weather_ensemble] model_failed "
+                f"model={model_id} category={exc.category} status={exc.status} message={exc.message}"
+            )
+        except Exception as exc:
+            failed_models.append(model_id)
+            failed_model_reasons[model_id] = {
+                "category": "unexpected_error",
+                "status": None,
+                "message": str(exc),
+            }
+            print(f"[weather_ensemble] model_failed model={model_id} category=unexpected_error message={exc}")
 
     if not per_model_pv_columns["pv_total_kwh"]:
         raise RuntimeError("All weather model requests failed.")
@@ -485,6 +535,7 @@ def build_ensemble_forecast(
         missing_vars_by_model=missing_vars_by_model,
         derived_irradiance_by_model=derived_irradiance_by_model,
         failed_models=failed_models,
+        failed_model_reasons=failed_model_reasons,
         selected_models=list(per_model_pv_columns["pv_total_kwh"].keys()),
         weights_used=weights_used,
     )
