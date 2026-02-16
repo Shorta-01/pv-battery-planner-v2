@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -71,6 +72,8 @@ _WEATHER_CACHE_TTL_S = 600
 class EnsembleWeatherResult:
     weather_primary: core.ForecastResult
     pv_ensemble_p50: pd.Series
+    pv_ensemble_unclipped_p50: pd.Series
+    pv_ensemble_clipped_p50: pd.Series
     pv_ensemble_p10: pd.Series | None
     pv_ensemble_p90: pd.Series | None
     per_model_pv_totals_kwh: dict[str, float]
@@ -242,7 +245,8 @@ def build_ensemble_forecast(
     if not selected:
         raise RuntimeError("Select at least one weather model.")
 
-    per_model_pv_series: dict[str, pd.Series] = {}
+    per_model_pv_ac_series: dict[str, pd.Series] = {}
+    per_model_pv_unclipped_series: dict[str, pd.Series] = {}
     per_model_pv_totals: dict[str, float] = {}
     missing_vars_by_model: dict[str, list[str]] = {}
     failed_models: list[str] = []
@@ -252,46 +256,69 @@ def build_ensemble_forecast(
         try:
             weather, missing_vars = fetch_open_meteo_weather(model_id, loc, tz, target_date)
             model_pv = core.build_pv_forecast(weather.df, loc, tz=tz)
-            pv_series = pd.to_numeric(model_pv["pv_total_kwh"], errors="coerce").fillna(0.0)
-            per_model_pv_series[model_id] = pv_series
-            per_model_pv_totals[model_id] = float(pv_series.sum())
+            pv_ac = pd.to_numeric(model_pv["pv_total_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
+
+            if "pv_dc_available_kwh" in model_pv.columns:
+                pv_unclipped = model_pv["pv_dc_available_kwh"]
+            elif "pv_total_unclipped_kwh" in model_pv.columns:
+                pv_unclipped = model_pv["pv_total_unclipped_kwh"]
+            else:
+                pv_unclipped = pv_ac
+
+            pv_unclipped = pd.to_numeric(pv_unclipped, errors="coerce").fillna(0.0).clip(lower=0.0)
+            pv_unclipped = pv_unclipped.reindex(pv_ac.index).fillna(0.0)
+            pv_unclipped = pd.Series(np.maximum(pv_unclipped, pv_ac), index=pv_ac.index)
+
+            per_model_pv_ac_series[model_id] = pv_ac
+            per_model_pv_unclipped_series[model_id] = pv_unclipped
+            per_model_pv_totals[model_id] = float(pv_ac.sum())
             missing_vars_by_model[model_id] = missing_vars
             weather_ok[model_id] = weather
         except Exception:
             failed_models.append(model_id)
 
-    if not per_model_pv_series:
+    if not per_model_pv_ac_series:
         raise RuntimeError("All weather model requests failed.")
 
-    aligned_index = next(iter(per_model_pv_series.values())).index
-    for model_id in list(per_model_pv_series.keys()):
-        per_model_pv_series[model_id] = per_model_pv_series[model_id].reindex(aligned_index).fillna(0.0)
+    aligned_index = next(iter(per_model_pv_ac_series.values())).index
+    for model_id in list(per_model_pv_ac_series.keys()):
+        per_model_pv_ac_series[model_id] = per_model_pv_ac_series[model_id].reindex(aligned_index).fillna(0.0)
+        per_model_pv_unclipped_series[model_id] = per_model_pv_unclipped_series[model_id].reindex(aligned_index).fillna(0.0)
 
     if ensemble_method == "median":
-        ensemble_p50 = pd.concat(per_model_pv_series.values(), axis=1).median(axis=1)
+        ensemble_ac_p50 = pd.concat(per_model_pv_ac_series.values(), axis=1).median(axis=1)
+        ensemble_unclipped_p50 = pd.concat(per_model_pv_unclipped_series.values(), axis=1).median(axis=1)
         weights_used = None
     elif ensemble_method == "mean":
-        ensemble_p50 = pd.concat(per_model_pv_series.values(), axis=1).mean(axis=1)
+        ensemble_ac_p50 = pd.concat(per_model_pv_ac_series.values(), axis=1).mean(axis=1)
+        ensemble_unclipped_p50 = pd.concat(per_model_pv_unclipped_series.values(), axis=1).mean(axis=1)
         weights_used = None
     else:
-        ensemble_p50, weights_used = _weighted_ensemble(per_model_pv_series, list(per_model_pv_series.keys()))
+        model_keys = list(per_model_pv_ac_series.keys())
+        ensemble_ac_p50, weights_used = _weighted_ensemble(per_model_pv_ac_series, model_keys)
+        ensemble_unclipped_p50, _ = _weighted_ensemble(per_model_pv_unclipped_series, model_keys)
+
+    ensemble_unclipped_p50 = pd.Series(np.maximum(ensemble_unclipped_p50, ensemble_ac_p50), index=ensemble_ac_p50.index)
+    ensemble_clipped_p50 = (ensemble_unclipped_p50 - ensemble_ac_p50).clip(lower=0.0)
 
     p10 = None
     p90 = None
     if pv_uncertainty:
-        matrix = pd.concat(per_model_pv_series.values(), axis=1)
+        matrix = pd.concat(per_model_pv_ac_series.values(), axis=1)
         p10 = matrix.quantile(0.10, axis=1)
         p90 = matrix.quantile(0.90, axis=1)
 
     primary_model = next(iter(weather_ok.keys()))
     return EnsembleWeatherResult(
         weather_primary=weather_ok[primary_model],
-        pv_ensemble_p50=ensemble_p50.astype(float),
+        pv_ensemble_p50=ensemble_ac_p50.astype(float),
+        pv_ensemble_unclipped_p50=ensemble_unclipped_p50.astype(float),
+        pv_ensemble_clipped_p50=ensemble_clipped_p50.astype(float),
         pv_ensemble_p10=p10.astype(float) if p10 is not None else None,
         pv_ensemble_p90=p90.astype(float) if p90 is not None else None,
         per_model_pv_totals_kwh=per_model_pv_totals,
         missing_vars_by_model=missing_vars_by_model,
         failed_models=failed_models,
-        selected_models=list(per_model_pv_series.keys()),
+        selected_models=list(per_model_pv_ac_series.keys()),
         weights_used=weights_used,
     )
