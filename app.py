@@ -140,6 +140,28 @@ def close_lookup() -> None:
     st.session_state["loc_lookup_open"] = False
 
 
+def open_lookup(loc_cfg: dict) -> None:
+    loc_structured = loc_cfg.get("address_structured", {}) if isinstance(loc_cfg.get("address_structured"), dict) else {}
+    pending_structured = {
+        "street": str(st.session_state.get("loc_street", loc_structured.get("street", ""))),
+        "house_number": str(st.session_state.get("loc_house_number", loc_structured.get("house_number", ""))),
+        "postal_code": str(st.session_state.get("loc_postal_code", loc_structured.get("postal_code", ""))),
+        "city": str(st.session_state.get("loc_city", loc_structured.get("city", ""))),
+        "country": str(st.session_state.get("loc_country", loc_structured.get("country", ""))),
+    }
+    address_query = str(st.session_state.get("loc_address_query_display", loc_cfg.get("address_query", "")))
+    st.session_state["_pending_location_state"] = {
+        "address_query": address_query,
+        "latitude": float(st.session_state.get("loc_latitude", loc_cfg.get("latitude", core.LATITUDE))),
+        "longitude": float(st.session_state.get("loc_longitude", loc_cfg.get("longitude", core.LONGITUDE))),
+        "timezone": str(st.session_state.get("loc_timezone", loc_cfg.get("timezone", core.TIMEZONE))),
+        "address_structured": pending_structured,
+    }
+    st.session_state.pop("_geo_error", None)
+    st.session_state.pop("_geo_success", None)
+    st.session_state["loc_lookup_open"] = True
+
+
 def _render_lookup_form_contents() -> None:
     st.text_input("Street", key="loc_street")
     st.text_input("House Number", key="loc_house_number")
@@ -147,24 +169,52 @@ def _render_lookup_form_contents() -> None:
     st.text_input("City", key="loc_city")
     st.text_input("Country", key="loc_country")
 
-    cancel_col, ok_col = st.columns(2)
-    with cancel_col:
-        st.form_submit_button("Cancel", on_click=close_lookup)
-    with ok_col:
-        st.form_submit_button("OK", type="primary", on_click=submit_structured_lookup)
-
 
 if hasattr(st, "dialog"):
     @st.dialog("Lookup location")
     def lookup_location_dialog() -> None:
         with st.form("lookup_location_form"):
             _render_lookup_form_contents()
+            if st.session_state.get("_geo_error"):
+                st.error(st.session_state["_geo_error"])
+            if st.session_state.get("_geo_success"):
+                st.success(st.session_state["_geo_success"])
+            cancel_col, ok_col = st.columns(2)
+            with cancel_col:
+                cancel = st.form_submit_button("Cancel")
+            with ok_col:
+                ok = st.form_submit_button("OK", type="primary")
+            if cancel:
+                close_lookup()
+                st.session_state.pop("_geo_error", None)
+                st.session_state.pop("_geo_success", None)
+                st.rerun()
+            if ok:
+                submit_structured_lookup()
+                st.rerun()
 else:
     def lookup_location_dialog() -> None:
         with st.container(border=True):
             st.markdown("#### Lookup location")
             with st.form("lookup_location_form_fallback"):
                 _render_lookup_form_contents()
+                if st.session_state.get("_geo_error"):
+                    st.error(st.session_state["_geo_error"])
+                if st.session_state.get("_geo_success"):
+                    st.success(st.session_state["_geo_success"])
+                cancel_col, ok_col = st.columns(2)
+                with cancel_col:
+                    cancel = st.form_submit_button("Cancel")
+                with ok_col:
+                    ok = st.form_submit_button("OK", type="primary")
+                if cancel:
+                    close_lookup()
+                    st.session_state.pop("_geo_error", None)
+                    st.session_state.pop("_geo_success", None)
+                    st.rerun()
+                if ok:
+                    submit_structured_lookup()
+                    st.rerun()
 
 
 def format_hour_from_index(index: pd.Index, fmt: str) -> pd.Series:
@@ -955,7 +1005,7 @@ with left:
             st.text_input("Address query", key="loc_address_query_display", disabled=True)
         with btn_col:
             if st.button("Lookup", type="primary", key="btn_open_lookup"):
-                st.session_state["loc_lookup_open"] = True
+                open_lookup(loc_cfg)
 
         if st.session_state.get("loc_lookup_open"):
             lookup_location_dialog()
