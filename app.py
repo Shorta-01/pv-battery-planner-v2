@@ -74,8 +74,7 @@ def apply_pending_location_state() -> None:
     st.session_state["loc_latitude"] = float(pending.get("latitude", core.LATITUDE))
     st.session_state["loc_longitude"] = float(pending.get("longitude", core.LONGITUDE))
     st.session_state["loc_timezone"] = str(pending.get("timezone", core.TIMEZONE))
-    fallback_query = str(pending.get("address_query", ""))
-    st.session_state["loc_street"] = str(structured.get("street", "")) or fallback_query
+    st.session_state["loc_street"] = str(structured.get("street", ""))
     st.session_state["loc_house_number"] = str(structured.get("house_number", ""))
     st.session_state["loc_postal_code"] = str(structured.get("postal_code", ""))
     st.session_state["loc_city"] = str(structured.get("city", ""))
@@ -155,6 +154,11 @@ def open_lookup(loc_cfg: dict) -> None:
         "timezone": str(st.session_state.get("loc_timezone", loc_cfg.get("timezone", core.TIMEZONE))),
         "address_structured": pending_structured,
     }
+    st.session_state["loc_street"] = ""
+    st.session_state["loc_house_number"] = ""
+    st.session_state["loc_postal_code"] = ""
+    st.session_state["loc_city"] = ""
+    st.session_state["loc_country"] = ""
     st.session_state.pop("_geo_error", None)
     st.session_state.pop("_geo_success", None)
     st.session_state["loc_lookup_open"] = True
@@ -970,7 +974,7 @@ with left:
     if "loc_timezone" not in st.session_state:
         st.session_state["loc_timezone"] = str(loc_cfg.get("timezone", core.TIMEZONE))
     if "loc_street" not in st.session_state:
-        st.session_state["loc_street"] = str(loc_structured.get("street", "")) or str(loc_cfg.get("address_query", ""))
+        st.session_state["loc_street"] = str(loc_structured.get("street", ""))
     if "loc_house_number" not in st.session_state:
         st.session_state["loc_house_number"] = str(loc_structured.get("house_number", ""))
     if "loc_postal_code" not in st.session_state:
