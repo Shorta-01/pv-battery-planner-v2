@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import html
 import inspect
 import json
 import os
@@ -59,6 +60,35 @@ TABLE_TOOLTIPS = {
 }
 
 WEATHER_MODEL_AVAILABLE_ICON = "✅"
+
+WEATHER_MODEL_ORDER = [
+    "knmi_harmonie_arome",
+    "dwd_icon_d2",
+    "ecmwf_ifs",
+    "dwd_icon_eu",
+    "meteofrance_seamless",
+]
+
+WEATHER_MODEL_DEFAULT = {"knmi_harmonie_arome", "dwd_icon_d2", "ecmwf_ifs"}
+
+WEATHER_MODEL_HOVERTEXT = {
+    "knmi_harmonie_arome": "High-resolution KNMI regional model for Benelux. Strong for short-term local cloud and wind changes.",
+    "dwd_icon_d2": "Very high-resolution DWD model (Germany region). Often captures fast cloud transitions that impact PV.",
+    "ecmwf_ifs": "ECMWF global model. Very reliable for fronts and the overall weather pattern, good stable baseline.",
+    "dwd_icon_eu": "European ICON model. Useful secondary view when the high-res model is noisy or inconsistent.",
+    "meteofrance_seamless": "Météo-France seamless blend. Helpful extra perspective for Western Europe cloud patterns.",
+}
+
+BADGE_HOVERTEXT = {
+    "⭐": "Core model (recommended by default).",
+    "🟩": "Best PV inputs: includes direct + diffuse + DNI radiation fields.",
+    "🧩": "Some PV radiation components are derived or approximated.",
+    "✅": "This model is available via the weather API.",
+}
+
+
+def _esc(s: str) -> str:
+    return html.escape(str(s or ""), quote=True)
 
 LOCAL_STATE_DIR = Path("local_state")
 API_BASE_URL = os.getenv("PVBP_BACKEND_URL", "http://127.0.0.1:8787")
@@ -1470,62 +1500,61 @@ with left:
                 st.error(f"Could not save nightly settings: {exc}")
 
     with st.expander("Weather models", expanded=True):
-        mode_label = st.radio(
-            "Forecast mode",
-            options=["Accuracy (Recommended)", "Custom (Advanced)"],
-            index=0,
-            horizontal=True,
-        )
-        default_model_ids = [
-            m.get("id")
-            for m in weather_models_catalog
-            if m.get("id") in {"knmi_harmonie_arome", "dwd_icon_d2", "ecmwf_ifs"}
-        ]
-        if not default_model_ids:
-            default_model_ids = [m.get("id") for m in weather_models_catalog if isinstance(m.get("id"), str)]
+        st.caption("Select which weather models to use. We combine them automatically using Belgium-tuned weighting.")
+        show_uncertainty = st.checkbox("Show PV forecast range (Low / Typical / High)", value=False)
+        st.caption("When enabled, the PV chart shows three curves: Low, Typical, and High. Use this on changeable cloud days to see the possible range.")
 
         model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
         selected_models: list[str] = []
-        ensemble_method = st.selectbox(
-            "Ensemble method",
-            options=["weighted", "mean", "median"],
-            index=0,
-            help="Weighted is Belgium-tuned default; mean/median are robust alternatives.",
-        )
-        show_uncertainty = st.checkbox("Show PV uncertainty (P10/P50/P90)", value=False)
-        fast_run = st.checkbox("Fast run (limit to 2 models)", value=False)
 
-        if mode_label == "Accuracy (Recommended)":
-            st.caption("Recommended for Belgium: KNMI + ICON-D2 + ECMWF")
-            for model_id in default_model_ids:
-                model = model_options.get(model_id, {"label": model_id, "badges": []})
+        st.markdown(
+            "<style>.wm-name{cursor:help}.wm-icon{cursor:help;margin-left:6px}</style>",
+            unsafe_allow_html=True,
+        )
+
+        for model_id in WEATHER_MODEL_ORDER:
+            model = model_options.get(model_id)
+            if not model:
+                continue
+
+            cols = st.columns([0.35, 3.2, 1.3], vertical_alignment="center")
+
+            with cols[0]:
                 checked = st.checkbox(
-                    weather_model_option_label(model, model_id),
-                    value=True,
-                    key=f"wm_accuracy_{model_id}",
-                    help=weather_model_option_help(model),
+                    "enabled",
+                    value=(model_id in WEATHER_MODEL_DEFAULT),
+                    key=f"wm_{model_id}",
+                    label_visibility="collapsed",
                 )
-                if checked:
-                    selected_models.append(model_id)
-        else:
-            for model_id, model in model_options.items():
-                checked = st.checkbox(
-                    weather_model_option_label(model, model_id),
-                    value=model_id in default_model_ids,
-                    key=f"wm_custom_{model_id}",
-                    help=weather_model_option_help(model),
+
+            with cols[1]:
+                label = str(model.get("label") or model_id)
+                tip = WEATHER_MODEL_HOVERTEXT.get(model_id, "")
+                st.markdown(
+                    f"<span class='wm-name' title='{_esc(tip)}'><b>{_esc(label)}</b></span>",
+                    unsafe_allow_html=True,
                 )
-                if checked:
-                    selected_models.append(model_id)
+
+            with cols[2]:
+                badges = list(model.get("badges") or [])
+                badges.append(WEATHER_MODEL_AVAILABLE_ICON)
+                icon_html = " ".join(
+                    f"<span class='wm-icon' title='{_esc(BADGE_HOVERTEXT.get(b, ''))}'>{_esc(b)}</span>"
+                    for b in badges
+                )
+                st.markdown(icon_html, unsafe_allow_html=True)
+
+            if checked:
+                selected_models.append(model_id)
 
         if not selected_models:
             st.error("Select at least one weather model.")
 
+    ensemble_method = "weighted"
     run = st.button(
         "Run forecast",
         type="primary",
         disabled=not bool(selected_models),
-        help="Click to fetch tomorrow weather and recompute all charts and recommendations.",
     )
 
 if run:
@@ -1548,7 +1577,6 @@ if run:
                     "weather_models": selected_models,
                     "ensemble_method": ensemble_method,
                     "pv_uncertainty": bool(show_uncertainty),
-                    "fast_mode": bool(fast_run),
                 },
             )
             result = run_response["result"]
