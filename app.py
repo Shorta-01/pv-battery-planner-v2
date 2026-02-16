@@ -583,8 +583,55 @@ else:
         _render_history_log_block()
 
 
-def make_chart_pv_load(df: pd.DataFrame, soc: pd.Series, cutoff_soc: float) -> go.Figure:
-    working = core.ensure_pv_columns(df.copy(), split_ratio=(0.0, 1.0))
+def normalize_detail_df_for_ui(df: pd.DataFrame, effective_cfg: dict) -> pd.DataFrame:
+    out = df.copy()
+    pv_cfg = effective_cfg.get("pv", {}) if isinstance(effective_cfg, dict) else {}
+    east_panels = int(pv_cfg.get("array_east_panels", 0) or 0)
+    south_panels = int(pv_cfg.get("array_south_panels", 1) or 1)
+    panel_total = max(east_panels + south_panels, 1)
+    east_ratio = east_panels / panel_total
+    south_ratio = south_panels / panel_total
+
+    if "pv_total_kwh" not in out.columns:
+        if "pv_ac_limited_kwh" in out.columns:
+            out["pv_total_kwh"] = out["pv_ac_limited_kwh"]
+        else:
+            out["pv_total_kwh"] = 0.0
+
+    if "pv_total_unclipped_kwh" not in out.columns:
+        if "pv_dc_available_kwh" in out.columns:
+            out["pv_total_unclipped_kwh"] = out["pv_dc_available_kwh"]
+        else:
+            out["pv_total_unclipped_kwh"] = out["pv_total_kwh"]
+
+    if "pv_east_kwh" not in out.columns:
+        out["pv_east_kwh"] = pd.to_numeric(out["pv_total_kwh"], errors="coerce").fillna(0.0) * east_ratio
+    if "pv_south_kwh" not in out.columns:
+        out["pv_south_kwh"] = pd.to_numeric(out["pv_total_kwh"], errors="coerce").fillna(0.0) * south_ratio
+
+    out["pv_total_kwh"] = pd.to_numeric(out["pv_total_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    out["pv_total_unclipped_kwh"] = pd.to_numeric(out["pv_total_unclipped_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    out["pv_total_unclipped_kwh"] = out[["pv_total_unclipped_kwh", "pv_total_kwh"]].max(axis=1)
+    out["pv_east_kwh"] = pd.to_numeric(out["pv_east_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    out["pv_south_kwh"] = pd.to_numeric(out["pv_south_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    out["pv_clipped_kwh"] = (out["pv_total_unclipped_kwh"] - out["pv_total_kwh"]).clip(lower=0.0)
+
+    if "pv_surplus_kwh" not in out.columns and "surplus_kwh" in out.columns:
+        out["pv_surplus_kwh"] = pd.to_numeric(out["surplus_kwh"], errors="coerce").fillna(0.0)
+    if "pv_deficit_kwh" not in out.columns and "deficit_kwh" in out.columns:
+        out["pv_deficit_kwh"] = pd.to_numeric(out["deficit_kwh"], errors="coerce").fillna(0.0)
+    if "pv_surplus_kwh" not in out.columns:
+        load = pd.to_numeric(out.get("load_kwh", 0.0), errors="coerce").fillna(0.0)
+        out["pv_surplus_kwh"] = (out["pv_total_kwh"] - load).clip(lower=0.0)
+    if "pv_deficit_kwh" not in out.columns:
+        load = pd.to_numeric(out.get("load_kwh", 0.0), errors="coerce").fillna(0.0)
+        out["pv_deficit_kwh"] = (load - out["pv_total_kwh"]).clip(lower=0.0)
+
+    return out
+
+
+def make_chart_pv_load(df: pd.DataFrame, soc: pd.Series, cutoff_soc: float, effective_cfg: dict) -> go.Figure:
+    working = normalize_detail_df_for_ui(df.copy(), effective_cfg)
     if "load_kwh" not in working.columns:
         working["load_kwh"] = 0.0
     if "pv_surplus_kwh" not in working.columns:
@@ -1240,6 +1287,8 @@ if run:
             weather_df = df_from_split(result["weather"])
             pv = df_from_split(result["pv"])
             detail_df = df_from_split(result["detail"])
+            pv = normalize_detail_df_for_ui(pv, effective_cfg)
+            detail_df = normalize_detail_df_for_ui(detail_df, effective_cfg)
             flows_df = df_from_split(result["flows"])
             soc_series = series_from_split(result["soc"])
             sunrise = pd.Timestamp(result["sunrise"])
@@ -1287,7 +1336,7 @@ if run:
                 )
 
             tooltip_heading("PV production vs Load (hourly)", CHART_TOOLTIPS["PV production vs Load (hourly)"])
-            pv_load_fig = make_chart_pv_load(pv, soc_series, cutoff_soc)
+            pv_load_fig = make_chart_pv_load(pv, soc_series, cutoff_soc, effective_cfg)
             add_tariff_and_sun_markers(pv_load_fig, tomorrow, sunrise, sunset)
             st.plotly_chart(pv_load_fig, use_container_width=True)
 

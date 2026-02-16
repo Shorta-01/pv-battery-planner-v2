@@ -1441,19 +1441,15 @@ def estimate_pv_with_pvlib(
         TILT_SOUTH_DEG, AZIMUTH_SOUTH_DEG, dc_kwp(ARRAY_SOUTH_PANELS)
     )
 
+    east_ac_kwh_unclipped = (east_ac_kwh_unclipped * PV_CALIBRATION_FACTOR).fillna(0).clip(lower=0)
+    south_ac_kwh_unclipped = (south_ac_kwh_unclipped * PV_CALIBRATION_FACTOR).fillna(0).clip(lower=0)
+    east_ac_kw_unclipped = (east_ac_kwh_unclipped / dt_h.replace(0.0, float("nan"))).fillna(0).clip(lower=0)
+    south_ac_kw_unclipped = (south_ac_kwh_unclipped / dt_h.replace(0.0, float("nan"))).fillna(0).clip(lower=0)
     total_ac_kw_unclipped = (east_ac_kw_unclipped + south_ac_kw_unclipped).fillna(0).clip(lower=0)
     total_ac_kwh_unclipped = (east_ac_kwh_unclipped + south_ac_kwh_unclipped).fillna(0).clip(lower=0)
 
     total_ac_kw_clipped = total_ac_kw_unclipped.clip(upper=INVERTER_AC_KW_LIMIT)
     total_ac_kwh_clipped = (total_ac_kw_clipped * dt_h).fillna(0).clip(lower=0)
-
-    east_ac_kwh_unclipped = (east_ac_kwh_unclipped * PV_CALIBRATION_FACTOR).fillna(0).clip(lower=0)
-    south_ac_kwh_unclipped = (south_ac_kwh_unclipped * PV_CALIBRATION_FACTOR).fillna(0).clip(lower=0)
-    total_ac_kwh_unclipped = (total_ac_kwh_unclipped * PV_CALIBRATION_FACTOR).fillna(0).clip(lower=0)
-    total_ac_kwh_clipped = (total_ac_kwh_clipped * PV_CALIBRATION_FACTOR).fillna(0).clip(lower=0)
-
-    east_ac_kw_unclipped = (east_ac_kwh_unclipped / dt_h.replace(0.0, float("nan"))).fillna(0).clip(lower=0)
-    south_ac_kw_unclipped = (south_ac_kwh_unclipped / dt_h.replace(0.0, float("nan"))).fillna(0).clip(lower=0)
 
     return (
         east_ac_kw_unclipped.astype(float),
@@ -1986,6 +1982,30 @@ def simulate_expensive_hours_detailed(
         })
 
     detail_df = pd.DataFrame(rows).set_index("time")
+
+    if "pv_total_unclipped_kwh" not in detail_df.columns and "pv_dc_available_kwh" in detail_df.columns:
+        detail_df["pv_total_unclipped_kwh"] = detail_df["pv_dc_available_kwh"]
+    if "pv_total_kwh" not in detail_df.columns and "pv_ac_limited_kwh" in detail_df.columns:
+        detail_df["pv_total_kwh"] = detail_df["pv_ac_limited_kwh"]
+
+    detail_df["pv_total_unclipped_kwh"] = pd.to_numeric(detail_df.get("pv_total_unclipped_kwh", 0.0), errors="coerce").fillna(0.0)
+    detail_df["pv_total_kwh"] = pd.to_numeric(detail_df.get("pv_total_kwh", 0.0), errors="coerce").fillna(0.0)
+    detail_df["pv_clipped_kwh"] = (detail_df["pv_total_unclipped_kwh"] - detail_df["pv_total_kwh"]).clip(lower=0.0)
+
+    if "pv_surplus_kwh" not in detail_df.columns and "surplus_kwh" in detail_df.columns:
+        detail_df["pv_surplus_kwh"] = detail_df["surplus_kwh"]
+    if "pv_deficit_kwh" not in detail_df.columns and "deficit_kwh" in detail_df.columns:
+        detail_df["pv_deficit_kwh"] = detail_df["deficit_kwh"]
+
+    if "pv_east_kwh" in df.columns and "pv_south_kwh" in df.columns:
+        detail_df["pv_east_kwh"] = pd.to_numeric(df.reindex(detail_df.index)["pv_east_kwh"], errors="coerce").fillna(0.0)
+        detail_df["pv_south_kwh"] = pd.to_numeric(df.reindex(detail_df.index)["pv_south_kwh"], errors="coerce").fillna(0.0)
+    else:
+        split_total = max(ARRAY_EAST_PANELS + ARRAY_SOUTH_PANELS, 1)
+        east_ratio = ARRAY_EAST_PANELS / split_total
+        south_ratio = ARRAY_SOUTH_PANELS / split_total
+        detail_df["pv_east_kwh"] = detail_df["pv_total_kwh"] * east_ratio
+        detail_df["pv_south_kwh"] = detail_df["pv_total_kwh"] * south_ratio
     if ENABLE_INVARIANT_CHECKS:
         validate_flow_invariants(detail_df, "expensive_hours")
     if import_with_high_soc_due_to_power_limit:
