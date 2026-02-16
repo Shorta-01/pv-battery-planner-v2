@@ -204,3 +204,90 @@ def test_request_open_meteo_error_categorization(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(we, "_SESSION", FakeSession())
     with pytest.raises(RuntimeError, match="rate_limited"):
         we._request_open_meteo("https://example.com", {}, model_id="ecmwf_ifs")
+
+
+def test_request_open_meteo_timeout_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    import requests
+
+    class FakeSession:
+        def get(self, *args, **kwargs):
+            raise requests.Timeout("timed out")
+
+    monkeypatch.setattr(we, "_SESSION", FakeSession())
+    with pytest.raises(we.WeatherProviderError, match="timeout") as err:
+        we._request_open_meteo("https://example.com", {}, model_id="ecmwf_ifs")
+    assert err.value.category == "timeout"
+
+
+def test_request_open_meteo_malformed_json_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            raise ValueError("bad json")
+
+    class FakeSession:
+        def get(self, *args, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(we, "_SESSION", FakeSession())
+    with pytest.raises(we.WeatherProviderError, match="Malformed JSON") as err:
+        we._request_open_meteo("https://example.com", {}, model_id="ecmwf_ifs")
+    assert err.value.category == "malformed_json"
+    assert err.value.status == 200
+
+
+def test_build_ensemble_surfaces_failed_model_reasons(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex) -> None:
+    loc = core.Location(name="x", latitude=50.8, longitude=4.3)
+    weather_df = pd.DataFrame(
+        {
+            "temp_air_c": [10.0] * len(hourly_index),
+            "ghi_wm2": [0.0] * len(hourly_index),
+            "dni_wm2": [0.0] * len(hourly_index),
+            "dhi_wm2": [0.0] * len(hourly_index),
+            "cloud_cover_pct": [0.0] * len(hourly_index),
+            "wind_speed_ms": [1.0] * len(hourly_index),
+        },
+        index=hourly_index,
+    )
+
+    def fake_weather(model_id, *_args, **_kwargs):
+        if model_id == "dwd_icon_d2":
+            raise we.WeatherProviderError(category="rate_limited", status=429, message="rate limited")
+        return core.ForecastResult(df=weather_df.copy(), sunrise=hourly_index[7].to_pydatetime(), sunset=hourly_index[17].to_pydatetime()), [], False
+
+    def fake_build_pv(df, _loc, tz=None):
+        s = pd.Series([1.0] * len(df.index), index=df.index)
+        return pd.DataFrame(
+            {
+                "pv_total_kwh": s,
+                "pv_total_unclipped_kwh": s,
+                "pv_east_kwh": s / 2,
+                "pv_south_kwh": s / 2,
+                "pv_clipped_kwh": [0.0] * len(df.index),
+            },
+            index=df.index,
+        )
+
+    monkeypatch.setattr(we, "fetch_open_meteo_weather", fake_weather)
+    monkeypatch.setattr(core, "build_pv_forecast", fake_build_pv)
+
+    out = we.build_ensemble_forecast(
+        loc=loc,
+        target_date=dt.date(2026, 1, 10),
+        tz="Europe/Brussels",
+        weather_models=["dwd_icon_d2", "ecmwf_ifs"],
+        ensemble_method="mean",
+        pv_uncertainty=False,
+        accuracy_mode=True,
+        fast_mode=False,
+    )
+
+    assert out.failed_models == ["dwd_icon_d2"]
+    assert out.failed_model_reasons == {
+        "dwd_icon_d2": {"category": "rate_limited", "status": 429, "message": "rate limited"}
+    }
+    assert out.selected_models == ["ecmwf_ifs"]
