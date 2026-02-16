@@ -289,3 +289,35 @@ def test_run_forecast_pipeline_price_response_modes(monkeypatch: "pytest.MonkeyP
 
     assert float(aware_high_out.cutoff_soc) > float(aware_low_out.cutoff_soc)
     assert float(aware_high_out.charge_kw) >= float(aware_low_out.charge_kw)
+
+
+def test_apply_config_plumbs_new_pv_modeling_options() -> None:
+    cfg = copy.deepcopy(core.DEFAULT_CONFIG)
+    cfg["pv"]["iam_model"] = "ashrae"
+    cfg["pv"]["iam_ashrae_b"] = 0.08
+    cfg["pv"]["albedo"] = 0.35
+    cfg["pv"]["inverter_ac_model"] = "pvwatts"
+
+    core.apply_config(cfg)
+
+    assert core.PV_IAM_MODEL == "ashrae"
+    assert core.PV_IAM_ASHRAE_B == pytest.approx(0.08)
+    assert core.PV_ALBEDO == pytest.approx(0.35)
+    assert core.INVERTER_AC_MODEL == "pvwatts"
+
+
+def test_validate_config_rejects_invalid_advanced_pv_options() -> None:
+    cfg = copy.deepcopy(core.DEFAULT_CONFIG)
+    cfg["pv"]["iam_model"] = "bad-model"
+    with pytest.raises(ValueError, match="pv.iam_model"):
+        core.validate_config(cfg)
+
+    cfg = copy.deepcopy(core.DEFAULT_CONFIG)
+    cfg["pv"]["albedo"] = 1.2
+    with pytest.raises(ValueError, match="pv.albedo"):
+        core.validate_config(cfg)
+
+    cfg = copy.deepcopy(core.DEFAULT_CONFIG)
+    cfg["pv"]["inverter_ac_model"] = "unknown"
+    with pytest.raises(ValueError, match="pv.inverter_ac_model"):
+        core.validate_config(cfg)
