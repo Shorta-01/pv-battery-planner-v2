@@ -64,7 +64,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
     },
 }
 
-_WEATHER_CACHE: dict[tuple, tuple[float, core.ForecastResult, list[str]]] = {}
+_WEATHER_CACHE: dict[tuple, tuple[float, core.ForecastResult, list[str], bool]] = {}
 _WEATHER_CACHE_TTL_S = 600
 
 
@@ -78,6 +78,7 @@ class EnsembleWeatherResult:
     pv_ensemble_p90: pd.Series | None
     per_model_pv_totals_kwh: dict[str, float]
     missing_vars_by_model: dict[str, list[str]]
+    derived_irradiance_by_model: dict[str, bool]
     failed_models: list[str]
     selected_models: list[str]
     weights_used: dict[str, float] | None
@@ -129,15 +130,53 @@ def _cache_key(model_id: str, lat: float, lon: float, tz: str, target_date: dt.d
     return (model_id, round(float(lat), 4), round(float(lon), 4), str(tz), target_date.isoformat())
 
 
-def fetch_open_meteo_weather(model_id: str, loc: core.Location, tz: str, target_date: dt.date) -> tuple[core.ForecastResult, list[str]]:
+
+
+def _is_central_europe(lat: float, lon: float) -> bool:
+    return 43.0 <= float(lat) <= 57.5 and -2.0 <= float(lon) <= 20.0
+
+
+def _aggregate_minutely_15_to_hourly(minutely_payload: dict[str, Any], tz: str) -> pd.DataFrame:
+    times = pd.to_datetime(minutely_payload.get("time", []), errors="coerce")
+    if len(times) == 0:
+        return pd.DataFrame()
+    if getattr(times, "tz", None) is None:
+        times = times.tz_localize(tz)
+    else:
+        times = times.tz_convert(tz)
+
+    hourly = pd.DataFrame(index=times)
+    for src, dst in {
+        "shortwave_radiation": "ghi_wm2",
+        "direct_normal_irradiance": "dni_wm2",
+        "diffuse_radiation": "dhi_wm2",
+    }.items():
+        vals = minutely_payload.get(src)
+        if vals is None:
+            continue
+        hourly[dst] = pd.to_numeric(pd.Series(vals, index=times), errors="coerce")
+
+    if hourly.empty:
+        return hourly
+    return hourly.groupby(hourly.index.floor("h")).mean(numeric_only=True)
+
+def fetch_open_meteo_weather(
+    model_id: str,
+    loc: core.Location,
+    tz: str,
+    target_date: dt.date,
+    *,
+    accuracy_mode: bool = True,
+    fast_mode: bool = False,
+) -> tuple[core.ForecastResult, list[str], bool]:
     if model_id not in WEATHER_MODELS:
         raise RuntimeError(f"Unsupported weather model: {model_id}")
 
-    key = _cache_key(model_id, loc.latitude, loc.longitude, tz, target_date)
+    key = (_cache_key(model_id, loc.latitude, loc.longitude, tz, target_date), bool(accuracy_mode), bool(fast_mode))
     now = time.time()
     cached = _WEATHER_CACHE.get(key)
     if cached and now - cached[0] < _WEATHER_CACHE_TTL_S:
-        return cached[1], list(cached[2])
+        return cached[1], list(cached[2]), bool(cached[3])
 
     spec = WEATHER_MODELS[model_id]
     params = {
@@ -161,6 +200,21 @@ def fetch_open_meteo_weather(model_id: str, loc: core.Location, tz: str, target_
         "daily": "sunrise,sunset",
     }
     params.update(spec.get("params", {}))
+
+    use_icon15 = (
+        model_id == "dwd_icon_d2"
+        and bool(accuracy_mode)
+        and not bool(fast_mode)
+        and _is_central_europe(loc.latitude, loc.longitude)
+    )
+    if use_icon15:
+        params["minutely_15"] = ",".join([
+            "shortwave_radiation",
+            "direct_radiation",
+            "diffuse_radiation",
+            "direct_normal_irradiance",
+        ])
+
     data = _request_open_meteo(spec["endpoint"], params)
 
     hourly = data.get("hourly") if isinstance(data.get("hourly"), dict) else {}
@@ -187,13 +241,27 @@ def fetch_open_meteo_weather(model_id: str, loc: core.Location, tz: str, target_
     df["cloud_cover_pct"] = _series("cloud_cover", 0.0).fillna(0.0).clip(lower=0.0)
     df["ghi_wm2"] = _series("shortwave_radiation", 0.0).fillna(0.0).clip(lower=0.0)
 
-    dni = _series("direct_normal_irradiance", float("nan"))
-    dhi = _series("diffuse_radiation", float("nan"))
+    minutely = data.get("minutely_15") if isinstance(data.get("minutely_15"), dict) else {}
+    if use_icon15 and minutely:
+        agg15 = _aggregate_minutely_15_to_hourly(minutely, tz=tz)
+        if not agg15.empty:
+            agg15 = agg15.reindex(df.index)
+            for col in ["ghi_wm2", "dni_wm2", "dhi_wm2"]:
+                if col in agg15.columns:
+                    df[col] = pd.to_numeric(agg15[col], errors="coerce")
+
+    dni = df["dni_wm2"] if "dni_wm2" in df.columns else _series("direct_normal_irradiance", float("nan"))
+    dhi = df["dhi_wm2"] if "dhi_wm2" in df.columns else _series("diffuse_radiation", float("nan"))
+    derived_irradiance = False
     if dni.isna().all() or dhi.isna().all():
         df = _decompose_from_ghi(df, loc, tz)
+        derived_irradiance = True
     else:
-        df["dni_wm2"] = dni.fillna(0.0).clip(lower=0.0)
-        df["dhi_wm2"] = dhi.fillna(0.0).clip(lower=0.0)
+        df["dni_wm2"] = pd.to_numeric(dni, errors="coerce").fillna(0.0).clip(lower=0.0)
+        df["dhi_wm2"] = pd.to_numeric(dhi, errors="coerce").fillna(0.0).clip(lower=0.0)
+
+    if model_id == "ecmwf_ifs":
+        derived_irradiance = True
 
     df = core.normalize_hourly_forecast_index(
         df[["temp_air_c", "ghi_wm2", "dni_wm2", "dhi_wm2", "cloud_cover_pct", "wind_speed_ms"]],
@@ -218,8 +286,8 @@ def fetch_open_meteo_weather(model_id: str, loc: core.Location, tz: str, target_
         sunset = sunset.tz_convert(tz)
 
     forecast = core.ForecastResult(df=df, sunrise=sunrise.to_pydatetime(), sunset=sunset.to_pydatetime())
-    _WEATHER_CACHE[key] = (time.time(), forecast, list(set(missing_vars)))
-    return forecast, list(set(missing_vars))
+    _WEATHER_CACHE[key] = (time.time(), forecast, list(set(missing_vars)), bool(derived_irradiance))
+    return forecast, list(set(missing_vars)), bool(derived_irradiance)
 
 
 def _weighted_ensemble(series_map: dict[str, pd.Series], selected_models: list[str]) -> tuple[pd.Series, dict[str, float] | None]:
@@ -239,6 +307,8 @@ def build_ensemble_forecast(
     weather_models: list[str] | None,
     ensemble_method: str,
     pv_uncertainty: bool,
+    accuracy_mode: bool = True,
+    fast_mode: bool = False,
 ) -> EnsembleWeatherResult:
     selected = weather_models[:] if weather_models else DEFAULT_ACCURACY_MODELS[:]
     selected = [m for m in selected if m in WEATHER_MODELS]
@@ -249,13 +319,21 @@ def build_ensemble_forecast(
     per_model_pv_unclipped_series: dict[str, pd.Series] = {}
     per_model_pv_totals: dict[str, float] = {}
     missing_vars_by_model: dict[str, list[str]] = {}
+    derived_irradiance_by_model: dict[str, bool] = {}
     failed_models: list[str] = []
     weather_ok: dict[str, core.ForecastResult] = {}
 
     for model_id in selected:
         try:
-            weather, missing_vars = fetch_open_meteo_weather(model_id, loc, tz, target_date)
-            model_pv = core.build_pv_forecast(weather.df, loc, tz=tz)
+            weather, missing_vars, derived_irradiance = fetch_open_meteo_weather(
+                model_id,
+                loc,
+                tz,
+                target_date,
+                accuracy_mode=accuracy_mode,
+                fast_mode=fast_mode,
+            )
+            model_pv = core.ensure_pv_columns(core.build_pv_forecast(weather.df, loc, tz=tz))
             pv_ac = pd.to_numeric(model_pv["pv_total_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
 
             if "pv_dc_available_kwh" in model_pv.columns:
@@ -273,6 +351,7 @@ def build_ensemble_forecast(
             per_model_pv_unclipped_series[model_id] = pv_unclipped
             per_model_pv_totals[model_id] = float(pv_ac.sum())
             missing_vars_by_model[model_id] = missing_vars
+            derived_irradiance_by_model[model_id] = bool(derived_irradiance)
             weather_ok[model_id] = weather
         except Exception:
             failed_models.append(model_id)
@@ -298,6 +377,18 @@ def build_ensemble_forecast(
         ensemble_ac_p50, weights_used = _weighted_ensemble(per_model_pv_ac_series, model_keys)
         ensemble_unclipped_p50, _ = _weighted_ensemble(per_model_pv_unclipped_series, model_keys)
 
+    if len(per_model_pv_ac_series) >= 3 and ensemble_method != "median":
+        matrix = pd.concat(per_model_pv_ac_series.values(), axis=1)
+        spread = (matrix.max(axis=1) - matrix.min(axis=1)).fillna(0.0)
+        spread_median = float(spread.median()) if not spread.empty else 0.0
+        extreme_mask = spread > max(0.5, 2.0 * spread_median)
+        if int(extreme_mask.sum()) >= 3:
+            median_ac = matrix.median(axis=1)
+            matrix_unclip = pd.concat(per_model_pv_unclipped_series.values(), axis=1)
+            median_unclip = matrix_unclip.median(axis=1)
+            ensemble_ac_p50.loc[extreme_mask] = median_ac.loc[extreme_mask]
+            ensemble_unclipped_p50.loc[extreme_mask] = median_unclip.loc[extreme_mask]
+
     ensemble_unclipped_p50 = pd.Series(np.maximum(ensemble_unclipped_p50, ensemble_ac_p50), index=ensemble_ac_p50.index)
     ensemble_clipped_p50 = (ensemble_unclipped_p50 - ensemble_ac_p50).clip(lower=0.0)
 
@@ -318,6 +409,7 @@ def build_ensemble_forecast(
         pv_ensemble_p90=p90.astype(float) if p90 is not None else None,
         per_model_pv_totals_kwh=per_model_pv_totals,
         missing_vars_by_model=missing_vars_by_model,
+        derived_irradiance_by_model=derived_irradiance_by_model,
         failed_models=failed_models,
         selected_models=list(per_model_pv_ac_series.keys()),
         weights_used=weights_used,

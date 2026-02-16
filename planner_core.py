@@ -33,6 +33,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+import numpy as np
+
 try:
     import pandas as pd
 except ImportError:
@@ -1507,8 +1509,65 @@ def build_pv_forecast(df: "pd.DataFrame", loc: Location, tz: str | None = None) 
     out["pv_east_kw"] = (out["pv_east_kwh"] / dt_h.replace(0.0, float("nan"))).fillna(0.0).clip(lower=0.0)
     out["pv_south_kw"] = (out["pv_south_kwh"] / dt_h.replace(0.0, float("nan"))).fillna(0.0).clip(lower=0.0)
 
+    out = ensure_pv_columns(out, split_ratio=(0.5, 0.5))
     validate_pv_outputs(out)
     out.attrs["pv_method"] = "pvlib"
+    return out
+
+
+def ensure_pv_columns(df: "pd.DataFrame", *, prefer_split: bool = True, split_ratio: tuple[float, float] = (0.0, 1.0)) -> "pd.DataFrame":
+    """
+    Enforces presence of PV columns expected by UI and detailed simulation.
+    split_ratio = (east_ratio, south_ratio) used only when split missing.
+    """
+    out = df.copy()
+
+    if "pv_total_kwh" not in out.columns:
+        if "pv_kwh" in out.columns:
+            out["pv_total_kwh"] = out["pv_kwh"]
+        else:
+            out["pv_total_kwh"] = 0.0
+
+    if "pv_total_unclipped_kwh" not in out.columns:
+        if "pv_dc_available_kwh" in out.columns:
+            out["pv_total_unclipped_kwh"] = out["pv_dc_available_kwh"]
+        else:
+            out["pv_total_unclipped_kwh"] = out["pv_total_kwh"]
+
+    if "pv_dc_available_kwh" not in out.columns:
+        out["pv_dc_available_kwh"] = out["pv_total_unclipped_kwh"]
+    if "pv_ac_limited_kwh" not in out.columns:
+        out["pv_ac_limited_kwh"] = out["pv_total_kwh"]
+
+    split_missing = ("pv_east_kwh" not in out.columns) or ("pv_south_kwh" not in out.columns)
+    if split_missing and prefer_split:
+        e_ratio, s_ratio = split_ratio
+        total = pd.to_numeric(out["pv_total_kwh"], errors="coerce").fillna(0.0)
+        out["pv_east_kwh"] = (total * float(e_ratio)).astype(float)
+        out["pv_south_kwh"] = (total * float(s_ratio)).astype(float)
+    elif split_missing:
+        out["pv_east_kwh"] = 0.0
+        out["pv_south_kwh"] = pd.to_numeric(out["pv_total_kwh"], errors="coerce").fillna(0.0)
+
+    if "pv_clipped_kwh" not in out.columns:
+        out["pv_clipped_kwh"] = (out["pv_total_unclipped_kwh"] - out["pv_total_kwh"]).clip(lower=0.0)
+
+    out["pv_total_kwh"] = pd.to_numeric(out["pv_total_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    out["pv_total_unclipped_kwh"] = pd.to_numeric(out["pv_total_unclipped_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    out["pv_total_unclipped_kwh"] = np.maximum(out["pv_total_unclipped_kwh"], out["pv_total_kwh"])
+    out["pv_east_kwh"] = pd.to_numeric(out["pv_east_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    out["pv_south_kwh"] = pd.to_numeric(out["pv_south_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
+
+    split_total = out["pv_east_kwh"] + out["pv_south_kwh"]
+    need_rebalance = split_total > 0
+    rebalance_factor = pd.Series(1.0, index=out.index, dtype=float)
+    rebalance_factor.loc[need_rebalance] = out.loc[need_rebalance, "pv_total_kwh"] / split_total.loc[need_rebalance]
+    out["pv_east_kwh"] = (out["pv_east_kwh"] * rebalance_factor).fillna(0.0).clip(lower=0.0)
+    out["pv_south_kwh"] = (out["pv_south_kwh"] * rebalance_factor).fillna(0.0).clip(lower=0.0)
+
+    out["pv_dc_available_kwh"] = out["pv_total_unclipped_kwh"]
+    out["pv_ac_limited_kwh"] = out["pv_total_kwh"]
+    out["pv_clipped_kwh"] = (out["pv_total_unclipped_kwh"] - out["pv_total_kwh"]).clip(lower=0.0)
     return out
 
 
@@ -1540,23 +1599,11 @@ def apply_daylight_clamp(df: "pd.DataFrame", sunrise: dt.datetime, sunset: dt.da
     out = df.copy()
     _, _, daylight_mask = normalize_daylight_window(out.index, sunrise, sunset)
     pv_cols = [
-        "pv_east_kwh",
-        "pv_south_kwh",
-        "pv_total_unclipped_kwh",
-        "pv_total_kwh",
-        "pv_dc_available_kwh",
-        "pv_ac_limited_kwh",
-        "pv_clipped_kwh",
-        "pv_dc_available_kw",
-        "pv_ac_limited_kw",
-        "pv_east_kw",
-        "pv_south_kw",
-        "pv_total_unclipped_kw",
-        "pv_total_kw",
+        col for col in out.columns
+        if isinstance(col, str) and col.startswith("pv_") and col.endswith("_kwh")
     ]
     for col in pv_cols:
-        if col in out.columns:
-            out.loc[~daylight_mask, col] = 0.0
+        out.loc[~daylight_mask, col] = 0.0
     return out
 
 

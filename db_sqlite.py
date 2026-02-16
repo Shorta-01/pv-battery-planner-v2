@@ -58,6 +58,10 @@ def init_db(db_path: str) -> None:
                 run_id TEXT NOT NULL,
                 ts_local TEXT NOT NULL,
                 pv_kwh REAL,
+                pv_total_unclipped_kwh REAL,
+                pv_east_kwh REAL,
+                pv_south_kwh REAL,
+                pv_clipped_kwh REAL,
                 load_kwh REAL,
                 grid_import_kwh REAL,
                 grid_export_kwh REAL,
@@ -95,6 +99,35 @@ def init_db(db_path: str) -> None:
                 export_error_kwh REAL,
                 created_at_utc TEXT NOT NULL
             );
+            """
+        )
+
+        existing_cols = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(forecast_hourly)").fetchall()
+        }
+        for col_name in [
+            "pv_total_unclipped_kwh",
+            "pv_east_kwh",
+            "pv_south_kwh",
+            "pv_clipped_kwh",
+        ]:
+            if col_name not in existing_cols:
+                conn.execute(f"ALTER TABLE forecast_hourly ADD COLUMN {col_name} REAL")
+
+        conn.execute(
+            """
+            UPDATE forecast_hourly
+            SET
+                pv_total_unclipped_kwh = COALESCE(pv_total_unclipped_kwh, pv_kwh, 0.0),
+                pv_east_kwh = COALESCE(pv_east_kwh, 0.0),
+                pv_south_kwh = COALESCE(pv_south_kwh, pv_kwh, 0.0),
+                pv_clipped_kwh = COALESCE(pv_clipped_kwh, 0.0)
+            WHERE
+                pv_total_unclipped_kwh IS NULL
+                OR pv_east_kwh IS NULL
+                OR pv_south_kwh IS NULL
+                OR pv_clipped_kwh IS NULL
             """
         )
 
@@ -165,6 +198,10 @@ def _normalize_hourly(payload: dict) -> list[dict]:
             continue
 
         pv_kwh = _safe_float(pv_df.at[ts, "pv_total_kwh"]) if "pv_total_kwh" in pv_df.columns and ts in pv_df.index else None
+        pv_total_unclipped_kwh = _safe_float(pv_df.at[ts, "pv_total_unclipped_kwh"]) if "pv_total_unclipped_kwh" in pv_df.columns and ts in pv_df.index else pv_kwh
+        pv_east_kwh = _safe_float(pv_df.at[ts, "pv_east_kwh"]) if "pv_east_kwh" in pv_df.columns and ts in pv_df.index else 0.0
+        pv_south_kwh = _safe_float(pv_df.at[ts, "pv_south_kwh"]) if "pv_south_kwh" in pv_df.columns and ts in pv_df.index else pv_kwh
+        pv_clipped_kwh = _safe_float(pv_df.at[ts, "pv_clipped_kwh"]) if "pv_clipped_kwh" in pv_df.columns and ts in pv_df.index else 0.0
         load_kwh = _safe_float(pv_df.at[ts, "load_kwh"]) if "load_kwh" in pv_df.columns and ts in pv_df.index else None
         grid_import = _safe_float(flows_df.at[ts, "grid_import_kwh"]) if "grid_import_kwh" in flows_df.columns and ts in flows_df.index else None
         grid_export = _safe_float(flows_df.at[ts, "grid_export_kwh"]) if "grid_export_kwh" in flows_df.columns and ts in flows_df.index else None
@@ -183,6 +220,10 @@ def _normalize_hourly(payload: dict) -> list[dict]:
             {
                 "ts_local": ts_local,
                 "pv_kwh": pv_kwh,
+                "pv_total_unclipped_kwh": pv_total_unclipped_kwh,
+                "pv_east_kwh": pv_east_kwh,
+                "pv_south_kwh": pv_south_kwh,
+                "pv_clipped_kwh": pv_clipped_kwh,
                 "load_kwh": load_kwh,
                 "grid_import_kwh": grid_import,
                 "grid_export_kwh": grid_export,
@@ -280,16 +321,20 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
             conn.executemany(
                 """
                 INSERT OR REPLACE INTO forecast_hourly (
-                    run_id, ts_local, pv_kwh, load_kwh,
+                    run_id, ts_local, pv_kwh, pv_total_unclipped_kwh, pv_east_kwh, pv_south_kwh, pv_clipped_kwh, load_kwh,
                     grid_import_kwh, grid_export_kwh,
                     batt_charge_kwh, batt_discharge_kwh, soc_pct
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         run_id,
                         row["ts_local"],
                         row["pv_kwh"],
+                        row["pv_total_unclipped_kwh"],
+                        row["pv_east_kwh"],
+                        row["pv_south_kwh"],
+                        row["pv_clipped_kwh"],
                         row["load_kwh"],
                         row["grid_import_kwh"],
                         row["grid_export_kwh"],
@@ -427,7 +472,8 @@ def fetch_latest_full_run(db_path: str) -> dict | None:
             return None
         hourly_rows = conn.execute(
             """
-            SELECT ts_local, pv_kwh, load_kwh, grid_import_kwh, grid_export_kwh,
+            SELECT ts_local, pv_kwh, pv_total_unclipped_kwh, pv_east_kwh, pv_south_kwh, pv_clipped_kwh,
+                   load_kwh, grid_import_kwh, grid_export_kwh,
                    batt_charge_kwh, batt_discharge_kwh, soc_pct
             FROM forecast_hourly
             WHERE run_id = ?
@@ -455,6 +501,10 @@ def fetch_latest_full_run(db_path: str) -> dict | None:
     idx = pd.to_datetime(hourly["ts_local"], errors="coerce")
     pv_df = pd.DataFrame(index=idx)
     pv_df["pv_total_kwh"] = pd.to_numeric(hourly["pv_kwh"], errors="coerce").fillna(0.0)
+    pv_df["pv_total_unclipped_kwh"] = pd.to_numeric(hourly.get("pv_total_unclipped_kwh"), errors="coerce").fillna(pv_df["pv_total_kwh"])
+    pv_df["pv_east_kwh"] = pd.to_numeric(hourly.get("pv_east_kwh"), errors="coerce").fillna(0.0)
+    pv_df["pv_south_kwh"] = pd.to_numeric(hourly.get("pv_south_kwh"), errors="coerce").fillna(pv_df["pv_total_kwh"])
+    pv_df["pv_clipped_kwh"] = pd.to_numeric(hourly.get("pv_clipped_kwh"), errors="coerce").fillna(0.0)
     pv_df["load_kwh"] = pd.to_numeric(hourly["load_kwh"], errors="coerce").fillna(0.0)
 
     flows_df = pd.DataFrame(index=idx)

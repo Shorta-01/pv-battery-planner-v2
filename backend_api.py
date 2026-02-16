@@ -98,6 +98,7 @@ class RunNowPayload(BaseModel):
     weather_models: list[str] | None = None
     ensemble_method: str = Field(default="weighted")
     pv_uncertainty: bool = False
+    fast_mode: bool = False
 
 
 class NightlyTickPayload(BaseModel):
@@ -299,6 +300,7 @@ class BackendState:
         weather_models: list[str] | None,
         ensemble_method: str,
         pv_uncertainty: bool,
+        fast_mode: bool = False,
     ) -> dict:
         cfg = self.settings["config"]
         loc_cfg = cfg.get("location", {})
@@ -320,19 +322,30 @@ class BackendState:
             weather_models=selected_models,
             ensemble_method=str(ensemble_method).lower().strip(),
             pv_uncertainty=bool(pv_uncertainty),
+            accuracy_mode=True,
+            fast_mode=bool(fast_mode),
         )
 
         weather = ensemble.weather_primary
         pv = pd.DataFrame(index=ensemble.pv_ensemble_p50.index)
         pv["pv_total_kwh"] = ensemble.pv_ensemble_p50
-
-        # Add required columns for detailed simulation and consistent PV accounting
         pv["pv_total_unclipped_kwh"] = ensemble.pv_ensemble_unclipped_p50
         pv["pv_dc_available_kwh"] = ensemble.pv_ensemble_unclipped_p50
         pv["pv_ac_limited_kwh"] = ensemble.pv_ensemble_p50
         pv["pv_clipped_kwh"] = ensemble.pv_ensemble_clipped_p50
 
+        ratio_e, ratio_s = 0.0, 1.0
+        if {"pv_east_kwh", "pv_south_kwh"}.issubset(set(pv.columns)):
+            total_e = float(pd.to_numeric(pv["pv_east_kwh"], errors="coerce").fillna(0.0).sum())
+            total_s = float(pd.to_numeric(pv["pv_south_kwh"], errors="coerce").fillna(0.0).sum())
+            split_total = total_e + total_s
+            if split_total > 0:
+                ratio_e = total_e / split_total
+                ratio_s = total_s / split_total
+
+        pv = core.ensure_pv_columns(pv, split_ratio=(ratio_e, ratio_s))
         pv = core.apply_daylight_clamp(pv, weather.sunrise, weather.sunset).sort_index()
+        pv = core.ensure_pv_columns(pv, split_ratio=(ratio_e, ratio_s))
         pv = core.add_sun_percent(pv, weather.sunrise, weather.sunset)
         pv = core.add_load_and_surplus_columns(pv, yesterday_kwh)
 
@@ -485,7 +498,9 @@ class BackendState:
                 if pv_uncertainty
                 else None,
                 "missing_vars_by_model": ensemble.missing_vars_by_model,
+                "derived_irradiance_by_model": ensemble.derived_irradiance_by_model,
                 "failed_models": ensemble.failed_models,
+                "fast_mode": bool(fast_mode),
             },
         }
         insert_forecast_run(str(SQLITE_PATH), payload)
@@ -522,6 +537,7 @@ class BackendState:
                 payload.weather_models,
                 payload.ensemble_method,
                 payload.pv_uncertainty,
+                payload.fast_mode,
             )
             result["run_type"] = "manual"
             self.latest_result = result
