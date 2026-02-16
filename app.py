@@ -998,7 +998,7 @@ with left:
 
     with st.expander("Saved settings"):
         st.markdown("#### Location")
-        addr_col, status_col, btn_col = st.columns([6, 1, 2], vertical_alignment="bottom")
+        addr_col, status_col, btn_col = st.columns([6, 1, 2], vertical_alignment="center")
         with addr_col:
             st.text_input("Address query", key="loc_address_query_display", disabled=True)
         with status_col:
