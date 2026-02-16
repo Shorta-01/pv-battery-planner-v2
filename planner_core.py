@@ -81,6 +81,10 @@ AZIMUTH_SOUTH_DEG = 180.0
 PERFORMANCE_RATIO = 0.82
 INVERTER_EFF = 0.97
 PV_LOSS_MODEL = "split"
+PV_IAM_MODEL = "none"
+PV_IAM_ASHRAE_B = 0.05
+PV_ALBEDO: float | None = None
+INVERTER_AC_MODEL = "linear"
 PV_CALIBRATION_FACTOR = 1.00
 PV_CALIBRATION_FACTOR_EAST = 1.00
 PV_CALIBRATION_FACTOR_SOUTH = 1.00
@@ -149,6 +153,10 @@ DEFAULT_CONFIG = {
         "performance_ratio": PERFORMANCE_RATIO,
         "inverter_eff": INVERTER_EFF,
         "pv_loss_model": PV_LOSS_MODEL,
+        "iam_model": PV_IAM_MODEL,
+        "iam_ashrae_b": PV_IAM_ASHRAE_B,
+        "albedo": PV_ALBEDO,
+        "inverter_ac_model": INVERTER_AC_MODEL,
         "pv_calibration_factor": PV_CALIBRATION_FACTOR,
         "pv_calibration_factor_east": PV_CALIBRATION_FACTOR_EAST,
         "pv_calibration_factor_south": PV_CALIBRATION_FACTOR_SOUTH,
@@ -311,6 +319,19 @@ def validate_config(cfg: dict) -> None:
     pv_loss_model = str(pv.get("pv_loss_model", "split")).strip().lower()
     if pv_loss_model not in {"split", "combined"}:
         raise ValueError("pv.pv_loss_model must be either 'split' or 'combined'.")
+    iam_model = str(pv.get("iam_model", "none")).strip().lower()
+    if iam_model not in {"none", "ashrae"}:
+        raise ValueError("pv.iam_model must be either 'none' or 'ashrae'.")
+    iam_ashrae_b = float(pv.get("iam_ashrae_b", 0.05))
+    if not (0.0 <= iam_ashrae_b <= 0.5):
+        raise ValueError("pv.iam_ashrae_b must be in [0.0, 0.5].")
+    if "albedo" in pv and pv.get("albedo") is not None:
+        albedo = float(pv["albedo"])
+        if not (0.0 <= albedo <= 1.0):
+            raise ValueError("pv.albedo must be in [0.0, 1.0] when set.")
+    inverter_ac_model = str(pv.get("inverter_ac_model", "linear")).strip().lower()
+    if inverter_ac_model not in {"linear", "pvwatts"}:
+        raise ValueError("pv.inverter_ac_model must be either 'linear' or 'pvwatts'.")
     pv_calibration_factor = float(pv.get("pv_calibration_factor", 1.0))
     if not (0.7 <= pv_calibration_factor <= 1.3):
         raise ValueError("pv.pv_calibration_factor must be in [0.7, 1.3].")
@@ -388,7 +409,8 @@ def apply_config(cfg: dict) -> None:
     global USE_GEOCODING, ADDRESS_QUERY, LATITUDE, LONGITUDE, TIMEZONE
     global PANEL_WP, ARRAY_SOUTH_PANELS, ARRAY_EAST_PANELS
     global TILT_EAST_DEG, TILT_SOUTH_DEG, AZIMUTH_EAST_DEG, AZIMUTH_SOUTH_DEG
-    global PERFORMANCE_RATIO, INVERTER_EFF, PV_LOSS_MODEL, PV_CALIBRATION_FACTOR, PV_CALIBRATION_FACTOR_EAST, PV_CALIBRATION_FACTOR_SOUTH, INVERTER_AC_KW_LIMIT
+    global PERFORMANCE_RATIO, INVERTER_EFF, PV_LOSS_MODEL, PV_IAM_MODEL, PV_IAM_ASHRAE_B, PV_ALBEDO, INVERTER_AC_MODEL
+    global PV_CALIBRATION_FACTOR, PV_CALIBRATION_FACTOR_EAST, PV_CALIBRATION_FACTOR_SOUTH, INVERTER_AC_KW_LIMIT
     global BATTERY_KWH, MIN_SOC_PERCENT, MAX_CUTOFF_SOC_PERCENT
     global BATTERY_MAX_CHARGE_KW, BATTERY_MAX_DISCHARGE_KW, MAX_AC_CHARGE_KW_HARD_LIMIT
     global LOAD_PROFILE, MIN_SOC, MAX_CUTOFF_SOC, EFFECTIVE_CFG, OFFPEAK_WINDOWS_BY_DOW
@@ -418,6 +440,10 @@ def apply_config(cfg: dict) -> None:
     PERFORMANCE_RATIO = float(pv["performance_ratio"])
     INVERTER_EFF = float(pv["inverter_eff"])
     PV_LOSS_MODEL = str(pv.get("pv_loss_model", "split")).strip().lower()
+    PV_IAM_MODEL = str(pv.get("iam_model", "none")).strip().lower()
+    PV_IAM_ASHRAE_B = float(pv.get("iam_ashrae_b", 0.05))
+    PV_ALBEDO = None if pv.get("albedo") is None else float(pv.get("albedo"))
+    INVERTER_AC_MODEL = str(pv.get("inverter_ac_model", "linear")).strip().lower()
     PV_CALIBRATION_FACTOR = float(pv.get("pv_calibration_factor", 1.0))
     base_calibration_factor_east = float(pv.get("pv_calibration_factor_east", 1.0))
     base_calibration_factor_south = float(pv.get("pv_calibration_factor_south", 1.0))
@@ -1473,9 +1499,12 @@ def estimate_pv_with_pvlib(
     temp_air = pd.to_numeric(df_local["temp_air_c"], errors="coerce").ffill().bfill().fillna(10.0)
 
     dt_h = timestep_hours(df_local.index)
-    loss_multiplier = PERFORMANCE_RATIO if PV_LOSS_MODEL == "combined" else (PERFORMANCE_RATIO * INVERTER_EFF)
+    pre_inverter_loss_multiplier = PERFORMANCE_RATIO
 
-    def array_energy(tilt: float, az: float, pdc0_kw: float) -> Tuple["pd.Series", "pd.Series", "pd.Series", "pd.Series"]:
+    def array_energy(tilt: float, az: float, pdc0_kw: float) -> Tuple["pd.Series", "pd.Series"]:
+        irradiance_kwargs = {}
+        if PV_ALBEDO is not None:
+            irradiance_kwargs["albedo"] = PV_ALBEDO
         irr = pvlib.irradiance.get_total_irradiance(
             surface_tilt=tilt,
             surface_azimuth=az,
@@ -1485,9 +1514,19 @@ def estimate_pv_with_pvlib(
             ghi=ghi.fillna(0).clip(lower=0),
             dhi=dhi.fillna(0).clip(lower=0),
             dni_extra=dni_extra,
-            model="haydavies"
+            model="haydavies",
+            **irradiance_kwargs,
         )
         poa = irr["poa_global"].fillna(0).clip(lower=0)
+        if PV_IAM_MODEL == "ashrae":
+            aoi = pvlib.irradiance.aoi(
+                surface_tilt=tilt,
+                surface_azimuth=az,
+                solar_zenith=solpos["apparent_zenith"],
+                solar_azimuth=solpos["azimuth"],
+            )
+            iam_modifier = pvlib.iam.ashrae(aoi, b=PV_IAM_ASHRAE_B)
+            poa = (poa * pd.to_numeric(iam_modifier, errors="coerce").fillna(0.0).clip(lower=0.0, upper=1.0)).fillna(0.0)
         temp_cell = pvlib.temperature.faiman(
             poa_global=poa,
             temp_air=temp_air,
@@ -1496,30 +1535,47 @@ def estimate_pv_with_pvlib(
         dc_w = pvlib.pvsystem.pvwatts_dc(
             poa, pdc0=pdc0_kw * 1000.0, gamma_pdc=PV_GAMMA_PDC, temp_cell=temp_cell
         )
-        dc_kw = (dc_w / 1000.0).clip(lower=0)
+        dc_kw = ((dc_w / 1000.0) * pre_inverter_loss_multiplier).clip(lower=0)
         dc_kwh = (dc_kw * dt_h).fillna(0).clip(lower=0)
-        ac_kw_unclipped = (dc_kw * loss_multiplier).fillna(0).clip(lower=0)
-        ac_kwh_unclipped = (ac_kw_unclipped * dt_h).fillna(0).clip(lower=0)
-        return (
-            dc_kw.astype(float),
-            dc_kwh.astype(float),
-            ac_kw_unclipped.astype(float),
-            ac_kwh_unclipped.astype(float),
-        )
+        return dc_kw.astype(float), dc_kwh.astype(float)
 
-    _, _, east_ac_kw_unclipped, east_ac_kwh_unclipped = array_energy(
+    east_dc_kw, east_dc_kwh = array_energy(
         TILT_EAST_DEG, AZIMUTH_EAST_DEG, dc_kwp(ARRAY_EAST_PANELS)
     )
-    _, _, south_ac_kw_unclipped, south_ac_kwh_unclipped = array_energy(
+    south_dc_kw, south_dc_kwh = array_energy(
         TILT_SOUTH_DEG, AZIMUTH_SOUTH_DEG, dc_kwp(ARRAY_SOUTH_PANELS)
     )
 
-    east_ac_kwh_unclipped = (east_ac_kwh_unclipped * PV_CALIBRATION_FACTOR_EAST).fillna(0).clip(lower=0)
-    south_ac_kwh_unclipped = (south_ac_kwh_unclipped * PV_CALIBRATION_FACTOR_SOUTH).fillna(0).clip(lower=0)
+    east_dc_kwh = (east_dc_kwh * PV_CALIBRATION_FACTOR_EAST).fillna(0).clip(lower=0)
+    south_dc_kwh = (south_dc_kwh * PV_CALIBRATION_FACTOR_SOUTH).fillna(0).clip(lower=0)
+    east_dc_kw = (east_dc_kwh / dt_h.replace(0.0, float("nan"))).fillna(0).clip(lower=0)
+    south_dc_kw = (south_dc_kwh / dt_h.replace(0.0, float("nan"))).fillna(0).clip(lower=0)
+
+    total_dc_kw = (east_dc_kw + south_dc_kw).fillna(0).clip(lower=0)
+    if INVERTER_AC_MODEL == "pvwatts":
+        eta_nom = INVERTER_EFF if PV_LOSS_MODEL == "split" else 1.0
+        total_ac_kw_unclipped = pd.Series(
+            pvlib.inverter.pvwatts(
+                pdc=total_dc_kw * 1000.0,
+                pdc0=(INVERTER_AC_KW_LIMIT * 1000.0) / max(eta_nom, 1e-6),
+                eta_inv_nom=eta_nom,
+            ),
+            index=total_dc_kw.index,
+            dtype=float,
+        ) / 1000.0
+        total_ac_kw_unclipped = total_ac_kw_unclipped.fillna(0.0).clip(lower=0.0)
+    else:
+        linear_ac_eff = INVERTER_EFF if PV_LOSS_MODEL == "split" else 1.0
+        total_ac_kw_unclipped = (total_dc_kw * linear_ac_eff).fillna(0).clip(lower=0)
+
+    total_dc_kwh = (east_dc_kwh + south_dc_kwh).fillna(0).clip(lower=0)
+    total_ac_kwh_unclipped = (total_ac_kw_unclipped * dt_h).fillna(0).clip(lower=0)
+
+    ac_share = (total_ac_kwh_unclipped / total_dc_kwh.replace(0.0, float("nan"))).fillna(0.0).clip(lower=0.0)
+    east_ac_kwh_unclipped = (east_dc_kwh * ac_share).fillna(0.0).clip(lower=0.0)
+    south_ac_kwh_unclipped = (south_dc_kwh * ac_share).fillna(0.0).clip(lower=0.0)
     east_ac_kw_unclipped = (east_ac_kwh_unclipped / dt_h.replace(0.0, float("nan"))).fillna(0).clip(lower=0)
     south_ac_kw_unclipped = (south_ac_kwh_unclipped / dt_h.replace(0.0, float("nan"))).fillna(0).clip(lower=0)
-    total_ac_kw_unclipped = (east_ac_kw_unclipped + south_ac_kw_unclipped).fillna(0).clip(lower=0)
-    total_ac_kwh_unclipped = (east_ac_kwh_unclipped + south_ac_kwh_unclipped).fillna(0).clip(lower=0)
 
     total_ac_kw_clipped = total_ac_kw_unclipped.clip(upper=INVERTER_AC_KW_LIMIT)
     total_ac_kwh_clipped = (total_ac_kw_clipped * dt_h).fillna(0).clip(lower=0)

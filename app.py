@@ -26,7 +26,11 @@ INPUT_TOOLTIPS = {
     "buffer_percent": "This adds a safety margin to the target SOC. It matters when forecasts are uncertain. Example: 3% means the target cutoff SOC is increased by 3 percentage points.",
     "performance_ratio": "This is overall PV system efficiency after real-world losses. It matters because lower efficiency means lower expected production. Example: 0.85 means around 85% of ideal output.",
     "inverter_eff": "This is inverter conversion efficiency from DC to AC. It matters when PV loss model is split; in combined mode it is ignored in PV calculations.",
-    "pv_loss_model": "Choose how PV losses are applied: split = performance ratio × inverter efficiency, combined = performance ratio only.",
+    "pv_loss_model": "Choose how PV losses are applied before inverter modeling: split = performance ratio then inverter efficiency/model, combined = performance ratio only.",
+    "iam_model": "Incidence-angle modifier model for reflection losses at high sun angles. none keeps legacy behavior; ashrae applies AOI-based optical losses.",
+    "iam_ashrae_b": "ASHRAE IAM coefficient b (only used when IAM model = ashrae). Typical range 0.02-0.12; higher means stronger angular losses.",
+    "albedo": "Ground reflectance used in transposition (None keeps pvlib default). Typical values: 0.2 grass, 0.6+ bright snow.",
+    "inverter_ac_model": "AC conversion model: linear reproduces legacy constant multiplier, pvwatts enables part-load inverter efficiency behavior.",
     "pv_calibration_factor": "Global PV tuning factor applied to both arrays. Effective east = global × east, effective south = global × south. 1.00 = unchanged.",
     "pv_calibration_factor_east": "East-array relative tuning factor multiplied by the global PV calibration factor. 1.00 keeps east at the global factor.",
     "pv_calibration_factor_south": "South-array relative tuning factor multiplied by the global PV calibration factor. 1.00 keeps south at the global factor.",
@@ -1013,9 +1017,51 @@ with left:
                 )
             with row5_col2:
                 if cfg_pv_loss_model == "combined":
-                    st.caption("Inverter efficiency is not used in combined mode.")
+                    st.caption("Inverter efficiency is ignored for linear mode in combined losses and treated as nominal eta for pvwatts.")
                 else:
-                    st.caption("In split mode, performance ratio × inverter efficiency is applied.")
+                    st.caption("In split mode, inverter efficiency feeds the selected AC model.")
+
+            row5b_col1, row5b_col2 = st.columns(2)
+            with row5b_col1:
+                inverter_ac_model_value = str(cfg_pv.get("inverter_ac_model", "linear")).strip().lower()
+                cfg_inverter_ac_model = st.selectbox(
+                    "Inverter AC model",
+                    options=["linear", "pvwatts"],
+                    index=["linear", "pvwatts"].index(inverter_ac_model_value if inverter_ac_model_value in {"linear", "pvwatts"} else "linear"),
+                    help=INPUT_TOOLTIPS["inverter_ac_model"],
+                )
+            with row5b_col2:
+                iam_model_value = str(cfg_pv.get("iam_model", "none")).strip().lower()
+                cfg_iam_model = st.selectbox(
+                    "IAM model",
+                    options=["none", "ashrae"],
+                    index=["none", "ashrae"].index(iam_model_value if iam_model_value in {"none", "ashrae"} else "none"),
+                    help=INPUT_TOOLTIPS["iam_model"],
+                )
+
+            row5c_col1, row5c_col2 = st.columns(2)
+            with row5c_col1:
+                cfg_iam_ashrae_b = st.number_input(
+                    "IAM ASHRAE b",
+                    min_value=0.00,
+                    max_value=0.50,
+                    value=float(cfg_pv.get("iam_ashrae_b", 0.05)),
+                    step=0.01,
+                    disabled=(cfg_iam_model != "ashrae"),
+                    help=INPUT_TOOLTIPS["iam_ashrae_b"],
+                )
+            with row5c_col2:
+                albedo_default = cfg_pv.get("albedo", None)
+                cfg_albedo_enabled = st.checkbox("Set custom albedo", value=albedo_default is not None)
+                cfg_albedo = st.number_input(
+                    "Albedo",
+                    min_value=0.00,
+                    max_value=1.00,
+                    value=float(albedo_default if albedo_default is not None else 0.20),
+                    step=0.01,
+                    disabled=(not cfg_albedo_enabled),
+                    help=INPUT_TOOLTIPS["albedo"],
+                )
 
             row6_col1, row6_col2, row6_col3 = st.columns(3)
             with row6_col1:
@@ -1141,6 +1187,10 @@ with left:
                         "performance_ratio": float(cfg_performance_ratio),
                         "inverter_eff": float(cfg_inverter_eff),
                         "pv_loss_model": str(cfg_pv_loss_model),
+                        "iam_model": str(cfg_iam_model),
+                        "iam_ashrae_b": float(cfg_iam_ashrae_b),
+                        "albedo": (float(cfg_albedo) if cfg_albedo_enabled else None),
+                        "inverter_ac_model": str(cfg_inverter_ac_model),
                         "pv_calibration_factor": float(cfg_pv_calibration_factor),
                         "pv_calibration_factor_east": float(cfg_pv_calibration_factor_east),
                         "pv_calibration_factor_south": float(cfg_pv_calibration_factor_south),
