@@ -74,6 +74,8 @@ class EnsembleWeatherResult:
     pv_ensemble_p50: pd.Series
     pv_ensemble_unclipped_p50: pd.Series
     pv_ensemble_clipped_p50: pd.Series
+    pv_ensemble_east_p50: pd.Series
+    pv_ensemble_south_p50: pd.Series
     pv_ensemble_p10: pd.Series | None
     pv_ensemble_p90: pd.Series | None
     per_model_pv_totals_kwh: dict[str, float]
@@ -315,8 +317,13 @@ def build_ensemble_forecast(
     if not selected:
         raise RuntimeError("Select at least one weather model.")
 
-    per_model_pv_ac_series: dict[str, pd.Series] = {}
-    per_model_pv_unclipped_series: dict[str, pd.Series] = {}
+    per_model_pv_columns: dict[str, dict[str, pd.Series]] = {
+        "pv_total_kwh": {},
+        "pv_total_unclipped_kwh": {},
+        "pv_east_kwh": {},
+        "pv_south_kwh": {},
+        "pv_clipped_kwh": {},
+    }
     per_model_pv_totals: dict[str, float] = {}
     missing_vars_by_model: dict[str, list[str]] = {}
     derived_irradiance_by_model: dict[str, bool] = {}
@@ -334,68 +341,72 @@ def build_ensemble_forecast(
                 fast_mode=fast_mode,
             )
             model_pv = core.ensure_pv_columns(core.build_pv_forecast(weather.df, loc, tz=tz))
-            pv_ac = pd.to_numeric(model_pv["pv_total_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
+            pv_total = pd.to_numeric(model_pv["pv_total_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
+            pv_unclipped = pd.to_numeric(model_pv["pv_total_unclipped_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
+            pv_unclipped = pd.Series(np.maximum(pv_unclipped, pv_total), index=pv_total.index)
+            pv_east = pd.to_numeric(model_pv["pv_east_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
+            pv_south = pd.to_numeric(model_pv["pv_south_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
+            pv_clipped = pd.to_numeric(model_pv["pv_clipped_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
 
-            if "pv_dc_available_kwh" in model_pv.columns:
-                pv_unclipped = model_pv["pv_dc_available_kwh"]
-            elif "pv_total_unclipped_kwh" in model_pv.columns:
-                pv_unclipped = model_pv["pv_total_unclipped_kwh"]
-            else:
-                pv_unclipped = pv_ac
-
-            pv_unclipped = pd.to_numeric(pv_unclipped, errors="coerce").fillna(0.0).clip(lower=0.0)
-            pv_unclipped = pv_unclipped.reindex(pv_ac.index).fillna(0.0)
-            pv_unclipped = pd.Series(np.maximum(pv_unclipped, pv_ac), index=pv_ac.index)
-
-            per_model_pv_ac_series[model_id] = pv_ac
-            per_model_pv_unclipped_series[model_id] = pv_unclipped
-            per_model_pv_totals[model_id] = float(pv_ac.sum())
+            per_model_pv_columns["pv_total_kwh"][model_id] = pv_total
+            per_model_pv_columns["pv_total_unclipped_kwh"][model_id] = pv_unclipped
+            per_model_pv_columns["pv_east_kwh"][model_id] = pv_east
+            per_model_pv_columns["pv_south_kwh"][model_id] = pv_south
+            per_model_pv_columns["pv_clipped_kwh"][model_id] = pv_clipped
+            per_model_pv_totals[model_id] = float(pv_total.sum())
             missing_vars_by_model[model_id] = missing_vars
             derived_irradiance_by_model[model_id] = bool(derived_irradiance)
             weather_ok[model_id] = weather
         except Exception:
             failed_models.append(model_id)
 
-    if not per_model_pv_ac_series:
+    if not per_model_pv_columns["pv_total_kwh"]:
         raise RuntimeError("All weather model requests failed.")
 
-    aligned_index = next(iter(per_model_pv_ac_series.values())).index
-    for model_id in list(per_model_pv_ac_series.keys()):
-        per_model_pv_ac_series[model_id] = per_model_pv_ac_series[model_id].reindex(aligned_index).fillna(0.0)
-        per_model_pv_unclipped_series[model_id] = per_model_pv_unclipped_series[model_id].reindex(aligned_index).fillna(0.0)
+    aligned_index = next(iter(per_model_pv_columns["pv_total_kwh"].values())).index
+    for col_map in per_model_pv_columns.values():
+        for model_id in list(col_map.keys()):
+            col_map[model_id] = col_map[model_id].reindex(aligned_index).fillna(0.0)
 
-    if ensemble_method == "median":
-        ensemble_ac_p50 = pd.concat(per_model_pv_ac_series.values(), axis=1).median(axis=1)
-        ensemble_unclipped_p50 = pd.concat(per_model_pv_unclipped_series.values(), axis=1).median(axis=1)
-        weights_used = None
-    elif ensemble_method == "mean":
-        ensemble_ac_p50 = pd.concat(per_model_pv_ac_series.values(), axis=1).mean(axis=1)
-        ensemble_unclipped_p50 = pd.concat(per_model_pv_unclipped_series.values(), axis=1).mean(axis=1)
-        weights_used = None
-    else:
-        model_keys = list(per_model_pv_ac_series.keys())
-        ensemble_ac_p50, weights_used = _weighted_ensemble(per_model_pv_ac_series, model_keys)
-        ensemble_unclipped_p50, _ = _weighted_ensemble(per_model_pv_unclipped_series, model_keys)
+    def _ensemble_column(column_name: str) -> tuple[pd.Series, dict[str, float] | None]:
+        model_series = per_model_pv_columns[column_name]
+        if ensemble_method == "median":
+            return pd.concat(model_series.values(), axis=1).median(axis=1), None
+        if ensemble_method == "mean":
+            return pd.concat(model_series.values(), axis=1).mean(axis=1), None
+        model_keys = list(model_series.keys())
+        return _weighted_ensemble(model_series, model_keys)
 
-    if len(per_model_pv_ac_series) >= 3 and ensemble_method != "median":
-        matrix = pd.concat(per_model_pv_ac_series.values(), axis=1)
+    ensemble_ac_p50, weights_used = _ensemble_column("pv_total_kwh")
+    ensemble_unclipped_p50, _ = _ensemble_column("pv_total_unclipped_kwh")
+    ensemble_east_p50, _ = _ensemble_column("pv_east_kwh")
+    ensemble_south_p50, _ = _ensemble_column("pv_south_kwh")
+
+    if len(per_model_pv_columns["pv_total_kwh"]) >= 3 and ensemble_method != "median":
+        matrix = pd.concat(per_model_pv_columns["pv_total_kwh"].values(), axis=1)
         spread = (matrix.max(axis=1) - matrix.min(axis=1)).fillna(0.0)
         spread_median = float(spread.median()) if not spread.empty else 0.0
         extreme_mask = spread > max(0.5, 2.0 * spread_median)
         if int(extreme_mask.sum()) >= 3:
             median_ac = matrix.median(axis=1)
-            matrix_unclip = pd.concat(per_model_pv_unclipped_series.values(), axis=1)
+            matrix_unclip = pd.concat(per_model_pv_columns["pv_total_unclipped_kwh"].values(), axis=1)
             median_unclip = matrix_unclip.median(axis=1)
             ensemble_ac_p50.loc[extreme_mask] = median_ac.loc[extreme_mask]
             ensemble_unclipped_p50.loc[extreme_mask] = median_unclip.loc[extreme_mask]
 
     ensemble_unclipped_p50 = pd.Series(np.maximum(ensemble_unclipped_p50, ensemble_ac_p50), index=ensemble_ac_p50.index)
+    east_south_total = (ensemble_east_p50 + ensemble_south_p50).fillna(0.0)
+    rebalance = pd.Series(1.0, index=ensemble_ac_p50.index, dtype=float)
+    positive_split = east_south_total > 0
+    rebalance.loc[positive_split] = (ensemble_ac_p50.loc[positive_split] / east_south_total.loc[positive_split]).astype(float)
+    ensemble_east_p50 = (ensemble_east_p50 * rebalance).fillna(0.0).clip(lower=0.0)
+    ensemble_south_p50 = (ensemble_south_p50 * rebalance).fillna(0.0).clip(lower=0.0)
     ensemble_clipped_p50 = (ensemble_unclipped_p50 - ensemble_ac_p50).clip(lower=0.0)
 
     p10 = None
     p90 = None
     if pv_uncertainty:
-        matrix = pd.concat(per_model_pv_ac_series.values(), axis=1)
+        matrix = pd.concat(per_model_pv_columns["pv_total_kwh"].values(), axis=1)
         p10 = matrix.quantile(0.10, axis=1)
         p90 = matrix.quantile(0.90, axis=1)
 
@@ -405,12 +416,14 @@ def build_ensemble_forecast(
         pv_ensemble_p50=ensemble_ac_p50.astype(float),
         pv_ensemble_unclipped_p50=ensemble_unclipped_p50.astype(float),
         pv_ensemble_clipped_p50=ensemble_clipped_p50.astype(float),
+        pv_ensemble_east_p50=ensemble_east_p50.astype(float),
+        pv_ensemble_south_p50=ensemble_south_p50.astype(float),
         pv_ensemble_p10=p10.astype(float) if p10 is not None else None,
         pv_ensemble_p90=p90.astype(float) if p90 is not None else None,
         per_model_pv_totals_kwh=per_model_pv_totals,
         missing_vars_by_model=missing_vars_by_model,
         derived_irradiance_by_model=derived_irradiance_by_model,
         failed_models=failed_models,
-        selected_models=list(per_model_pv_ac_series.keys()),
+        selected_models=list(per_model_pv_columns["pv_total_kwh"].keys()),
         weights_used=weights_used,
     )

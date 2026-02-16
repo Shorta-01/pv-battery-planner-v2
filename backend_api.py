@@ -328,20 +328,18 @@ class BackendState:
 
         weather = ensemble.weather_primary
         pv = pd.DataFrame(index=ensemble.pv_ensemble_p50.index)
-        pv["pv_total_kwh"] = ensemble.pv_ensemble_p50
-        pv["pv_total_unclipped_kwh"] = ensemble.pv_ensemble_unclipped_p50
-        pv["pv_dc_available_kwh"] = ensemble.pv_ensemble_unclipped_p50
-        pv["pv_ac_limited_kwh"] = ensemble.pv_ensemble_p50
-        pv["pv_clipped_kwh"] = ensemble.pv_ensemble_clipped_p50
+        pv["pv_east_kwh"] = ensemble.pv_ensemble_east_p50.reindex(pv.index).fillna(0.0)
+        pv["pv_south_kwh"] = ensemble.pv_ensemble_south_p50.reindex(pv.index).fillna(0.0)
+        pv["pv_total_unclipped_kwh"] = ensemble.pv_ensemble_unclipped_p50.reindex(pv.index).fillna(0.0)
+        pv["pv_total_kwh"] = ensemble.pv_ensemble_p50.reindex(pv.index).fillna(0.0)
+        pv["pv_clipped_kwh"] = (pv["pv_total_unclipped_kwh"] - pv["pv_total_kwh"]).clip(lower=0.0)
+        pv["pv_dc_available_kwh"] = pv["pv_total_unclipped_kwh"]
+        pv["pv_ac_limited_kwh"] = pv["pv_total_kwh"]
 
-        ratio_e, ratio_s = 0.0, 1.0
-        if {"pv_east_kwh", "pv_south_kwh"}.issubset(set(pv.columns)):
-            total_e = float(pd.to_numeric(pv["pv_east_kwh"], errors="coerce").fillna(0.0).sum())
-            total_s = float(pd.to_numeric(pv["pv_south_kwh"], errors="coerce").fillna(0.0).sum())
-            split_total = total_e + total_s
-            if split_total > 0:
-                ratio_e = total_e / split_total
-                ratio_s = total_s / split_total
+        total_e = float(pd.to_numeric(pv["pv_east_kwh"], errors="coerce").fillna(0.0).sum())
+        total_s = float(pd.to_numeric(pv["pv_south_kwh"], errors="coerce").fillna(0.0).sum())
+        split_total = total_e + total_s
+        ratio_e, ratio_s = (total_e / split_total, total_s / split_total) if split_total > 0 else (0.0, 1.0)
 
         pv = core.ensure_pv_columns(pv, split_ratio=(ratio_e, ratio_s))
         pv = core.apply_daylight_clamp(pv, weather.sunrise, weather.sunset).sort_index()
