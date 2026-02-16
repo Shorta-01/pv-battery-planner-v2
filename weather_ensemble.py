@@ -192,8 +192,13 @@ def _decompose_from_ghi(df: pd.DataFrame, loc: core.Location, tz: str) -> pd.Dat
     disc = pvlib.irradiance.disc(ghi, solpos["apparent_zenith"], df.index)
     dni = pd.to_numeric(disc["dni"], errors="coerce").fillna(0.0).clip(lower=0.0)
     cos_zen = pd.to_numeric(solpos["apparent_zenith"], errors="coerce").apply(lambda z: max(0.0, math.cos(math.radians(z))) if pd.notna(z) else 0.0)
-    df["dni_wm2"] = dni
-    df["dhi_wm2"] = (ghi - (dni * cos_zen)).fillna(0.0).clip(lower=0.0)
+    dhi = (ghi - (dni * cos_zen)).fillna(0.0).clip(lower=0.0)
+
+    dni_existing = pd.to_numeric(df.get("dni_wm2"), errors="coerce") if "dni_wm2" in df.columns else pd.Series(np.nan, index=df.index)
+    dhi_existing = pd.to_numeric(df.get("dhi_wm2"), errors="coerce") if "dhi_wm2" in df.columns else pd.Series(np.nan, index=df.index)
+
+    df["dni_wm2"] = dni_existing.where(dni_existing.notna(), dni)
+    df["dhi_wm2"] = dhi_existing.where(dhi_existing.notna(), dhi)
     return df
 
 
@@ -323,13 +328,13 @@ def fetch_open_meteo_weather(
 
     dni = df["dni_wm2"] if "dni_wm2" in df.columns else _series("direct_normal_irradiance", float("nan"))
     dhi = df["dhi_wm2"] if "dhi_wm2" in df.columns else _series("diffuse_radiation", float("nan"))
-    derived_irradiance = False
-    if dni.isna().all() or dhi.isna().all():
+    df["dni_wm2"] = pd.to_numeric(dni, errors="coerce")
+    df["dhi_wm2"] = pd.to_numeric(dhi, errors="coerce")
+    derived_irradiance = bool(df[["dni_wm2", "dhi_wm2"]].isna().any(axis=None))
+    if derived_irradiance:
         df = _decompose_from_ghi(df, loc, tz)
-        derived_irradiance = True
-    else:
-        df["dni_wm2"] = pd.to_numeric(dni, errors="coerce").fillna(0.0).clip(lower=0.0)
-        df["dhi_wm2"] = pd.to_numeric(dhi, errors="coerce").fillna(0.0).clip(lower=0.0)
+    df["dni_wm2"] = pd.to_numeric(df["dni_wm2"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    df["dhi_wm2"] = pd.to_numeric(df["dhi_wm2"], errors="coerce").fillna(0.0).clip(lower=0.0)
 
     availability = pd.DataFrame(index=df.index)
     for col in ["ghi_wm2", "dni_wm2", "dhi_wm2"]:
