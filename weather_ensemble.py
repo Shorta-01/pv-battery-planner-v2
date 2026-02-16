@@ -19,6 +19,8 @@ DEFAULT_WEIGHTED_BELGIUM = {
     "knmi_harmonie_arome": 0.45,
     "dwd_icon_d2": 0.35,
     "ecmwf_ifs": 0.20,
+    "dwd_icon_eu": 0.10,
+    "meteofrance_seamless": 0.10,
 }
 
 WEATHER_MODELS: dict[str, dict[str, Any]] = {
@@ -62,6 +64,34 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
             "diffuse_native": True,
             "dni_native": True,
             "notes": "Direct/diffuse may be approximated on open-data feeds.",
+        },
+    },
+    "dwd_icon_eu": {
+        "label": "DWD ICON-EU",
+        "endpoint": "https://api.open-meteo.com/v1/forecast",
+        "params": {"models": "icon_eu"},
+        "badges": ["🧩"],
+        "recommended_for_be": True,
+        "capability": {
+            "ghi_native": True,
+            "direct_native": True,
+            "diffuse_native": True,
+            "dni_native": True,
+            "notes": "ICON EU via /v1/forecast. Radiation components should be available depending on Open-Meteo feed.",
+        },
+    },
+    "meteofrance_seamless": {
+        "label": "METEO-FRANCE SEAMLESS",
+        "endpoint": "https://api.open-meteo.com/v1/forecast",
+        "params": {"models": "meteofrance_seamless"},
+        "badges": ["🧩"],
+        "recommended_for_be": True,
+        "capability": {
+            "ghi_native": True,
+            "direct_native": False,
+            "diffuse_native": False,
+            "dni_native": False,
+            "notes": "Seamless provider blend; direct/diffuse/DNI may be derived depending on Open-Meteo feed.",
         },
     },
 }
