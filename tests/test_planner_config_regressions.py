@@ -4,22 +4,94 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import planner_core as core
 
 
-def test_apply_config_backfills_per_array_calibration_from_global() -> None:
+def test_apply_config_uses_global_and_per_array_calibration_product() -> None:
     cfg = copy.deepcopy(core.DEFAULT_CONFIG)
     cfg["pv"]["pv_calibration_factor"] = 1.07
-    cfg["pv"].pop("pv_calibration_factor_east", None)
-    cfg["pv"].pop("pv_calibration_factor_south", None)
+    cfg["pv"]["pv_calibration_factor_east"] = 0.95
+    cfg["pv"]["pv_calibration_factor_south"] = 1.10
 
     core.apply_config(cfg)
 
-    assert core.PV_CALIBRATION_FACTOR_EAST == 1.07
-    assert core.PV_CALIBRATION_FACTOR_SOUTH == 1.07
+    assert core.PV_CALIBRATION_FACTOR_EAST == 1.07 * 0.95
+    assert core.PV_CALIBRATION_FACTOR_SOUTH == 1.07 * 1.10
+
+
+def _stub_build_pv_forecast_from_calibration(df: pd.DataFrame, _loc: core.Location, tz: str | None = None) -> pd.DataFrame:
+    out = df.copy()
+    east_kwh = pd.Series([1.0 * core.PV_CALIBRATION_FACTOR_EAST] * len(out.index), index=out.index)
+    south_kwh = pd.Series([2.0 * core.PV_CALIBRATION_FACTOR_SOUTH] * len(out.index), index=out.index)
+    total_kwh = east_kwh + south_kwh
+    out["pv_east_kwh"] = east_kwh
+    out["pv_south_kwh"] = south_kwh
+    out["pv_total_unclipped_kwh"] = total_kwh
+    out["pv_total_kwh"] = total_kwh
+    out["pv_total_unclipped_kw"] = total_kwh
+    out["pv_total_kw"] = total_kwh
+    out["pv_dc_available_kwh"] = total_kwh
+    out["pv_ac_limited_kwh"] = total_kwh
+    out["pv_dc_available_kw"] = total_kwh
+    out["pv_ac_limited_kw"] = total_kwh
+    out["pv_clipped_kwh"] = 0.0
+    out.attrs["pv_method"] = "stub"
+    return out
+
+
+def _pv_stub_totals_from_config(cfg: dict) -> tuple[float, float, float]:
+    core.apply_config(cfg)
+    idx = pd.date_range(pd.Timestamp(dt.datetime(2026, 1, 10, 0, 0), tz="Europe/Brussels"), periods=24, freq="h")
+    df = pd.DataFrame(index=idx)
+    pv_df = _stub_build_pv_forecast_from_calibration(df, core.Location("stub", core.LATITUDE, core.LONGITUDE), tz="Europe/Brussels")
+    return (
+        float(pv_df["pv_east_kwh"].sum()),
+        float(pv_df["pv_south_kwh"].sum()),
+        float(pv_df["pv_total_kwh"].sum()),
+    )
+
+
+def test_global_only_calibration_affects_pv_columns() -> None:
+    cfg = copy.deepcopy(core.DEFAULT_CONFIG)
+    cfg["pv"]["pv_calibration_factor"] = 1.10
+    cfg["pv"]["pv_calibration_factor_east"] = 1.00
+    cfg["pv"]["pv_calibration_factor_south"] = 1.00
+
+    pv_east_kwh, pv_south_kwh, pv_total_kwh = _pv_stub_totals_from_config(cfg)
+
+    assert pv_east_kwh == pytest.approx(24.0 * 1.10)
+    assert pv_south_kwh == pytest.approx(48.0 * 1.10)
+    assert pv_total_kwh == pytest.approx(72.0 * 1.10)
+
+
+def test_per_array_only_calibration_affects_pv_columns() -> None:
+    cfg = copy.deepcopy(core.DEFAULT_CONFIG)
+    cfg["pv"]["pv_calibration_factor"] = 1.00
+    cfg["pv"]["pv_calibration_factor_east"] = 0.90
+    cfg["pv"]["pv_calibration_factor_south"] = 1.20
+
+    pv_east_kwh, pv_south_kwh, pv_total_kwh = _pv_stub_totals_from_config(cfg)
+
+    assert pv_east_kwh == pytest.approx(24.0 * 0.90)
+    assert pv_south_kwh == pytest.approx(48.0 * 1.20)
+    assert pv_total_kwh == pytest.approx((24.0 * 0.90) + (48.0 * 1.20))
+
+
+def test_combined_global_and_per_array_calibration_affects_pv_columns() -> None:
+    cfg = copy.deepcopy(core.DEFAULT_CONFIG)
+    cfg["pv"]["pv_calibration_factor"] = 1.10
+    cfg["pv"]["pv_calibration_factor_east"] = 0.90
+    cfg["pv"]["pv_calibration_factor_south"] = 1.20
+
+    pv_east_kwh, pv_south_kwh, pv_total_kwh = _pv_stub_totals_from_config(cfg)
+
+    assert pv_east_kwh == pytest.approx(24.0 * 1.10 * 0.90)
+    assert pv_south_kwh == pytest.approx(48.0 * 1.10 * 1.20)
+    assert pv_total_kwh == pytest.approx((24.0 * 1.10 * 0.90) + (48.0 * 1.10 * 1.20))
 
 
 def test_parse_offpeak_windows_supports_multi_window_roundtrip() -> None:
