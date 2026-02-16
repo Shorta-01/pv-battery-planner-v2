@@ -247,7 +247,8 @@ class BackendState:
         self._write_json(HISTORY_PATH, self.history)
 
     def _tzinfo(self) -> ZoneInfo:
-        tz_name = str(self.settings.get("timezone") or "Europe/Brussels")
+        loc_cfg = self.settings.get("config", {}).get("location", {}) if isinstance(self.settings.get("config"), dict) else {}
+        tz_name = str(loc_cfg.get("timezone") or self.settings.get("timezone") or "Europe/Brussels")
         try:
             return ZoneInfo(tz_name)
         except Exception:
@@ -262,11 +263,13 @@ class BackendState:
         _ = ZoneInfo(payload.timezone)
         dt.datetime.strptime(payload.nightly_run_time, "%H:%M")
         merged = self._apply_config(payload.config)
+        loc_cfg = merged.get("location", {}) if isinstance(merged, dict) else {}
+        canonical_tz = str(loc_cfg.get("timezone") or payload.timezone)
         self.settings.update(
             {
                 "config": merged,
                 "nightly_run_time": payload.nightly_run_time,
-                "timezone": payload.timezone,
+                "timezone": canonical_tz,
                 "max_ac_charge_power_kw_default": float(payload.max_ac_charge_power_kw_default),
             }
         )
