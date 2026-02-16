@@ -28,6 +28,7 @@ Daarnaast kun je de volledige dagbalans (PV, verbruik, batterij‑SOC, netimport
 - **Tariefmodel**
   - Daluren per weekdag configureerbaar in `config.json` of via UI
   - Piekuren = complement van daluren
+  - `tariff.optimization_mode`: `window_only` (standaard, prijzen enkel voor kostenrapportering) of `price_aware` (prijzen beïnvloeden cutoff/charge planning)
 - **Batterijplanning**
   - Berekent minimale SOC om dure uren te overbruggen
   - Houdt rekening met verwacht PV‑overschot overdag (headroom)
@@ -127,6 +128,7 @@ De basisconfiguratie staat in `config.json`. Belangrijke blokken:
 - **`battery`**: capaciteit, min/max SOC, laad/ontlaad‑kW, AC‑laadlimiet
 - **`load_profile`**: 24 waarden (relatief verbruiksprofiel per uur)
 - **`tariff.offpeak_windows_by_dow`**: daluren per weekdag
+- **`tariff.optimization_mode`**: `window_only` of `price_aware`
 
 Je kunt deze waarden:
 - aanpassen via de Streamlit UI (`Settings (saved)`), of

@@ -101,6 +101,7 @@
         ]
       ]
     ],
-    "peak_grid_price_eur_per_kwh": 0.3
+    "peak_grid_price_eur_per_kwh": 0.3,
+    "optimization_mode": "window_only"
   }
 }

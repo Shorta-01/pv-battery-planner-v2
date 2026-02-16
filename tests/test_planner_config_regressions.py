@@ -168,7 +168,7 @@ def _stub_build_pv_forecast(df: pd.DataFrame, _loc: core.Location, tz: str | Non
 def _pipeline_metrics(cfg: dict) -> dict[str, float]:
     result = core.run_forecast_pipeline(
         cfg=cfg,
-        target_date=dt.date(2026, 1, 10),
+        target_date=dt.date(2026, 1, 12),
         soc_at_22_percent=35.0,
         yesterday_kwh=12.0,
         buffer_percent=1.0,
@@ -208,3 +208,84 @@ def test_run_forecast_pipeline_isolation_across_back_to_back_configs(monkeypatch
     assert alt_b1 == baseline_b
     assert alt_a2 == baseline_a
     assert alt_b2 == baseline_b
+
+
+def _make_flat_pv_day(day: dt.date, tz: str = "Europe/Brussels") -> pd.DataFrame:
+    idx = pd.date_range(pd.Timestamp(dt.datetime.combine(day, dt.time(0, 0)), tz=tz), periods=24, freq="h")
+    return pd.DataFrame({"pv_total_kwh": [0.0] * len(idx)}, index=idx)
+
+
+def test_compute_soc_low_window_only_is_price_invariant() -> None:
+    day = dt.date(2026, 1, 12)  # Monday
+    pv = _make_flat_pv_day(day)
+
+    low_price_tariff = copy.deepcopy(core.DEFAULT_CONFIG["tariff"])
+    low_price_tariff["optimization_mode"] = "window_only"
+    low_price_tariff["peak_grid_price_eur_per_kwh"] = 0.30
+
+    high_price_tariff = copy.deepcopy(low_price_tariff)
+    high_price_tariff["peak_grid_price_eur_per_kwh"] = 1.20
+
+    soc_low_a = core.compute_soc_low_timing_aware(pv, total_consumption_kwh=12.0, for_date=day, tariff_cfg=low_price_tariff)
+    soc_low_b = core.compute_soc_low_timing_aware(pv, total_consumption_kwh=12.0, for_date=day, tariff_cfg=high_price_tariff)
+
+    assert soc_low_a == pytest.approx(soc_low_b)
+
+
+def test_compute_soc_low_price_aware_changes_with_prices() -> None:
+    day = dt.date(2026, 1, 12)  # Monday
+    pv = _make_flat_pv_day(day)
+
+    low_price_tariff = copy.deepcopy(core.DEFAULT_CONFIG["tariff"])
+    low_price_tariff["optimization_mode"] = "price_aware"
+    low_price_tariff["peak_grid_price_eur_per_kwh"] = 0.30
+
+    high_price_tariff = copy.deepcopy(low_price_tariff)
+    high_price_tariff["peak_grid_price_eur_per_kwh"] = 1.20
+
+    soc_low_a = core.compute_soc_low_timing_aware(pv, total_consumption_kwh=12.0, for_date=day, tariff_cfg=low_price_tariff)
+    soc_low_b = core.compute_soc_low_timing_aware(pv, total_consumption_kwh=12.0, for_date=day, tariff_cfg=high_price_tariff)
+
+    assert soc_low_b > soc_low_a
+
+
+def test_run_forecast_pipeline_price_response_modes(monkeypatch: "pytest.MonkeyPatch") -> None:
+    monkeypatch.setattr(core, "fetch_weather_for_date", lambda loc, target_date, tz=None: _build_stub_weather(target_date, tz or "Europe/Brussels"))
+    monkeypatch.setattr(core, "build_pv_forecast", _stub_build_pv_forecast)
+
+    base_cfg = copy.deepcopy(core.DEFAULT_CONFIG)
+
+    window_low = copy.deepcopy(base_cfg)
+    window_low["tariff"]["optimization_mode"] = "window_only"
+    window_low["tariff"]["peak_grid_price_eur_per_kwh"] = 0.30
+
+    window_high = copy.deepcopy(window_low)
+    window_high["tariff"]["peak_grid_price_eur_per_kwh"] = 1.20
+
+    aware_low = copy.deepcopy(base_cfg)
+    aware_low["tariff"]["optimization_mode"] = "price_aware"
+    aware_low["tariff"]["peak_grid_price_eur_per_kwh"] = 0.30
+
+    aware_high = copy.deepcopy(aware_low)
+    aware_high["tariff"]["peak_grid_price_eur_per_kwh"] = 1.20
+
+    def _run(cfg: dict) -> core.PlannerOutput:
+        return core.run_forecast_pipeline(
+            cfg=cfg,
+            target_date=dt.date(2026, 1, 12),
+            soc_at_22_percent=35.0,
+            yesterday_kwh=28.0,
+            buffer_percent=0.0,
+            user_max_ac_kw=4.0,
+        )
+
+    window_low_out = _run(window_low)
+    window_high_out = _run(window_high)
+    aware_low_out = _run(aware_low)
+    aware_high_out = _run(aware_high)
+
+    assert float(window_low_out.cutoff_soc) == pytest.approx(float(window_high_out.cutoff_soc))
+    assert float(window_low_out.charge_kw) == pytest.approx(float(window_high_out.charge_kw))
+
+    assert float(aware_high_out.cutoff_soc) > float(aware_low_out.cutoff_soc)
+    assert float(aware_high_out.charge_kw) >= float(aware_low_out.charge_kw)
