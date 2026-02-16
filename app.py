@@ -141,17 +141,15 @@ def close_lookup() -> None:
 
 
 def open_lookup(loc_cfg: dict) -> None:
-    loc_structured = loc_cfg.get("address_structured", {}) if isinstance(loc_cfg.get("address_structured"), dict) else {}
-    address_query = str(st.session_state.get("loc_address_query_display", loc_cfg.get("address_query", "")))
     pending_structured = {
-        "street": str(st.session_state.get("loc_street", loc_structured.get("street", ""))),
-        "house_number": str(st.session_state.get("loc_house_number", loc_structured.get("house_number", ""))),
-        "postal_code": str(st.session_state.get("loc_postal_code", loc_structured.get("postal_code", ""))),
-        "city": str(st.session_state.get("loc_city", loc_structured.get("city", ""))),
-        "country": str(st.session_state.get("loc_country", loc_structured.get("country", ""))),
+        "street": "",
+        "house_number": "",
+        "postal_code": "",
+        "city": "",
+        "country": "",
     }
     st.session_state["_pending_location_state"] = {
-        "address_query": address_query,
+        "address_query": str(st.session_state.get("loc_address_query_display", "")),
         "latitude": float(st.session_state.get("loc_latitude", loc_cfg.get("latitude", core.LATITUDE))),
         "longitude": float(st.session_state.get("loc_longitude", loc_cfg.get("longitude", core.LONGITUDE))),
         "timezone": str(st.session_state.get("loc_timezone", loc_cfg.get("timezone", core.TIMEZONE))),
@@ -1000,9 +998,23 @@ with left:
 
     with st.expander("Saved settings"):
         st.markdown("#### Location")
-        addr_col, btn_col = st.columns([3, 1], vertical_alignment="bottom")
+        addr_col, status_col, btn_col = st.columns([6, 1, 2], vertical_alignment="bottom")
         with addr_col:
             st.text_input("Address query", key="loc_address_query_display", disabled=True)
+        with status_col:
+            has_lookup_details = isinstance(st.session_state.get("loc_latitude"), (float, int)) and isinstance(
+                st.session_state.get("loc_longitude"), (float, int)
+            ) and bool(str(st.session_state.get("loc_timezone", "")).strip())
+            if has_lookup_details:
+                st.markdown(
+                    f"<div title=\"Latitude: {float(st.session_state['loc_latitude']):.5f} | "
+                    f"Longitude: {float(st.session_state['loc_longitude']):.5f} | "
+                    f"Timezone: {str(st.session_state['loc_timezone'])}\" "
+                    "style='font-size:1.4rem;line-height:2.4rem;text-align:center'>✅</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown("&nbsp;", unsafe_allow_html=True)
         with btn_col:
             if st.button("Lookup", type="primary", key="btn_open_lookup"):
                 open_lookup(loc_cfg)
