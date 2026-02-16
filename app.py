@@ -5,6 +5,7 @@ import inspect
 import json
 import os
 import time
+from io import StringIO
 from pathlib import Path
 
 import pandas as pd
@@ -423,7 +424,7 @@ def api_post(path: str, payload: dict) -> dict:
 
 
 def df_from_split(payload: dict) -> pd.DataFrame:
-    return pd.read_json(json.dumps(payload), orient="split")
+    return pd.read_json(StringIO(json.dumps(payload)), orient="split")
 
 
 def series_from_split(payload: dict) -> pd.Series:
@@ -583,9 +584,13 @@ else:
 
 
 def make_chart_pv_load(df: pd.DataFrame, soc: pd.Series, cutoff_soc: float) -> go.Figure:
-    working = df.copy()
-    if "pv_clipped_kwh" not in working.columns:
-        working["pv_clipped_kwh"] = (working["pv_total_unclipped_kwh"] - working["pv_total_kwh"]).clip(lower=0.0)
+    working = core.ensure_pv_columns(df.copy(), split_ratio=(0.0, 1.0))
+    if "load_kwh" not in working.columns:
+        working["load_kwh"] = 0.0
+    if "pv_surplus_kwh" not in working.columns:
+        working["pv_surplus_kwh"] = (working["pv_total_kwh"] - working["load_kwh"]).clip(lower=0.0)
+    if "pv_deficit_kwh" not in working.columns:
+        working["pv_deficit_kwh"] = (working["load_kwh"] - working["pv_total_kwh"]).clip(lower=0.0)
     cutoff_pct = float(cutoff_soc) * 100.0
 
     custom_data = working[[
