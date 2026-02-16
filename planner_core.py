@@ -1835,18 +1835,33 @@ def simulate_expensive_hours_detailed(
     hit_min = False
     import_with_high_soc_due_to_power_limit = False
 
+    def _get_float(frame: "pd.DataFrame", ts: pd.Timestamp, col: str, default: float = 0.0) -> float:
+        if col in frame.columns:
+            try:
+                value = frame.loc[ts, col]
+                return float(value) if pd.notna(value) else float(default)
+            except Exception:
+                return float(default)
+        return float(default)
+
     for ts in df.index:
         if not in_any_window(ts.time(), expensive_windows):
             continue
 
         step_h = float(dt_h.loc[ts])
-        pv_unclipped = float(df.loc[ts, "pv_dc_available_kwh"] if "pv_dc_available_kwh" in df.columns else df.loc[ts, "pv_total_unclipped_kwh"])
-        if "pv_ac_limited_kwh" in df.columns:
-            pv_ac_limited = float(df.loc[ts, "pv_ac_limited_kwh"])
-        elif "pv_total_kwh" in df.columns:
-            pv_ac_limited = float(df.loc[ts, "pv_total_kwh"])
-        else:
-            pv_ac_limited = pv_unclipped
+        pv_unclipped = _get_float(
+            df,
+            ts,
+            "pv_dc_available_kwh",
+            default=_get_float(
+                df,
+                ts,
+                "pv_total_unclipped_kwh",
+                default=_get_float(df, ts, "pv_ac_limited_kwh", default=_get_float(df, ts, "pv_total_kwh", default=0.0)),
+            ),
+        )
+        pv_ac_limited = _get_float(df, ts, "pv_ac_limited_kwh", default=_get_float(df, ts, "pv_total_kwh", default=0.0))
+        pv_unclipped = max(pv_unclipped, pv_ac_limited)
         load = float(loads.loc[ts])
 
         soc_start_pct = (energy / BATTERY_KWH * 100.0) if BATTERY_KWH > 0 else 0.0

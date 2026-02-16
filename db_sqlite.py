@@ -5,6 +5,7 @@ import hashlib
 import json
 import sqlite3
 import uuid
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -112,7 +113,7 @@ def _parse_df(payload: dict, key: str) -> pd.DataFrame:
     if not isinstance(raw, dict):
         return pd.DataFrame()
     try:
-        return pd.read_json(json.dumps(raw), orient="split")
+        return pd.read_json(StringIO(json.dumps(raw)), orient="split")
     except ValueError:
         return pd.DataFrame()
 

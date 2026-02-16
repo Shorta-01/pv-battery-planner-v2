@@ -325,6 +325,13 @@ class BackendState:
         weather = ensemble.weather_primary
         pv = pd.DataFrame(index=ensemble.pv_ensemble_p50.index)
         pv["pv_total_kwh"] = ensemble.pv_ensemble_p50
+
+        # Add required columns for detailed simulation and consistent PV accounting
+        pv["pv_total_unclipped_kwh"] = ensemble.pv_ensemble_unclipped_p50
+        pv["pv_dc_available_kwh"] = ensemble.pv_ensemble_unclipped_p50
+        pv["pv_ac_limited_kwh"] = ensemble.pv_ensemble_p50
+        pv["pv_clipped_kwh"] = ensemble.pv_ensemble_clipped_p50
+
         pv = core.apply_daylight_clamp(pv, weather.sunrise, weather.sunset).sort_index()
         pv = core.add_sun_percent(pv, weather.sunrise, weather.sunset)
         pv = core.add_load_and_surplus_columns(pv, yesterday_kwh)
