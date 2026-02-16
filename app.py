@@ -1622,6 +1622,23 @@ if run:
             grid_import = float(metrics.get("grid_import", 0.0))
             grid_export = float(metrics.get("grid_export", 0.0))
             weather_ensemble = result.get("weather_ensemble", {}) if isinstance(result.get("weather_ensemble"), dict) else {}
+            weather_primary_model_id = result.get("weather_primary_model_id")
+            weather_ensemble_table_payload = result.get("weather_ensemble_table")
+            weather_by_model_payload = result.get("weather_by_model")
+            ensemble_weather_df = (
+                df_from_split(weather_ensemble_table_payload)
+                if isinstance(weather_ensemble_table_payload, dict)
+                else None
+            )
+            per_model_weather_dfs = (
+                {
+                    model_id: df_from_split(payload)
+                    for model_id, payload in weather_by_model_payload.items()
+                    if isinstance(payload, dict)
+                }
+                if isinstance(weather_by_model_payload, dict)
+                else {}
+            )
 
         with right:
             top_left, top_right = st.columns([4, 3], gap="large")
@@ -1683,28 +1700,82 @@ if run:
                     f"PV forecast built from {len(selected_labels)} models: {', '.join(selected_labels)} "
                     f"(method: {weather_ensemble.get('ensemble_method', 'weighted')})"
                 )
+                st.write(
+                    "PV forecast is built from the selected models (ensemble). Weather tables below show: "
+                    "(a) Ensemble weather + min/max spread, (b) each model separately."
+                )
                 st.write(f"Address query: {st.session_state.get('loc_address_query_display', '')}")
                 st.write(f"Latitude/Longitude: {float(st.session_state.get('loc_latitude', core.LATITUDE)):.5f}, {float(st.session_state.get('loc_longitude', core.LONGITUDE)):.5f}")
                 st.write(f"Timezone: {st.session_state.get('loc_timezone', core.TIMEZONE)}")
                 st.write("Hourly columns: temperature_2m, cloud_cover, shortwave_radiation, direct_normal_irradiance, diffuse_radiation, wind_speed_10m")
-                weather_display = weather_df.copy()
-                weather_display.insert(0, "Hour", format_hour_from_index(weather_display.index, "%H:00").values)
-                weather_display = weather_display.head(24).reset_index(drop=True)
-                weather_column_config = build_column_config(
-                    weather_display,
-                    {
-                        "temperature_2m": st.column_config.NumberColumn(format="%.1f"),
-                        "wind_speed_10m": st.column_config.NumberColumn(format="%.1f"),
-                        "cloud_cover": st.column_config.NumberColumn(format="%.0f"),
-                        "ghi": st.column_config.NumberColumn(format="%.0f"),
-                        "dni": st.column_config.NumberColumn(format="%.0f"),
-                        "dhi": st.column_config.NumberColumn(format="%.0f"),
-                        "shortwave_radiation": st.column_config.NumberColumn(format="%.0f"),
-                        "direct_normal_irradiance": st.column_config.NumberColumn(format="%.0f"),
-                        "diffuse_radiation": st.column_config.NumberColumn(format="%.0f"),
-                    },
-                )
-                render_modern_table(weather_display, weather_column_config)
+
+                weather_column_candidates = {
+                    "temperature_2m": st.column_config.NumberColumn(format="%.1f"),
+                    "wind_speed_10m": st.column_config.NumberColumn(format="%.1f"),
+                    "cloud_cover": st.column_config.NumberColumn(format="%.0f"),
+                    "ghi": st.column_config.NumberColumn(format="%.0f"),
+                    "dni": st.column_config.NumberColumn(format="%.0f"),
+                    "dhi": st.column_config.NumberColumn(format="%.0f"),
+                    "shortwave_radiation": st.column_config.NumberColumn(format="%.0f"),
+                    "direct_normal_irradiance": st.column_config.NumberColumn(format="%.0f"),
+                    "diffuse_radiation": st.column_config.NumberColumn(format="%.0f"),
+                    "temperature_2m_min": st.column_config.NumberColumn(format="%.1f"),
+                    "temperature_2m_max": st.column_config.NumberColumn(format="%.1f"),
+                    "wind_speed_10m_min": st.column_config.NumberColumn(format="%.1f"),
+                    "wind_speed_10m_max": st.column_config.NumberColumn(format="%.1f"),
+                    "cloud_cover_min": st.column_config.NumberColumn(format="%.0f"),
+                    "cloud_cover_max": st.column_config.NumberColumn(format="%.0f"),
+                    "shortwave_radiation_min": st.column_config.NumberColumn(format="%.0f"),
+                    "shortwave_radiation_max": st.column_config.NumberColumn(format="%.0f"),
+                    "direct_normal_irradiance_min": st.column_config.NumberColumn(format="%.0f"),
+                    "direct_normal_irradiance_max": st.column_config.NumberColumn(format="%.0f"),
+                    "diffuse_radiation_min": st.column_config.NumberColumn(format="%.0f"),
+                    "diffuse_radiation_max": st.column_config.NumberColumn(format="%.0f"),
+                }
+
+                if isinstance(ensemble_weather_df, pd.DataFrame) and not ensemble_weather_df.empty:
+                    st.markdown("**Ensemble weather (P50 + min/max)**")
+                    ensemble_weather_display = ensemble_weather_df.copy()
+                    ensemble_weather_display.insert(0, "Hour", format_hour_from_index(ensemble_weather_display.index, "%H:00").values)
+                    ensemble_weather_display = ensemble_weather_display.head(24).reset_index(drop=True)
+                    ensemble_weather_config = build_column_config(ensemble_weather_display, weather_column_candidates)
+                    render_modern_table(ensemble_weather_display, ensemble_weather_config)
+                elif isinstance(weather_df, pd.DataFrame) and not weather_df.empty:
+                    weather_display = weather_df.copy()
+                    weather_display.insert(0, "Hour", format_hour_from_index(weather_display.index, "%H:00").values)
+                    weather_display = weather_display.head(24).reset_index(drop=True)
+                    weather_column_config = build_column_config(weather_display, weather_column_candidates)
+                    render_modern_table(weather_display, weather_column_config)
+                else:
+                    st.info("No data available.")
+
+                if per_model_weather_dfs:
+                    with st.expander("Per-model weather (selected models)"):
+                        ordered_model_ids = [mid for mid in selected_ids if mid in per_model_weather_dfs]
+                        ordered_model_ids.extend(sorted(mid for mid in per_model_weather_dfs if mid not in ordered_model_ids))
+                        derived_by_model = weather_ensemble.get("derived_irradiance_by_model", {}) if isinstance(weather_ensemble.get("derived_irradiance_by_model"), dict) else {}
+                        tab_labels = []
+                        for model_id in ordered_model_ids:
+                            model_label = str(labels_by_id.get(model_id, model_id))
+                            extras = []
+                            if model_id == weather_primary_model_id:
+                                extras.append("primary")
+                            if bool(derived_by_model.get(model_id)):
+                                extras.append("derived irradiance")
+                            label = f"{model_label} ({', '.join(extras)})" if extras else model_label
+                            tab_labels.append(label)
+                        tabs = st.tabs(tab_labels)
+                        for tab, model_id in zip(tabs, ordered_model_ids):
+                            with tab:
+                                model_df = per_model_weather_dfs.get(model_id)
+                                if model_df is None or model_df.empty:
+                                    st.info("No data available.")
+                                    continue
+                                model_display = model_df.copy()
+                                model_display.insert(0, "Hour", format_hour_from_index(model_display.index, "%H:00").values)
+                                model_display = model_display.head(24).reset_index(drop=True)
+                                model_column_config = build_column_config(model_display, weather_column_candidates)
+                                render_modern_table(model_display, model_column_config)
 
             combined = pv.join(flows_df[["soc_end_pct", "grid_import_kwh", "grid_export_kwh", "curtailed_kwh"]], how="left")
             combined_display = combined.copy()

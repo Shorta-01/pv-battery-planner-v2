@@ -445,6 +445,12 @@ class BackendState:
             "run_id": run_id,
             "target_date": target_date.isoformat(),
             "weather": self._serialize_df(weather.df),
+            "weather_primary_model_id": ensemble.weather_primary_model_id,
+            "weather_ensemble_table": self._serialize_df(ensemble.weather_ensemble_table.df),
+            "weather_by_model": {
+                model_id: self._serialize_df(fr.df)
+                for model_id, fr in ensemble.weather_by_model.items()
+            },
             "pv": self._serialize_df(pv),
             "detail": self._serialize_df(detail_df),
             "flows": self._serialize_df(flows_df),
