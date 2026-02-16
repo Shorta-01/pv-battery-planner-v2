@@ -166,6 +166,7 @@ DEFAULT_CONFIG = {
         "peak_grid_price_eur_per_kwh": PEAK_GRID_PRICE_EUR_PER_KWH,
         "offpeak_grid_price_eur_per_kwh": OFFPEAK_GRID_PRICE_EUR_PER_KWH,
         "injection_grid_price_eur_per_kwh": INJECTION_GRID_PRICE_EUR_PER_KWH,
+        "optimization_mode": "window_only",
         "offpeak_windows_by_dow": [
             [["22:00", "07:00"]],  # Monday
             [["22:00", "07:00"]],  # Tuesday
@@ -363,11 +364,15 @@ def validate_config(cfg: dict) -> None:
 
     peak_price = float(tariff["peak_grid_price_eur_per_kwh"])
     offpeak_price = float(tariff["offpeak_grid_price_eur_per_kwh"])
-    injection_price = float(tariff["injection_grid_price_eur_per_kwh"])
+    float(tariff["injection_grid_price_eur_per_kwh"])
     if peak_price < 0.0:
         raise ValueError("tariff.peak_grid_price_eur_per_kwh must be >= 0.")
     if offpeak_price < 0.0:
         raise ValueError("tariff.offpeak_grid_price_eur_per_kwh must be >= 0.")
+
+    optimization_mode = str(tariff.get("optimization_mode", "window_only")).strip().lower()
+    if optimization_mode not in {"window_only", "price_aware"}:
+        raise ValueError("tariff.optimization_mode must be 'window_only' or 'price_aware'.")
 
     parse_offpeak_windows_by_dow(tariff["offpeak_windows_by_dow"])
 
@@ -1707,6 +1712,7 @@ def compute_soc_low_timing_aware(
     total_consumption_kwh: float,
     for_date: dt.date,
     buffer_soc: float = 0.0,
+    tariff_cfg: Optional[dict] = None,
 ) -> float:
     expensive_windows = get_expensive_windows(for_date)
     if not expensive_windows:
@@ -1716,12 +1722,25 @@ def compute_soc_low_timing_aware(
     cum = 0.0
     max_cum = 0.0
 
+    optimization_mode = str((tariff_cfg or {}).get("optimization_mode", "window_only")).strip().lower()
+    optimization_mode = optimization_mode if optimization_mode in {"window_only", "price_aware"} else "window_only"
+    offpeak_price = float((tariff_cfg or {}).get("offpeak_grid_price_eur_per_kwh", OFFPEAK_GRID_PRICE_EUR_PER_KWH))
+    break_even_price = offpeak_price / max(1e-9, BATTERY_AC_CHARGE_EFF * BATTERY_DISCHARGE_EFF)
+
     for ts in df.index:
         if not in_any_window(ts.time(), expensive_windows):
             continue
         pv = float(df.loc[ts, "pv_total_kwh"])
         load = float(loads.loc[ts])
         net = load - pv  # + tekort, - overschot
+        if optimization_mode == "price_aware":
+            hour_price = import_price_eur_per_kwh(ts, tariff_cfg or DEFAULT_CONFIG["tariff"])
+            if hour_price <= 0.0:
+                net = 0.0
+            elif hour_price <= break_even_price:
+                net = 0.0
+            else:
+                net *= (hour_price - break_even_price) / hour_price
         cum += net
         if cum > max_cum:
             max_cum = cum
@@ -1758,7 +1777,8 @@ def run_forecast_pipeline(
         pv = add_sun_percent(pv, weather.sunrise, weather.sunset)
         pv = add_load_and_surplus_columns(pv, yesterday_kwh)
 
-        soc_low = compute_soc_low_timing_aware(pv, yesterday_kwh, target_date)
+        tariff_cfg = effective_cfg.get("tariff", DEFAULT_CONFIG["tariff"])
+        soc_low = compute_soc_low_timing_aware(pv, yesterday_kwh, target_date, tariff_cfg=tariff_cfg)
         _, soc_high = compute_soc_high_headroom(pv, yesterday_kwh, target_date)
         cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high)
         cutoff_soc = cutoff_soc_raw + (float(buffer_percent) / 100.0)

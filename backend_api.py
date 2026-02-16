@@ -350,7 +350,8 @@ class BackendState:
         pv = core.add_sun_percent(pv, weather.sunrise, weather.sunset)
         pv = core.add_load_and_surplus_columns(pv, yesterday_kwh)
 
-        soc_low = core.compute_soc_low_timing_aware(pv, yesterday_kwh, target_date)
+        tariff_cfg = cfg.get("tariff", core.DEFAULT_CONFIG["tariff"])
+        soc_low = core.compute_soc_low_timing_aware(pv, yesterday_kwh, target_date, tariff_cfg=tariff_cfg)
         _, soc_high = core.compute_soc_high_headroom(pv, yesterday_kwh, target_date)
         cutoff_soc_raw, cutoff_reason = core.choose_cutoff_soc(target_date, soc_low, soc_high)
         cutoff_soc = min(max(cutoff_soc_raw + (float(buffer_percent) / 100.0), core.MIN_SOC), core.MAX_CUTOFF_SOC)
@@ -410,7 +411,7 @@ class BackendState:
             today_date=charge_date,
             tomorrow_date=target_date,
             total_consumption_kwh=yesterday_kwh,
-            tariff_cfg=cfg.get("tariff", core.DEFAULT_CONFIG["tariff"]),
+            tariff_cfg=tariff_cfg,
         )
         pv_quality.update(savings)
 
