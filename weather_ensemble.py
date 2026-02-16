@@ -108,6 +108,15 @@ IRRADIANCE_HOURLY_VARIABLES = [
     "diffuse_radiation",
 ]
 
+WEATHER_DISPLAY_VARS = [
+    "temperature_2m",
+    "wind_speed_10m",
+    "cloud_cover",
+    "shortwave_radiation",
+    "direct_normal_irradiance",
+    "diffuse_radiation",
+]
+
 FORECAST_FALLBACK_MODELS: dict[str, str] = {
     "knmi_harmonie_arome": "knmi_seamless",
     "dwd_icon_d2": "icon_d2",
@@ -136,6 +145,9 @@ class EnsembleWeatherResult:
     failed_model_reasons: dict[str, dict[str, Any]]
     selected_models: list[str]
     weights_used: dict[str, float] | None
+    weather_primary_model_id: str
+    weather_by_model: dict[str, core.ForecastResult]
+    weather_ensemble_table: core.ForecastResult
 
 
 class WeatherProviderError(RuntimeError):
@@ -467,6 +479,54 @@ def _weighted_ensemble(series_map: dict[str, pd.Series], selected_models: list[s
     return out.astype(float), normalized
 
 
+def build_weather_ensemble_table(
+    weather_ok: dict[str, core.ForecastResult],
+    index: pd.DatetimeIndex,
+    ensemble_method: str,
+    weights: dict[str, float] | None,
+) -> pd.DataFrame:
+    out = pd.DataFrame(index=index)
+    normalized_method = str(ensemble_method).lower().strip()
+    for var in WEATHER_DISPLAY_VARS:
+        series_by_model: dict[str, pd.Series] = {}
+        for model_id, forecast in weather_ok.items():
+            series = forecast.df.get(var)
+            if series is None:
+                continue
+            series_by_model[model_id] = pd.to_numeric(series, errors="coerce").reindex(index)
+
+        if not series_by_model:
+            out[var] = pd.Series(np.nan, index=index, dtype=float)
+            out[f"{var}_min"] = pd.Series(np.nan, index=index, dtype=float)
+            out[f"{var}_max"] = pd.Series(np.nan, index=index, dtype=float)
+            continue
+
+        matrix = pd.DataFrame(series_by_model, index=index)
+        out[f"{var}_min"] = matrix.min(axis=1, skipna=True)
+        out[f"{var}_max"] = matrix.max(axis=1, skipna=True)
+
+        if normalized_method == "median":
+            out[var] = matrix.median(axis=1, skipna=True)
+            continue
+        if normalized_method == "mean":
+            out[var] = matrix.mean(axis=1, skipna=True)
+            continue
+
+        weight_map = dict(weights or {})
+        weighted_columns = [model_id for model_id in matrix.columns if model_id in weight_map]
+        if not weighted_columns:
+            out[var] = matrix.mean(axis=1, skipna=True)
+            continue
+        weighted_matrix = matrix[weighted_columns]
+        weight_series = pd.Series({model_id: float(weight_map[model_id]) for model_id in weighted_columns}, dtype=float)
+        weighted_values = weighted_matrix.mul(weight_series, axis=1)
+        numerator = weighted_values.sum(axis=1, skipna=True)
+        denominator = weighted_matrix.notna().mul(weight_series, axis=1).sum(axis=1)
+        out[var] = numerator.div(denominator.where(denominator > 0))
+
+    return out.reindex(index)
+
+
 def build_ensemble_forecast(
     loc: core.Location,
     target_date: dt.date,
@@ -601,6 +661,19 @@ def build_ensemble_forecast(
         p90 = matrix.quantile(0.90, axis=1)
 
     primary_model = next(iter(weather_ok.keys()))
+    weather_index = weather_ok[primary_model].df.index
+    ensemble_weather_df = build_weather_ensemble_table(
+        weather_ok=weather_ok,
+        index=weather_index,
+        ensemble_method=ensemble_method,
+        weights=weights_used,
+    )
+    ensemble_weather = core.ForecastResult(
+        df=ensemble_weather_df,
+        sunrise=weather_ok[primary_model].sunrise,
+        sunset=weather_ok[primary_model].sunset,
+    )
+
     return EnsembleWeatherResult(
         weather_primary=weather_ok[primary_model],
         pv_ensemble_p50=ensemble_ac_p50.astype(float),
@@ -617,4 +690,7 @@ def build_ensemble_forecast(
         failed_model_reasons=failed_model_reasons,
         selected_models=list(per_model_pv_columns["pv_total_kwh"].keys()),
         weights_used=weights_used,
+        weather_primary_model_id=primary_model,
+        weather_by_model=weather_ok,
+        weather_ensemble_table=ensemble_weather,
     )
