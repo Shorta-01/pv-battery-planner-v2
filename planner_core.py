@@ -92,6 +92,9 @@ IRR_REL_ERR_POINT_THRESHOLD = 0.35
 IRR_BAD_POINT_FRACTION = 0.40
 IRR_MIN_GHI_WM2 = 5.0
 IRR_REPAIR_METHOD = "disc"  # or "erbs"
+CLOUD_ATTENUATION_EXPONENT = 3.4
+CLOUD_ATTENUATION_WEIGHT = 0.75
+CLOUD_TRANSMITTANCE_MIN = 0.08
 
 # Batterij
 BATTERY_KWH = 14.0
@@ -1368,23 +1371,55 @@ def estimate_pv_with_pvlib(
     solpos = pvloc.get_solarposition(times)
     dni_extra = pvlib.irradiance.get_extra_radiation(times)
 
+    def cloud_transmittance_from_cover(cloud_cover_pct: "pd.Series") -> "pd.Series":
+        cloud_fraction = (pd.to_numeric(cloud_cover_pct, errors="coerce") / 100.0).clip(lower=0.0, upper=1.0)
+        cloud_fraction = cloud_fraction.fillna(0.0)
+        trans = 1.0 - (CLOUD_ATTENUATION_WEIGHT * (cloud_fraction ** CLOUD_ATTENUATION_EXPONENT))
+        return trans.clip(lower=CLOUD_TRANSMITTANCE_MIN, upper=1.0)
+
+    def derive_irradiance_from_ghi(ghi_in: "pd.Series") -> Tuple["pd.Series", "pd.Series", "pd.Series"]:
+        ghi_s = pd.to_numeric(ghi_in, errors="coerce").reindex(df_local.index).fillna(0.0).clip(lower=0.0)
+        repair_method = IRR_REPAIR_METHOD.lower()
+        if repair_method == "erbs":
+            decomp = pvlib.irradiance.erbs(ghi_s, solpos["apparent_zenith"], times)
+            dni_s = pd.to_numeric(decomp["dni"], errors="coerce").fillna(0.0).clip(lower=0.0)
+            dhi_s = pd.to_numeric(decomp["dhi"], errors="coerce").fillna(0.0).clip(lower=0.0)
+        else:
+            decomp = pvlib.irradiance.disc(ghi_s, solpos["apparent_zenith"], times)
+            dni_s = pd.to_numeric(decomp["dni"], errors="coerce").fillna(0.0).clip(lower=0.0)
+            cos_zen_local = pd.to_numeric(solpos["apparent_zenith"], errors="coerce").apply(
+                lambda z: max(0.0, math.cos(math.radians(z))) if pd.notna(z) else 0.0
+            )
+            dhi_s = (ghi_s - (dni_s * cos_zen_local)).fillna(0.0).clip(lower=0.0)
+        return ghi_s.astype(float), dni_s.astype(float), dhi_s.astype(float)
+
     irradiance_cols = ["ghi_wm2", "dni_wm2", "dhi_wm2"]
     missing_irr_cols = [c for c in irradiance_cols if c not in df_local.columns]
     irr_nan_ratio = float(df_local[irradiance_cols].isna().mean().mean()) if not missing_irr_cols else 1.0
     use_clearsky = bool(missing_irr_cols) or irr_nan_ratio > 0.5
 
     if use_clearsky:
-        cs = pvloc.get_clearsky(times, model="ineichen")
-        if "cloud_cover_pct" in df_local.columns:
-            cloud_factor = (1.0 - (pd.to_numeric(df_local["cloud_cover_pct"], errors="coerce") / 100.0)).clip(lower=0.0, upper=1.0)
-            cloud_factor = cloud_factor.fillna(1.0)
-            ghi = cs["ghi"] * cloud_factor
-            dni = cs["dni"] * cloud_factor
-            dhi = cs["dhi"] * cloud_factor
+        provider_ghi = pd.to_numeric(df_local.get("ghi_wm2"), errors="coerce") if "ghi_wm2" in df_local.columns else pd.Series(np.nan, index=df_local.index)
+        ghi_coverage = float(provider_ghi.notna().mean()) if len(provider_ghi) else 0.0
+        if ghi_coverage >= 0.5:
+            ghi, dni, dhi = derive_irradiance_from_ghi(provider_ghi)
         else:
-            ghi = cs["ghi"]
-            dni = cs["dni"]
-            dhi = cs["dhi"]
+            cs = pvloc.get_clearsky(times, model="ineichen")
+            if "cloud_cover_pct" in df_local.columns:
+                trans = cloud_transmittance_from_cover(df_local["cloud_cover_pct"])
+                ghi_cloud = cs["ghi"] * trans
+                if "ghi_wm2" in df_local.columns:
+                    ghi_provider = pd.to_numeric(df_local["ghi_wm2"], errors="coerce")
+                    daylight = cs["ghi"] > 20.0
+                    valid_bias = daylight & ghi_provider.notna()
+                    if bool(valid_bias.any()):
+                        bias = (ghi_provider[valid_bias] / cs["ghi"][valid_bias].clip(lower=1.0)).median()
+                        if pd.notna(bias):
+                            bias = float(np.clip(bias, 0.6, 1.2))
+                            ghi_cloud = ghi_cloud * bias
+                ghi, dni, dhi = derive_irradiance_from_ghi(ghi_cloud)
+            else:
+                ghi, dni, dhi = derive_irradiance_from_ghi(cs["ghi"])
     else:
         ghi = pd.to_numeric(df_local["ghi_wm2"], errors="coerce")
         dni = pd.to_numeric(df_local["dni_wm2"], errors="coerce")

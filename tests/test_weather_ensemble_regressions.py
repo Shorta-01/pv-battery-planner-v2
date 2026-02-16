@@ -188,6 +188,35 @@ def test_fetch_open_meteo_sets_derived_flag_from_missing_dni_dhi(monkeypatch: py
     assert derived_missing is True
 
 
+
+
+def test_fetch_open_meteo_partially_missing_dni_dhi_backfills_gaps(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex) -> None:
+    payload_partial = {
+        "hourly": {
+            "time": [ts.isoformat() for ts in hourly_index],
+            "temperature_2m": [10.0] * 24,
+            "wind_speed_10m": [1.0] * 24,
+            "shortwave_radiation": [100.0] * 24,
+            "direct_normal_irradiance": [50.0 if i % 2 == 0 else None for i in range(24)],
+            "diffuse_radiation": [20.0 if i % 3 != 0 else None for i in range(24)],
+            "cloud_cover": [35.0] * 24,
+        },
+        "daily": {"sunrise": [hourly_index[7].isoformat()], "sunset": [hourly_index[17].isoformat()]},
+    }
+
+    we._WEATHER_CACHE.clear()
+    monkeypatch.setattr(we, "_request_open_meteo", lambda *args, **kwargs: payload_partial)
+    forecast, _, derived = we.fetch_open_meteo_weather(
+        model_id="ecmwf_ifs",
+        loc=core.Location(name="x", latitude=50.8, longitude=4.3),
+        tz="Europe/Brussels",
+        target_date=dt.date(2026, 1, 10),
+    )
+    assert derived is True
+    assert forecast.df["dni_wm2"].isna().sum() == 0
+    assert forecast.df["dhi_wm2"].isna().sum() == 0
+    assert forecast.df["dni_wm2"].iloc[2] == pytest.approx(50.0)
+
 def test_request_open_meteo_error_categorization(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeResponse:
         status_code = 429
