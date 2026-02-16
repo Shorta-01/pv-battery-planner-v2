@@ -25,6 +25,11 @@ from db_sqlite import (
     init_db,
     insert_forecast_run,
 )
+from weather_ensemble import (
+    DEFAULT_ACCURACY_MODELS,
+    build_ensemble_forecast,
+    weather_models_payload,
+)
 
 LOCAL_STATE_DIR = Path("local_state")
 SETTINGS_PATH = LOCAL_STATE_DIR / "settings.json"
@@ -87,6 +92,9 @@ class RunNowPayload(BaseModel):
     yesterday_consumption_kwh: float | None = Field(default=None, gt=0.0)
     buffer_percent: float = Field(default=0.0, ge=0.0, le=10.0)
     user_max_ac_kw: float | None = Field(default=None, ge=0.0)
+    weather_models: list[str] | None = None
+    ensemble_method: str = Field(default="weighted")
+    pv_uncertainty: bool = False
 
 
 class NightlyTickPayload(BaseModel):
@@ -278,31 +286,69 @@ class BackendState:
         frame = s.to_frame(name="value")
         return self._serialize_df(frame)
 
-    def _run(self, target_date: dt.date, soc_percent: float, yesterday_kwh: float, buffer_percent: float, user_max_ac_kw: float) -> dict:
+    def _run(
+        self,
+        target_date: dt.date,
+        soc_percent: float,
+        yesterday_kwh: float,
+        buffer_percent: float,
+        user_max_ac_kw: float,
+        weather_models: list[str] | None,
+        ensemble_method: str,
+        pv_uncertainty: bool,
+    ) -> dict:
         cfg = self.settings["config"]
-        run = core.run_forecast_pipeline(
-            cfg=cfg,
-            target_date=target_date,
-            soc_at_22_percent=soc_percent,
-            yesterday_kwh=yesterday_kwh,
-            buffer_percent=buffer_percent,
-            user_max_ac_kw=user_max_ac_kw,
-        )
-        loc = run.location
-        weather = run.weather
-        pv = run.hourly_df
-        detail_df = run.expensive_detail_df
-        flows_df = run.full_day_flows_df
-        soc_series = run.full_day_soc
-        cutoff_soc = run.cutoff_soc
-        cutoff_reason = run.cutoff_reason
-        charge_note = run.charge_note
-        charge_kw = run.charge_kw
-        grid_import = run.grid_import_expensive_kwh
-        grid_export = run.grid_export_expensive_kwh
-
-        loc_cfg = cfg["location"]
+        loc_cfg = cfg.get("location", {})
         tz = str(loc_cfg.get("timezone", "Europe/Brussels"))
+        loc = core.Location(
+            name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
+            latitude=float(loc_cfg["latitude"]),
+            longitude=float(loc_cfg["longitude"]),
+        )
+
+        selected_models = weather_models if weather_models is not None else DEFAULT_ACCURACY_MODELS
+        if not selected_models:
+            raise HTTPException(status_code=400, detail="Select at least one weather model.")
+
+        ensemble = build_ensemble_forecast(
+            loc=loc,
+            target_date=target_date,
+            tz=tz,
+            weather_models=selected_models,
+            ensemble_method=str(ensemble_method).lower().strip(),
+            pv_uncertainty=bool(pv_uncertainty),
+        )
+
+        weather = ensemble.weather_primary
+        pv = pd.DataFrame(index=ensemble.pv_ensemble_p50.index)
+        pv["pv_total_kwh"] = ensemble.pv_ensemble_p50
+        pv = core.apply_daylight_clamp(pv, weather.sunrise, weather.sunset).sort_index()
+        pv = core.add_sun_percent(pv, weather.sunrise, weather.sunset)
+        pv = core.add_load_and_surplus_columns(pv, yesterday_kwh)
+
+        soc_low = core.compute_soc_low_timing_aware(pv, yesterday_kwh, target_date)
+        _, soc_high = core.compute_soc_high_headroom(pv, yesterday_kwh, target_date)
+        cutoff_soc_raw, cutoff_reason = core.choose_cutoff_soc(target_date, soc_low, soc_high)
+        cutoff_soc = min(max(cutoff_soc_raw + (float(buffer_percent) / 100.0), core.MIN_SOC), core.MAX_CUTOFF_SOC)
+        charge_date = target_date - dt.timedelta(days=1)
+        _, charge_kw, charge_note, achieved_soc_start = core.plan_charge_power(
+            soc_percent / 100.0,
+            cutoff_soc,
+            charge_date,
+            user_cap_kw=user_max_ac_kw,
+        )
+        detail_df, grid_import, grid_export, _, _ = core.simulate_expensive_hours_detailed(
+            pv, yesterday_kwh, achieved_soc_start, target_date
+        )
+        soc_series, flows_df = core.simulate_full_day_soc(
+            pv,
+            yesterday_kwh,
+            soc_percent / 100.0,
+            charge_kw,
+            cutoff_soc,
+            target_date,
+        )
+
         charge_date = target_date - dt.timedelta(days=1)
 
         try:
@@ -399,9 +445,38 @@ class BackendState:
             "system_snapshot": {k: v for k, v in system_snapshot.items() if v is not None},
             "planner_version": "v2",
             "config_hash": config_hash,
-            "config_json": json.dumps(cfg, sort_keys=True),
+            "config_json": json.dumps(
+                {
+                    **cfg,
+                    "weather_models_selected": ensemble.selected_models,
+                    "ensemble_method": ensemble_method,
+                    "pv_uncertainty_enabled": bool(pv_uncertainty),
+                    "per_model_pv_totals_kwh": ensemble.per_model_pv_totals_kwh,
+                    "pv_totals_kwh": {
+                        "p10": float(ensemble.pv_ensemble_p10.sum()) if ensemble.pv_ensemble_p10 is not None else None,
+                        "p50": float(ensemble.pv_ensemble_p50.sum()),
+                        "p90": float(ensemble.pv_ensemble_p90.sum()) if ensemble.pv_ensemble_p90 is not None else None,
+                    },
+                },
+                sort_keys=True,
+            ),
             "config": cfg,
             "created_at_utc": run_at_utc,
+            "weather_ensemble": {
+                "selected_models": ensemble.selected_models,
+                "ensemble_method": str(ensemble_method).lower().strip(),
+                "weights_used": ensemble.weights_used,
+                "per_model_pv_totals_kwh": ensemble.per_model_pv_totals_kwh,
+                "pv_totals_kwh": {
+                    "p10": float(ensemble.pv_ensemble_p10.sum()) if ensemble.pv_ensemble_p10 is not None else None,
+                    "p50": float(ensemble.pv_ensemble_p50.sum()),
+                    "p90": float(ensemble.pv_ensemble_p90.sum()) if ensemble.pv_ensemble_p90 is not None else None,
+                }
+                if pv_uncertainty
+                else None,
+                "missing_vars_by_model": ensemble.missing_vars_by_model,
+                "failed_models": ensemble.failed_models,
+            },
         }
         insert_forecast_run(str(SQLITE_PATH), payload)
         self.latest_result = payload
@@ -428,7 +503,16 @@ class BackendState:
             cap = float(payload.user_max_ac_kw if payload.user_max_ac_kw is not None else self.settings["max_ac_charge_power_kw_default"])
             local_today = dt.datetime.now(self._tzinfo()).date()
             target_date = local_today + dt.timedelta(days=1)
-            result = self._run(target_date, soc, ykwh, float(payload.buffer_percent), cap)
+            result = self._run(
+                target_date,
+                soc,
+                ykwh,
+                float(payload.buffer_percent),
+                cap,
+                payload.weather_models,
+                payload.ensemble_method,
+                payload.pv_uncertainty,
+            )
             result["run_type"] = "manual"
             self.latest_result = result
             if self.history:
@@ -461,7 +545,16 @@ class BackendState:
                 if (local_now - updated_at) > dt.timedelta(hours=24):
                     warnings.append("stale inputs")
 
-            result = self._run(target_date, soc, ykwh, 0.0, float(self.settings["max_ac_charge_power_kw_default"]))
+            result = self._run(
+                target_date,
+                soc,
+                ykwh,
+                0.0,
+                float(self.settings["max_ac_charge_power_kw_default"]),
+                DEFAULT_ACCURACY_MODELS,
+                "weighted",
+                False,
+            )
             result["warnings"] = warnings
             result["run_type"] = "nightly"
             self.latest_result = result
@@ -526,6 +619,12 @@ def run_now(payload: RunNowPayload, authorization: str | None = Header(default=N
 def run_nightly(payload: NightlyTickPayload, authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
     return state.run_nightly_tick(payload)
+
+
+@app.get("/v1/weather/models")
+def weather_models(authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return {"items": weather_models_payload()}
 
 
 @app.get("/v1/results/latest")
