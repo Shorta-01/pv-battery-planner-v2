@@ -324,7 +324,7 @@ class BackendState:
             tz=tz,
             weather_models=selected_models,
             ensemble_method=str(ensemble_method).lower().strip(),
-            pv_uncertainty=bool(pv_uncertainty),
+            pv_uncertainty=True,
             accuracy_mode=True,
             fast_mode=bool(fast_mode),
         )
@@ -335,6 +335,10 @@ class BackendState:
         pv["pv_south_kwh"] = ensemble.pv_ensemble_south_p50.reindex(pv.index).fillna(0.0)
         pv["pv_total_unclipped_kwh"] = ensemble.pv_ensemble_unclipped_p50.reindex(pv.index).fillna(0.0)
         pv["pv_total_kwh"] = ensemble.pv_ensemble_p50.reindex(pv.index).fillna(0.0)
+        if ensemble.pv_ensemble_p10 is not None:
+            pv["pv_total_low_kwh"] = ensemble.pv_ensemble_p10.reindex(pv.index).fillna(0.0)
+        if ensemble.pv_ensemble_p90 is not None:
+            pv["pv_total_high_kwh"] = ensemble.pv_ensemble_p90.reindex(pv.index).fillna(0.0)
         pv["pv_clipped_kwh"] = (pv["pv_total_unclipped_kwh"] - pv["pv_total_kwh"]).clip(lower=0.0)
         pv["pv_dc_available_kwh"] = pv["pv_total_unclipped_kwh"]
         pv["pv_ac_limited_kwh"] = pv["pv_total_kwh"]
