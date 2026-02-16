@@ -27,7 +27,9 @@ INPUT_TOOLTIPS = {
     "performance_ratio": "This is overall PV system efficiency after real-world losses. It matters because lower efficiency means lower expected production. Example: 0.85 means around 85% of ideal output.",
     "inverter_eff": "This is inverter conversion efficiency from DC to AC. It matters when PV loss model is split; in combined mode it is ignored in PV calculations.",
     "pv_loss_model": "Choose how PV losses are applied: split = performance ratio × inverter efficiency, combined = performance ratio only.",
-    "pv_calibration_factor": "Optional tuning factor to match forecasts to reality without changing pvlib assumptions. 1.00 = unchanged.",
+    "pv_calibration_factor": "Optional global tuning factor to match forecasts to reality without changing pvlib assumptions. 1.00 = unchanged.",
+    "pv_calibration_factor_east": "Optional east-array tuning factor. Defaults to global PV calibration factor.",
+    "pv_calibration_factor_south": "Optional south-array tuning factor. Defaults to global PV calibration factor.",
     "max_ac_user_cap": "The app computes a recommended AC charge power from required energy and off-peak window hours. This field is your safety cap: final used value is min(recommended, your cap, inverter/battery limits).",
 }
 
@@ -989,34 +991,62 @@ with left:
 
             row4_col1, row4_col2 = st.columns(2)
             with row4_col1:
-                cfg_inverter_eff = st.number_input(
-                    "Inverter efficiency",
-                    min_value=0.50,
-                    max_value=1.00,
-                    value=float(cfg_pv["inverter_eff"]),
-                    step=0.01,
-                    help=INPUT_TOOLTIPS["inverter_eff"],
-                )
-            with row4_col2:
-                cfg_inverter_ac_kw_limit = st.number_input("Inverter AC limit (kW)", min_value=0.1, value=float(cfg_pv["inverter_ac_kw_limit"]), step=0.1)
-
-            row5_col1, row5_col2 = st.columns(2)
-            with row5_col1:
                 cfg_pv_loss_model = st.selectbox(
                     "PV loss model",
                     options=["split", "combined"],
                     index=["split", "combined"].index(str(cfg_pv.get("pv_loss_model", "split")).strip().lower() if str(cfg_pv.get("pv_loss_model", "split")).strip().lower() in {"split", "combined"} else "split"),
                     help=INPUT_TOOLTIPS["pv_loss_model"],
                 )
+            with row4_col2:
+                cfg_inverter_ac_kw_limit = st.number_input("Inverter AC limit (kW)", min_value=0.1, value=float(cfg_pv["inverter_ac_kw_limit"]), step=0.1)
+
+            row5_col1, row5_col2 = st.columns(2)
+            with row5_col1:
+                cfg_inverter_eff = st.number_input(
+                    "Inverter efficiency",
+                    min_value=0.50,
+                    max_value=1.00,
+                    value=float(cfg_pv["inverter_eff"]),
+                    step=0.01,
+                    disabled=(cfg_pv_loss_model == "combined"),
+                    help=INPUT_TOOLTIPS["inverter_eff"],
+                )
             with row5_col2:
+                if cfg_pv_loss_model == "combined":
+                    st.caption("Inverter efficiency is not used in combined mode.")
+                else:
+                    st.caption("In split mode, performance ratio × inverter efficiency is applied.")
+
+            row6_col1, row6_col2, row6_col3 = st.columns(3)
+            with row6_col1:
                 cfg_pv_calibration_factor = st.number_input(
-                    "PV calibration factor",
+                    "PV calibration factor (global)",
                     min_value=0.70,
                     max_value=1.30,
                     value=float(cfg_pv.get("pv_calibration_factor", 1.0)),
                     step=0.01,
                     format="%.2f",
                     help=INPUT_TOOLTIPS["pv_calibration_factor"],
+                )
+            with row6_col2:
+                cfg_pv_calibration_factor_east = st.number_input(
+                    "PV calibration factor east",
+                    min_value=0.70,
+                    max_value=1.30,
+                    value=float(cfg_pv.get("pv_calibration_factor_east", cfg_pv.get("pv_calibration_factor", 1.0))),
+                    step=0.01,
+                    format="%.2f",
+                    help=INPUT_TOOLTIPS["pv_calibration_factor_east"],
+                )
+            with row6_col3:
+                cfg_pv_calibration_factor_south = st.number_input(
+                    "PV calibration factor south",
+                    min_value=0.70,
+                    max_value=1.30,
+                    value=float(cfg_pv.get("pv_calibration_factor_south", cfg_pv.get("pv_calibration_factor", 1.0))),
+                    step=0.01,
+                    format="%.2f",
+                    help=INPUT_TOOLTIPS["pv_calibration_factor_south"],
                 )
 
             st.markdown("#### Battery")
@@ -1095,7 +1125,10 @@ with left:
                         "peak_grid_price_eur_per_kwh": float(cfg_peak_price_input),
                         "offpeak_grid_price_eur_per_kwh": float(cfg_offpeak_price_input),
                         "injection_grid_price_eur_per_kwh": float(cfg_injection_price_input),
-                        "offpeak_windows_by_dow": [[[from_value, to_value]] for from_value, to_value in tariff_inputs],
+                        "offpeak_windows_by_dow": [
+                            [[from_value, to_value], *[[w_start, w_end] for (w_start, w_end) in tariff_by_day.get(day_idx, [])[1:]]] if tariff_by_day.get(day_idx) else [[from_value, to_value]]
+                            for day_idx, (from_value, to_value) in enumerate(tariff_inputs)
+                        ],
                     },
                     "pv": {
                         "panel_wp": int(cfg_panel_wp),
@@ -1109,6 +1142,8 @@ with left:
                         "inverter_eff": float(cfg_inverter_eff),
                         "pv_loss_model": str(cfg_pv_loss_model),
                         "pv_calibration_factor": float(cfg_pv_calibration_factor),
+                        "pv_calibration_factor_east": float(cfg_pv_calibration_factor_east),
+                        "pv_calibration_factor_south": float(cfg_pv_calibration_factor_south),
                         "inverter_ac_kw_limit": float(cfg_inverter_ac_kw_limit),
                     },
                     "battery": {
@@ -1129,7 +1164,7 @@ with left:
                         {
                             "config": new_cfg,
                             "nightly_run_time": backend_settings.get("nightly_run_time", "22:00"),
-                            "timezone": backend_settings.get("timezone", "Europe/Brussels"),
+                            "timezone": str(new_cfg["location"].get("timezone", backend_settings.get("timezone", "Europe/Brussels"))),
                             "max_ac_charge_power_kw_default": backend_settings.get("max_ac_charge_power_kw_default", 5.0),
                         },
                     )
@@ -1147,7 +1182,7 @@ with left:
                     {
                         "config": core.DEFAULT_CONFIG,
                         "nightly_run_time": backend_settings.get("nightly_run_time", "22:00"),
-                        "timezone": backend_settings.get("timezone", "Europe/Brussels"),
+                        "timezone": str(core.DEFAULT_CONFIG["location"].get("timezone", backend_settings.get("timezone", "Europe/Brussels"))),
                         "max_ac_charge_power_kw_default": backend_settings.get("max_ac_charge_power_kw_default", 5.0),
                     },
                 )
@@ -1191,7 +1226,7 @@ with left:
                     {
                         "config": effective_cfg,
                         "nightly_run_time": nightly_run_time,
-                        "timezone": "Europe/Brussels",
+                        "timezone": str(effective_cfg.get("location", {}).get("timezone", backend_settings.get("timezone", "Europe/Brussels"))),
                         "max_ac_charge_power_kw_default": float(user_max_ac_kw),
                     },
                 )
@@ -1246,8 +1281,6 @@ with left:
                 if checked:
                     selected_models.append(model_id)
 
-        if fast_run and {"knmi_harmonie_arome", "dwd_icon_d2"}.issubset(set(model_options.keys())):
-            selected_models = ["knmi_harmonie_arome", "dwd_icon_d2"]
 
         st.caption("⭐ recommended for Belgium. 🟩 full irradiance fields. 🧩 derived/approximated components.")
         if not selected_models:
@@ -1280,6 +1313,7 @@ if run:
                     "weather_models": selected_models,
                     "ensemble_method": ensemble_method,
                     "pv_uncertainty": bool(show_uncertainty),
+                    "fast_mode": bool(fast_run),
                 },
             )
             result = run_response["result"]

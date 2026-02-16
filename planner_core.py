@@ -80,6 +80,8 @@ PERFORMANCE_RATIO = 0.82
 INVERTER_EFF = 0.97
 PV_LOSS_MODEL = "split"
 PV_CALIBRATION_FACTOR = 1.00
+PV_CALIBRATION_FACTOR_EAST = 1.00
+PV_CALIBRATION_FACTOR_SOUTH = 1.00
 PV_GAMMA_PDC = -0.003
 
 # Irradiance consistency controls
@@ -143,6 +145,8 @@ DEFAULT_CONFIG = {
         "inverter_eff": INVERTER_EFF,
         "pv_loss_model": PV_LOSS_MODEL,
         "pv_calibration_factor": PV_CALIBRATION_FACTOR,
+        "pv_calibration_factor_east": PV_CALIBRATION_FACTOR_EAST,
+        "pv_calibration_factor_south": PV_CALIBRATION_FACTOR_SOUTH,
         "inverter_ac_kw_limit": INVERTER_AC_KW_LIMIT,
     },
     "battery": {
@@ -303,6 +307,12 @@ def validate_config(cfg: dict) -> None:
     pv_calibration_factor = float(pv.get("pv_calibration_factor", 1.0))
     if not (0.7 <= pv_calibration_factor <= 1.3):
         raise ValueError("pv.pv_calibration_factor must be in [0.7, 1.3].")
+    pv_calibration_factor_east = float(pv.get("pv_calibration_factor_east", pv_calibration_factor))
+    pv_calibration_factor_south = float(pv.get("pv_calibration_factor_south", pv_calibration_factor))
+    if not (0.7 <= pv_calibration_factor_east <= 1.3):
+        raise ValueError("pv.pv_calibration_factor_east must be in [0.7, 1.3].")
+    if not (0.7 <= pv_calibration_factor_south <= 1.3):
+        raise ValueError("pv.pv_calibration_factor_south must be in [0.7, 1.3].")
 
     loss_combo = float(pv["performance_ratio"]) * float(pv["inverter_eff"])
     if loss_combo < 0.65 or loss_combo > 0.95:
@@ -367,7 +377,7 @@ def apply_config(cfg: dict) -> None:
     global USE_GEOCODING, ADDRESS_QUERY, LATITUDE, LONGITUDE, TIMEZONE
     global PANEL_WP, ARRAY_SOUTH_PANELS, ARRAY_EAST_PANELS
     global TILT_EAST_DEG, TILT_SOUTH_DEG, AZIMUTH_EAST_DEG, AZIMUTH_SOUTH_DEG
-    global PERFORMANCE_RATIO, INVERTER_EFF, PV_LOSS_MODEL, PV_CALIBRATION_FACTOR, INVERTER_AC_KW_LIMIT
+    global PERFORMANCE_RATIO, INVERTER_EFF, PV_LOSS_MODEL, PV_CALIBRATION_FACTOR, PV_CALIBRATION_FACTOR_EAST, PV_CALIBRATION_FACTOR_SOUTH, INVERTER_AC_KW_LIMIT
     global BATTERY_KWH, MIN_SOC_PERCENT, MAX_CUTOFF_SOC_PERCENT
     global BATTERY_MAX_CHARGE_KW, BATTERY_MAX_DISCHARGE_KW, MAX_AC_CHARGE_KW_HARD_LIMIT
     global LOAD_PROFILE, MIN_SOC, MAX_CUTOFF_SOC, EFFECTIVE_CFG, OFFPEAK_WINDOWS_BY_DOW
@@ -398,6 +408,8 @@ def apply_config(cfg: dict) -> None:
     INVERTER_EFF = float(pv["inverter_eff"])
     PV_LOSS_MODEL = str(pv.get("pv_loss_model", "split")).strip().lower()
     PV_CALIBRATION_FACTOR = float(pv.get("pv_calibration_factor", 1.0))
+    PV_CALIBRATION_FACTOR_EAST = float(pv.get("pv_calibration_factor_east", PV_CALIBRATION_FACTOR))
+    PV_CALIBRATION_FACTOR_SOUTH = float(pv.get("pv_calibration_factor_south", PV_CALIBRATION_FACTOR))
     INVERTER_AC_KW_LIMIT = float(pv["inverter_ac_kw_limit"])
 
     BATTERY_KWH = float(battery["battery_kwh"])
@@ -1441,8 +1453,8 @@ def estimate_pv_with_pvlib(
         TILT_SOUTH_DEG, AZIMUTH_SOUTH_DEG, dc_kwp(ARRAY_SOUTH_PANELS)
     )
 
-    east_ac_kwh_unclipped = (east_ac_kwh_unclipped * PV_CALIBRATION_FACTOR).fillna(0).clip(lower=0)
-    south_ac_kwh_unclipped = (south_ac_kwh_unclipped * PV_CALIBRATION_FACTOR).fillna(0).clip(lower=0)
+    east_ac_kwh_unclipped = (east_ac_kwh_unclipped * PV_CALIBRATION_FACTOR_EAST).fillna(0).clip(lower=0)
+    south_ac_kwh_unclipped = (south_ac_kwh_unclipped * PV_CALIBRATION_FACTOR_SOUTH).fillna(0).clip(lower=0)
     east_ac_kw_unclipped = (east_ac_kwh_unclipped / dt_h.replace(0.0, float("nan"))).fillna(0).clip(lower=0)
     south_ac_kw_unclipped = (south_ac_kwh_unclipped / dt_h.replace(0.0, float("nan"))).fillna(0).clip(lower=0)
     total_ac_kw_unclipped = (east_ac_kw_unclipped + south_ac_kw_unclipped).fillna(0).clip(lower=0)

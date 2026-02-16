@@ -9,6 +9,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 import planner_core as core
 
@@ -66,6 +68,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
 
 _WEATHER_CACHE: dict[tuple, tuple[float, core.ForecastResult, list[str], bool]] = {}
 _WEATHER_CACHE_TTL_S = 600
+_SESSION: requests.Session | None = None
 
 
 @dataclass
@@ -103,10 +106,40 @@ def weather_models_payload() -> list[dict[str, Any]]:
     return rows
 
 
-def _request_open_meteo(url: str, params: dict[str, Any]) -> dict[str, Any]:
-    response = requests.get(url, params=params, timeout=30)
-    response.raise_for_status()
-    data = response.json()
+def _request_open_meteo(url: str, params: dict[str, Any], model_id: str) -> dict[str, Any]:
+    global _SESSION
+    if _SESSION is None:
+        retry = Retry(
+            total=3,
+            connect=3,
+            read=3,
+            status=3,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods={"GET"},
+            backoff_factor=0.5,
+            respect_retry_after_header=True,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        session = requests.Session()
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        _SESSION = session
+    try:
+        response = _SESSION.get(url, params=params, timeout=(5, 30))
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        category = "rate_limited" if status == 429 else "provider_down" if status in {500, 502, 503, 504} else "http_error"
+        raise RuntimeError(f"Open-Meteo request failed ({category}) for {model_id} status={status}") from exc
+    except requests.Timeout as exc:
+        raise RuntimeError(f"Open-Meteo request timeout for {model_id}") from exc
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Open-Meteo network error for {model_id}: {exc}") from exc
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"Malformed JSON from Open-Meteo for {model_id}") from exc
     if not isinstance(data, dict):
         raise RuntimeError("Unexpected weather payload shape")
     return data
@@ -217,7 +250,7 @@ def fetch_open_meteo_weather(
             "direct_normal_irradiance",
         ])
 
-    data = _request_open_meteo(spec["endpoint"], params)
+    data = _request_open_meteo(spec["endpoint"], params, model_id=model_id)
 
     hourly = data.get("hourly") if isinstance(data.get("hourly"), dict) else {}
     times = pd.to_datetime(hourly.get("time", []), errors="coerce")
@@ -262,22 +295,35 @@ def fetch_open_meteo_weather(
         df["dni_wm2"] = pd.to_numeric(dni, errors="coerce").fillna(0.0).clip(lower=0.0)
         df["dhi_wm2"] = pd.to_numeric(dhi, errors="coerce").fillna(0.0).clip(lower=0.0)
 
-    if model_id == "ecmwf_ifs":
-        derived_irradiance = True
+    availability = pd.DataFrame(index=df.index)
+    for col in ["ghi_wm2", "dni_wm2", "dhi_wm2"]:
+        availability[col] = pd.to_numeric(df.get(col), errors="coerce").notna()
 
     df = core.normalize_hourly_forecast_index(
         df[["temp_air_c", "ghi_wm2", "dni_wm2", "dhi_wm2", "cloud_cover_pct", "wind_speed_ms"]],
         target_date,
         tz,
     )
+    availability = availability.reindex(df.index).fillna(False)
+    for col in ["ghi_wm2", "dni_wm2", "dhi_wm2"]:
+        df.loc[~availability[col], col] = np.nan
 
     daily = data.get("daily") if isinstance(data.get("daily"), dict) else {}
     sunrise = pd.to_datetime((daily.get("sunrise") or [None])[0], errors="coerce")
     sunset = pd.to_datetime((daily.get("sunset") or [None])[0], errors="coerce")
     if pd.isna(sunrise) or pd.isna(sunset):
-        day_start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(6, 0)), tz=tz)
-        sunrise = day_start
-        sunset = day_start + dt.timedelta(hours=12)
+        if core.PVLIB_AVAILABLE:
+            import pvlib  # type: ignore
+
+            pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz)
+            date_index = pd.DatetimeIndex([pd.Timestamp(dt.datetime.combine(target_date, dt.time(12, 0)), tz=tz)])
+            sun_times = pvloc.get_sun_rise_set_transit(date_index)
+            sunrise = pd.to_datetime(sun_times["sunrise"].iloc[0], errors="coerce")
+            sunset = pd.to_datetime(sun_times["sunset"].iloc[0], errors="coerce")
+        if pd.isna(sunrise) or pd.isna(sunset):
+            day_start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(6, 0)), tz=tz)
+            sunrise = day_start
+            sunset = day_start + dt.timedelta(hours=12)
     if sunrise.tzinfo is None:
         sunrise = sunrise.tz_localize(tz)
     else:
@@ -298,7 +344,11 @@ def _weighted_ensemble(series_map: dict[str, pd.Series], selected_models: list[s
         return pd.concat(series_map.values(), axis=1).mean(axis=1), None
     total = sum(weighted_subset.values())
     normalized = {m: w / total for m, w in weighted_subset.items()}
-    out = sum(series_map[m] * normalized[m] for m in normalized)
+    matrix = pd.DataFrame({m: series_map[m] for m in normalized})
+    weighted_values = matrix.mul(pd.Series(normalized), axis=1)
+    numerator = weighted_values.sum(axis=1, skipna=True)
+    denominator = matrix.notna().mul(pd.Series(normalized), axis=1).sum(axis=1)
+    out = numerator.div(denominator.where(denominator > 0))
     return out.astype(float), normalized
 
 
@@ -314,6 +364,11 @@ def build_ensemble_forecast(
 ) -> EnsembleWeatherResult:
     selected = weather_models[:] if weather_models else DEFAULT_ACCURACY_MODELS[:]
     selected = [m for m in selected if m in WEATHER_MODELS]
+    if fast_mode:
+        if weather_models:
+            selected = selected[:2]
+        else:
+            selected = [m for m in DEFAULT_ACCURACY_MODELS if m in WEATHER_MODELS][:2]
     if not selected:
         raise RuntimeError("Select at least one weather model.")
 
@@ -340,13 +395,16 @@ def build_ensemble_forecast(
                 accuracy_mode=accuracy_mode,
                 fast_mode=fast_mode,
             )
-            model_pv = core.ensure_pv_columns(core.build_pv_forecast(weather.df, loc, tz=tz))
-            pv_total = pd.to_numeric(model_pv["pv_total_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
-            pv_unclipped = pd.to_numeric(model_pv["pv_total_unclipped_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
+            model_pv = core.build_pv_forecast(weather.df, loc, tz=tz)
+            for req in ["pv_total_kwh", "pv_total_unclipped_kwh", "pv_east_kwh", "pv_south_kwh", "pv_clipped_kwh"]:
+                if req not in model_pv.columns:
+                    model_pv[req] = np.nan
+            pv_total = pd.to_numeric(model_pv["pv_total_kwh"], errors="coerce").clip(lower=0.0)
+            pv_unclipped = pd.to_numeric(model_pv["pv_total_unclipped_kwh"], errors="coerce").clip(lower=0.0)
             pv_unclipped = pd.Series(np.maximum(pv_unclipped, pv_total), index=pv_total.index)
-            pv_east = pd.to_numeric(model_pv["pv_east_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
-            pv_south = pd.to_numeric(model_pv["pv_south_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
-            pv_clipped = pd.to_numeric(model_pv["pv_clipped_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
+            pv_east = pd.to_numeric(model_pv["pv_east_kwh"], errors="coerce").clip(lower=0.0)
+            pv_south = pd.to_numeric(model_pv["pv_south_kwh"], errors="coerce").clip(lower=0.0)
+            pv_clipped = pd.to_numeric(model_pv["pv_clipped_kwh"], errors="coerce").clip(lower=0.0)
 
             per_model_pv_columns["pv_total_kwh"][model_id] = pv_total
             per_model_pv_columns["pv_total_unclipped_kwh"][model_id] = pv_unclipped
@@ -363,17 +421,15 @@ def build_ensemble_forecast(
     if not per_model_pv_columns["pv_total_kwh"]:
         raise RuntimeError("All weather model requests failed.")
 
-    aligned_index = next(iter(per_model_pv_columns["pv_total_kwh"].values())).index
-    for col_map in per_model_pv_columns.values():
-        for model_id in list(col_map.keys()):
-            col_map[model_id] = col_map[model_id].reindex(aligned_index).fillna(0.0)
+    canonical_index = next(iter(weather_ok.values())).df.index
 
     def _ensemble_column(column_name: str) -> tuple[pd.Series, dict[str, float] | None]:
         model_series = per_model_pv_columns[column_name]
+        matrix = pd.concat(model_series.values(), axis=1)
         if ensemble_method == "median":
-            return pd.concat(model_series.values(), axis=1).median(axis=1), None
+            return matrix.median(axis=1, skipna=True), None
         if ensemble_method == "mean":
-            return pd.concat(model_series.values(), axis=1).mean(axis=1), None
+            return matrix.mean(axis=1, skipna=True), None
         model_keys = list(model_series.keys())
         return _weighted_ensemble(model_series, model_keys)
 
@@ -393,6 +449,11 @@ def build_ensemble_forecast(
             median_unclip = matrix_unclip.median(axis=1)
             ensemble_ac_p50.loc[extreme_mask] = median_ac.loc[extreme_mask]
             ensemble_unclipped_p50.loc[extreme_mask] = median_unclip.loc[extreme_mask]
+
+    ensemble_ac_p50 = ensemble_ac_p50.reindex(canonical_index)
+    ensemble_unclipped_p50 = ensemble_unclipped_p50.reindex(canonical_index)
+    ensemble_east_p50 = ensemble_east_p50.reindex(canonical_index)
+    ensemble_south_p50 = ensemble_south_p50.reindex(canonical_index)
 
     ensemble_unclipped_p50 = pd.Series(np.maximum(ensemble_unclipped_p50, ensemble_ac_p50), index=ensemble_ac_p50.index)
     east_south_total = (ensemble_east_p50 + ensemble_south_p50).fillna(0.0)
