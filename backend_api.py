@@ -612,13 +612,35 @@ def put_last_inputs(payload: InputsPayload, authorization: str | None = Header(d
 @app.post("/v1/run/now")
 def run_now(payload: RunNowPayload, authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
-    return state.run_now(payload)
+    try:
+        return state.run_now(payload)
+    except core.ExternalServiceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": str(exc),
+                "service": exc.service,
+                "category": exc.category,
+                "hint": exc.hint,
+            },
+        ) from exc
 
 
 @app.post("/v1/run/nightly")
 def run_nightly(payload: NightlyTickPayload, authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
-    return state.run_nightly_tick(payload)
+    try:
+        return state.run_nightly_tick(payload)
+    except core.ExternalServiceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": str(exc),
+                "service": exc.service,
+                "category": exc.category,
+                "hint": exc.hint,
+            },
+        ) from exc
 
 
 @app.get("/v1/weather/models")
