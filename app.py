@@ -74,7 +74,8 @@ def apply_pending_location_state() -> None:
     st.session_state["loc_latitude"] = float(pending.get("latitude", core.LATITUDE))
     st.session_state["loc_longitude"] = float(pending.get("longitude", core.LONGITUDE))
     st.session_state["loc_timezone"] = str(pending.get("timezone", core.TIMEZONE))
-    st.session_state["loc_street"] = str(structured.get("street", ""))
+    fallback_query = str(pending.get("address_query", ""))
+    st.session_state["loc_street"] = str(structured.get("street", "")) or fallback_query
     st.session_state["loc_house_number"] = str(structured.get("house_number", ""))
     st.session_state["loc_postal_code"] = str(structured.get("postal_code", ""))
     st.session_state["loc_city"] = str(structured.get("city", ""))
@@ -102,7 +103,8 @@ def apply_location_lookup_result(cfg: dict) -> None:
     st.session_state["loc_timezone"] = str(res.get("timezone", core.TIMEZONE))
 
     structured = res.get("address_structured", {}) if isinstance(res.get("address_structured"), dict) else {}
-    st.session_state["loc_street"] = str(structured.get("street", ""))
+    fallback_query = str(res.get("address_query", ""))
+    st.session_state["loc_street"] = str(structured.get("street", "")) or fallback_query
     st.session_state["loc_house_number"] = str(structured.get("house_number", ""))
     st.session_state["loc_postal_code"] = str(structured.get("postal_code", ""))
     st.session_state["loc_city"] = str(structured.get("city", ""))
@@ -132,7 +134,6 @@ def submit_structured_lookup() -> None:
         f"Resolved {result['address_query']}: {result['latitude']:.5f}, {result['longitude']:.5f}"
     )
     st.session_state.pop("_geo_error", None)
-    st.rerun()
 
 
 def close_lookup() -> None:
