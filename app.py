@@ -65,37 +65,105 @@ API_TOKEN_FILE = LOCAL_STATE_DIR / "api_token.txt"
 st.session_state.setdefault("history_all_runs", False)
 st.session_state.setdefault("history_show_run_at", False)
 
-def lookup_geo_callback() -> None:
-    # Widget-bound keys (like loc_latitude) must be changed in a callback,
-    # not after the widgets have been created in the same run.
-    query = (st.session_state.get("loc_address_query") or "").strip()
-    if not query:
-        st.session_state["_geo_error"] = "Enter an address first."
-        st.session_state.pop("_geo_success", None)
-        return
-
-    try:
-        loc, tz = core.geocode_address_full(query)
-        st.session_state["loc_latitude"] = float(loc.latitude)
-        st.session_state["loc_longitude"] = float(loc.longitude)
-        if tz:
-            st.session_state["loc_timezone"] = str(tz)
-
-        st.session_state["_geo_success"] = f"Found {loc.name}: {loc.latitude:.5f}, {loc.longitude:.5f}"
-        st.session_state.pop("_geo_error", None)
-    except Exception as exc:
-        st.session_state["_geo_error"] = f"Could not find coordinates for '{query}'. {exc}"
-        st.session_state.pop("_geo_success", None)
-
-
 def apply_pending_location_state() -> None:
     pending = st.session_state.pop("_pending_location_state", None)
     if not isinstance(pending, dict):
         return
-    st.session_state["loc_address_query"] = str(pending.get("address_query", ""))
+    structured = pending.get("address_structured", {}) if isinstance(pending.get("address_structured"), dict) else {}
+    st.session_state["loc_address_query_display"] = str(pending.get("address_query", ""))
     st.session_state["loc_latitude"] = float(pending.get("latitude", core.LATITUDE))
     st.session_state["loc_longitude"] = float(pending.get("longitude", core.LONGITUDE))
     st.session_state["loc_timezone"] = str(pending.get("timezone", core.TIMEZONE))
+    st.session_state["loc_street"] = str(structured.get("street", ""))
+    st.session_state["loc_house_number"] = str(structured.get("house_number", ""))
+    st.session_state["loc_postal_code"] = str(structured.get("postal_code", ""))
+    st.session_state["loc_city"] = str(structured.get("city", ""))
+    st.session_state["loc_country"] = str(structured.get("country", ""))
+
+
+def apply_location_lookup_result(cfg: dict) -> None:
+    if not st.session_state.get("loc_apply_lookup"):
+        return
+    res = st.session_state.get("loc_lookup_result")
+    if not isinstance(res, dict):
+        st.session_state["loc_apply_lookup"] = False
+        return
+
+    cfg.setdefault("location", {})
+    cfg["location"]["address_query"] = str(res.get("address_query", ""))
+    cfg["location"]["latitude"] = float(res.get("latitude", core.LATITUDE))
+    cfg["location"]["longitude"] = float(res.get("longitude", core.LONGITUDE))
+    cfg["location"]["timezone"] = str(res.get("timezone", core.TIMEZONE))
+    cfg["location"]["address_structured"] = res.get("address_structured", {})
+
+    st.session_state["loc_address_query_display"] = str(res.get("address_query", ""))
+    st.session_state["loc_latitude"] = float(res.get("latitude", core.LATITUDE))
+    st.session_state["loc_longitude"] = float(res.get("longitude", core.LONGITUDE))
+    st.session_state["loc_timezone"] = str(res.get("timezone", core.TIMEZONE))
+
+    structured = res.get("address_structured", {}) if isinstance(res.get("address_structured"), dict) else {}
+    st.session_state["loc_street"] = str(structured.get("street", ""))
+    st.session_state["loc_house_number"] = str(structured.get("house_number", ""))
+    st.session_state["loc_postal_code"] = str(structured.get("postal_code", ""))
+    st.session_state["loc_city"] = str(structured.get("city", ""))
+    st.session_state["loc_country"] = str(structured.get("country", ""))
+
+    st.session_state["loc_apply_lookup"] = False
+
+
+def submit_structured_lookup() -> None:
+    try:
+        result = core.resolve_location_from_structured_address(
+            st.session_state.get("loc_street", ""),
+            st.session_state.get("loc_house_number", ""),
+            st.session_state.get("loc_postal_code", ""),
+            st.session_state.get("loc_city", ""),
+            st.session_state.get("loc_country", ""),
+        )
+    except Exception as exc:
+        st.session_state["_geo_error"] = str(exc)
+        st.session_state.pop("_geo_success", None)
+        return
+
+    st.session_state["loc_lookup_result"] = result
+    st.session_state["loc_apply_lookup"] = True
+    st.session_state["loc_lookup_open"] = False
+    st.session_state["_geo_success"] = (
+        f"Resolved {result['address_query']}: {result['latitude']:.5f}, {result['longitude']:.5f}"
+    )
+    st.session_state.pop("_geo_error", None)
+    st.rerun()
+
+
+def close_lookup() -> None:
+    st.session_state["loc_lookup_open"] = False
+
+
+def _render_lookup_form_contents() -> None:
+    st.text_input("Street", key="loc_street")
+    st.text_input("House Number", key="loc_house_number")
+    st.text_input("ZIP", key="loc_postal_code")
+    st.text_input("City", key="loc_city")
+    st.text_input("Country", key="loc_country")
+
+    cancel_col, ok_col = st.columns(2)
+    with cancel_col:
+        st.form_submit_button("Cancel", on_click=close_lookup)
+    with ok_col:
+        st.form_submit_button("OK", type="primary", on_click=submit_structured_lookup)
+
+
+if hasattr(st, "dialog"):
+    @st.dialog("Lookup location")
+    def lookup_location_dialog() -> None:
+        with st.form("lookup_location_form"):
+            _render_lookup_form_contents()
+else:
+    def lookup_location_dialog() -> None:
+        with st.container(border=True):
+            st.markdown("#### Lookup location")
+            with st.form("lookup_location_form_fallback"):
+                _render_lookup_form_contents()
 
 
 def format_hour_from_index(index: pd.Index, fmt: str) -> pd.Series:
@@ -841,14 +909,27 @@ with left:
     effective_cfg = backend_settings.get("config", core.DEFAULT_CONFIG)
     loc_cfg = effective_cfg["location"]
     apply_pending_location_state()
-    if "loc_address_query" not in st.session_state:
-        st.session_state["loc_address_query"] = str(loc_cfg["address_query"])
+    apply_location_lookup_result(effective_cfg)
+
+    loc_structured = loc_cfg.get("address_structured", {}) if isinstance(loc_cfg.get("address_structured"), dict) else {}
+    if "loc_address_query_display" not in st.session_state:
+        st.session_state["loc_address_query_display"] = str(loc_cfg.get("address_query", ""))
     if "loc_latitude" not in st.session_state:
-        st.session_state["loc_latitude"] = float(loc_cfg["latitude"])
+        st.session_state["loc_latitude"] = float(loc_cfg.get("latitude", core.LATITUDE))
     if "loc_longitude" not in st.session_state:
-        st.session_state["loc_longitude"] = float(loc_cfg["longitude"])
+        st.session_state["loc_longitude"] = float(loc_cfg.get("longitude", core.LONGITUDE))
     if "loc_timezone" not in st.session_state:
-        st.session_state["loc_timezone"] = str(loc_cfg["timezone"])
+        st.session_state["loc_timezone"] = str(loc_cfg.get("timezone", core.TIMEZONE))
+    if "loc_street" not in st.session_state:
+        st.session_state["loc_street"] = str(loc_structured.get("street", ""))
+    if "loc_house_number" not in st.session_state:
+        st.session_state["loc_house_number"] = str(loc_structured.get("house_number", ""))
+    if "loc_postal_code" not in st.session_state:
+        st.session_state["loc_postal_code"] = str(loc_structured.get("postal_code", ""))
+    if "loc_city" not in st.session_state:
+        st.session_state["loc_city"] = str(loc_structured.get("city", ""))
+    if "loc_country" not in st.session_state:
+        st.session_state["loc_country"] = str(loc_structured.get("country", ""))
     with st.expander("Inputs", expanded=True):
         soc_percent = st.number_input(
             "Battery SOC at 22:00 (%)",
@@ -867,13 +948,18 @@ with left:
         )
 
     with st.expander("Saved settings"):
+        st.markdown("#### Location")
+        addr_col, btn_col = st.columns([3, 1], vertical_alignment="bottom")
+        with addr_col:
+            st.text_input("Address query", key="loc_address_query_display", disabled=True)
+        with btn_col:
+            if st.button("Lookup", type="primary", key="btn_open_lookup"):
+                st.session_state["loc_lookup_open"] = True
+
+        if st.session_state.get("loc_lookup_open"):
+            lookup_location_dialog()
+
         with st.form("settings_form"):
-            st.markdown("#### Location")
-            addr_col, btn_col = st.columns([3, 1], vertical_alignment="bottom")
-            with addr_col:
-                cfg_address_query = st.text_input("Address query", key="loc_address_query")
-            with btn_col:
-                st.form_submit_button("Lookup", type="primary", on_click=lookup_geo_callback)
             loc_col1, loc_col2 = st.columns(2)
             with loc_col1:
                 cfg_latitude = st.number_input(
@@ -1162,7 +1248,14 @@ with left:
                 new_cfg = {
                     "location": {
                         "use_geocoding": False,
-                        "address_query": str(cfg_address_query),
+                        "address_query": str(st.session_state.get("loc_address_query_display", "")),
+                        "address_structured": {
+                            "street": str(st.session_state.get("loc_street", "")),
+                            "house_number": str(st.session_state.get("loc_house_number", "")),
+                            "postal_code": str(st.session_state.get("loc_postal_code", "")),
+                            "city": str(st.session_state.get("loc_city", "")),
+                            "country": str(st.session_state.get("loc_country", "")),
+                        },
                         "latitude": float(cfg_latitude),
                         "longitude": float(cfg_longitude),
                         "timezone": str(st.session_state["loc_timezone"]),
@@ -1446,7 +1539,7 @@ if run:
                     f"PV forecast built from {len(selected_labels)} models: {', '.join(selected_labels)} "
                     f"(method: {weather_ensemble.get('ensemble_method', 'weighted')})"
                 )
-                st.write(f"Address query: {st.session_state.get('loc_address_query', '')}")
+                st.write(f"Address query: {st.session_state.get('loc_address_query_display', '')}")
                 st.write(f"Latitude/Longitude: {float(st.session_state.get('loc_latitude', core.LATITUDE)):.5f}, {float(st.session_state.get('loc_longitude', core.LONGITUDE)):.5f}")
                 st.write(f"Timezone: {st.session_state.get('loc_timezone', core.TIMEZONE)}")
                 st.write("Hourly columns: temperature_2m, cloud_cover, shortwave_radiation, direct_normal_irradiance, diffuse_radiation, wind_speed_10m")

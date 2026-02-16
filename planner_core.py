@@ -141,6 +141,13 @@ DEFAULT_CONFIG = {
         "latitude": LATITUDE,
         "longitude": LONGITUDE,
         "timezone": TIMEZONE,
+        "address_structured": {
+            "street": "",
+            "house_number": "",
+            "postal_code": "",
+            "city": "",
+            "country": "",
+        },
     },
     "pv": {
         "panel_wp": PANEL_WP,
@@ -1151,6 +1158,56 @@ def geocode_address_full(query: str) -> tuple[Location, str | None]:
             hint="Retry; if persistent, report the issue.",
         ) from exc
     return loc, res.get("timezone")
+
+
+def compose_address(street: str, house_number: str, postal_code: str, city: str, country: str) -> str:
+    street_clean = " ".join(str(street or "").split())
+    house_number_clean = " ".join(str(house_number or "").split())
+    postal_code_clean = " ".join(str(postal_code or "").split())
+    city_clean = " ".join(str(city or "").split())
+    country_clean = " ".join(str(country or "").split())
+
+    line1 = " ".join(part for part in [street_clean, house_number_clean] if part).strip()
+    line2 = " ".join(part for part in [postal_code_clean, city_clean] if part).strip()
+
+    return ", ".join(part for part in [line1, line2, country_clean] if part)
+
+
+def resolve_location_from_structured_address(
+    street: str,
+    house_number: str,
+    postal_code: str,
+    city: str,
+    country: str,
+) -> dict:
+    address_query = compose_address(street, house_number, postal_code, city, country)
+    if not address_query:
+        raise RuntimeError("Please provide at least Street/City/Country before lookup.")
+
+    try:
+        loc, timezone = geocode_address_full(address_query)
+    except Exception as exc:
+        raise RuntimeError(f"Could not resolve '{address_query}'. {exc}") from exc
+
+    timezone_use = str(timezone or TIMEZONE)
+    try:
+        ZoneInfo(timezone_use)
+    except Exception:
+        timezone_use = TIMEZONE
+
+    return {
+        "address_query": address_query,
+        "latitude": float(loc.latitude),
+        "longitude": float(loc.longitude),
+        "timezone": timezone_use,
+        "address_structured": {
+            "street": " ".join(str(street or "").split()),
+            "house_number": " ".join(str(house_number or "").split()),
+            "postal_code": " ".join(str(postal_code or "").split()),
+            "city": " ".join(str(city or "").split()),
+            "country": " ".join(str(country or "").split()),
+        },
+    }
 
 
 def _build_geocode_query_candidates(query: str) -> list[str]:
