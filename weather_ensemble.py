@@ -24,8 +24,8 @@ DEFAULT_WEIGHTED_BELGIUM = {
 WEATHER_MODELS: dict[str, dict[str, Any]] = {
     "knmi_harmonie_arome": {
         "label": "KNMI HARMONIE-AROME",
-        "endpoint": "https://api.open-meteo.com/v1/knmi",
-        "params": {},
+        "endpoint": "https://api.open-meteo.com/v1/forecast",
+        "params": {"models": "knmi_harmonie_arome_netherlands"},
         "badges": ["⭐", "🧩"],
         "recommended_for_be": True,
         "capability": {
@@ -79,7 +79,7 @@ IRRADIANCE_HOURLY_VARIABLES = [
 ]
 
 FORECAST_FALLBACK_MODELS: dict[str, str] = {
-    "knmi_harmonie_arome": "knmi_harmonie_arome",
+    "knmi_harmonie_arome": "knmi_seamless",
     "dwd_icon_d2": "icon_d2",
     "ecmwf_ifs": "ifs",
 }
@@ -164,10 +164,21 @@ def _request_open_meteo(url: str, params: dict[str, Any], model_id: str) -> dict
     except requests.HTTPError as exc:
         status = exc.response.status_code if exc.response is not None else None
         category = "rate_limited" if status == 429 else "provider_down" if status in {500, 502, 503, 504} else "http_error"
+        provider_reason = ""
+        if exc.response is not None:
+            try:
+                error_payload = exc.response.json()
+            except ValueError:
+                error_payload = None
+            if isinstance(error_payload, dict) and error_payload.get("reason"):
+                provider_reason = str(error_payload.get("reason"))
+            else:
+                provider_reason = (exc.response.text or "").strip()[:200]
+        reason_suffix = f" reason={provider_reason}" if provider_reason else ""
         raise WeatherProviderError(
             category=category,
             status=status,
-            message=f"Open-Meteo request failed ({category}) for {model_id} status={status}",
+            message=f"Open-Meteo request failed ({category}) for {model_id} status={status}{reason_suffix}",
         ) from exc
     except requests.Timeout as exc:
         raise WeatherProviderError(
@@ -311,7 +322,13 @@ def fetch_open_meteo_weather(
         data = _request_open_meteo(spec["endpoint"], params, model_id=model_id)
     except WeatherProviderError as exc:
         fallback_model = FORECAST_FALLBACK_MODELS.get(model_id)
-        can_retry_with_forecast = exc.category == "http_error" and exc.status in {400, 404} and bool(fallback_model)
+        requested_model = str(params.get("models") or "").strip()
+        can_retry_with_forecast = (
+            exc.category == "http_error"
+            and exc.status in {400, 404}
+            and bool(fallback_model)
+            and fallback_model != requested_model
+        )
         if not can_retry_with_forecast:
             raise
 
