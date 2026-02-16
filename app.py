@@ -58,6 +58,8 @@ TABLE_TOOLTIPS = {
     "History log": "By default this table shows the latest run per date. Enable \"Show all runs\" to view every run.",
 }
 
+WEATHER_MODEL_AVAILABLE_ICON = "✅"
+
 LOCAL_STATE_DIR = Path("local_state")
 API_BASE_URL = os.getenv("PVBP_BACKEND_URL", "http://127.0.0.1:8787")
 API_TOKEN_FILE = LOCAL_STATE_DIR / "api_token.txt"
@@ -256,6 +258,11 @@ def inject_tooltip_css() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def weather_model_option_label(model: dict, model_id: str) -> str:
+    base_label = f"{model.get('label', model_id)} {' '.join(model.get('badges', []))}".strip()
+    return f"{base_label} {WEATHER_MODEL_AVAILABLE_ICON}".strip()
 
 
 def tooltip_heading(label: str, help_text: str) -> None:
@@ -1476,7 +1483,7 @@ with left:
             for model_id in default_model_ids:
                 model = model_options.get(model_id, {"label": model_id, "badges": []})
                 checked = st.checkbox(
-                    f"{model.get('label', model_id)} {' '.join(model.get('badges', []))}".strip(),
+                    weather_model_option_label(model, model_id),
                     value=True,
                     key=f"wm_accuracy_{model_id}",
                 )
@@ -1485,7 +1492,7 @@ with left:
         else:
             for model_id, model in model_options.items():
                 checked = st.checkbox(
-                    f"{model.get('label', model_id)} {' '.join(model.get('badges', []))}".strip(),
+                    weather_model_option_label(model, model_id),
                     value=model_id in default_model_ids,
                     key=f"wm_custom_{model_id}",
                 )
@@ -1493,7 +1500,9 @@ with left:
                     selected_models.append(model_id)
 
 
-        st.caption("⭐ recommended for Belgium. 🟩 full irradiance fields. 🧩 derived/approximated components.")
+        st.caption(
+            "✅ data available from provider. ⭐ recommended for Belgium. 🟩 full irradiance fields. 🧩 derived/approximated components."
+        )
         if not selected_models:
             st.error("Select at least one weather model.")
 
