@@ -813,6 +813,7 @@ def normalize_detail_df_for_ui(df: pd.DataFrame, effective_cfg: dict) -> pd.Data
 
 def make_chart_pv_load(df: pd.DataFrame, soc: pd.Series, cutoff_soc: float, effective_cfg: dict) -> go.Figure:
     working = normalize_detail_df_for_ui(df.copy(), effective_cfg)
+    has_range = ("pv_total_low_kwh" in working.columns) and ("pv_total_high_kwh" in working.columns)
     if "load_kwh" not in working.columns:
         working["load_kwh"] = 0.0
     if "pv_surplus_kwh" not in working.columns:
@@ -872,12 +873,35 @@ def make_chart_pv_load(df: pd.DataFrame, soc: pd.Series, cutoff_soc: float, effe
             x=working.index,
             y=working["pv_total_kwh"],
             mode="lines",
-            name="PV total",
+            name="PV total (Typical)",
             line=dict(width=3, color="#90be6d"),
             customdata=custom_data,
             hovertemplate=hover,
         )
     )
+    if has_range:
+        fig.add_trace(
+            go.Scatter(
+                x=working.index,
+                y=working["pv_total_low_kwh"],
+                mode="lines",
+                name="PV total (Low)",
+                visible="legendonly",
+                line=dict(width=2, dash="dot", color="#90be6d"),
+                hovertemplate="Hour: %{x|%H:%M}<br>PV total (Low): %{y:.2f} kWh<extra></extra>",
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=working.index,
+                y=working["pv_total_high_kwh"],
+                mode="lines",
+                name="PV total (High)",
+                visible="legendonly",
+                line=dict(width=2, dash="dot", color="#90be6d"),
+                hovertemplate="Hour: %{x|%H:%M}<br>PV total (High): %{y:.2f} kWh<extra></extra>",
+            )
+        )
     fig.add_trace(
         go.Scatter(
             x=working.index,
@@ -1501,8 +1525,7 @@ with left:
 
     with st.expander("Weather models", expanded=True):
         st.caption("Select which weather models to use. We combine them automatically using Belgium-tuned weighting.")
-        show_uncertainty = st.checkbox("Show PV forecast range (Low / Typical / High)", value=False)
-        st.caption("When enabled, the PV chart shows three curves: Low, Typical, and High. Use this on changeable cloud days to see the possible range.")
+        st.caption("Tip: Toggle PV Low/High lines using the chart legend.")
 
         model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
         selected_models: list[str] = []
@@ -1576,7 +1599,7 @@ if run:
                     "user_max_ac_kw": float(user_max_ac_kw),
                     "weather_models": selected_models,
                     "ensemble_method": ensemble_method,
-                    "pv_uncertainty": bool(show_uncertainty),
+                    "pv_uncertainty": True,
                 },
             )
             result = run_response["result"]
