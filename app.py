@@ -874,6 +874,10 @@ def make_chart_pv_load(df: pd.DataFrame, soc: pd.Series, cutoff_soc: float, effe
             y=working["pv_total_kwh"],
             mode="lines",
             name="PV total (Typical)",
+            visible=True,
+            legendgroup="pv_range",
+            legendgrouptitle_text="PV range",
+            legendrank=10,
             line=dict(width=3, color="#90be6d"),
             customdata=custom_data,
             hovertemplate=hover,
@@ -887,6 +891,8 @@ def make_chart_pv_load(df: pd.DataFrame, soc: pd.Series, cutoff_soc: float, effe
                 mode="lines",
                 name="PV total (Low)",
                 visible="legendonly",
+                legendgroup="pv_range",
+                legendrank=11,
                 line=dict(width=2, dash="dot", color="#90be6d"),
                 hovertemplate="Hour: %{x|%H:%M}<br>PV total (Low): %{y:.2f} kWh<extra></extra>",
             )
@@ -898,6 +904,8 @@ def make_chart_pv_load(df: pd.DataFrame, soc: pd.Series, cutoff_soc: float, effe
                 mode="lines",
                 name="PV total (High)",
                 visible="legendonly",
+                legendgroup="pv_range",
+                legendrank=12,
                 line=dict(width=2, dash="dot", color="#90be6d"),
                 hovertemplate="Hour: %{x|%H:%M}<br>PV total (High): %{y:.2f} kWh<extra></extra>",
             )
