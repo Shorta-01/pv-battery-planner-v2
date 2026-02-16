@@ -66,6 +66,12 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
     },
 }
 
+FORECAST_FALLBACK_MODELS: dict[str, str] = {
+    "knmi_harmonie_arome": "knmi_harmonie_arome",
+    "dwd_icon_d2": "icon_d2",
+    "ecmwf_ifs": "ifs",
+}
+
 _WEATHER_CACHE: dict[tuple, tuple[float, core.ForecastResult, list[str], bool]] = {}
 _WEATHER_CACHE_TTL_S = 600
 _SESSION: requests.Session | None = None
@@ -291,7 +297,17 @@ def fetch_open_meteo_weather(
             "direct_normal_irradiance",
         ])
 
-    data = _request_open_meteo(spec["endpoint"], params, model_id=model_id)
+    try:
+        data = _request_open_meteo(spec["endpoint"], params, model_id=model_id)
+    except WeatherProviderError as exc:
+        fallback_model = FORECAST_FALLBACK_MODELS.get(model_id)
+        can_retry_with_forecast = exc.category == "http_error" and exc.status == 404 and bool(fallback_model)
+        if not can_retry_with_forecast:
+            raise
+
+        fallback_params = dict(params)
+        fallback_params["models"] = fallback_model
+        data = _request_open_meteo("https://api.open-meteo.com/v1/forecast", fallback_params, model_id=model_id)
 
     hourly = data.get("hourly") if isinstance(data.get("hourly"), dict) else {}
     times = pd.to_datetime(hourly.get("time", []), errors="coerce")
