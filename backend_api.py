@@ -8,12 +8,14 @@ import os
 import secrets
 import threading
 import tempfile
+import traceback
 import uuid
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 import planner_core as core
@@ -52,6 +54,7 @@ PV_QUALITY_COLORS = {
 }
 
 FULL_RESULT_HEAVY_KEYS = {"weather", "pv", "detail", "flows", "soc"}
+DEBUG = os.getenv("DEBUG", "").strip() in ("1", "true", "True", "yes", "YES")
 
 
 def _to_history_summary(payload: dict) -> dict:
@@ -568,6 +571,33 @@ class BackendState:
 
 
 app = FastAPI(title="PV Battery Planner Backend")
+
+
+@app.exception_handler(core.ExternalServiceError)
+def external_service_error_handler(request, exc: core.ExternalServiceError):
+    return JSONResponse(
+        status_code=502,
+        content={
+            "error": "external_service_error",
+            "service": getattr(exc, "service", None),
+            "category": getattr(exc, "category", None),
+            "detail": str(exc),
+            "hint": getattr(exc, "hint", None),
+        },
+    )
+
+
+@app.exception_handler(Exception)
+def unhandled_exception_handler(request, exc: Exception):
+    payload = {
+        "error": "internal_server_error",
+        "detail": str(exc),
+    }
+    if DEBUG:
+        payload["traceback"] = traceback.format_exc()
+    return JSONResponse(status_code=500, content=payload)
+
+
 state = BackendState()
 
 
@@ -612,35 +642,13 @@ def put_last_inputs(payload: InputsPayload, authorization: str | None = Header(d
 @app.post("/v1/run/now")
 def run_now(payload: RunNowPayload, authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
-    try:
-        return state.run_now(payload)
-    except core.ExternalServiceError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": str(exc),
-                "service": exc.service,
-                "category": exc.category,
-                "hint": exc.hint,
-            },
-        ) from exc
+    return state.run_now(payload)
 
 
 @app.post("/v1/run/nightly")
 def run_nightly(payload: NightlyTickPayload, authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
-    try:
-        return state.run_nightly_tick(payload)
-    except core.ExternalServiceError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": str(exc),
-                "service": exc.service,
-                "category": exc.category,
-                "hint": exc.hint,
-            },
-        ) from exc
+    return state.run_nightly_tick(payload)
 
 
 @app.get("/v1/weather/models")
