@@ -142,6 +142,7 @@ def close_lookup() -> None:
 
 def open_lookup(loc_cfg: dict) -> None:
     loc_structured = loc_cfg.get("address_structured", {}) if isinstance(loc_cfg.get("address_structured"), dict) else {}
+    address_query = str(st.session_state.get("loc_address_query_display", loc_cfg.get("address_query", "")))
     pending_structured = {
         "street": str(st.session_state.get("loc_street", loc_structured.get("street", ""))),
         "house_number": str(st.session_state.get("loc_house_number", loc_structured.get("house_number", ""))),
@@ -149,7 +150,6 @@ def open_lookup(loc_cfg: dict) -> None:
         "city": str(st.session_state.get("loc_city", loc_structured.get("city", ""))),
         "country": str(st.session_state.get("loc_country", loc_structured.get("country", ""))),
     }
-    address_query = str(st.session_state.get("loc_address_query_display", loc_cfg.get("address_query", "")))
     st.session_state["_pending_location_state"] = {
         "address_query": address_query,
         "latitude": float(st.session_state.get("loc_latitude", loc_cfg.get("latitude", core.LATITUDE))),
@@ -972,7 +972,7 @@ with left:
     if "loc_timezone" not in st.session_state:
         st.session_state["loc_timezone"] = str(loc_cfg.get("timezone", core.TIMEZONE))
     if "loc_street" not in st.session_state:
-        st.session_state["loc_street"] = str(loc_structured.get("street", ""))
+        st.session_state["loc_street"] = str(loc_structured.get("street", "")) or str(loc_cfg.get("address_query", ""))
     if "loc_house_number" not in st.session_state:
         st.session_state["loc_house_number"] = str(loc_structured.get("house_number", ""))
     if "loc_postal_code" not in st.session_state:
@@ -1006,6 +1006,7 @@ with left:
         with btn_col:
             if st.button("Lookup", type="primary", key="btn_open_lookup"):
                 open_lookup(loc_cfg)
+                st.rerun()
 
         if st.session_state.get("loc_lookup_open"):
             lookup_location_dialog()
