@@ -24,8 +24,10 @@ import os
 import tempfile
 import warnings
 import datetime as dt
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+import threading
 from typing import List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
@@ -191,6 +193,7 @@ OFFPEAK_WINDOWS_BY_DOW: dict[int, list[tuple[str, str]]] = {
 }
 
 DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+_CONFIG_STATE_LOCK = threading.RLock()
 
 
 def deep_update(base: dict, override: dict) -> dict:
@@ -430,6 +433,25 @@ def apply_config(cfg: dict) -> None:
     EFFECTIVE_CFG = copy.deepcopy(cfg)
 
 
+def build_effective_config(user_cfg: dict) -> dict:
+    migrated_cfg = migrate_legacy_tilt_config(user_cfg)
+    merged_cfg = deep_update(copy.deepcopy(DEFAULT_CONFIG), migrated_cfg)
+    validate_config(merged_cfg)
+    return merged_cfg
+
+
+@contextmanager
+def applied_config(cfg: dict):
+    effective_cfg = build_effective_config(cfg)
+    with _CONFIG_STATE_LOCK:
+        previous_cfg = get_effective_config()
+        apply_config(effective_cfg)
+        try:
+            yield effective_cfg
+        finally:
+            apply_config(previous_cfg)
+
+
 def get_effective_config() -> dict:
     effective_cfg = copy.deepcopy(EFFECTIVE_CFG)
     pv_cfg = effective_cfg.get("pv")
@@ -523,16 +545,13 @@ def validate_flow_invariants(flows_df: "pd.DataFrame", context: str, *, tol: flo
 
 
 def set_user_config(user_cfg: dict) -> dict:
-    migrated_cfg = migrate_legacy_tilt_config(user_cfg)
-    merged_cfg = deep_update(copy.deepcopy(DEFAULT_CONFIG), migrated_cfg)
-    validate_config(merged_cfg)
+    merged_cfg = build_effective_config(user_cfg)
     apply_config(merged_cfg)
     return get_effective_config()
 
 
-USER_CFG = migrate_legacy_tilt_config(load_config_file(CONFIG_PATH))
-EFFECTIVE_CFG = deep_update(copy.deepcopy(DEFAULT_CONFIG), USER_CFG)
-validate_config(EFFECTIVE_CFG)
+USER_CFG = load_config_file(CONFIG_PATH)
+EFFECTIVE_CFG = build_effective_config(USER_CFG)
 apply_config(EFFECTIVE_CFG)
 
 # Zon-uur indicator (voor "Sun%" in output)
@@ -1720,73 +1739,73 @@ def run_forecast_pipeline(
     buffer_percent: float,
     user_max_ac_kw: float,
 ) -> PlannerOutput:
-    quick_sanity_checks()
+    with applied_config(cfg) as effective_cfg:
+        quick_sanity_checks()
 
-    loc_cfg = cfg.get("location", {})
-    tz = str(loc_cfg.get("timezone", TIMEZONE))
-    loc = Location(
-        name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
-        latitude=float(loc_cfg["latitude"]),
-        longitude=float(loc_cfg["longitude"]),
-    )
+        loc_cfg = effective_cfg.get("location", {})
+        tz = str(loc_cfg["timezone"])
+        loc = Location(
+            name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
+            latitude=float(loc_cfg["latitude"]),
+            longitude=float(loc_cfg["longitude"]),
+        )
 
-    weather = fetch_weather_for_date(loc, target_date, tz=tz)
-    pv = build_pv_forecast(weather.df, loc, tz=tz)
-    pv = apply_daylight_clamp(pv, weather.sunrise, weather.sunset).sort_index()
-    pv = add_sun_percent(pv, weather.sunrise, weather.sunset)
-    pv = add_load_and_surplus_columns(pv, yesterday_kwh)
+        weather = fetch_weather_for_date(loc, target_date, tz=tz)
+        pv = build_pv_forecast(weather.df, loc, tz=tz)
+        pv = apply_daylight_clamp(pv, weather.sunrise, weather.sunset).sort_index()
+        pv = add_sun_percent(pv, weather.sunrise, weather.sunset)
+        pv = add_load_and_surplus_columns(pv, yesterday_kwh)
 
-    soc_low = compute_soc_low_timing_aware(pv, yesterday_kwh, target_date)
-    _, soc_high = compute_soc_high_headroom(pv, yesterday_kwh, target_date)
-    cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high)
-    cutoff_soc = cutoff_soc_raw + (float(buffer_percent) / 100.0)
+        soc_low = compute_soc_low_timing_aware(pv, yesterday_kwh, target_date)
+        _, soc_high = compute_soc_high_headroom(pv, yesterday_kwh, target_date)
+        cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high)
+        cutoff_soc = cutoff_soc_raw + (float(buffer_percent) / 100.0)
 
-    old_cutoff_soc = cutoff_soc
-    cutoff_soc = min(max(cutoff_soc, MIN_SOC), MAX_CUTOFF_SOC)
-    cutoff_note = (
-        f"Cutoff capped to {MAX_CUTOFF_SOC_PERCENT:.1f}% (was {old_cutoff_soc*100:.1f}%)."
-        if abs(cutoff_soc - old_cutoff_soc) > 1e-9 else ""
-    )
+        old_cutoff_soc = cutoff_soc
+        cutoff_soc = min(max(cutoff_soc, MIN_SOC), MAX_CUTOFF_SOC)
+        cutoff_note = (
+            f"Cutoff capped to {MAX_CUTOFF_SOC_PERCENT:.1f}% (was {old_cutoff_soc*100:.1f}%)."
+            if abs(cutoff_soc - old_cutoff_soc) > 1e-9 else ""
+        )
 
-    charge_date = target_date - dt.timedelta(days=1)
-    _, charge_kw, charge_note, achieved_soc_start = plan_charge_power(
-        soc_at_22_percent / 100.0,
-        cutoff_soc,
-        charge_date,
-        user_cap_kw=user_max_ac_kw,
-    )
+        charge_date = target_date - dt.timedelta(days=1)
+        _, charge_kw, charge_note, achieved_soc_start = plan_charge_power(
+            soc_at_22_percent / 100.0,
+            cutoff_soc,
+            charge_date,
+            user_cap_kw=user_max_ac_kw,
+        )
 
-    detail_df, grid_import, grid_export, _, _ = simulate_expensive_hours_detailed(
-        pv, yesterday_kwh, achieved_soc_start, target_date
-    )
-    full_soc, full_flows = simulate_full_day_soc(
-        pv,
-        yesterday_kwh,
-        soc_at_22_percent / 100.0,
-        charge_kw,
-        cutoff_soc,
-        target_date,
-    )
+        detail_df, grid_import, grid_export, _, _ = simulate_expensive_hours_detailed(
+            pv, yesterday_kwh, achieved_soc_start, target_date
+        )
+        full_soc, full_flows = simulate_full_day_soc(
+            pv,
+            yesterday_kwh,
+            soc_at_22_percent / 100.0,
+            charge_kw,
+            cutoff_soc,
+            target_date,
+        )
 
-    return PlannerOutput(
-        location=loc,
-        tomorrow_date=target_date,
-        weather=weather,
-        hourly_df=pv,
-        expensive_detail_df=detail_df,
-        full_day_soc=full_soc,
-        full_day_flows_df=full_flows,
-        cutoff_soc=cutoff_soc,
-        charge_kw=charge_kw,
-        achieved_soc_start=achieved_soc_start,
-        grid_import_expensive_kwh=float(grid_import),
-        grid_export_expensive_kwh=float(grid_export),
-        curtailed_expensive_kwh=float(detail_df["curtailed_kwh"].sum()) if not detail_df.empty else 0.0,
-        cutoff_note=cutoff_note,
-        cutoff_reason=cutoff_reason,
-        charge_note=charge_note,
-    )
-
+        return PlannerOutput(
+            location=loc,
+            tomorrow_date=target_date,
+            weather=weather,
+            hourly_df=pv,
+            expensive_detail_df=detail_df,
+            full_day_soc=full_soc,
+            full_day_flows_df=full_flows,
+            cutoff_soc=cutoff_soc,
+            charge_kw=charge_kw,
+            achieved_soc_start=achieved_soc_start,
+            grid_import_expensive_kwh=float(grid_import),
+            grid_export_expensive_kwh=float(grid_export),
+            curtailed_expensive_kwh=float(detail_df["curtailed_kwh"].sum()) if not detail_df.empty else 0.0,
+            cutoff_note=cutoff_note,
+            cutoff_reason=cutoff_reason,
+            charge_note=charge_note,
+        )
 
 def compute_soc_high_headroom(df: "pd.DataFrame", total_consumption_kwh: float, for_date: dt.date) -> Tuple[float, float]:
     """
