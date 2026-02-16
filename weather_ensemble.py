@@ -66,6 +66,18 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
     },
 }
 
+BASE_HOURLY_VARIABLES = [
+    "temperature_2m",
+    "wind_speed_10m",
+    "shortwave_radiation",
+    "cloud_cover",
+]
+
+IRRADIANCE_HOURLY_VARIABLES = [
+    "direct_normal_irradiance",
+    "diffuse_radiation",
+]
+
 FORECAST_FALLBACK_MODELS: dict[str, str] = {
     "knmi_harmonie_arome": "knmi_harmonie_arome",
     "dwd_icon_d2": "icon_d2",
@@ -261,6 +273,13 @@ def fetch_open_meteo_weather(
         return cached[1], list(cached[2]), bool(cached[3])
 
     spec = WEATHER_MODELS[model_id]
+    capability = spec.get("capability", {}) if isinstance(spec, dict) else {}
+    hourly_variables = BASE_HOURLY_VARIABLES[:]
+    if bool(capability.get("dni_native")):
+        hourly_variables.append("direct_normal_irradiance")
+    if bool(capability.get("diffuse_native")):
+        hourly_variables.append("diffuse_radiation")
+
     params = {
         "latitude": loc.latitude,
         "longitude": loc.longitude,
@@ -270,15 +289,7 @@ def fetch_open_meteo_weather(
         "timeformat": "iso8601",
         "start_date": target_date.isoformat(),
         "end_date": target_date.isoformat(),
-        "hourly": ",".join([
-            "temperature_2m",
-            "wind_speed_10m",
-            "shortwave_radiation",
-            "direct_radiation",
-            "diffuse_radiation",
-            "direct_normal_irradiance",
-            "cloud_cover",
-        ]),
+        "hourly": ",".join(hourly_variables),
         "daily": "sunrise,sunset",
     }
     params.update(spec.get("params", {}))
@@ -292,7 +303,6 @@ def fetch_open_meteo_weather(
     if use_icon15:
         params["minutely_15"] = ",".join([
             "shortwave_radiation",
-            "direct_radiation",
             "diffuse_radiation",
             "direct_normal_irradiance",
         ])
@@ -306,6 +316,7 @@ def fetch_open_meteo_weather(
             raise
 
         fallback_params = dict(params)
+        fallback_params["hourly"] = ",".join(BASE_HOURLY_VARIABLES + IRRADIANCE_HOURLY_VARIABLES)
         fallback_params["models"] = fallback_model
         data = _request_open_meteo("https://api.open-meteo.com/v1/forecast", fallback_params, model_id=model_id)
 
