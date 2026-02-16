@@ -265,6 +265,23 @@ def weather_model_option_label(model: dict, model_id: str) -> str:
     return f"{base_label} {WEATHER_MODEL_AVAILABLE_ICON}".strip()
 
 
+def weather_model_option_help(model: dict) -> str:
+    badge_meanings = {
+        WEATHER_MODEL_AVAILABLE_ICON: "data available from provider",
+        "⭐": "recommended for Belgium",
+        "🟩": "full irradiance fields",
+        "🧩": "derived/approximated components",
+    }
+    badges = [badge for badge in model.get("badges", []) if badge in badge_meanings]
+    badges.insert(0, WEATHER_MODEL_AVAILABLE_ICON)
+    unique_badges = list(dict.fromkeys(badges))
+    badge_summary = ", ".join(f"{badge} {badge_meanings[badge]}" for badge in unique_badges)
+    notes = str(model.get("notes") or model.get("capability", {}).get("notes") or "")
+    if notes:
+        return f"{notes}\n\nLegend: {badge_summary}."
+    return f"Legend: {badge_summary}."
+
+
 def tooltip_heading(label: str, help_text: str) -> None:
     safe_help = help_text.replace('"', "&quot;")
     st.markdown(
@@ -1486,6 +1503,7 @@ with left:
                     weather_model_option_label(model, model_id),
                     value=True,
                     key=f"wm_accuracy_{model_id}",
+                    help=weather_model_option_help(model),
                 )
                 if checked:
                     selected_models.append(model_id)
@@ -1495,14 +1513,11 @@ with left:
                     weather_model_option_label(model, model_id),
                     value=model_id in default_model_ids,
                     key=f"wm_custom_{model_id}",
+                    help=weather_model_option_help(model),
                 )
                 if checked:
                     selected_models.append(model_id)
 
-
-        st.caption(
-            "✅ data available from provider. ⭐ recommended for Belgium. 🟩 full irradiance fields. 🧩 derived/approximated components."
-        )
         if not selected_models:
             st.error("Select at least one weather model.")
 
