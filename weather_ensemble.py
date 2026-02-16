@@ -301,7 +301,7 @@ def fetch_open_meteo_weather(
         data = _request_open_meteo(spec["endpoint"], params, model_id=model_id)
     except WeatherProviderError as exc:
         fallback_model = FORECAST_FALLBACK_MODELS.get(model_id)
-        can_retry_with_forecast = exc.category == "http_error" and exc.status == 404 and bool(fallback_model)
+        can_retry_with_forecast = exc.category == "http_error" and exc.status in {400, 404} and bool(fallback_model)
         if not can_retry_with_forecast:
             raise
 

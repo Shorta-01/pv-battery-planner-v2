@@ -262,6 +262,50 @@ def test_fetch_open_meteo_retries_404_with_forecast_endpoint(monkeypatch: pytest
     assert derived is False
     assert forecast.df["ghi_wm2"].iloc[0] == pytest.approx(100.0)
 
+
+def test_fetch_open_meteo_retries_400_with_forecast_endpoint(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex) -> None:
+    payload = {
+        "hourly": {
+            "time": [ts.isoformat() for ts in hourly_index],
+            "temperature_2m": [10.0] * 24,
+            "wind_speed_10m": [1.0] * 24,
+            "shortwave_radiation": [100.0] * 24,
+            "direct_normal_irradiance": [50.0] * 24,
+            "diffuse_radiation": [20.0] * 24,
+            "cloud_cover": [25.0] * 24,
+        },
+        "daily": {"sunrise": [hourly_index[7].isoformat()], "sunset": [hourly_index[17].isoformat()]},
+    }
+
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_request(url: str, params: dict[str, object], model_id: str):
+        calls.append((url, params.get("models") if isinstance(params, dict) else None))
+        if len(calls) == 1:
+            raise we.WeatherProviderError(
+                category="http_error",
+                status=400,
+                message=f"Open-Meteo request failed (http_error) for {model_id} status=400",
+            )
+        return payload
+
+    we._WEATHER_CACHE.clear()
+    monkeypatch.setattr(we, "_request_open_meteo", fake_request)
+
+    forecast, _, derived = we.fetch_open_meteo_weather(
+        model_id="knmi_harmonie_arome",
+        loc=core.Location(name="x", latitude=50.8, longitude=4.3),
+        tz="Europe/Brussels",
+        target_date=dt.date(2026, 1, 10),
+    )
+
+    assert len(calls) == 2
+    assert calls[0][0] == we.WEATHER_MODELS["knmi_harmonie_arome"]["endpoint"]
+    assert calls[1][0] == "https://api.open-meteo.com/v1/forecast"
+    assert calls[1][1] == "knmi_harmonie_arome"
+    assert derived is False
+    assert forecast.df["ghi_wm2"].iloc[0] == pytest.approx(100.0)
+
 def test_request_open_meteo_error_categorization(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeResponse:
         status_code = 429
