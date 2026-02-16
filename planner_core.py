@@ -310,8 +310,8 @@ def validate_config(cfg: dict) -> None:
     pv_calibration_factor = float(pv.get("pv_calibration_factor", 1.0))
     if not (0.7 <= pv_calibration_factor <= 1.3):
         raise ValueError("pv.pv_calibration_factor must be in [0.7, 1.3].")
-    pv_calibration_factor_east = float(pv.get("pv_calibration_factor_east", pv_calibration_factor))
-    pv_calibration_factor_south = float(pv.get("pv_calibration_factor_south", pv_calibration_factor))
+    pv_calibration_factor_east = float(pv.get("pv_calibration_factor_east", 1.0))
+    pv_calibration_factor_south = float(pv.get("pv_calibration_factor_south", 1.0))
     if not (0.7 <= pv_calibration_factor_east <= 1.3):
         raise ValueError("pv.pv_calibration_factor_east must be in [0.7, 1.3].")
     if not (0.7 <= pv_calibration_factor_south <= 1.3):
@@ -411,8 +411,10 @@ def apply_config(cfg: dict) -> None:
     INVERTER_EFF = float(pv["inverter_eff"])
     PV_LOSS_MODEL = str(pv.get("pv_loss_model", "split")).strip().lower()
     PV_CALIBRATION_FACTOR = float(pv.get("pv_calibration_factor", 1.0))
-    PV_CALIBRATION_FACTOR_EAST = float(pv.get("pv_calibration_factor_east", PV_CALIBRATION_FACTOR))
-    PV_CALIBRATION_FACTOR_SOUTH = float(pv.get("pv_calibration_factor_south", PV_CALIBRATION_FACTOR))
+    base_calibration_factor_east = float(pv.get("pv_calibration_factor_east", 1.0))
+    base_calibration_factor_south = float(pv.get("pv_calibration_factor_south", 1.0))
+    PV_CALIBRATION_FACTOR_EAST = PV_CALIBRATION_FACTOR * base_calibration_factor_east
+    PV_CALIBRATION_FACTOR_SOUTH = PV_CALIBRATION_FACTOR * base_calibration_factor_south
     INVERTER_AC_KW_LIMIT = float(pv["inverter_ac_kw_limit"])
 
     BATTERY_KWH = float(battery["battery_kwh"])

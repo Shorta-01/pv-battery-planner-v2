@@ -27,9 +27,9 @@ INPUT_TOOLTIPS = {
     "performance_ratio": "This is overall PV system efficiency after real-world losses. It matters because lower efficiency means lower expected production. Example: 0.85 means around 85% of ideal output.",
     "inverter_eff": "This is inverter conversion efficiency from DC to AC. It matters when PV loss model is split; in combined mode it is ignored in PV calculations.",
     "pv_loss_model": "Choose how PV losses are applied: split = performance ratio × inverter efficiency, combined = performance ratio only.",
-    "pv_calibration_factor": "Optional global tuning factor to match forecasts to reality without changing pvlib assumptions. 1.00 = unchanged.",
-    "pv_calibration_factor_east": "Optional east-array tuning factor. Defaults to global PV calibration factor.",
-    "pv_calibration_factor_south": "Optional south-array tuning factor. Defaults to global PV calibration factor.",
+    "pv_calibration_factor": "Global PV tuning factor applied to both arrays. Effective east = global × east, effective south = global × south. 1.00 = unchanged.",
+    "pv_calibration_factor_east": "East-array relative tuning factor multiplied by the global PV calibration factor. 1.00 keeps east at the global factor.",
+    "pv_calibration_factor_south": "South-array relative tuning factor multiplied by the global PV calibration factor. 1.00 keeps south at the global factor.",
     "max_ac_user_cap": "The app computes a recommended AC charge power from required energy and off-peak window hours. This field is your safety cap: final used value is min(recommended, your cap, inverter/battery limits).",
 }
 
@@ -1030,20 +1030,20 @@ with left:
                 )
             with row6_col2:
                 cfg_pv_calibration_factor_east = st.number_input(
-                    "PV calibration factor east",
+                    "PV calibration factor east (relative)",
                     min_value=0.70,
                     max_value=1.30,
-                    value=float(cfg_pv.get("pv_calibration_factor_east", cfg_pv.get("pv_calibration_factor", 1.0))),
+                    value=float(cfg_pv.get("pv_calibration_factor_east", 1.0)),
                     step=0.01,
                     format="%.2f",
                     help=INPUT_TOOLTIPS["pv_calibration_factor_east"],
                 )
             with row6_col3:
                 cfg_pv_calibration_factor_south = st.number_input(
-                    "PV calibration factor south",
+                    "PV calibration factor south (relative)",
                     min_value=0.70,
                     max_value=1.30,
-                    value=float(cfg_pv.get("pv_calibration_factor_south", cfg_pv.get("pv_calibration_factor", 1.0))),
+                    value=float(cfg_pv.get("pv_calibration_factor_south", 1.0)),
                     step=0.01,
                     format="%.2f",
                     help=INPUT_TOOLTIPS["pv_calibration_factor_south"],
