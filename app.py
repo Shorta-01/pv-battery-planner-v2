@@ -105,6 +105,7 @@ API_TOKEN_FILE = LOCAL_STATE_DIR / "api_token.txt"
 
 st.session_state.setdefault("history_all_runs", False)
 st.session_state.setdefault("history_show_run_at", False)
+st.session_state.setdefault("history_debug_columns", False)
 
 def apply_pending_location_state() -> None:
     pending = st.session_state.pop("_pending_location_state", None)
@@ -764,6 +765,9 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
         "Load",
         "Charge",
         "Warnings",
+        "Duration (ms)",
+        "Models OK/Failed",
+        "Primary model",
         "warnings_count",
         "run_type",
         "models_raw",
@@ -814,6 +818,9 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
             "Load": round(float(metrics.get("cons_forecast_kwh", 0.0)), 2),
             "Charge": round(float(metrics.get("charge_kw", 0.0)), 2),
             "Warnings": warnings_text,
+            "Duration (ms)": item.get("run_duration_ms"),
+            "Models OK/Failed": f"{int(item.get('models_ok_count') or 0)}/{int(item.get('models_failed_count') or 0)}",
+            "Primary model": str(item.get("primary_model_id") or "—"),
             "warnings_count": warnings_count,
             "run_type": str(item.get("run_type") or "manual"),
             "models_raw": models_text,
@@ -1456,7 +1463,11 @@ def _render_history_log_block() -> None:
             filtered = prepared
 
         with c3:
-            st.caption("")
+            st.toggle(
+                "Debug columns",
+                key="history_debug_columns",
+                help="Show extra debugging details like run duration and model health.",
+            )
 
         if filtered.empty:
             st.info("No history records yet. Run a forecast to create the first record.")
@@ -1469,6 +1480,8 @@ def _render_history_log_block() -> None:
                     display_df = display_df.drop(columns=["Run at"])
 
             drop_cols = ["run_id", "Status", "PV p10", "PV p90", "warnings_count", "run_type", "models_raw", "warnings_raw", "models_summary_raw"]
+            if not st.session_state.get("history_debug_columns", False):
+                drop_cols.extend(["Duration (ms)", "Models OK/Failed", "Primary model"])
             display_df = display_df.drop(columns=[c for c in drop_cols if c in display_df.columns])
             history_column_config = build_column_config(
                 display_df,
