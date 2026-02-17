@@ -475,3 +475,68 @@ def test_weather_provider_error_to_reason_includes_provider_reason() -> None:
         "message": "Open-Meteo request failed",
         "provider_reason": "unknown model",
     }
+
+
+def test_fetch_open_meteo_logs_structured_success(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, hourly_index: pd.DatetimeIndex) -> None:
+    payload = {
+        "hourly": {
+            "time": [ts.isoformat() for ts in hourly_index],
+            "temperature_2m": [10.0] * 24,
+            "wind_speed_10m": [1.0] * 24,
+            "shortwave_radiation": [100.0] * 24,
+            "direct_normal_irradiance": [50.0] * 24,
+            "diffuse_radiation": [20.0] * 24,
+            "cloud_cover": [25.0] * 24,
+        },
+        "daily": {"sunrise": [hourly_index[7].isoformat()], "sunset": [hourly_index[17].isoformat()]},
+    }
+
+    we._WEATHER_CACHE.clear()
+    monkeypatch.setattr(we, "_request_open_meteo", lambda *args, **kwargs: payload)
+
+    with caplog.at_level("INFO"):
+        we.fetch_open_meteo_weather(
+            model_id="dwd_icon_d2",
+            loc=core.Location(name="x", latitude=50.8, longitude=4.3),
+            tz="Europe/Brussels",
+            target_date=dt.date(2026, 1, 10),
+        )
+
+    model_logs = [r.message for r in caplog.records if "model_fetch" in r.message]
+    assert model_logs
+    msg = model_logs[-1]
+    assert "model=dwd_icon_d2" in msg
+    assert "endpoint=https://api.open-meteo.com/v1/dwd-icon" in msg
+    assert "status=200" in msg
+    assert "elapsed_ms=" in msg
+    assert "params_hash=" in msg
+    assert "latitude=50.8" not in msg
+
+
+def test_fetch_open_meteo_logs_structured_failure(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    def fake_request(_url: str, _params: dict[str, object], model_id: str):
+        raise we.WeatherProviderError(
+            category="rate_limited",
+            status=429,
+            message=f"Open-Meteo request failed (rate_limited) for {model_id} status=429",
+        )
+
+    we._WEATHER_CACHE.clear()
+    monkeypatch.setattr(we, "_request_open_meteo", fake_request)
+
+    with caplog.at_level("INFO"):
+        with pytest.raises(we.WeatherProviderError):
+            we.fetch_open_meteo_weather(
+                model_id="dwd_icon_d2",
+                loc=core.Location(name="x", latitude=50.8, longitude=4.3),
+                tz="Europe/Brussels",
+                target_date=dt.date(2026, 1, 10),
+            )
+
+    model_logs = [r.message for r in caplog.records if "model_fetch" in r.message]
+    assert model_logs
+    msg = model_logs[-1]
+    assert "model=dwd_icon_d2" in msg
+    assert "status=429" in msg
+    assert "category=rate_limited" in msg
+    assert "outcome=failed" in msg

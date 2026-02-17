@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
+import logging
 import math
 import time
 from dataclasses import dataclass
@@ -126,6 +129,7 @@ FORECAST_FALLBACK_MODELS: dict[str, str] = {
 _WEATHER_CACHE: dict[tuple, tuple[float, core.ForecastResult, list[str], bool]] = {}
 _WEATHER_CACHE_TTL_S = 600
 _SESSION: requests.Session | None = None
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -316,6 +320,33 @@ def _request_open_meteo(url: str, params: dict[str, Any], model_id: str) -> dict
     return data
 
 
+def _params_hash(params: dict[str, Any]) -> str:
+    safe_payload = json.dumps(params, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(safe_payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _log_model_fetch(
+    *,
+    model_id: str,
+    endpoint: str,
+    params: dict[str, Any],
+    elapsed_ms: int,
+    category: str,
+    status: int | None,
+    outcome: str,
+) -> None:
+    _LOGGER.info(
+        "[weather_ensemble] model_fetch model=%s endpoint=%s params_hash=%s status=%s elapsed_ms=%s category=%s outcome=%s",
+        model_id,
+        endpoint,
+        _params_hash(params),
+        status,
+        elapsed_ms,
+        category,
+        outcome,
+    )
+
+
 def _decompose_from_ghi(df: pd.DataFrame, loc: core.Location, tz: str) -> pd.DataFrame:
     if not core.PVLIB_AVAILABLE:
         return df
@@ -424,9 +455,28 @@ def fetch_open_meteo_weather(
             "direct_normal_irradiance",
         ])
 
+    request_start = time.perf_counter()
     try:
         data = _request_open_meteo(spec["endpoint"], params, model_id=model_id)
+        _log_model_fetch(
+            model_id=model_id,
+            endpoint=spec["endpoint"],
+            params=params,
+            elapsed_ms=int((time.perf_counter() - request_start) * 1000),
+            category="ok",
+            status=200,
+            outcome="success",
+        )
     except WeatherProviderError as exc:
+        _log_model_fetch(
+            model_id=model_id,
+            endpoint=spec["endpoint"],
+            params=params,
+            elapsed_ms=int((time.perf_counter() - request_start) * 1000),
+            category=exc.category,
+            status=exc.status,
+            outcome="failed",
+        )
         fallback_model = FORECAST_FALLBACK_MODELS.get(model_id)
         requested_model = str(params.get("models") or "").strip()
         if not _should_retry_with_forecast(exc, fallback_model, requested_model):
@@ -435,7 +485,30 @@ def fetch_open_meteo_weather(
         fallback_params = dict(params)
         fallback_params["hourly"] = ",".join(BASE_HOURLY_VARIABLES + IRRADIANCE_HOURLY_VARIABLES)
         fallback_params["models"] = fallback_model
-        data = _request_open_meteo("https://api.open-meteo.com/v1/forecast", fallback_params, model_id=model_id)
+        fallback_endpoint = "https://api.open-meteo.com/v1/forecast"
+        fallback_start = time.perf_counter()
+        try:
+            data = _request_open_meteo(fallback_endpoint, fallback_params, model_id=model_id)
+            _log_model_fetch(
+                model_id=model_id,
+                endpoint=fallback_endpoint,
+                params=fallback_params,
+                elapsed_ms=int((time.perf_counter() - fallback_start) * 1000),
+                category="ok",
+                status=200,
+                outcome="success",
+            )
+        except WeatherProviderError as fallback_exc:
+            _log_model_fetch(
+                model_id=model_id,
+                endpoint=fallback_endpoint,
+                params=fallback_params,
+                elapsed_ms=int((time.perf_counter() - fallback_start) * 1000),
+                category=fallback_exc.category,
+                status=fallback_exc.status,
+                outcome="failed",
+            )
+            raise
 
     hourly = data.get("hourly") if isinstance(data.get("hourly"), dict) else {}
     times = pd.to_datetime(hourly.get("time", []), errors="coerce")
@@ -652,9 +725,12 @@ def build_ensemble_forecast(
         except WeatherProviderError as exc:
             failed_models.append(model_id)
             failed_model_reasons[model_id] = exc.to_reason()
-            print(
-                "[weather_ensemble] model_failed "
-                f"model={model_id} category={exc.category} status={exc.status} message={exc.message}"
+            _LOGGER.warning(
+                "[weather_ensemble] model_failed model=%s category=%s status=%s message=%s",
+                model_id,
+                exc.category,
+                exc.status,
+                exc.message,
             )
         except Exception as exc:
             failed_models.append(model_id)
@@ -663,7 +739,11 @@ def build_ensemble_forecast(
                 "status": None,
                 "message": str(exc),
             }
-            print(f"[weather_ensemble] model_failed model={model_id} category=unexpected_error message={exc}")
+            _LOGGER.exception(
+                "[weather_ensemble] model_failed model=%s category=unexpected_error message=%s",
+                model_id,
+                exc,
+            )
 
     if not per_model_pv_columns["pv_total_kwh"]:
         raise RuntimeError("All weather model requests failed.")
