@@ -461,6 +461,126 @@ def build_column_config(df: pd.DataFrame, candidates: dict) -> dict:
     return {k: v for k, v in candidates.items() if k in df.columns}
 
 
+def make_column_config(df: pd.DataFrame, units_and_help_map: dict[str, dict[str, str]]) -> dict:
+    if df is None or df.empty:
+        return {}
+    config: dict[str, object] = {}
+    for col in df.columns:
+        meta = units_and_help_map.get(col)
+        if not isinstance(meta, dict):
+            continue
+        label = str(meta.get("label") or col)
+        help_text = str(meta.get("help") or "")
+        fmt = str(meta.get("format") or "")
+        if not fmt:
+            if col.endswith("_pct"):
+                fmt = "%.1f"
+            elif col.endswith("_kwh") or col.endswith("_kw"):
+                fmt = "%.2f"
+            else:
+                fmt = "%.2f"
+        config[col] = st.column_config.NumberColumn(label=label, format=fmt, help=help_text)
+    return config
+
+
+@st.cache_data(show_spinner=False)
+def compute_residual_kwh(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame() if df is None else df.copy()
+    out = df.copy()
+    for col in [
+        "pv_total_kwh",
+        "grid_import_kwh",
+        "batt_discharge_kwh",
+        "load_kwh",
+        "batt_charge_kwh",
+        "grid_export_kwh",
+        "pv_curtailed_kwh",
+    ]:
+        if col not in out.columns:
+            out[col] = 0.0
+    lhs = (
+        pd.to_numeric(out["pv_total_kwh"], errors="coerce").fillna(0.0)
+        + pd.to_numeric(out["grid_import_kwh"], errors="coerce").fillna(0.0)
+        + pd.to_numeric(out["batt_discharge_kwh"], errors="coerce").fillna(0.0)
+    )
+    rhs = (
+        pd.to_numeric(out["load_kwh"], errors="coerce").fillna(0.0)
+        + pd.to_numeric(out["batt_charge_kwh"], errors="coerce").fillna(0.0)
+        + pd.to_numeric(out["grid_export_kwh"], errors="coerce").fillna(0.0)
+        + pd.to_numeric(out["pv_curtailed_kwh"], errors="coerce").fillna(0.0)
+    )
+    out["residual_kwh"] = (lhs - rhs).round(3)
+    return out
+
+
+@st.cache_data(show_spinner=False)
+def get_preset_columns(columns: tuple[str, ...], preset: str, table_kind: str) -> list[str]:
+    available = list(columns)
+    if table_kind == "weather":
+        core_cols = ["hour", "temperature_2m", "cloud_cover", "wind_speed_10m", "shortwave_radiation", "ghi"]
+        pv_plus = [
+            "dni",
+            "dhi",
+            "direct_normal_irradiance",
+            "diffuse_radiation",
+            "shortwave_radiation_min",
+            "shortwave_radiation_max",
+        ]
+        wanted = core_cols if preset == "Core" else (core_cols + pv_plus if preset == "PV-relevant" else available)
+    else:
+        core_cols = [
+            "hour",
+            "pv_total_kwh",
+            "load_kwh",
+            "soc_end_pct",
+            "grid_import_kwh",
+            "grid_export_kwh",
+            "batt_charge_kwh",
+            "batt_discharge_kwh",
+            "charge_kw",
+            "cutoff_soc_pct",
+        ]
+        bal_plus = [
+            "pv_clipped_kwh",
+            "pv_ac_limited_kwh",
+            "pv_curtailed_kwh",
+            "pv_dc_available_kwh",
+            "pv_surplus_kwh",
+            "pv_deficit_kwh",
+            "residual_kwh",
+        ]
+        wanted = core_cols if preset == "Core" else (core_cols + bal_plus if preset == "Energy balance" else available)
+    selected = [c for c in wanted if c in available]
+    if table_kind == "weather" and "shortwave_radiation" not in selected and "ghi" in available and "ghi" not in selected:
+        selected.append("ghi")
+    return selected or available
+
+
+@st.cache_data(show_spinner=False)
+def summarize_model_diagnostics(weather_ensemble: dict) -> dict:
+    if not isinstance(weather_ensemble, dict):
+        return {"selected": 0, "ok": 0, "failed": 0, "failed_models": [], "derived_models": [], "missing_important": []}
+    selected = [str(v) for v in weather_ensemble.get("selected_models", []) if isinstance(v, str)]
+    failed = [str(v) for v in weather_ensemble.get("failed_models", []) if isinstance(v, str)]
+    derived_map = weather_ensemble.get("derived_irradiance_by_model", {}) if isinstance(weather_ensemble.get("derived_irradiance_by_model"), dict) else {}
+    missing_map = weather_ensemble.get("missing_vars_by_model", {}) if isinstance(weather_ensemble.get("missing_vars_by_model"), dict) else {}
+    derived_models = sorted([model for model, used in derived_map.items() if bool(used)])
+    missing_important: list[str] = []
+    for model, vars_list in missing_map.items():
+        if not isinstance(vars_list, list) or not vars_list:
+            continue
+        missing_important.append(f"{model}: {', '.join(str(v) for v in vars_list)}")
+    return {
+        "selected": len(selected),
+        "ok": max(len(selected) - len(failed), 0),
+        "failed": len(failed),
+        "failed_models": failed,
+        "derived_models": derived_models,
+        "missing_important": missing_important,
+    }
+
+
 def render_modern_table(df: pd.DataFrame, column_config: dict | None = None) -> None:
     if df is None or df.empty:
         st.info("No data available.")
@@ -2723,112 +2843,118 @@ if run:
                 add_tariff_and_sun_markers(grid_fig, tomorrow, sunrise, sunset)
                 st.plotly_chart(grid_fig, use_container_width=True)
 
-            tooltip_heading("Weather inputs used", TABLE_TOOLTIPS["Weather inputs used"])
-            with st.expander("Weather inputs used"):
-                labels_by_id = {m.get("id"): m.get("label", m.get("id")) for m in weather_models_catalog}
-                selected_ids = weather_ensemble.get("selected_models", []) if isinstance(weather_ensemble.get("selected_models"), list) else []
-                selected_labels = [str(labels_by_id.get(mid, mid)) for mid in selected_ids]
-                st.write(
-                    f"PV forecast built from {len(selected_labels)} models: {', '.join(selected_labels)} "
-                    f"(method: {weather_ensemble.get('ensemble_method', 'weighted')})"
-                )
-                st.write(
-                    "PV forecast is built from the selected models (ensemble). Weather tables below show: "
-                    "(a) Ensemble weather + min/max spread, (b) each model separately."
-                )
-                st.write(f"Address query: {st.session_state.get('loc_address_query_display', '')}")
-                st.write(f"Latitude/Longitude: {float(st.session_state.get('loc_latitude', core.LATITUDE)):.5f}, {float(st.session_state.get('loc_longitude', core.LONGITUDE)):.5f}")
-                st.write(f"Timezone: {st.session_state.get('loc_timezone', core.TIMEZONE)}")
-                st.write("Hourly columns: temperature_2m, cloud_cover, shortwave_radiation, direct_normal_irradiance, diffuse_radiation, wind_speed_10m")
+            run_inspector_debug_mode = st.session_state.get("history_mode", "Simple") == "Debug"
+            if run_inspector_debug_mode:
+                tooltip_heading("Weather inputs used", TABLE_TOOLTIPS["Weather inputs used"])
+                with st.expander("Weather inputs used", expanded=False):
+                    labels_by_id = {m.get("id"): m.get("label", m.get("id")) for m in weather_models_catalog}
+                    selected_ids = weather_ensemble.get("selected_models", []) if isinstance(weather_ensemble.get("selected_models"), list) else []
+                    selected_labels = [str(labels_by_id.get(mid, mid)) for mid in selected_ids]
+                    st.write(
+                        f"PV forecast built from {len(selected_labels)} models: {', '.join(selected_labels)} "
+                        f"(method: {weather_ensemble.get('ensemble_method', 'weighted')})"
+                    )
 
-                weather_column_candidates = {
-                    "temperature_2m": st.column_config.NumberColumn(format="%.1f"),
-                    "wind_speed_10m": st.column_config.NumberColumn(format="%.1f"),
-                    "cloud_cover": st.column_config.NumberColumn(format="%.0f"),
-                    "ghi": st.column_config.NumberColumn(format="%.0f"),
-                    "dni": st.column_config.NumberColumn(format="%.0f"),
-                    "dhi": st.column_config.NumberColumn(format="%.0f"),
-                    "shortwave_radiation": st.column_config.NumberColumn(format="%.0f"),
-                    "direct_normal_irradiance": st.column_config.NumberColumn(format="%.0f"),
-                    "diffuse_radiation": st.column_config.NumberColumn(format="%.0f"),
-                    "temperature_2m_min": st.column_config.NumberColumn(format="%.1f"),
-                    "temperature_2m_max": st.column_config.NumberColumn(format="%.1f"),
-                    "wind_speed_10m_min": st.column_config.NumberColumn(format="%.1f"),
-                    "wind_speed_10m_max": st.column_config.NumberColumn(format="%.1f"),
-                    "cloud_cover_min": st.column_config.NumberColumn(format="%.0f"),
-                    "cloud_cover_max": st.column_config.NumberColumn(format="%.0f"),
-                    "shortwave_radiation_min": st.column_config.NumberColumn(format="%.0f"),
-                    "shortwave_radiation_max": st.column_config.NumberColumn(format="%.0f"),
-                    "direct_normal_irradiance_min": st.column_config.NumberColumn(format="%.0f"),
-                    "direct_normal_irradiance_max": st.column_config.NumberColumn(format="%.0f"),
-                    "diffuse_radiation_min": st.column_config.NumberColumn(format="%.0f"),
-                    "diffuse_radiation_max": st.column_config.NumberColumn(format="%.0f"),
-                }
+                    model_diag = summarize_model_diagnostics(weather_ensemble)
+                    st.caption(
+                        f"Models selected: {model_diag['selected']} · Models OK: {model_diag['ok']} · "
+                        f"Models failed: {model_diag['failed']}"
+                    )
+                    if model_diag["failed_models"]:
+                        st.caption(f"Failed models: {', '.join(model_diag['failed_models'])}")
+                    st.caption(
+                        "Derived irradiance used: "
+                        + (f"Yes ({', '.join(model_diag['derived_models'])})" if model_diag["derived_models"] else "No")
+                    )
+                    st.caption(
+                        "Missing important vars: "
+                        + (f"Yes ({'; '.join(model_diag['missing_important'])})" if model_diag["missing_important"] else "No")
+                    )
 
-                if isinstance(ensemble_weather_df, pd.DataFrame) and not ensemble_weather_df.empty:
-                    st.markdown("**Ensemble weather (P50 + min/max)**")
-                    ensemble_weather_display = ensemble_weather_df.copy()
-                    ensemble_weather_display.insert(0, "Hour", format_hour_from_index(ensemble_weather_display.index, "%H:00").values)
-                    ensemble_weather_display = ensemble_weather_display.head(24).reset_index(drop=True)
-                    ensemble_weather_config = build_column_config(ensemble_weather_display, weather_column_candidates)
-                    render_modern_table(ensemble_weather_display, ensemble_weather_config)
-                elif isinstance(weather_df, pd.DataFrame) and not weather_df.empty:
-                    weather_display = weather_df.copy()
-                    weather_display.insert(0, "Hour", format_hour_from_index(weather_display.index, "%H:00").values)
-                    weather_display = weather_display.head(24).reset_index(drop=True)
-                    weather_column_config = build_column_config(weather_display, weather_column_candidates)
-                    render_modern_table(weather_display, weather_column_config)
-                else:
-                    st.info("No data available.")
+                    weather_units_help_map = {
+                        "temperature_2m": {"label": "Temp (°C)", "help": "Air temperature at 2m above ground.", "format": "%.1f"},
+                        "wind_speed_10m": {"label": "Wind (m/s)", "help": "Wind speed at 10m.", "format": "%.1f"},
+                        "cloud_cover": {"label": "Cloud cover (%)", "help": "Fraction of sky covered by clouds.", "format": "%d"},
+                        "shortwave_radiation": {"label": "GHI (W/m²)", "help": "Global horizontal irradiance used by PV model.", "format": "%.0f"},
+                        "ghi": {"label": "GHI (W/m²)", "help": "Global horizontal irradiance used by PV model.", "format": "%.0f"},
+                        "dni": {"label": "DNI (W/m²)", "help": "Direct normal irradiance on surface normal to sun.", "format": "%.0f"},
+                        "dhi": {"label": "DHI (W/m²)", "help": "Diffuse horizontal irradiance.", "format": "%.0f"},
+                        "direct_normal_irradiance": {"label": "DNI (W/m²)", "help": "Direct normal irradiance.", "format": "%.0f"},
+                        "diffuse_radiation": {"label": "DHI (W/m²)", "help": "Diffuse irradiance component.", "format": "%.0f"},
+                        "shortwave_radiation_min": {"label": "GHI min (W/m²)", "help": "Minimum model irradiance among ensemble.", "format": "%.0f"},
+                        "shortwave_radiation_max": {"label": "GHI max (W/m²)", "help": "Maximum model irradiance among ensemble.", "format": "%.0f"},
+                    }
 
-                if per_model_weather_dfs:
-                    with st.expander("Per-model weather (selected models)"):
-                        ordered_model_ids = [mid for mid in selected_ids if mid in per_model_weather_dfs]
-                        ordered_model_ids.extend(sorted(mid for mid in per_model_weather_dfs if mid not in ordered_model_ids))
-                        derived_by_model = weather_ensemble.get("derived_irradiance_by_model", {}) if isinstance(weather_ensemble.get("derived_irradiance_by_model"), dict) else {}
-                        tab_labels = []
-                        for model_id in ordered_model_ids:
-                            model_label = str(labels_by_id.get(model_id, model_id))
-                            extras = []
-                            if model_id == weather_primary_model_id:
-                                extras.append("primary")
-                            if bool(derived_by_model.get(model_id)):
-                                extras.append("derived irradiance")
-                            label = f"{model_label} ({', '.join(extras)})" if extras else model_label
-                            tab_labels.append(label)
-                        tabs = st.tabs(tab_labels)
-                        for tab, model_id in zip(tabs, ordered_model_ids):
-                            with tab:
-                                model_df = per_model_weather_dfs.get(model_id)
-                                if model_df is None or model_df.empty:
-                                    st.info("No data available.")
-                                    continue
-                                model_display = model_df.copy()
-                                model_display.insert(0, "Hour", format_hour_from_index(model_display.index, "%H:00").values)
-                                model_display = model_display.head(24).reset_index(drop=True)
-                                model_column_config = build_column_config(model_display, weather_column_candidates)
-                                render_modern_table(model_display, model_column_config)
+                    weather_source = ensemble_weather_df if isinstance(ensemble_weather_df, pd.DataFrame) and not ensemble_weather_df.empty else weather_df
+                    if isinstance(weather_source, pd.DataFrame) and not weather_source.empty:
+                        weather_display = weather_source.copy()
+                        weather_display.insert(0, "hour", format_hour_from_index(weather_display.index, "%H:00").values)
+                        weather_display = weather_display.head(24).reset_index(drop=True)
+                        weather_preset = st.selectbox("Preset", options=["Core", "PV-relevant", "Full"], index=0, key="run_weather_preset")
+                        weather_cols = get_preset_columns(tuple(str(c) for c in weather_display.columns), weather_preset, "weather")
+                        weather_visible = weather_display[weather_cols]
+                        weather_cfg = make_column_config(weather_visible, weather_units_help_map)
+                        render_modern_table(weather_visible, weather_cfg)
+                        weather_csv = weather_visible.to_csv(index=False)
+                        weather_json = json.dumps({
+                            "metadata": {
+                                "preset": weather_preset,
+                                "run_id": str(result.get("run_id", "")),
+                                "target_date": str(result.get("target_date", "")),
+                            },
+                            "table": weather_display.to_dict(orient="records"),
+                        }, ensure_ascii=False, indent=2)
+                        weather_name = f"weather_inputs_{_target_date_for_filename(result.get('target_date'))}_{_safe_filename_part(result.get('run_id'),'run')}_{weather_preset.lower().replace(' ','_')}"
+                        d1, d2 = st.columns(2)
+                        d1.download_button("Download CSV", data=weather_csv, file_name=f"{weather_name}.csv", mime="text/csv", key="weather_csv_download")
+                        d2.download_button("Download JSON", data=weather_json, file_name=f"{weather_name}.json", mime="application/json", key="weather_json_download")
+                    else:
+                        st.info("No data available.")
 
-            combined = pv.join(flows_df[["soc_end_pct", "grid_import_kwh", "grid_export_kwh", "curtailed_kwh"]], how="left")
-            combined_display = combined.copy()
-            combined_display.insert(0, "Hour", format_hour_from_index(combined_display.index, "%H:%M").values)
-            combined_display = combined_display.reset_index(drop=True)
-            tooltip_heading("Hourly planning output", TABLE_TOOLTIPS["Hourly planning output"])
-            with st.expander("Hourly planning output"):
-                hourly_column_config = build_column_config(
-                    combined_display,
-                    {
-                        "pv_total_kwh": st.column_config.NumberColumn(format="%.2f"),
-                        "load_kwh": st.column_config.NumberColumn(format="%.2f"),
-                        "grid_import_kwh": st.column_config.NumberColumn(format="%.2f"),
-                        "grid_export_kwh": st.column_config.NumberColumn(format="%.2f"),
-                        "batt_charge_kwh": st.column_config.NumberColumn(format="%.2f"),
-                        "batt_discharge_kwh": st.column_config.NumberColumn(format="%.2f"),
-                        "soc_pct": st.column_config.NumberColumn(format="%.1f"),
-                        "soc_end_pct": st.column_config.NumberColumn(format="%.1f"),
-                    },
-                )
-                render_modern_table(combined_display, hourly_column_config)
+                combined = pv.join(flows_df[["soc_end_pct", "grid_import_kwh", "grid_export_kwh", "curtailed_kwh"]], how="left")
+                if "pv_curtailed_kwh" not in combined.columns and "curtailed_kwh" in combined.columns:
+                    combined["pv_curtailed_kwh"] = pd.to_numeric(combined["curtailed_kwh"], errors="coerce").fillna(0.0)
+                combined = compute_residual_kwh(combined)
+                combined_display = combined.copy()
+                combined_display.insert(0, "hour", format_hour_from_index(combined_display.index, "%H:%M").values)
+                combined_display = combined_display.reset_index(drop=True)
+                tooltip_heading("Hourly planning output", TABLE_TOOLTIPS["Hourly planning output"])
+                with st.expander("Hourly planning output", expanded=False):
+                    planning_preset = st.selectbox("Preset", options=["Core", "Energy balance", "Full"], index=0, key="run_planning_preset")
+                    planning_cols = get_preset_columns(tuple(str(c) for c in combined_display.columns), planning_preset, "planning")
+                    planning_visible = combined_display[planning_cols]
+                    planning_units_help_map = {
+                        "pv_total_kwh": {"label": "PV total (kWh)", "help": "Total PV output available to planner.", "format": "%.2f"},
+                        "pv_clipped_kwh": {"label": "PV clipped (kWh)", "help": "PV lost to clipping limits.", "format": "%.2f"},
+                        "pv_ac_limited_kwh": {"label": "PV AC-limited (kWh)", "help": "PV output after AC-side limiting.", "format": "%.2f"},
+                        "grid_import_kwh": {"label": "Grid import (kWh)", "help": "Energy imported from grid.", "format": "%.2f"},
+                        "grid_export_kwh": {"label": "Grid export (kWh)", "help": "Energy exported to grid.", "format": "%.2f"},
+                        "batt_charge_kwh": {"label": "Battery charge (kWh)", "help": "Energy sent into battery.", "format": "%.2f"},
+                        "batt_discharge_kwh": {"label": "Battery discharge (kWh)", "help": "Energy discharged from battery.", "format": "%.2f"},
+                        "soc_end_pct": {"label": "SOC end (%)", "help": "Battery SOC at end of hour.", "format": "%.1f"},
+                        "residual_kwh": {"label": "Energy balance residual (kWh)", "help": "(PV + import + batt discharge) - (load + batt charge + export + curtailed).", "format": "%.3f"},
+                        "charge_kw": {"label": "Charge (kW)", "help": "Charge power setting used for planning.", "format": "%.2f"},
+                        "cutoff_soc_pct": {"label": "Cutoff SOC (%)", "help": "Configured AC charge cutoff SOC.", "format": "%.1f"},
+                        "load_kwh": {"label": "Load (kWh)", "help": "Forecast household demand.", "format": "%.2f"},
+                    }
+                    max_res = float(pd.to_numeric(combined_display.get("residual_kwh"), errors="coerce").abs().max()) if "residual_kwh" in combined_display.columns else 0.0
+                    st.metric("Max |residual| (kWh)", f"{max_res:.3f}")
+                    render_modern_table(planning_visible, make_column_config(planning_visible, planning_units_help_map))
+                    planning_csv = planning_visible.to_csv(index=False)
+                    planning_json = json.dumps({
+                        "metadata": {
+                            "preset": planning_preset,
+                            "run_id": str(result.get("run_id", "")),
+                            "target_date": str(result.get("target_date", "")),
+                        },
+                        "table": combined_display.to_dict(orient="records"),
+                    }, ensure_ascii=False, indent=2)
+                    planning_name = f"hourly_planning_{_target_date_for_filename(result.get('target_date'))}_{_safe_filename_part(result.get('run_id'),'run')}_{planning_preset.lower().replace(' ','_')}"
+                    p1, p2 = st.columns(2)
+                    p1.download_button("Download CSV", data=planning_csv, file_name=f"{planning_name}.csv", mime="text/csv", key="planning_csv_download")
+                    p2.download_button("Download JSON", data=planning_json, file_name=f"{planning_name}.json", mime="application/json", key="planning_json_download")
+            else:
+                st.info("Run Inspector tables are hidden in Simple mode. Switch History mode to Debug to inspect weather/planning tables.")
 
             render_history_fragment()
 
