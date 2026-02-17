@@ -59,8 +59,6 @@ TABLE_TOOLTIPS = {
     "History log": "By default this table shows the latest run per date. Enable \"Show all runs\" to view every run.",
 }
 
-WEATHER_MODEL_AVAILABLE_ICON = "✅"
-
 WEATHER_MODEL_ORDER = [
     "knmi_harmonie_arome",
     "dwd_icon_d2",
@@ -83,13 +81,10 @@ BADGE_HOVERTEXT = {
     "⭐": "Core model. Recommended default for Belgium.",
     "🟩": "Best PV inputs. This model provides the main solar irradiance fields directly, which usually improves PV accuracy.",
     "🧩": "Derived PV inputs. Some solar irradiance fields are missing, so we estimate them. PV still works, but accuracy can drop on difficult cloud days.",
-    "✅": "Available. This model can be used right now.",
     "🔎": "High-resolution (local). Best for short-term local cloud timing, which often improves PV ramps and hour-to-hour changes.",
     "🗺️": "Regional (Europe-scale). A good second opinion that is usually smoother and more stable than high-resolution models.",
     "🌍": "Global. Stable big-picture baseline for fronts and the overall weather pattern.",
     "⏱️": "Uses 15-minute solar radiation (then aggregated to hourly). Can improve the PV curve shape when clouds change quickly.",
-    "⚠️": "Partial in last run. Hover for details.",
-    "❌": "Failed in last run. Hover for the reason.",
 }
 
 
@@ -304,14 +299,8 @@ def inject_tooltip_css() -> None:
     )
 
 
-def weather_model_option_label(model: dict, model_id: str) -> str:
-    base_label = f"{model.get('label', model_id)} {' '.join(model.get('badges', []))}".strip()
-    return f"{base_label} {WEATHER_MODEL_AVAILABLE_ICON}".strip()
-
-
 def weather_model_option_help(model: dict) -> str:
     badge_meanings = {
-        WEATHER_MODEL_AVAILABLE_ICON: "data available from provider",
         "⭐": "recommended for Belgium",
         "🟩": "full irradiance fields",
         "🧩": "derived/approximated components",
@@ -322,12 +311,9 @@ def weather_model_option_help(model: dict) -> str:
             "🗺️": "regional Europe-scale",
             "🌍": "global baseline",
             "⏱️": "uses 15-minute solar data",
-            "⚠️": "partial last run",
-            "❌": "failed last run",
         }
     )
     badges = [badge for badge in model.get("badges", []) if badge in badge_meanings]
-    badges.insert(0, WEATHER_MODEL_AVAILABLE_ICON)
     unique_badges = list(dict.fromkeys(badges))
     badge_summary = ", ".join(f"{badge} {badge_meanings[badge]}" for badge in unique_badges)
     notes = str(model.get("notes") or model.get("capability", {}).get("notes") or "")
@@ -370,6 +356,83 @@ def last_run_status_badge(model_id: str) -> tuple[str | None, str]:
         return ("⚠️", " ".join(parts))
 
     return (None, "")
+
+
+def render_weather_models(weather_models_catalog: list[dict], default_selected: set[str]) -> list[str]:
+    with st.expander("Weather models", expanded=True):
+        st.caption("Select which weather models to use. We combine them automatically using Belgium-tuned weighting.")
+        st.caption("After you run a forecast, we show warnings (⚠️) or failures (❌) next to models if needed.")
+
+        model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
+        selected_models: list[str] = []
+
+        st.markdown(
+            "<style>.wm-name{cursor:help}.wm-icon{cursor:help;margin-left:6px}</style>",
+            unsafe_allow_html=True,
+        )
+
+        for model_id in WEATHER_MODEL_ORDER:
+            model = model_options.get(model_id)
+            if not model:
+                continue
+
+            cols = st.columns([0.35, 3.2, 1.3], vertical_alignment="center")
+
+            with cols[0]:
+                checked = st.checkbox(
+                    "enabled",
+                    value=(model_id in default_selected),
+                    key=f"wm_{model_id}",
+                    label_visibility="collapsed",
+                )
+
+            with cols[1]:
+                label = str(model.get("label") or model_id)
+                tip = WEATHER_MODEL_HOVERTEXT.get(model_id, "")
+                st.markdown(
+                    f"<span class='wm-name' title='{_esc(tip)}'><b>{_esc(label)}</b></span>",
+                    unsafe_allow_html=True,
+                )
+
+            with cols[2]:
+                static_badges = list(model.get("badges") or [])
+                status_icon, status_tip = last_run_status_badge(model_id)
+
+                badge_items: list[tuple[str, str]] = []
+                if status_icon:
+                    badge_items.append((status_icon, status_tip))
+
+                for b in static_badges:
+                    badge_items.append((b, BADGE_HOVERTEXT.get(b, "")))
+
+                icon_html = " ".join(
+                    f"<span class='wm-icon' title='{_esc(tip)}'>{_esc(icon)}</span>"
+                    for icon, tip in badge_items
+                )
+                st.markdown(icon_html, unsafe_allow_html=True)
+
+            if checked:
+                selected_models.append(model_id)
+
+        if not selected_models:
+            st.error("Select at least one weather model.")
+        else:
+            dbg = st.session_state.get("last_weather_ensemble_debug") or {}
+            with st.expander("Advanced: last run model debug", expanded=False):
+                st.caption("Raw per-model debug from the last Run forecast. Copy/paste this into Codex when reporting issues.")
+                if not dbg:
+                    st.info("No debug data yet. Click Run forecast once to populate this.")
+                else:
+                    dbg_json = json.dumps(dbg, indent=2, ensure_ascii=False)
+                    st.text_area("Weather ensemble debug JSON (copy/paste)", value=dbg_json, height=280)
+                    st.download_button(
+                        "Download debug JSON",
+                        data=dbg_json,
+                        file_name="weather_ensemble_debug.json",
+                        mime="application/json",
+                    )
+
+        return selected_models
 
 
 def tooltip_heading(label: str, help_text: str) -> None:
@@ -1591,95 +1654,22 @@ with left:
             except Exception as exc:
                 st.error(f"Could not save nightly settings: {exc}")
 
-    with st.expander("Weather models", expanded=True):
-        st.caption("Select which weather models to use. We combine them automatically using Belgium-tuned weighting.")
-        st.caption("Tip: Toggle PV Low/High lines using the chart legend.")
+    model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
+    available_ids = set(model_options.keys())
 
-        model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
-        available_ids = set(model_options.keys())
+    saved = effective_cfg.get("weather_models_selected")
+    if isinstance(saved, list):
+        saved_set = {str(x) for x in saved if isinstance(x, str)}
+    else:
+        saved_set = set()
 
-        saved = effective_cfg.get("weather_models_selected")
-        if isinstance(saved, list):
-            saved_set = {str(x) for x in saved if isinstance(x, str)}
-        else:
-            saved_set = set()
+    initial_selected = (saved_set & available_ids) if saved_set else set()
+    if not initial_selected:
+        initial_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
 
-        initial_selected = (saved_set & available_ids) if saved_set else set()
-        if not initial_selected:
-            initial_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
-
-        for mid in WEATHER_MODEL_ORDER:
-            if mid in available_ids:
-                st.session_state.setdefault(f"wm_{mid}", (mid in initial_selected))
-
-        st.markdown(
-            "<style>.wm-name{cursor:help}.wm-icon{cursor:help;margin-left:6px}</style>",
-            unsafe_allow_html=True,
-        )
-
-        for model_id in WEATHER_MODEL_ORDER:
-            model = model_options.get(model_id)
-            if not model:
-                continue
-
-            cols = st.columns([0.35, 3.2, 1.6], vertical_alignment="center")
-
-            with cols[0]:
-                st.checkbox(
-                    "enabled",
-                    key=f"wm_{model_id}",
-                    label_visibility="collapsed",
-                )
-
-            with cols[1]:
-                label = str(model.get("label") or model_id)
-                tip = WEATHER_MODEL_HOVERTEXT.get(model_id, "")
-                st.markdown(
-                    f"<span class='wm-name' title='{_esc(tip)}'><b>{_esc(label)}</b></span>",
-                    unsafe_allow_html=True,
-                )
-
-            with cols[2]:
-                static_badges = list(model.get("badges") or [])
-
-                status_icon, status_tip = last_run_status_badge(model_id)
-
-                badge_items: list[tuple[str, str]] = []
-                for b in static_badges:
-                    badge_items.append((b, BADGE_HOVERTEXT.get(b, "")))
-
-                if status_icon:
-                    badge_items.append((status_icon, status_tip))
-
-                badge_items.append(
-                    (WEATHER_MODEL_AVAILABLE_ICON, BADGE_HOVERTEXT.get(WEATHER_MODEL_AVAILABLE_ICON, ""))
-                )
-
-                icon_html = " ".join(
-                    f"<span class='wm-icon' title='{_esc(tip)}'>{_esc(icon)}</span>"
-                    for icon, tip in badge_items
-                )
-                st.markdown(icon_html, unsafe_allow_html=True)
-
-        selected_models = get_selected_weather_models(available_ids)
-
-        if not selected_models:
-            st.error("Select at least one weather model.")
-
-        dbg = st.session_state.get("last_weather_ensemble_debug") or {}
-        with st.expander("Advanced: last run model debug", expanded=False):
-            st.caption("Raw model debug from the last Run forecast. Copy/paste this into Codex when reporting issues.")
-            if not dbg:
-                st.info("No debug data yet. Click Run forecast once to populate this.")
-            else:
-                dbg_json = json.dumps(dbg, indent=2, ensure_ascii=False)
-                st.text_area("Weather ensemble debug JSON (copy/paste)", value=dbg_json, height=280)
-                st.download_button(
-                    "Download debug JSON",
-                    data=dbg_json,
-                    file_name="weather_ensemble_debug.json",
-                    mime="application/json",
-                )
+    weather_models_box = st.empty()
+    with weather_models_box.container():
+        selected_models = render_weather_models(weather_models_catalog, initial_selected)
 
     ensemble_method = "weighted"
     run = st.button(
@@ -1715,6 +1705,9 @@ if run:
             st.session_state["last_weather_ensemble_debug"] = dbg if isinstance(dbg, dict) else {}
             st.session_state["last_weather_ensemble_debug_at"] = dt.datetime.utcnow().isoformat()
             st.session_state["last_weather_ensemble_models_used"] = list(selected_models)
+            weather_models_box.empty()
+            with weather_models_box.container():
+                _ = render_weather_models(weather_models_catalog, initial_selected)
             tomorrow = dt.date.fromisoformat(result["target_date"])
             weather_df = df_from_split(result["weather"])
             pv = df_from_split(result["pv"])
