@@ -25,6 +25,7 @@ from db_sqlite import (
     fetch_history_all_runs,
     fetch_history_latest_per_day,
     fetch_latest_full_run,
+    fetch_full_run_by_id,
     init_db,
     insert_forecast_run,
 )
@@ -737,6 +738,16 @@ def latest_result(authorization: str | None = Header(default=None)) -> dict:
     if db_payload is not None:
         return db_payload
     return state.latest_result
+
+
+
+@app.get("/v1/results/run/{run_id}")
+def result_by_run_id(run_id: str, authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    payload = fetch_full_run_by_id(str(SQLITE_PATH), run_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return payload
 
 
 @app.get("/v1/results/history")

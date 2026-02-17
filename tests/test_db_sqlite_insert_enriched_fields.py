@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from db_sqlite import fetch_history_all_runs, fetch_history_latest_per_day, init_db, insert_forecast_run
+from db_sqlite import fetch_full_run_by_id, fetch_history_all_runs, fetch_history_latest_per_day, init_db, insert_forecast_run
 
 
 def test_insert_forecast_run_persists_enriched_fields(tmp_path):
@@ -137,3 +137,67 @@ def test_fetch_history_includes_run_id_and_summary_fields(tmp_path):
         "weights_used": {"ecmwf_ifs": 0.6, "gfs": 0.4},
         "failed_models": ["icon"],
     }
+
+
+def test_fetch_full_run_by_id_returns_stored_run_details(tmp_path):
+    db_path = tmp_path / "planner.sqlite"
+    init_db(str(db_path))
+
+    payload = {
+        "run_id": "run-full",
+        "target_date": "2026-02-02",
+        "run_at_utc": "2026-02-01T22:00:00+00:00",
+        "run_type": "manual",
+        "warnings": ["check-1"],
+        "metrics": {
+            "charge_kw": 3.5,
+            "cutoff_soc": 0.5,
+            "pv_forecast_kwh": 8.0,
+            "cons_forecast_kwh": 12.0,
+        },
+        "pv": {
+            "columns": [
+                "pv_total_kwh",
+                "pv_total_unclipped_kwh",
+                "pv_east_kwh",
+                "pv_south_kwh",
+                "pv_clipped_kwh",
+                "load_kwh",
+            ],
+            "index": ["2026-02-02T00:00:00"],
+            "data": [[1.2, 1.3, 0.4, 0.8, 0.1, 0.6]],
+        },
+        "flows": {
+            "columns": ["grid_import_kwh", "grid_export_kwh", "batt_charge_kwh", "batt_discharge_kwh", "soc_end_pct"],
+            "index": ["2026-02-02T00:00:00"],
+            "data": [[0.2, 0.1, 0.3, 0.0, 55.0]],
+        },
+        "soc": {
+            "columns": ["value"],
+            "index": ["2026-02-02T00:00:00"],
+            "data": [[0.55]],
+        },
+    }
+
+    insert_forecast_run(str(db_path), payload)
+
+    full = fetch_full_run_by_id(str(db_path), "run-full")
+    assert full is not None
+    assert full["run_id"] == "run-full"
+    assert full["target_date"] == "2026-02-02"
+    assert full["metrics"]["charge_kw"] == 3.5
+    assert full["metrics"]["cutoff_soc"] == 0.5
+    assert full["warnings"] == ["check-1"]
+    assert full["pv"]["columns"] == [
+        "pv_total_kwh",
+        "pv_total_unclipped_kwh",
+        "pv_east_kwh",
+        "pv_south_kwh",
+        "pv_clipped_kwh",
+        "load_kwh",
+    ]
+    assert len(full["pv"]["data"]) == 1
+    assert len(full["flows"]["data"]) == 1
+    assert len(full["soc"]["data"]) == 1
+
+    assert fetch_full_run_by_id(str(db_path), "does-not-exist") is None
