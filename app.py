@@ -848,12 +848,15 @@ def _prepare_history_df(df: pd.DataFrame, all_runs: bool, show_run_at: bool) -> 
     if colmap:
         working = working.rename(columns=colmap)
 
-    if "Date" in working.columns:
-        # Keep as datetime64 for reliable downstream .dt filtering/rendering.
-        working["Date"] = pd.to_datetime(working["Date"], errors="coerce").dt.normalize()
-
-    if "Run at" in working.columns:
-        working["Run at"] = pd.to_datetime(working["Run at"], errors="coerce")
+    # Normalize core history schema once and centrally so downstream sorting/
+    # rendering logic can rely on stable dtypes even if backend payload drifts.
+    working["Date"] = pd.to_datetime(working.get("Date"), errors="coerce").dt.normalize()
+    if "Run at" not in working.columns:
+        working["Run at"] = pd.NaT
+    working["Run at"] = (
+        pd.to_datetime(working.get("Run at"), errors="coerce", utc=True)
+        .dt.tz_convert("Europe/Brussels")
+    )
 
     if not all_runs:
         if "Date" in working.columns and "Run at" in working.columns:
