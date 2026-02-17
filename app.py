@@ -465,6 +465,16 @@ def render_modern_table(df: pd.DataFrame, column_config: dict | None = None) -> 
     if df is None or df.empty:
         st.info("No data available.")
         return
+
+    # Streamlit/pyarrow rejects duplicate labels; backend payloads can
+    # occasionally include accidental duplicate fields after schema drift.
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()].copy()
+
+    # Keep column formatting config in sync with the final rendered dataframe.
+    if column_config:
+        column_config = {k: v for k, v in column_config.items() if k in df.columns}
+
     st.dataframe(
         df,
         use_container_width=True,
