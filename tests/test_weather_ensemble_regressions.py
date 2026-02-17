@@ -258,12 +258,12 @@ def test_fetch_open_meteo_retries_404_with_forecast_endpoint(monkeypatch: pytest
     assert len(calls) == 2
     assert calls[0][0] == we.WEATHER_MODELS["knmi_harmonie_arome"]["endpoint"]
     assert calls[1][0] == "https://api.open-meteo.com/v1/forecast"
-    assert calls[1][1] == "knmi_harmonie_arome"
+    assert calls[1][1] == "knmi_seamless"
     assert derived is False
     assert forecast.df["ghi_wm2"].iloc[0] == pytest.approx(100.0)
 
 
-def test_fetch_open_meteo_retries_400_with_forecast_endpoint(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex) -> None:
+def test_fetch_open_meteo_retries_400_with_forecast_endpoint_for_model_support_errors(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex) -> None:
     payload = {
         "hourly": {
             "time": [ts.isoformat() for ts in hourly_index],
@@ -285,6 +285,7 @@ def test_fetch_open_meteo_retries_400_with_forecast_endpoint(monkeypatch: pytest
             raise we.WeatherProviderError(
                 category="http_error",
                 status=400,
+                provider_reason="Hourly parameter direct_normal_irradiance is not supported for this model",
                 message=f"Open-Meteo request failed (http_error) for {model_id} status=400",
             )
         return payload
@@ -302,9 +303,58 @@ def test_fetch_open_meteo_retries_400_with_forecast_endpoint(monkeypatch: pytest
     assert len(calls) == 2
     assert calls[0][0] == we.WEATHER_MODELS["knmi_harmonie_arome"]["endpoint"]
     assert calls[1][0] == "https://api.open-meteo.com/v1/forecast"
-    assert calls[1][1] == "knmi_harmonie_arome"
+    assert calls[1][1] == "knmi_seamless"
     assert derived is False
     assert forecast.df["ghi_wm2"].iloc[0] == pytest.approx(100.0)
+
+
+def test_fetch_open_meteo_does_not_retry_400_for_invalid_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_request(url: str, params: dict[str, object], model_id: str):
+        calls.append((url, params.get("models") if isinstance(params, dict) else None))
+        raise we.WeatherProviderError(
+            category="http_error",
+            status=400,
+            provider_reason="Invalid latitude parameter",
+            message=f"Open-Meteo request failed (http_error) for {model_id} status=400",
+        )
+
+    we._WEATHER_CACHE.clear()
+    monkeypatch.setattr(we, "_request_open_meteo", fake_request)
+
+    with pytest.raises(we.WeatherProviderError):
+        we.fetch_open_meteo_weather(
+            model_id="knmi_harmonie_arome",
+            loc=core.Location(name="x", latitude=50.8, longitude=4.3),
+            tz="Europe/Brussels",
+            target_date=dt.date(2026, 1, 10),
+        )
+
+    assert len(calls) == 1
+
+def test_request_open_meteo_handles_429_without_json_method(monkeypatch: pytest.MonkeyPatch) -> None:
+    import requests
+
+    class DummyResp:
+        status_code = 429
+        text = "Too Many Requests"
+
+        def raise_for_status(self):
+            raise requests.HTTPError(response=self)
+
+    class FakeSession:
+        def get(self, *args, **kwargs):
+            return DummyResp()
+
+    monkeypatch.setattr(we, "_SESSION", FakeSession())
+    with pytest.raises(we.WeatherProviderError) as err:
+        we._request_open_meteo("https://example.com", {}, model_id="ecmwf_ifs")
+
+    assert err.value.category == "rate_limited"
+    assert err.value.status == 429
+    assert err.value.provider_reason == "Too Many Requests"
+
 
 def test_request_open_meteo_error_categorization(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeResponse:
@@ -409,3 +459,19 @@ def test_build_ensemble_surfaces_failed_model_reasons(monkeypatch: pytest.Monkey
         "dwd_icon_d2": {"category": "rate_limited", "status": 429, "message": "rate limited"}
     }
     assert out.selected_models == ["ecmwf_ifs"]
+
+
+def test_weather_provider_error_to_reason_includes_provider_reason() -> None:
+    err = we.WeatherProviderError(
+        category="http_error",
+        status=400,
+        provider_reason="unknown model",
+        message="Open-Meteo request failed",
+    )
+
+    assert err.to_reason() == {
+        "category": "http_error",
+        "status": 400,
+        "message": "Open-Meteo request failed",
+        "provider_reason": "unknown model",
+    }

@@ -151,18 +151,90 @@ class EnsembleWeatherResult:
 
 
 class WeatherProviderError(RuntimeError):
-    def __init__(self, *, category: str, message: str, status: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        category: str,
+        message: str,
+        status: int | None = None,
+        provider_reason: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.category = category
         self.status = status
         self.message = message
+        self.provider_reason = provider_reason
 
     def to_reason(self) -> dict[str, Any]:
-        return {
+        reason = {
             "category": self.category,
             "status": self.status,
             "message": self.message,
         }
+        if self.provider_reason is not None:
+            reason["provider_reason"] = self.provider_reason
+        return reason
+
+
+def _safe_provider_reason(resp: Any) -> str:
+    payload = None
+    if hasattr(resp, "json"):
+        try:
+            payload = resp.json()
+        except (ValueError, AttributeError, TypeError):
+            payload = None
+
+    reason = ""
+    if isinstance(payload, dict) and payload.get("reason"):
+        reason = str(payload.get("reason"))
+    else:
+        reason = (getattr(resp, "text", "") or "").strip()
+    return reason[:200]
+
+
+def _should_retry_with_forecast(exc: WeatherProviderError, fallback_model: str | None, requested_model: str) -> bool:
+    if exc.category != "http_error":
+        return False
+    if not fallback_model or fallback_model == requested_model:
+        return False
+    if exc.status == 404:
+        return True
+    if exc.status != 400:
+        return False
+
+    reason = (exc.provider_reason or "").lower().strip()
+    if not reason:
+        return False
+
+    allow = any(
+        s in reason
+        for s in [
+            "model",
+            "models",
+            "not available",
+            "unknown model",
+            "unsupported",
+            "not supported",
+            "not in allowed",
+            "invalid model",
+            "variable",
+            "variables",
+            "hourly parameter",
+            "daily parameter",
+        ]
+    )
+    block = any(
+        s in reason
+        for s in [
+            "latitude",
+            "longitude",
+            "timezone",
+            "start_date",
+            "end_date",
+            "timeformat",
+        ]
+    )
+    return allow and not block
 
 
 def weather_models_payload() -> list[dict[str, Any]]:
@@ -206,20 +278,12 @@ def _request_open_meteo(url: str, params: dict[str, Any], model_id: str) -> dict
     except requests.HTTPError as exc:
         status = exc.response.status_code if exc.response is not None else None
         category = "rate_limited" if status == 429 else "provider_down" if status in {500, 502, 503, 504} else "http_error"
-        provider_reason = ""
-        if exc.response is not None:
-            try:
-                error_payload = exc.response.json()
-            except ValueError:
-                error_payload = None
-            if isinstance(error_payload, dict) and error_payload.get("reason"):
-                provider_reason = str(error_payload.get("reason"))
-            else:
-                provider_reason = (exc.response.text or "").strip()[:200]
+        provider_reason = _safe_provider_reason(exc.response) if exc.response is not None else ""
         reason_suffix = f" reason={provider_reason}" if provider_reason else ""
         raise WeatherProviderError(
             category=category,
             status=status,
+            provider_reason=provider_reason,
             message=f"Open-Meteo request failed ({category}) for {model_id} status={status}{reason_suffix}",
         ) from exc
     except requests.Timeout as exc:
@@ -365,13 +429,7 @@ def fetch_open_meteo_weather(
     except WeatherProviderError as exc:
         fallback_model = FORECAST_FALLBACK_MODELS.get(model_id)
         requested_model = str(params.get("models") or "").strip()
-        can_retry_with_forecast = (
-            exc.category == "http_error"
-            and exc.status in {400, 404}
-            and bool(fallback_model)
-            and fallback_model != requested_model
-        )
-        if not can_retry_with_forecast:
+        if not _should_retry_with_forecast(exc, fallback_model, requested_model):
             raise
 
         fallback_params = dict(params)
