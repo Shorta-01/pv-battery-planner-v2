@@ -872,11 +872,24 @@ def _prepare_history_df(df: pd.DataFrame, all_runs: bool, show_run_at: bool) -> 
     return working.reset_index(drop=True)
 
 
+def _to_py_date(val):
+    """Return a python datetime.date or None from date/datetime/Timestamp/str."""
+    if val is None:
+        return None
+    if isinstance(val, dt.date) and not isinstance(val, dt.datetime):
+        return val
+    try:
+        ts = pd.to_datetime(val, errors="coerce")
+        if pd.isna(ts):
+            return None
+        return ts.date()
+    except Exception:
+        return None
+
+
 def _run_label(row: pd.Series, fallback_index: int = 0) -> str:
-    if pd.notna(row.get("Date")):
-        date_part = pd.Timestamp(row["Date"]).date().isoformat()
-    else:
-        date_part = "unknown-date"
+    date_value = _to_py_date(row.get("Date"))
+    date_part = date_value.isoformat() if date_value is not None else "unknown-date"
     status = str(row.get("Status label") or "—")
     run_type = str(row.get("run_type") or "manual")
     run_id = str(row.get("run_id") or f"row-{fallback_index + 1}")
@@ -1004,7 +1017,7 @@ def _render_run_inspector(filtered_df: pd.DataFrame) -> None:
 
     filtered_df = filtered_df.sort_values(["Date", "Run at"], ascending=[False, False]).reset_index(drop=True)
     options = {
-        f"{row['Date'].date().isoformat()} · {row['Status label']} · {row['run_type']} · {row.get('run_id') or ('row-' + str(i + 1))}": i
+        f"{_run_label(row, i)}": i
         for i, row in filtered_df.iterrows()
     }
     picked = st.selectbox("Inspect a run", list(options.keys()), key="history_inspector_run")
@@ -1028,12 +1041,13 @@ def _render_run_inspector(filtered_df: pd.DataFrame) -> None:
         tab_summary, tab_models, tab_inputs, tab_settings, tab_debug = st.tabs(
             ["Summary", "Weather models", "Inputs used", "Settings used", "Debug bundle"]
         )
-
         with tab_summary:
+            date_label = _to_py_date(row.get("Date")) or row.get("Date") or "unknown-date"
+            date_text = date_label.isoformat() if hasattr(date_label, "isoformat") else str(date_label)
             st.markdown(
-                f"**Date:** {row['Date'].date().isoformat()}  \\\n"
-                f"**Run at:** {row['Run at'].strftime('%Y-%m-%d %H:%M:%S') if pd.notna(row['Run at']) else '—'}  \\\n"
-                f"**Status:** {row['Status label']}  \\\n"
+                f"**Date:** {date_text}\n"
+                f"**Run at:** {row['Run at'].strftime('%Y-%m-%d %H:%M:%S') if pd.notna(row['Run at']) else '—'}\n"
+                f"**Status:** {row['Status label']}\n"
                 f"**Run type:** {row.get('run_type', 'manual')}"
             )
             if warnings_list:
@@ -1396,8 +1410,11 @@ def _render_history_log_block() -> None:
         )
 
         if not prepared.empty:
-            date_min = prepared["Date"].min().date()
-            date_max = prepared["Date"].max().date()
+            date_min = _to_py_date(prepared["Date"].min())
+            date_max = _to_py_date(prepared["Date"].max())
+            if date_min is None or date_max is None:
+                date_min = dt.date.today()
+                date_max = dt.date.today()
             f1, f2, f3 = st.columns([1.2, 1.2, 1.2])
             with f1:
                 selected_date_range = st.date_input("Date range", value=(date_min, date_max), min_value=date_min, max_value=date_max)
