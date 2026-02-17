@@ -871,6 +871,95 @@ def _prepare_history_df(df: pd.DataFrame, all_runs: bool, show_run_at: bool) -> 
     return working.reset_index(drop=True)
 
 
+def _run_label(row: pd.Series, fallback_index: int = 0) -> str:
+    date_part = row["Date"].date().isoformat() if pd.notna(row.get("Date")) else "unknown-date"
+    status = str(row.get("Status label") or "—")
+    run_type = str(row.get("run_type") or "manual")
+    run_id = str(row.get("run_id") or f"row-{fallback_index + 1}")
+    return f"{date_part} · {status} · {run_type} · {run_id}"
+
+
+def _get_run_detail(run_id: str) -> dict:
+    if not run_id:
+        return {}
+    cache = st.session_state.setdefault("_run_detail_cache", {})
+    if run_id in cache:
+        return cache[run_id]
+    try:
+        payload = api_get(f"/v1/results/run/{run_id}")
+    except Exception:
+        payload = {}
+    cache[run_id] = payload
+    return payload
+
+
+def _extract_hourly_df(detail_payload: dict) -> pd.DataFrame:
+    if isinstance(detail_payload.get("hourly"), list):
+        hourly_df = pd.DataFrame([r for r in detail_payload.get("hourly", []) if isinstance(r, dict)])
+        if not hourly_df.empty:
+            if "ts_local" not in hourly_df.columns and "time" in hourly_df.columns:
+                hourly_df = hourly_df.rename(columns={"time": "ts_local"})
+            hourly_df["ts_local"] = pd.to_datetime(hourly_df.get("ts_local"), errors="coerce")
+            for col in ["pv_total_kwh", "pv_kwh", "soc_end_pct", "soc_pct"]:
+                if col in hourly_df.columns:
+                    hourly_df[col] = pd.to_numeric(hourly_df[col], errors="coerce")
+            if "pv_total_kwh" not in hourly_df.columns and "pv_kwh" in hourly_df.columns:
+                hourly_df["pv_total_kwh"] = hourly_df["pv_kwh"]
+            if "soc_end_pct" not in hourly_df.columns and "soc_pct" in hourly_df.columns:
+                hourly_df["soc_end_pct"] = hourly_df["soc_pct"]
+            return hourly_df[[c for c in ["ts_local", "pv_total_kwh", "soc_end_pct"] if c in hourly_df.columns]].dropna(subset=["ts_local"])
+
+    if not (
+        isinstance(detail_payload.get("pv"), dict)
+        and isinstance(detail_payload.get("flows"), dict)
+        and isinstance(detail_payload.get("soc"), dict)
+    ):
+        return pd.DataFrame()
+
+    try:
+        pv_df = df_from_split(detail_payload["pv"])
+        flows_df = df_from_split(detail_payload["flows"])
+        soc_series = series_from_split(detail_payload["soc"])
+    except Exception:
+        return pd.DataFrame()
+
+    hourly_df = pd.concat([pv_df, flows_df], axis=1)
+    if "soc_end_pct" not in hourly_df.columns:
+        hourly_df["soc_end_pct"] = pd.to_numeric(soc_series, errors="coerce") * 100.0
+    if "pv_total_kwh" not in hourly_df.columns and "pv_kwh" in hourly_df.columns:
+        hourly_df["pv_total_kwh"] = pd.to_numeric(hourly_df["pv_kwh"], errors="coerce")
+    hourly_df = hourly_df.reset_index().rename(columns={"index": "ts_local"})
+    hourly_df["ts_local"] = pd.to_datetime(hourly_df["ts_local"], errors="coerce")
+    return hourly_df[[c for c in ["ts_local", "pv_total_kwh", "soc_end_pct"] if c in hourly_df.columns]].dropna(subset=["ts_local"])
+
+
+def _flatten_diff_payload(payload: object, prefix: str = "") -> dict[str, str]:
+    out: dict[str, str] = {}
+    if isinstance(payload, dict):
+        for key in sorted(payload.keys(), key=lambda x: str(x)):
+            key_name = f"{prefix}.{key}" if prefix else str(key)
+            out.update(_flatten_diff_payload(payload[key], key_name))
+        return out
+    if isinstance(payload, list):
+        out[prefix] = ", ".join(str(v) for v in payload)
+        return out
+    out[prefix] = "—" if payload is None else str(payload)
+    return out
+
+
+def _diff_table(left: dict, right: dict) -> pd.DataFrame:
+    left_flat = _flatten_diff_payload(left)
+    right_flat = _flatten_diff_payload(right)
+    keys = sorted(set(left_flat.keys()) | set(right_flat.keys()))
+    rows = []
+    for key in keys:
+        a_val = left_flat.get(key, "∅")
+        b_val = right_flat.get(key, "∅")
+        if a_val != b_val:
+            rows.append({"Field": key, "Run A": a_val, "Run B": b_val})
+    return pd.DataFrame(rows)
+
+
 def _render_run_inspector(filtered_df: pd.DataFrame) -> None:
     if filtered_df.empty:
         return
@@ -1038,6 +1127,145 @@ def _render_run_inspector(filtered_df: pd.DataFrame) -> None:
             )
 
 
+def _render_compare_runs_block(filtered_df: pd.DataFrame) -> None:
+    if filtered_df.empty:
+        return
+
+    working = filtered_df.sort_values(["Date", "Run at"], ascending=[False, False]).reset_index(drop=True)
+    options = {_run_label(row, i): i for i, row in working.iterrows()}
+    labels = list(options.keys())
+    default_b_idx = 1 if len(labels) > 1 else 0
+
+    with st.expander("Compare Runs", expanded=False):
+        st.caption("Select two runs to answer what changed and why in one view.")
+        c1, c2 = st.columns(2)
+        with c1:
+            run_a_label = st.selectbox("Run A", labels, index=0, key="compare_run_a")
+        with c2:
+            run_b_label = st.selectbox("Run B", labels, index=default_b_idx, key="compare_run_b")
+
+        if run_a_label == run_b_label:
+            st.info("Pick two different runs to compare.")
+            return
+
+        row_a = working.iloc[options[run_a_label]]
+        row_b = working.iloc[options[run_b_label]]
+        run_id_a = str(row_a.get("run_id") or "")
+        run_id_b = str(row_b.get("run_id") or "")
+        detail_a = _get_run_detail(run_id_a)
+        detail_b = _get_run_detail(run_id_b)
+
+        metrics_a = detail_a.get("metrics") if isinstance(detail_a.get("metrics"), dict) else {}
+        metrics_b = detail_b.get("metrics") if isinstance(detail_b.get("metrics"), dict) else {}
+        pv_a = float(row_a.get("PV p50") or metrics_a.get("pv_forecast_kwh") or 0.0)
+        pv_b = float(row_b.get("PV p50") or metrics_b.get("pv_forecast_kwh") or 0.0)
+        load_a = float(row_a.get("Load") or metrics_a.get("cons_forecast_kwh") or 0.0)
+        load_b = float(row_b.get("Load") or metrics_b.get("cons_forecast_kwh") or 0.0)
+        charge_a = float(row_a.get("Charge") or metrics_a.get("charge_kw") or 0.0)
+        charge_b = float(row_b.get("Charge") or metrics_b.get("charge_kw") or 0.0)
+        warn_a = int(row_a.get("warnings_count") or 0)
+        warn_b = int(row_b.get("warnings_count") or 0)
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("PV p50 Δ (kWh)", f"{pv_b - pv_a:+.2f}", help=f"A: {pv_a:.2f} → B: {pv_b:.2f}")
+        m2.metric("Load Δ (kWh)", f"{load_b - load_a:+.2f}", help=f"A: {load_a:.2f} → B: {load_b:.2f}")
+        m3.metric("Charge Δ (kW)", f"{charge_b - charge_a:+.2f}", help=f"A: {charge_a:.2f} → B: {charge_b:.2f}")
+        m4.metric("Warnings Δ", f"{warn_b - warn_a:+d}", help=f"A: {warn_a} → B: {warn_b}")
+
+        hourly_a = _extract_hourly_df(detail_a)
+        hourly_b = _extract_hourly_df(detail_b)
+        if not hourly_a.empty and not hourly_b.empty:
+            overlay_df = hourly_a.rename(columns={"pv_total_kwh": "pv_a", "soc_end_pct": "soc_a"}).merge(
+                hourly_b.rename(columns={"pv_total_kwh": "pv_b", "soc_end_pct": "soc_b"}),
+                on="ts_local",
+                how="outer",
+            ).sort_values("ts_local")
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=overlay_df["ts_local"], y=overlay_df.get("pv_a"), mode="lines", name="PV A", line=dict(color="#2ca02c")))
+            fig.add_trace(go.Scatter(x=overlay_df["ts_local"], y=overlay_df.get("pv_b"), mode="lines", name="PV B", line=dict(color="#98df8a", dash="dash")))
+            fig.add_trace(go.Scatter(x=overlay_df["ts_local"], y=overlay_df.get("soc_a"), mode="lines", name="SOC A", yaxis="y2", line=dict(color="#1f77b4")))
+            fig.add_trace(go.Scatter(x=overlay_df["ts_local"], y=overlay_df.get("soc_b"), mode="lines", name="SOC B", yaxis="y2", line=dict(color="#aec7e8", dash="dash")))
+            fig.update_layout(
+                template=PLOTLY_DARK,
+                margin=dict(l=10, r=10, t=25, b=10),
+                legend=dict(orientation="h", y=1.02, x=0),
+                yaxis=dict(title="PV (kWh)"),
+                yaxis2=dict(title="SOC (%)", overlaying="y", side="right"),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Hourly overlays unavailable for one or both runs.")
+
+        weather_a = detail_a.get("weather_ensemble") if isinstance(detail_a.get("weather_ensemble"), dict) else {}
+        weather_b = detail_b.get("weather_ensemble") if isinstance(detail_b.get("weather_ensemble"), dict) else {}
+        weather_focus_a = {
+            "failed_models": weather_a.get("failed_models") or [],
+            "weights_used": weather_a.get("weights_used") or {},
+            "derived_irradiance_by_model": weather_a.get("derived_irradiance_by_model") or {},
+        }
+        weather_focus_b = {
+            "failed_models": weather_b.get("failed_models") or [],
+            "weights_used": weather_b.get("weights_used") or {},
+            "derived_irradiance_by_model": weather_b.get("derived_irradiance_by_model") or {},
+        }
+
+        diffs_tabs = st.tabs(["Weather diff", "Inputs diff", "Settings diff", "Export"])
+        with diffs_tabs[0]:
+            weather_diff_df = _diff_table(weather_focus_a, weather_focus_b)
+            if weather_diff_df.empty:
+                st.success("No weather ensemble differences found.")
+            else:
+                st.dataframe(weather_diff_df, use_container_width=True, hide_index=True)
+        with diffs_tabs[1]:
+            inputs_a = detail_a.get("inputs_used") if isinstance(detail_a.get("inputs_used"), dict) else {}
+            inputs_b = detail_b.get("inputs_used") if isinstance(detail_b.get("inputs_used"), dict) else {}
+            inputs_diff_df = _diff_table(inputs_a, inputs_b)
+            if inputs_diff_df.empty:
+                st.success("No input differences found.")
+            else:
+                st.dataframe(inputs_diff_df, use_container_width=True, hide_index=True)
+        with diffs_tabs[2]:
+            settings_a = detail_a.get("settings_used") if isinstance(detail_a.get("settings_used"), dict) else {}
+            settings_b = detail_b.get("settings_used") if isinstance(detail_b.get("settings_used"), dict) else {}
+            settings_diff_df = _diff_table(settings_a, settings_b)
+            if settings_diff_df.empty:
+                st.success("No settings differences found.")
+            else:
+                st.dataframe(settings_diff_df, use_container_width=True, hide_index=True)
+        with diffs_tabs[3]:
+            compare_bundle = {
+                "run_a": {"label": run_a_label, "run_id": run_id_a, "summary": {"pv_p50": pv_a, "load": load_a, "charge_kw": charge_a, "warnings_count": warn_a}},
+                "run_b": {"label": run_b_label, "run_id": run_id_b, "summary": {"pv_p50": pv_b, "load": load_b, "charge_kw": charge_b, "warnings_count": warn_b}},
+                "deltas": {
+                    "pv_p50_kwh": pv_b - pv_a,
+                    "load_kwh": load_b - load_a,
+                    "charge_kw": charge_b - charge_a,
+                    "warnings_count": warn_b - warn_a,
+                },
+                "diffs": {
+                    "weather": _diff_table(weather_focus_a, weather_focus_b).to_dict(orient="records"),
+                    "inputs": _diff_table(
+                        detail_a.get("inputs_used") if isinstance(detail_a.get("inputs_used"), dict) else {},
+                        detail_b.get("inputs_used") if isinstance(detail_b.get("inputs_used"), dict) else {},
+                    ).to_dict(orient="records"),
+                    "settings": _diff_table(
+                        detail_a.get("settings_used") if isinstance(detail_a.get("settings_used"), dict) else {},
+                        detail_b.get("settings_used") if isinstance(detail_b.get("settings_used"), dict) else {},
+                    ).to_dict(orient="records"),
+                },
+            }
+            compare_json = json.dumps(compare_bundle, indent=2, ensure_ascii=False)
+            st.code(compare_json, language="json")
+            st.download_button(
+                "Download compare bundle JSON",
+                data=compare_json,
+                file_name=f"compare_{run_id_a or 'run_a'}_vs_{run_id_b or 'run_b'}.json",
+                mime="application/json",
+                key=f"compare_bundle_download_{run_id_a}_{run_id_b}",
+            )
+
+
 def _render_history_log_block() -> None:
     tooltip_heading("History log", TABLE_TOOLTIPS["History log"])
 
@@ -1134,6 +1362,7 @@ def _render_history_log_block() -> None:
             )
             render_modern_table(display_df, column_config=history_column_config)
             _render_run_inspector(filtered)
+            _render_compare_runs_block(filtered)
 
 
 if hasattr(st, "fragment"):
