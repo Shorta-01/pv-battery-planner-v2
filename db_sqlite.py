@@ -457,6 +457,20 @@ def _summary_from_row(row: sqlite3.Row) -> dict:
                 "failed_models": failed_models,
             }
 
+    pv_quality: dict[str, Any] = {}
+    raw_pv_quality = row["pv_quality"] if "pv_quality" in row.keys() else None
+    if isinstance(raw_pv_quality, str) and raw_pv_quality:
+        try:
+            parsed_pv_quality = json.loads(raw_pv_quality)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed_pv_quality = {}
+        if isinstance(parsed_pv_quality, dict):
+            pv_quality = {
+                "label": parsed_pv_quality.get("label"),
+                "score": parsed_pv_quality.get("score"),
+            }
+            pv_quality = {k: v for k, v in pv_quality.items() if v is not None}
+
     return {
         "run_id": row["run_id"],
         "target_date": row["target_date"],
@@ -475,6 +489,7 @@ def _summary_from_row(row: sqlite3.Row) -> dict:
         "pv_p10_kwh": _safe_float(row["pv_p10_kwh"]),
         "pv_p50_kwh": _safe_float(row["pv_p50_kwh"]),
         "pv_p90_kwh": _safe_float(row["pv_p90_kwh"]),
+        "pv_quality": pv_quality,
         "models_summary": models_summary,
         "run_at": row["run_at_utc"],
         "run_type": row["run_type"] or "manual",
@@ -509,6 +524,7 @@ def fetch_history_latest_per_day(db_path: str, limit_days: int | None = None) ->
                     warnings_count,
                     run_duration_ms,
                     weather_ensemble_json,
+                    pv_quality,
                     pv_p10_kwh,
                     pv_p50_kwh,
                     pv_p90_kwh,
@@ -531,6 +547,7 @@ def fetch_history_latest_per_day(db_path: str, limit_days: int | None = None) ->
                 warnings_count,
                 run_duration_ms,
                 weather_ensemble_json,
+                pv_quality,
                 pv_p10_kwh,
                 pv_p50_kwh,
                 pv_p90_kwh
@@ -567,6 +584,7 @@ def fetch_history_all_runs(db_path: str, limit_days: int | None = None) -> list[
                 warnings_count,
                 run_duration_ms,
                 weather_ensemble_json,
+                pv_quality,
                 pv_p10_kwh,
                 pv_p50_kwh,
                 pv_p90_kwh
