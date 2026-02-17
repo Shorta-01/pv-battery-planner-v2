@@ -148,7 +148,23 @@ def test_fetch_full_run_by_id_returns_stored_run_details(tmp_path):
         "target_date": "2026-02-02",
         "run_at_utc": "2026-02-01T22:00:00+00:00",
         "run_type": "manual",
+        "status": "ok",
+        "warnings_count": 1,
         "warnings": ["check-1"],
+        "inputs_used": {
+            "ensemble_method": "weighted",
+            "weather_models_selected": ["ecmwf_ifs"],
+        },
+        "config_hash": "cfg-hash-123",
+        "config": {"reserve_soc": 20, "timezone": "Europe/Brussels"},
+        "weather_ensemble": {
+            "selected_models": ["ecmwf_ifs"],
+            "failed_models": ["gfs"],
+            "missing_variables_by_model": {"gfs": ["dni"]},
+            "derived_irradiance_by_model": {"ecmwf_ifs": False, "gfs": True},
+            "weights_used": {"ecmwf_ifs": 1.0},
+        },
+        "pv_totals_kwh": {"p10": 6.8, "p50": 8.0, "p90": 9.4},
         "metrics": {
             "charge_kw": 3.5,
             "cutoff_soc": 0.5,
@@ -185,9 +201,27 @@ def test_fetch_full_run_by_id_returns_stored_run_details(tmp_path):
     assert full is not None
     assert full["run_id"] == "run-full"
     assert full["target_date"] == "2026-02-02"
+    assert full["run_at_utc"] == "2026-02-01T22:00:00+00:00"
+    assert full["run_type"] == "manual"
+    assert full["status"] == "ok"
+    assert full["warnings_count"] == 1
     assert full["metrics"]["charge_kw"] == 3.5
     assert full["metrics"]["cutoff_soc"] == 0.5
     assert full["warnings"] == ["check-1"]
+    assert full["inputs_used"] == {
+        "ensemble_method": "weighted",
+        "weather_models_selected": ["ecmwf_ifs"],
+    }
+    assert full["config_hash"] == "cfg-hash-123"
+    assert full["config_json"] == {"reserve_soc": 20, "timezone": "Europe/Brussels"}
+    assert full["weather_ensemble"] == {
+        "selected_models": ["ecmwf_ifs"],
+        "failed_models": ["gfs"],
+        "missing_variables_by_model": {"gfs": ["dni"]},
+        "derived_irradiance_by_model": {"ecmwf_ifs": False, "gfs": True},
+        "weights_used": {"ecmwf_ifs": 1.0},
+    }
+    assert full["pv_totals_kwh"] == {"p10": 6.8, "p50": 8.0, "p90": 9.4}
     assert full["pv"]["columns"] == [
         "pv_total_kwh",
         "pv_total_unclipped_kwh",
