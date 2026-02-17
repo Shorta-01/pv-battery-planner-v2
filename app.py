@@ -429,7 +429,12 @@ def render_weather_models(
                     st.info("No debug data yet. Click Run forecast once to populate this.")
                 else:
                     dbg_json = json.dumps(dbg, indent=2, ensure_ascii=False)
-                    st.text_area("Weather ensemble debug JSON (copy/paste)", value=dbg_json, height=280)
+                    st.text_area(
+                        "Weather ensemble debug JSON (copy/paste)",
+                        value=dbg_json,
+                        height=280,
+                        key="weather_ensemble_debug_json_text_area",
+                    )
                     st.download_button(
                         "Download debug JSON",
                         data=dbg_json,
