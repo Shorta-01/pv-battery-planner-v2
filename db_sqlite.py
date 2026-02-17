@@ -553,32 +553,7 @@ def fetch_history_all_runs(db_path: str, limit_days: int | None = None) -> list[
     return [_summary_from_row(row) for row in rows]
 
 
-def fetch_latest_full_run(db_path: str) -> dict | None:
-    with _connect(db_path) as conn:
-        row = conn.execute(
-            """
-            SELECT run_id, target_date, run_at_utc, run_type, timezone,
-                   charge_kw, cutoff_soc, pv_forecast_kwh, cons_forecast_kwh,
-                   warnings_json
-            FROM forecast_runs
-            ORDER BY run_at_utc DESC
-            LIMIT 1
-            """
-        ).fetchone()
-        if row is None:
-            return None
-        hourly_rows = conn.execute(
-            """
-            SELECT ts_local, pv_kwh, pv_total_unclipped_kwh, pv_east_kwh, pv_south_kwh, pv_clipped_kwh,
-                   load_kwh, grid_import_kwh, grid_export_kwh,
-                   batt_charge_kwh, batt_discharge_kwh, soc_pct
-            FROM forecast_hourly
-            WHERE run_id = ?
-            ORDER BY ts_local ASC
-            """,
-            (row["run_id"],),
-        ).fetchall()
-
+def _build_full_run_payload(row: sqlite3.Row, hourly_rows: list[sqlite3.Row]) -> dict:
     hourly = pd.DataFrame([dict(r) for r in hourly_rows])
     if hourly.empty:
         return {
@@ -611,7 +586,7 @@ def fetch_latest_full_run(db_path: str) -> dict | None:
     flows_df["batt_discharge_kwh"] = pd.to_numeric(hourly["batt_discharge_kwh"], errors="coerce").fillna(0.0)
     flows_df["soc_end_pct"] = pd.to_numeric(hourly["soc_pct"], errors="coerce").fillna(0.0)
 
-    soc_series = (pd.to_numeric(hourly["soc_pct"], errors="coerce").fillna(0.0) / 100.0)
+    soc_series = pd.to_numeric(hourly["soc_pct"], errors="coerce").fillna(0.0) / 100.0
     soc_series.index = idx
 
     return {
@@ -630,3 +605,50 @@ def fetch_latest_full_run(db_path: str) -> dict | None:
         "run_at": row["run_at_utc"],
         "run_type": row["run_type"] or "manual",
     }
+
+
+def fetch_full_run_by_id(db_path: str, run_id: str) -> dict | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT run_id, target_date, run_at_utc, run_type, timezone,
+                   charge_kw, cutoff_soc, pv_forecast_kwh, cons_forecast_kwh,
+                   warnings_json
+            FROM forecast_runs
+            WHERE run_id = ?
+            LIMIT 1
+            """,
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        hourly_rows = conn.execute(
+            """
+            SELECT ts_local, pv_kwh, pv_total_unclipped_kwh, pv_east_kwh, pv_south_kwh, pv_clipped_kwh,
+                   load_kwh, grid_import_kwh, grid_export_kwh,
+                   batt_charge_kwh, batt_discharge_kwh, soc_pct
+            FROM forecast_hourly
+            WHERE run_id = ?
+            ORDER BY ts_local ASC
+            """,
+            (row["run_id"],),
+        ).fetchall()
+    return _build_full_run_payload(row, hourly_rows)
+
+
+def fetch_latest_full_run(db_path: str) -> dict | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT run_id, target_date, run_at_utc, run_type, timezone,
+                   charge_kw, cutoff_soc, pv_forecast_kwh, cons_forecast_kwh,
+                   warnings_json
+            FROM forecast_runs
+            ORDER BY run_at_utc DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        run_id = str(row["run_id"])
+    return fetch_full_run_by_id(db_path, run_id)
