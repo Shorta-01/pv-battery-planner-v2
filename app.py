@@ -1599,6 +1599,28 @@ def _render_history_log_block() -> None:
         if filtered.empty:
             st.info("No history records yet. Run a forecast to create the first record.")
         else:
+            latest_row = filtered.iloc[-1]
+            latest_date = latest_row.get("Date")
+            if pd.isna(latest_date):
+                latest_date_text = "—"
+            elif hasattr(latest_date, "strftime"):
+                latest_date_text = latest_date.strftime("%Y-%m-%d")
+            else:
+                latest_date_text = str(latest_date)
+            latest_cutoff_raw = pd.to_numeric(pd.Series([latest_row.get("cutoff_soc")]), errors="coerce").iloc[0]
+            latest_cutoff_pct = (latest_cutoff_raw * 100.0) if pd.notna(latest_cutoff_raw) else None
+            latest_warnings = int(pd.to_numeric(pd.Series([latest_row.get("warnings_count")]), errors="coerce").fillna(0).iloc[0])
+
+            st.markdown("**Last run summary**")
+            s1, s2, s3, s4, s5, s6, s7 = st.columns(7)
+            s1.metric("Target date", latest_date_text)
+            s2.metric("Status", str(latest_row.get("Status label") or "—"))
+            s3.metric("PV p50", f"{float(pd.to_numeric(pd.Series([latest_row.get('PV p50')]), errors='coerce').fillna(0).iloc[0]):.2f} kWh")
+            s4.metric("Load", f"{float(pd.to_numeric(pd.Series([latest_row.get('Load')]), errors='coerce').fillna(0).iloc[0]):.2f} kWh")
+            s5.metric("Allowed AC charge power (kW)", f"{float(pd.to_numeric(pd.Series([latest_row.get('Charge')]), errors='coerce').fillna(0).iloc[0]):.2f} kW")
+            s6.metric("Cutoff SOC (%)", f"{latest_cutoff_pct:.1f}%" if latest_cutoff_pct is not None else "—")
+            s7.metric("Warnings count", str(latest_warnings))
+
             display_df = filtered.copy()
             display_df["Date"] = display_df["Date"].astype(str)
             if "Run at" in display_df.columns:
