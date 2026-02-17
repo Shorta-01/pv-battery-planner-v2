@@ -324,7 +324,7 @@ class BackendState:
             tz=tz,
             weather_models=selected_models,
             ensemble_method=str(ensemble_method).lower().strip(),
-            pv_uncertainty=True,
+            pv_uncertainty=bool(pv_uncertainty),
             accuracy_mode=True,
             fast_mode=bool(fast_mode),
         )
