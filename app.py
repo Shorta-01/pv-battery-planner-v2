@@ -88,8 +88,8 @@ BADGE_HOVERTEXT = {
     "🗺️": "Regional (Europe-scale). A good second opinion that is usually smoother and more stable than high-resolution models.",
     "🌍": "Global. Stable big-picture baseline for fronts and the overall weather pattern.",
     "⏱️": "Uses 15-minute solar radiation (then aggregated to hourly). Can improve the PV curve shape when clouds change quickly.",
-    "⚠️": "Partial in last run. The model worked, but PV inputs were incomplete or estimated. Hover to see details.",
-    "❌": "Failed in last run. The model could not be used. Hover to see the reason.",
+    "⚠️": "Partial in last run. Hover for details.",
+    "❌": "Failed in last run. Hover for the reason.",
 }
 
 
@@ -337,7 +337,7 @@ def weather_model_option_help(model: dict) -> str:
 
 
 def last_run_status_badge(model_id: str) -> tuple[str | None, str]:
-    dbg = st.session_state.get("last_ensemble_debug") or {}
+    dbg = st.session_state.get("last_weather_ensemble_debug") or {}
     if not isinstance(dbg, dict) or not dbg:
         return (None, "")
 
@@ -348,16 +348,15 @@ def last_run_status_badge(model_id: str) -> tuple[str | None, str]:
 
     if model_id in failed:
         r = reasons.get(model_id) or {}
-        if isinstance(r, dict):
-            detail = str(r.get("detail") or r.get("message") or "Unknown error").strip()
-            hint = str(r.get("hint") or r.get("provider_reason") or "").strip()
-        else:
-            detail = str(r).strip() or "Unknown error"
-            hint = ""
-        tip = f"Failed in last run. {detail}"
-        if hint:
-            tip = f"{tip} Hint: {hint}"
-        return ("❌", tip)
+        category = str(r.get("category") or "unknown").strip() if isinstance(r, dict) else "unknown"
+        status = r.get("status") if isinstance(r, dict) else None
+        message = str(r.get("message") or "Unknown error").strip() if isinstance(r, dict) else str(r).strip() or "Unknown error"
+        parts = ["Failed in last run. This model was not used."]
+        parts.append(f"Reason: {message}")
+        parts.append(f"Category: {category}")
+        if status is not None:
+            parts.append(f"HTTP status: {status}")
+        return ("❌", " ".join(parts))
 
     missing = list(missing_by.get(model_id) or [])
     derived = bool(derived_by.get(model_id))
@@ -1667,6 +1666,21 @@ with left:
         if not selected_models:
             st.error("Select at least one weather model.")
 
+        dbg = st.session_state.get("last_weather_ensemble_debug") or {}
+        with st.expander("Advanced: last run model debug", expanded=False):
+            st.caption("Raw model debug from the last Run forecast. Copy/paste this into Codex when reporting issues.")
+            if not dbg:
+                st.info("No debug data yet. Click Run forecast once to populate this.")
+            else:
+                dbg_json = json.dumps(dbg, indent=2, ensure_ascii=False)
+                st.text_area("Weather ensemble debug JSON (copy/paste)", value=dbg_json, height=280)
+                st.download_button(
+                    "Download debug JSON",
+                    data=dbg_json,
+                    file_name="weather_ensemble_debug.json",
+                    mime="application/json",
+                )
+
     ensemble_method = "weighted"
     run = st.button(
         "Run forecast",
@@ -1697,9 +1711,10 @@ if run:
                 },
             )
             result = run_response["result"]
-            st.session_state["last_ensemble_debug"] = result.get("ensemble_debug") or {}
-            st.session_state["last_ensemble_debug_at"] = dt.datetime.now().isoformat()
-            st.session_state["last_ensemble_models_used"] = list(selected_models)
+            dbg = result.get("weather_ensemble")
+            st.session_state["last_weather_ensemble_debug"] = dbg if isinstance(dbg, dict) else {}
+            st.session_state["last_weather_ensemble_debug_at"] = dt.datetime.utcnow().isoformat()
+            st.session_state["last_weather_ensemble_models_used"] = list(selected_models)
             tomorrow = dt.date.fromisoformat(result["target_date"])
             weather_df = df_from_split(result["weather"])
             pv = df_from_split(result["pv"])
