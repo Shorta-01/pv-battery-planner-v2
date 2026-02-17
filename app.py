@@ -933,23 +933,57 @@ def _extract_hourly_df(detail_payload: dict) -> pd.DataFrame:
     return hourly_df[[c for c in ["ts_local", "pv_total_kwh", "soc_end_pct"] if c in hourly_df.columns]].dropna(subset=["ts_local"])
 
 
-def _flatten_diff_payload(payload: object, prefix: str = "") -> dict[str, str]:
+NOISY_DIFF_KEYS = {
+    "run_id",
+    "run_at_utc",
+    "warnings_count",
+    "status",
+    "duration",
+    "session_id",
+    "session_state",
+    "ui_state",
+    "updated_at",
+    "created_at",
+}
+
+NOISY_DIFF_PATH_FRAGMENTS = {
+    "metadata",
+    "timestamps",
+    "session",
+    "transient",
+}
+
+
+def _is_noisy_diff_path(path: str) -> bool:
+    lowered_tokens = [token.strip().lower() for token in path.split(".") if token.strip()]
+    if not lowered_tokens:
+        return False
+    if lowered_tokens[-1] in NOISY_DIFF_KEYS:
+        return True
+    return any(fragment in lowered_tokens for fragment in NOISY_DIFF_PATH_FRAGMENTS)
+
+
+def _flatten_diff_payload(payload: object, prefix: str = "", include_noisy: bool = True) -> dict[str, str]:
     out: dict[str, str] = {}
     if isinstance(payload, dict):
         for key in sorted(payload.keys(), key=lambda x: str(x)):
             key_name = f"{prefix}.{key}" if prefix else str(key)
-            out.update(_flatten_diff_payload(payload[key], key_name))
+            out.update(_flatten_diff_payload(payload[key], key_name, include_noisy=include_noisy))
         return out
     if isinstance(payload, list):
+        if prefix and not include_noisy and _is_noisy_diff_path(prefix):
+            return out
         out[prefix] = ", ".join(str(v) for v in payload)
+        return out
+    if prefix and not include_noisy and _is_noisy_diff_path(prefix):
         return out
     out[prefix] = "—" if payload is None else str(payload)
     return out
 
 
-def _diff_table(left: dict, right: dict) -> pd.DataFrame:
-    left_flat = _flatten_diff_payload(left)
-    right_flat = _flatten_diff_payload(right)
+def _diff_table(left: dict, right: dict, include_noisy: bool = True) -> pd.DataFrame:
+    left_flat = _flatten_diff_payload(left, include_noisy=include_noisy)
+    right_flat = _flatten_diff_payload(right, include_noisy=include_noisy)
     keys = sorted(set(left_flat.keys()) | set(right_flat.keys()))
     rows = []
     for key in keys:
@@ -1275,10 +1309,17 @@ def _render_compare_runs_block(filtered_df: pd.DataFrame) -> None:
                 st.success("No input differences found.")
             else:
                 st.dataframe(inputs_diff_df, use_container_width=True, hide_index=True)
+        include_noisy_settings = False
         with diffs_tabs[2]:
+            include_noisy_settings = st.toggle(
+                "Include noisy keys",
+                value=False,
+                key="compare_settings_diff_include_noisy",
+                help="Show technical/transient fields (run_id, timestamps, metadata, session/UI state) for debugging.",
+            )
             settings_a = detail_a.get("settings_used") if isinstance(detail_a.get("settings_used"), dict) else {}
             settings_b = detail_b.get("settings_used") if isinstance(detail_b.get("settings_used"), dict) else {}
-            settings_diff_df = _diff_table(settings_a, settings_b)
+            settings_diff_df = _diff_table(settings_a, settings_b, include_noisy=include_noisy_settings)
             if settings_diff_df.empty:
                 st.success("No settings differences found.")
             else:
@@ -1304,6 +1345,7 @@ def _render_compare_runs_block(filtered_df: pd.DataFrame) -> None:
                     "settings": _diff_table(
                         detail_a.get("settings_used") if isinstance(detail_a.get("settings_used"), dict) else {},
                         detail_b.get("settings_used") if isinstance(detail_b.get("settings_used"), dict) else {},
+                        include_noisy=include_noisy_settings,
                     ).to_dict(orient="records"),
                 },
             }
