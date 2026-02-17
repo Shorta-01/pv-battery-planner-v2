@@ -750,6 +750,18 @@ def series_from_split(payload: dict) -> pd.Series:
     return pd.Series(dtype=float)
 
 
+def _parse_json_dict_maybe(payload: object) -> dict:
+    if isinstance(payload, dict):
+        return payload
+    if isinstance(payload, str):
+        try:
+            parsed = json.loads(payload)
+        except (TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
 def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.DataFrame:
     history_columns = [
         "run_id",
@@ -797,6 +809,15 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
         if not isinstance(models_list, list):
             models_list = []
         models_text = ", ".join(str(m) for m in models_list) if models_list else "—"
+        models_ok_count = int(item.get("models_ok_count") or 0)
+        models_failed_count = int(item.get("models_failed_count") or 0)
+        models_total_count = models_ok_count + models_failed_count
+        if models_failed_count > 0:
+            models_summary_text = f"{models_ok_count} OK, {models_failed_count} failed"
+        elif models_total_count > 0:
+            models_summary_text = f"{models_total_count} models OK"
+        else:
+            models_summary_text = "—"
 
         pv_p10 = float(item.get("pv_p10_kwh") or 0.0)
         pv_p50 = float(item.get("pv_p50_kwh") or metrics.get("pv_forecast_kwh") or 0.0)
@@ -810,7 +831,7 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
             "Run at": item.get("run_at"),
             "Status": status_raw or "ok",
             "Status label": status_label,
-            "Models": models_text,
+            "Models": models_summary_text,
             "PV p50": round(pv_p50, 2),
             "PV p10": round(pv_p10, 2),
             "PV p90": round(pv_p90, 2),
@@ -819,7 +840,7 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
             "Charge": round(float(metrics.get("charge_kw", 0.0)), 2),
             "Warnings": warnings_text,
             "Duration (ms)": item.get("run_duration_ms"),
-            "Models OK/Failed": f"{int(item.get('models_ok_count') or 0)}/{int(item.get('models_failed_count') or 0)}",
+            "Models OK/Failed": f"{models_ok_count}/{models_failed_count}",
             "Primary model": str(item.get("primary_model_id") or "—"),
             "warnings_count": warnings_count,
             "run_type": str(item.get("run_type") or "manual"),
@@ -1072,11 +1093,65 @@ def _render_run_inspector(filtered_df: pd.DataFrame) -> None:
             selected_models = models_summary.get("selected_models", []) if isinstance(models_summary, dict) else []
             failed_models = models_summary.get("failed_models", []) if isinstance(models_summary, dict) else []
             weights_used = models_summary.get("weights_used", {}) if isinstance(models_summary, dict) else {}
-            st.write("Selected models:", ", ".join(selected_models) if selected_models else "—")
-            st.write("Failed models:", ", ".join(failed_models) if failed_models else "None")
-            if isinstance(weights_used, dict) and weights_used:
-                weights_df = pd.DataFrame([{"Model": k, "Weight": float(v)} for k, v in weights_used.items()])
-                st.dataframe(weights_df, use_container_width=True, hide_index=True)
+            weather_ensemble = _parse_json_dict_maybe(detail.get("weather_ensemble_json"))
+            if not weather_ensemble:
+                weather_ensemble = detail.get("weather_ensemble") if isinstance(detail.get("weather_ensemble"), dict) else {}
+
+            failed_models_set = set(str(m) for m in failed_models)
+            failed_reasons = weather_ensemble.get("failed_model_reasons") if isinstance(weather_ensemble.get("failed_model_reasons"), dict) else {}
+            missing_by_model = weather_ensemble.get("missing_vars_by_model") if isinstance(weather_ensemble.get("missing_vars_by_model"), dict) else {}
+            derived_by_model = weather_ensemble.get("derived_irradiance_by_model") if isinstance(weather_ensemble.get("derived_irradiance_by_model"), dict) else {}
+
+            model_ids: list[str] = []
+            for model_id in selected_models:
+                model_text = str(model_id)
+                if model_text and model_text not in model_ids:
+                    model_ids.append(model_text)
+            if isinstance(weights_used, dict):
+                for model_id in weights_used.keys():
+                    model_text = str(model_id)
+                    if model_text and model_text not in model_ids:
+                        model_ids.append(model_text)
+            for model_id in failed_models_set:
+                if model_id and model_id not in model_ids:
+                    model_ids.append(model_id)
+
+            st.caption("Short status in History keeps the table readable. Full per-model diagnostics are shown below.")
+            if not model_ids:
+                st.info("No model details available for this run.")
+            else:
+                model_rows = []
+                for model_id in model_ids:
+                    is_selected = model_id in [str(m) for m in selected_models]
+                    is_failed = model_id in failed_models_set
+                    failure_payload = failed_reasons.get(model_id, {})
+                    failure_reason = ""
+                    if isinstance(failure_payload, dict):
+                        failure_reason = str(failure_payload.get("error") or failure_payload.get("reason") or "").strip()
+                    elif failure_payload:
+                        failure_reason = str(failure_payload).strip()
+                    missing_vars = missing_by_model.get(model_id, [])
+                    missing_count = len(missing_vars) if isinstance(missing_vars, list) else 0
+                    model_rows.append({
+                        "Model": model_id,
+                        "Selected": "Yes" if is_selected else "No",
+                        "Weight": float(weights_used.get(model_id, 0.0)) if isinstance(weights_used, dict) else 0.0,
+                        "Status": "Failed" if is_failed else "OK",
+                        "Failure reason": (failure_reason[:117] + "...") if len(failure_reason) > 120 else (failure_reason or "—"),
+                        "Missing vars": int(missing_count),
+                        "Derived irradiance": "Yes" if bool(derived_by_model.get(model_id)) else "No",
+                    })
+
+                model_details_df = pd.DataFrame(model_rows)
+                status_counts = model_details_df["Status"].value_counts()
+                ok_count = int(status_counts.get("OK", 0))
+                failed_count = int(status_counts.get("Failed", 0))
+                st.markdown(f"**Weather models:** {ok_count} OK, {failed_count} failed")
+                model_column_config = {
+                    "Weight": st.column_config.NumberColumn(format="%.4f"),
+                    "Missing vars": st.column_config.NumberColumn(format="%d"),
+                }
+                render_modern_table(model_details_df, column_config=model_column_config)
 
         with tab_inputs:
             inputs_used = detail.get("inputs_used") if isinstance(detail.get("inputs_used"), dict) else {}
