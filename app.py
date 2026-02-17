@@ -1166,11 +1166,61 @@ def _render_compare_runs_block(filtered_df: pd.DataFrame) -> None:
         warn_a = int(row_a.get("warnings_count") or 0)
         warn_b = int(row_b.get("warnings_count") or 0)
 
+        weather_a = detail_a.get("weather_ensemble") if isinstance(detail_a.get("weather_ensemble"), dict) else {}
+        weather_b = detail_b.get("weather_ensemble") if isinstance(detail_b.get("weather_ensemble"), dict) else {}
+
+        def _extract_pv_range_width(history_row: pd.Series, run_detail: dict) -> float | None:
+            p10_raw = history_row.get("PV p10")
+            p90_raw = history_row.get("PV p90")
+            p10 = float(p10_raw) if pd.notna(p10_raw) else None
+            p90 = float(p90_raw) if pd.notna(p90_raw) else None
+
+            weather = run_detail.get("weather_ensemble") if isinstance(run_detail.get("weather_ensemble"), dict) else {}
+            pv_totals = weather.get("pv_totals_kwh") if isinstance(weather.get("pv_totals_kwh"), dict) else {}
+            if p10 is None:
+                p10_alt = pv_totals.get("p10")
+                p10 = float(p10_alt) if p10_alt is not None else None
+            if p90 is None:
+                p90_alt = pv_totals.get("p90")
+                p90 = float(p90_alt) if p90_alt is not None else None
+
+            if p10 is None or p90 is None:
+                return None
+            return p90 - p10
+
+        def _extract_cutoff_soc_pct(run_detail: dict) -> float | None:
+            metrics = run_detail.get("metrics") if isinstance(run_detail.get("metrics"), dict) else {}
+            cutoff = metrics.get("cutoff_soc")
+            if cutoff is None:
+                return None
+            cutoff_val = float(cutoff)
+            return cutoff_val * 100.0 if cutoff_val <= 1.0 else cutoff_val
+
+        pv_width_a = _extract_pv_range_width(row_a, detail_a)
+        pv_width_b = _extract_pv_range_width(row_b, detail_b)
+        cutoff_a = _extract_cutoff_soc_pct(detail_a)
+        cutoff_b = _extract_cutoff_soc_pct(detail_b)
+
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("PV p50 Δ (kWh)", f"{pv_b - pv_a:+.2f}", help=f"A: {pv_a:.2f} → B: {pv_b:.2f}")
         m2.metric("Load Δ (kWh)", f"{load_b - load_a:+.2f}", help=f"A: {load_a:.2f} → B: {load_b:.2f}")
         m3.metric("Charge Δ (kW)", f"{charge_b - charge_a:+.2f}", help=f"A: {charge_a:.2f} → B: {charge_b:.2f}")
         m4.metric("Warnings Δ", f"{warn_b - warn_a:+d}", help=f"A: {warn_a} → B: {warn_b}")
+
+        m5, m6 = st.columns(2)
+        if pv_width_a is not None and pv_width_b is not None:
+            m5.metric(
+                "PV range width Δ (kWh)",
+                f"{pv_width_b - pv_width_a:+.2f}",
+                help=f"A: {pv_width_a:.2f} → B: {pv_width_b:.2f}",
+            )
+        else:
+            m5.metric("PV range width Δ (kWh)", "—", help="Unavailable when uncertainty bounds (p10/p90) are missing.")
+
+        if cutoff_a is not None and cutoff_b is not None:
+            m6.metric("Cutoff SOC Δ (pp)", f"{cutoff_b - cutoff_a:+.1f}", help=f"A: {cutoff_a:.1f}% → B: {cutoff_b:.1f}%")
+        else:
+            m6.metric("Cutoff SOC Δ (pp)", "—", help="Unavailable when cutoff SOC is missing for one or both runs.")
 
         hourly_a = _extract_hourly_df(detail_a)
         hourly_b = _extract_hourly_df(detail_b)
@@ -1197,17 +1247,17 @@ def _render_compare_runs_block(filtered_df: pd.DataFrame) -> None:
         else:
             st.info("Hourly overlays unavailable for one or both runs.")
 
-        weather_a = detail_a.get("weather_ensemble") if isinstance(detail_a.get("weather_ensemble"), dict) else {}
-        weather_b = detail_b.get("weather_ensemble") if isinstance(detail_b.get("weather_ensemble"), dict) else {}
         weather_focus_a = {
             "failed_models": weather_a.get("failed_models") or [],
             "weights_used": weather_a.get("weights_used") or {},
             "derived_irradiance_by_model": weather_a.get("derived_irradiance_by_model") or {},
+            "missing_vars_by_model": weather_a.get("missing_vars_by_model") or {},
         }
         weather_focus_b = {
             "failed_models": weather_b.get("failed_models") or [],
             "weights_used": weather_b.get("weights_used") or {},
             "derived_irradiance_by_model": weather_b.get("derived_irradiance_by_model") or {},
+            "missing_vars_by_model": weather_b.get("missing_vars_by_model") or {},
         }
 
         diffs_tabs = st.tabs(["Weather diff", "Inputs diff", "Settings diff", "Export"])
@@ -1235,12 +1285,14 @@ def _render_compare_runs_block(filtered_df: pd.DataFrame) -> None:
                 st.dataframe(settings_diff_df, use_container_width=True, hide_index=True)
         with diffs_tabs[3]:
             compare_bundle = {
-                "run_a": {"label": run_a_label, "run_id": run_id_a, "summary": {"pv_p50": pv_a, "load": load_a, "charge_kw": charge_a, "warnings_count": warn_a}},
-                "run_b": {"label": run_b_label, "run_id": run_id_b, "summary": {"pv_p50": pv_b, "load": load_b, "charge_kw": charge_b, "warnings_count": warn_b}},
+                "run_a": {"label": run_a_label, "run_id": run_id_a, "summary": {"pv_p50": pv_a, "pv_range_width_kwh": pv_width_a, "load": load_a, "charge_kw": charge_a, "cutoff_soc_pct": cutoff_a, "warnings_count": warn_a}},
+                "run_b": {"label": run_b_label, "run_id": run_id_b, "summary": {"pv_p50": pv_b, "pv_range_width_kwh": pv_width_b, "load": load_b, "charge_kw": charge_b, "cutoff_soc_pct": cutoff_b, "warnings_count": warn_b}},
                 "deltas": {
                     "pv_p50_kwh": pv_b - pv_a,
+                    "pv_range_width_kwh": (pv_width_b - pv_width_a) if (pv_width_a is not None and pv_width_b is not None) else None,
                     "load_kwh": load_b - load_a,
                     "charge_kw": charge_b - charge_a,
+                    "cutoff_soc_pp": (cutoff_b - cutoff_a) if (cutoff_a is not None and cutoff_b is not None) else None,
                     "warnings_count": warn_b - warn_a,
                 },
                 "diffs": {
