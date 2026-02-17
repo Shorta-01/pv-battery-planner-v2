@@ -918,6 +918,22 @@ def _to_py_date(val):
         return None
 
 
+def _safe_filename_part(value: object, fallback: str) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        text = fallback
+    cleaned = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in text)
+    cleaned = cleaned.strip("_")
+    return cleaned or fallback
+
+
+def _target_date_for_filename(value: object) -> str:
+    date_value = _to_py_date(value)
+    if date_value is None:
+        return "unknown_date"
+    return date_value.strftime("%Y%m%d")
+
+
 def _run_label(row: pd.Series, fallback_index: int = 0) -> str:
     date_value = _to_py_date(row.get("Date"))
     date_part = date_value.isoformat() if date_value is not None else "unknown-date"
@@ -1258,7 +1274,12 @@ def _render_run_inspector(filtered_df: pd.DataFrame) -> None:
             st.download_button(
                 "Download JSON debug bundle",
                 data=debug_bundle_json,
-                file_name=f"debug_bundle_{debug_bundle.get('run_id') or 'run'}.json",
+                file_name=(
+                    f"debug_bundle_{_target_date_for_filename(row.get('Date'))}"
+                    f"_{_safe_filename_part(debug_bundle.get('run_id'), 'run')}"
+                    f"_{_safe_filename_part(row.get('Status'), 'ok')}"
+                    f"_{_safe_filename_part(row.get('run_type'), 'manual')}.json"
+                ),
                 mime="application/json",
                 key=f"history_inspector_debug_bundle_download_{run_id or 'row'}",
             )
@@ -1457,7 +1478,10 @@ def _render_compare_runs_block(filtered_df: pd.DataFrame) -> None:
             st.download_button(
                 "Download compare bundle JSON",
                 data=compare_json,
-                file_name=f"compare_{run_id_a or 'run_a'}_vs_{run_id_b or 'run_b'}.json",
+                file_name=(
+                    f"compare_{_target_date_for_filename(row_a.get('Date'))}_{_safe_filename_part(run_id_a, 'run_a')}"
+                    f"_vs_{_target_date_for_filename(row_b.get('Date'))}_{_safe_filename_part(run_id_b, 'run_b')}.json"
+                ),
                 mime="application/json",
                 key=f"compare_bundle_download_{run_id_a}_{run_id_b}",
             )
