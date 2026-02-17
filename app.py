@@ -90,6 +90,14 @@ BADGE_HOVERTEXT = {
 def _esc(s: str) -> str:
     return html.escape(str(s or ""), quote=True)
 
+
+def get_selected_weather_models(valid_model_ids: set[str]) -> list[str]:
+    selected: list[str] = []
+    for mid in WEATHER_MODEL_ORDER:
+        if mid in valid_model_ids and bool(st.session_state.get(f"wm_{mid}", False)):
+            selected.append(mid)
+    return selected
+
 LOCAL_STATE_DIR = Path("local_state")
 API_BASE_URL = os.getenv("PVBP_BACKEND_URL", "http://127.0.0.1:8787")
 API_TOKEN_FILE = LOCAL_STATE_DIR / "api_token.txt"
@@ -1022,6 +1030,7 @@ try:
     health_payload = api_get("/v1/health")
     backend_settings = api_get("/v1/settings")
     weather_models_catalog = api_get("/v1/weather/models").get("items", [])
+    valid_model_ids = {m.get("id") for m in weather_models_catalog if isinstance(m.get("id"), str)}
 except Exception as exc:
     st.error(
         f"Backend unavailable at {API_BASE_URL}. Start backend with: "
@@ -1391,6 +1400,10 @@ with left:
             if tariff_error:
                 st.error(tariff_error)
             else:
+                selected_to_save = get_selected_weather_models(valid_model_ids)
+                if not selected_to_save:
+                    selected_to_save = sorted(list(WEATHER_MODEL_DEFAULT & valid_model_ids)) or sorted(list(valid_model_ids))
+
                 new_cfg = {
                     "location": {
                         "use_geocoding": False,
@@ -1446,6 +1459,7 @@ with left:
                     "load_profile": {
                         "load_profile_24h": [float(v) for v in cfg_load_profile],
                     },
+                    "weather_models_selected": selected_to_save,
                 }
                 try:
                     updated = api_put(
@@ -1478,6 +1492,8 @@ with left:
                 st.cache_data.clear()
                 st.session_state["_pending_location_state"] = updated["config"]["location"]
                 st.session_state["_settings_flash"] = "Reset settings to defaults."
+                for mid in WEATHER_MODEL_ORDER:
+                    st.session_state.pop(f"wm_{mid}", None)
                 st.rerun()
             except Exception as exc:
                 st.error(f"Could not reset settings: {exc}")
@@ -1528,7 +1544,21 @@ with left:
         st.caption("Tip: Toggle PV Low/High lines using the chart legend.")
 
         model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
-        selected_models: list[str] = []
+        available_ids = set(model_options.keys())
+
+        saved = effective_cfg.get("weather_models_selected")
+        if isinstance(saved, list):
+            saved_set = {str(x) for x in saved if isinstance(x, str)}
+        else:
+            saved_set = set()
+
+        initial_selected = (saved_set & available_ids) if saved_set else set()
+        if not initial_selected:
+            initial_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
+
+        for mid in WEATHER_MODEL_ORDER:
+            if mid in available_ids:
+                st.session_state.setdefault(f"wm_{mid}", (mid in initial_selected))
 
         st.markdown(
             "<style>.wm-name{cursor:help}.wm-icon{cursor:help;margin-left:6px}</style>",
@@ -1543,9 +1573,8 @@ with left:
             cols = st.columns([0.35, 3.2, 1.3], vertical_alignment="center")
 
             with cols[0]:
-                checked = st.checkbox(
+                st.checkbox(
                     "enabled",
-                    value=(model_id in WEATHER_MODEL_DEFAULT),
                     key=f"wm_{model_id}",
                     label_visibility="collapsed",
                 )
@@ -1567,8 +1596,7 @@ with left:
                 )
                 st.markdown(icon_html, unsafe_allow_html=True)
 
-            if checked:
-                selected_models.append(model_id)
+        selected_models = get_selected_weather_models(available_ids)
 
         if not selected_models:
             st.error("Select at least one weather model.")
