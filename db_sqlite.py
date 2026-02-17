@@ -554,20 +554,50 @@ def fetch_history_all_runs(db_path: str, limit_days: int | None = None) -> list[
 
 
 def _build_full_run_payload(row: sqlite3.Row, hourly_rows: list[sqlite3.Row]) -> dict:
+    def _decode_json(raw: Any, default: Any) -> Any:
+        if raw is None:
+            return default
+        if isinstance(raw, (dict, list)):
+            return raw
+        if isinstance(raw, str):
+            try:
+                return json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return default
+        return default
+
+    warnings = _decode_json(row["warnings_json"], [])
+    inputs_used = _decode_json(row["inputs_used_json"], {})
+    config_json = _decode_json(row["config_json"], {})
+    weather_ensemble = _decode_json(row["weather_ensemble_json"], {})
+    pv_totals_kwh = {
+        "p10": _safe_float(row["pv_p10_kwh"]),
+        "p50": _safe_float(row["pv_p50_kwh"]),
+        "p90": _safe_float(row["pv_p90_kwh"]),
+    }
+
     hourly = pd.DataFrame([dict(r) for r in hourly_rows])
     if hourly.empty:
         return {
             "run_id": row["run_id"],
             "target_date": row["target_date"],
+            "run_at_utc": row["run_at_utc"],
+            "run_type": row["run_type"] or "manual",
+            "status": row["status"],
+            "warnings_count": int(row["warnings_count"] or len(warnings)),
+            "warnings": warnings,
+            "inputs_used": inputs_used,
+            "config_hash": row["config_hash"] or "",
+            "config_json": config_json,
+            "weather_ensemble": weather_ensemble,
+            "pv_totals_kwh": pv_totals_kwh,
             "metrics": {
                 "charge_kw": float(row["charge_kw"] or 0.0),
                 "cutoff_soc": float(row["cutoff_soc"] or 0.0) / 100.0,
                 "pv_forecast_kwh": float(row["pv_forecast_kwh"] or 0.0),
                 "cons_forecast_kwh": float(row["cons_forecast_kwh"] or 0.0),
             },
-            "warnings": json.loads(row["warnings_json"] or "[]"),
             "run_at": row["run_at_utc"],
-            "run_type": row["run_type"] or "manual",
         }
 
     idx = pd.to_datetime(hourly["ts_local"], errors="coerce")
@@ -592,6 +622,16 @@ def _build_full_run_payload(row: sqlite3.Row, hourly_rows: list[sqlite3.Row]) ->
     return {
         "run_id": row["run_id"],
         "target_date": row["target_date"],
+        "run_at_utc": row["run_at_utc"],
+        "run_type": row["run_type"] or "manual",
+        "status": row["status"],
+        "warnings_count": int(row["warnings_count"] or len(warnings)),
+        "warnings": warnings,
+        "inputs_used": inputs_used,
+        "config_hash": row["config_hash"] or "",
+        "config_json": config_json,
+        "weather_ensemble": weather_ensemble,
+        "pv_totals_kwh": pv_totals_kwh,
         "pv": json.loads(pv_df.to_json(date_format="iso", orient="split")),
         "flows": json.loads(flows_df.to_json(date_format="iso", orient="split")),
         "soc": json.loads(soc_series.to_frame(name="value").to_json(date_format="iso", orient="split")),
@@ -601,9 +641,7 @@ def _build_full_run_payload(row: sqlite3.Row, hourly_rows: list[sqlite3.Row]) ->
             "pv_forecast_kwh": float(row["pv_forecast_kwh"] or 0.0),
             "cons_forecast_kwh": float(row["cons_forecast_kwh"] or 0.0),
         },
-        "warnings": json.loads(row["warnings_json"] or "[]"),
         "run_at": row["run_at_utc"],
-        "run_type": row["run_type"] or "manual",
     }
 
 
@@ -613,7 +651,10 @@ def fetch_full_run_by_id(db_path: str, run_id: str) -> dict | None:
             """
             SELECT run_id, target_date, run_at_utc, run_type, timezone,
                    charge_kw, cutoff_soc, pv_forecast_kwh, cons_forecast_kwh,
-                   warnings_json
+                   status, warnings_count, warnings_json,
+                   inputs_used_json, weather_ensemble_json,
+                   pv_p10_kwh, pv_p50_kwh, pv_p90_kwh,
+                   config_hash, config_json
             FROM forecast_runs
             WHERE run_id = ?
             LIMIT 1
