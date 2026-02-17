@@ -37,11 +37,20 @@ def init_db(db_path: str) -> None:
                 target_date TEXT NOT NULL,
                 run_at_utc TEXT NOT NULL,
                 run_type TEXT,
+                status TEXT,
                 timezone TEXT,
                 charge_kw REAL,
                 cutoff_soc REAL,
                 pv_forecast_kwh REAL,
                 cons_forecast_kwh REAL,
+                warnings_count INTEGER,
+                inputs_used_json TEXT,
+                weather_ensemble_json TEXT,
+                pv_p10_kwh REAL,
+                pv_p50_kwh REAL,
+                pv_p90_kwh REAL,
+                run_duration_ms INTEGER,
+                config_schema_version INTEGER,
                 soc_at_22_used REAL,
                 yesterday_kwh_used REAL,
                 planner_version TEXT,
@@ -114,6 +123,23 @@ def init_db(db_path: str) -> None:
         ]:
             if col_name not in existing_cols:
                 conn.execute(f"ALTER TABLE forecast_hourly ADD COLUMN {col_name} REAL")
+
+        forecast_runs_existing_cols = {
+            str(row["name"]) for row in conn.execute("PRAGMA table_info(forecast_runs)").fetchall()
+        }
+        for col_name, col_type in [
+            ("status", "TEXT"),
+            ("warnings_count", "INTEGER"),
+            ("inputs_used_json", "TEXT"),
+            ("weather_ensemble_json", "TEXT"),
+            ("pv_p10_kwh", "REAL"),
+            ("pv_p50_kwh", "REAL"),
+            ("pv_p90_kwh", "REAL"),
+            ("run_duration_ms", "INTEGER"),
+            ("config_schema_version", "INTEGER"),
+        ]:
+            if col_name not in forecast_runs_existing_cols:
+                conn.execute(f"ALTER TABLE forecast_runs ADD COLUMN {col_name} {col_type}")
 
         conn.execute(
             """
