@@ -31,7 +31,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "label": "KNMI HARMONIE-AROME",
         "endpoint": "https://api.open-meteo.com/v1/forecast",
         "params": {"models": "knmi_harmonie_arome_netherlands"},
-        "badges": ["⭐", "🧩"],
+        "badges": ["⭐", "🔎", "🧩"],
         "recommended_for_be": True,
         "capability": {
             "ghi_native": True,
@@ -45,7 +45,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "label": "DWD ICON-D2",
         "endpoint": "https://api.open-meteo.com/v1/dwd-icon",
         "params": {"models": "icon_d2"},
-        "badges": ["⭐", "🟩"],
+        "badges": ["⭐", "🔎", "🟩", "⏱️"],
         "recommended_for_be": True,
         "capability": {
             "ghi_native": True,
@@ -59,7 +59,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "label": "ECMWF IFS",
         "endpoint": "https://api.open-meteo.com/v1/ecmwf",
         "params": {},
-        "badges": ["⭐", "🧩"],
+        "badges": ["⭐", "🌍", "🟩"],
         "recommended_for_be": True,
         "capability": {
             "ghi_native": True,
@@ -73,7 +73,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "label": "DWD ICON-EU",
         "endpoint": "https://api.open-meteo.com/v1/forecast",
         "params": {"models": "icon_eu"},
-        "badges": ["🧩"],
+        "badges": ["🗺️", "🟩"],
         "recommended_for_be": True,
         "capability": {
             "ghi_native": True,
@@ -87,7 +87,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "label": "METEO-FRANCE SEAMLESS",
         "endpoint": "https://api.open-meteo.com/v1/forecast",
         "params": {"models": "meteofrance_seamless"},
-        "badges": ["🧩"],
+        "badges": ["🗺️", "🧩"],
         "recommended_for_be": True,
         "capability": {
             "ghi_native": True,

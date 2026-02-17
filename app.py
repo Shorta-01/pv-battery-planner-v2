@@ -80,10 +80,16 @@ WEATHER_MODEL_HOVERTEXT = {
 }
 
 BADGE_HOVERTEXT = {
-    "⭐": "Core model (recommended by default).",
-    "🟩": "Best PV inputs: includes direct + diffuse + DNI radiation fields.",
-    "🧩": "Some PV radiation components are derived or approximated.",
-    "✅": "This model is available via the weather API.",
+    "⭐": "Core model. Recommended default for Belgium.",
+    "🟩": "Best PV inputs. This model provides the main solar irradiance fields directly, which usually improves PV accuracy.",
+    "🧩": "Derived PV inputs. Some solar irradiance fields are missing, so we estimate them. PV still works, but accuracy can drop on difficult cloud days.",
+    "✅": "Available. This model can be used right now.",
+    "🔎": "High-resolution (local). Best for short-term local cloud timing, which often improves PV ramps and hour-to-hour changes.",
+    "🗺️": "Regional (Europe-scale). A good second opinion that is usually smoother and more stable than high-resolution models.",
+    "🌍": "Global. Stable big-picture baseline for fronts and the overall weather pattern.",
+    "⏱️": "Uses 15-minute solar radiation (then aggregated to hourly). Can improve the PV curve shape when clouds change quickly.",
+    "⚠️": "Partial in last run. The model worked, but PV inputs were incomplete or estimated. Hover to see details.",
+    "❌": "Failed in last run. The model could not be used. Hover to see the reason.",
 }
 
 
@@ -310,6 +316,16 @@ def weather_model_option_help(model: dict) -> str:
         "🟩": "full irradiance fields",
         "🧩": "derived/approximated components",
     }
+    badge_meanings.update(
+        {
+            "🔎": "high-resolution local",
+            "🗺️": "regional Europe-scale",
+            "🌍": "global baseline",
+            "⏱️": "uses 15-minute solar data",
+            "⚠️": "partial last run",
+            "❌": "failed last run",
+        }
+    )
     badges = [badge for badge in model.get("badges", []) if badge in badge_meanings]
     badges.insert(0, WEATHER_MODEL_AVAILABLE_ICON)
     unique_badges = list(dict.fromkeys(badges))
@@ -318,6 +334,43 @@ def weather_model_option_help(model: dict) -> str:
     if notes:
         return f"{notes}\n\nLegend: {badge_summary}."
     return f"Legend: {badge_summary}."
+
+
+def last_run_status_badge(model_id: str) -> tuple[str | None, str]:
+    dbg = st.session_state.get("last_ensemble_debug") or {}
+    if not isinstance(dbg, dict) or not dbg:
+        return (None, "")
+
+    failed = set(dbg.get("failed_models") or [])
+    reasons = dbg.get("failed_model_reasons") or {}
+    missing_by = dbg.get("missing_vars_by_model") or {}
+    derived_by = dbg.get("derived_irradiance_by_model") or {}
+
+    if model_id in failed:
+        r = reasons.get(model_id) or {}
+        if isinstance(r, dict):
+            detail = str(r.get("detail") or r.get("message") or "Unknown error").strip()
+            hint = str(r.get("hint") or r.get("provider_reason") or "").strip()
+        else:
+            detail = str(r).strip() or "Unknown error"
+            hint = ""
+        tip = f"Failed in last run. {detail}"
+        if hint:
+            tip = f"{tip} Hint: {hint}"
+        return ("❌", tip)
+
+    missing = list(missing_by.get(model_id) or [])
+    derived = bool(derived_by.get(model_id))
+
+    if missing or derived:
+        parts = ["Worked in last run, but PV inputs were incomplete or estimated."]
+        if missing:
+            parts.append("Missing: " + ", ".join(missing) + ".")
+        if derived:
+            parts.append("Solar irradiance components were derived/approximated.")
+        return ("⚠️", " ".join(parts))
+
+    return (None, "")
 
 
 def tooltip_heading(label: str, help_text: str) -> None:
@@ -1570,7 +1623,7 @@ with left:
             if not model:
                 continue
 
-            cols = st.columns([0.35, 3.2, 1.3], vertical_alignment="center")
+            cols = st.columns([0.35, 3.2, 1.6], vertical_alignment="center")
 
             with cols[0]:
                 st.checkbox(
@@ -1588,11 +1641,24 @@ with left:
                 )
 
             with cols[2]:
-                badges = list(model.get("badges") or [])
-                badges.append(WEATHER_MODEL_AVAILABLE_ICON)
+                static_badges = list(model.get("badges") or [])
+
+                status_icon, status_tip = last_run_status_badge(model_id)
+
+                badge_items: list[tuple[str, str]] = []
+                for b in static_badges:
+                    badge_items.append((b, BADGE_HOVERTEXT.get(b, "")))
+
+                if status_icon:
+                    badge_items.append((status_icon, status_tip))
+
+                badge_items.append(
+                    (WEATHER_MODEL_AVAILABLE_ICON, BADGE_HOVERTEXT.get(WEATHER_MODEL_AVAILABLE_ICON, ""))
+                )
+
                 icon_html = " ".join(
-                    f"<span class='wm-icon' title='{_esc(BADGE_HOVERTEXT.get(b, ''))}'>{_esc(b)}</span>"
-                    for b in badges
+                    f"<span class='wm-icon' title='{_esc(tip)}'>{_esc(icon)}</span>"
+                    for icon, tip in badge_items
                 )
                 st.markdown(icon_html, unsafe_allow_html=True)
 
@@ -1631,6 +1697,9 @@ if run:
                 },
             )
             result = run_response["result"]
+            st.session_state["last_ensemble_debug"] = result.get("ensemble_debug") or {}
+            st.session_state["last_ensemble_debug_at"] = dt.datetime.now().isoformat()
+            st.session_state["last_ensemble_models_used"] = list(selected_models)
             tomorrow = dt.date.fromisoformat(result["target_date"])
             weather_df = df_from_split(result["weather"])
             pv = df_from_split(result["pv"])
