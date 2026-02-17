@@ -796,6 +796,9 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
         "warnings_raw",
         "models_summary_raw",
         "cutoff_soc",
+        "pv_quality_label",
+        "pv_quality_score",
+        "PV quality",
     ]
     try:
         show_all_text = "true" if show_all_runs else "false"
@@ -838,6 +841,22 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
         warnings_raw = item.get("warnings") if isinstance(item.get("warnings"), list) else []
         warnings_text = " | ".join(str(w) for w in warnings_raw) if warnings_raw else (f"{warnings_count} warning(s)" if warnings_count else "None")
 
+        pv_quality = item.get("pv_quality") if isinstance(item.get("pv_quality"), dict) else {}
+        pv_quality_label = str(pv_quality.get("label") or "").strip()
+        pv_quality_score_raw = pv_quality.get("score")
+        try:
+            pv_quality_score = int(float(pv_quality_score_raw)) if pv_quality_score_raw is not None else None
+        except (TypeError, ValueError):
+            pv_quality_score = None
+        if status_raw == "error":
+            pv_quality_display = "—"
+        elif pv_quality_label and pv_quality_score is not None:
+            pv_quality_display = f"{pv_quality_label} ({pv_quality_score}/100)"
+        elif pv_quality_label:
+            pv_quality_display = pv_quality_label
+        else:
+            pv_quality_display = "—"
+
         rows.append({
             "run_id": str(item.get("run_id") or ""),
             "Date": item.get("target_date"),
@@ -861,6 +880,9 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
             "warnings_raw": warnings_raw,
             "models_summary_raw": models_summary,
             "cutoff_soc": metrics.get("cutoff_soc"),
+            "pv_quality_label": pv_quality_label or "—",
+            "pv_quality_score": pv_quality_score,
+            "PV quality": pv_quality_display,
         })
 
     if not rows:
@@ -1642,10 +1664,13 @@ def _render_history_log_block() -> None:
 
             display_df = display_df.rename(columns={"Status label": "Status", "Models": "Models summary"})
 
-            simple_columns = ["Date", "Status", "PV p50", "Load", "Allowed AC charge power", "Warnings badge"]
+            simple_columns = ["Date", "Status", "PV quality", "PV p50", "Load", "Allowed AC charge power", "Warnings badge"]
             debug_columns = [
                 "Date",
                 "Status",
+                "PV quality",
+                "pv_quality_label",
+                "pv_quality_score",
                 "PV p50",
                 "PV p10",
                 "PV p90",
@@ -1667,6 +1692,8 @@ def _render_history_log_block() -> None:
             history_column_config = build_column_config(
                 display_df,
                 {
+                    "pv_quality_label": st.column_config.TextColumn("PV quality label"),
+                    "pv_quality_score": st.column_config.NumberColumn("PV quality score", format="%.0f/100"),
                     "PV p50": st.column_config.NumberColumn(format="%.2f kWh"),
                     "PV p10": st.column_config.NumberColumn(format="%.2f kWh"),
                     "PV p90": st.column_config.NumberColumn(format="%.2f kWh"),
