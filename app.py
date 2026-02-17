@@ -358,7 +358,12 @@ def last_run_status_badge(model_id: str) -> tuple[str | None, str]:
     return (None, "")
 
 
-def render_weather_models(weather_models_catalog: list[dict], default_selected: set[str]) -> list[str]:
+def render_weather_models(
+    weather_models_catalog: list[dict],
+    default_selected: set[str],
+    *,
+    widget_key_prefix: str = "wm",
+) -> list[str]:
     with st.expander("Weather models", expanded=True):
         st.caption("Select which weather models to use. We combine them automatically using Belgium-tuned weighting.")
         st.caption("After you run a forecast, we show warnings (⚠️) or failures (❌) next to models if needed.")
@@ -382,7 +387,7 @@ def render_weather_models(weather_models_catalog: list[dict], default_selected: 
                 checked = st.checkbox(
                     "enabled",
                     value=(model_id in default_selected),
-                    key=f"wm_{model_id}",
+                    key=f"{widget_key_prefix}_{model_id}",
                     label_visibility="collapsed",
                 )
 
@@ -1669,7 +1674,7 @@ with left:
 
     weather_models_box = st.empty()
     with weather_models_box.container():
-        selected_models = render_weather_models(weather_models_catalog, initial_selected)
+        selected_models = render_weather_models(weather_models_catalog, initial_selected, widget_key_prefix="wm")
 
     ensemble_method = "weighted"
     run = st.button(
@@ -1707,7 +1712,7 @@ if run:
             st.session_state["last_weather_ensemble_models_used"] = list(selected_models)
             weather_models_box.empty()
             with weather_models_box.container():
-                _ = render_weather_models(weather_models_catalog, initial_selected)
+                _ = render_weather_models(weather_models_catalog, initial_selected, widget_key_prefix="wm_last")
             tomorrow = dt.date.fromisoformat(result["target_date"])
             weather_df = df_from_split(result["weather"])
             pv = df_from_split(result["pv"])
