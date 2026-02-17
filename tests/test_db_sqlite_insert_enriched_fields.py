@@ -67,6 +67,33 @@ def test_insert_forecast_run_persists_enriched_fields(tmp_path):
     assert row["run_duration_ms"] == 1234
     assert row["config_schema_version"] == 3
 
+
+def test_insert_forecast_run_defaults_config_schema_version_when_missing(tmp_path):
+    db_path = tmp_path / "planner.sqlite"
+    init_db(str(db_path))
+
+    payload = {
+        "run_id": "run-default-schema",
+        "target_date": "2026-02-03",
+        "run_at_utc": "2026-02-02T23:00:00+00:00",
+        "metrics": {
+            "pv_forecast_kwh": 1.0,
+            "cons_forecast_kwh": 2.0,
+        },
+    }
+
+    insert_forecast_run(str(db_path), payload)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT config_schema_version FROM forecast_runs WHERE run_id = ?",
+            ("run-default-schema",),
+        ).fetchone()
+
+    assert row is not None
+    assert row["config_schema_version"] == 1
+
 def test_fetch_history_includes_run_id_and_summary_fields(tmp_path):
     db_path = tmp_path / "planner.sqlite"
     init_db(str(db_path))

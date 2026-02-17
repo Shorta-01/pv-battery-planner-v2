@@ -12,6 +12,7 @@ from typing import Any
 import pandas as pd
 
 DEFAULT_TIMEZONE = "Europe/Brussels"
+CURRENT_CONFIG_SCHEMA_VERSION = 1
 
 
 def _ensure_parent(path: Path) -> None:
@@ -306,6 +307,11 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
     weather_ensemble_json = json.dumps(weather_ensemble, sort_keys=True)
     pv_quality = payload.get("pv_quality")
     pv_quality_text = json.dumps(pv_quality) if isinstance(pv_quality, dict) else None
+    config_schema_version_raw = payload.get("config_schema_version")
+    try:
+        config_schema_version = int(config_schema_version_raw)
+    except (TypeError, ValueError):
+        config_schema_version = CURRENT_CONFIG_SCHEMA_VERSION
 
     row_data = {
         "run_id": run_id,
@@ -325,7 +331,7 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
         "pv_p50_kwh": _safe_float((payload.get("pv_totals_kwh") or {}).get("p50")),
         "pv_p90_kwh": _safe_float((payload.get("pv_totals_kwh") or {}).get("p90")),
         "run_duration_ms": int(payload.get("run_duration_ms")) if payload.get("run_duration_ms") is not None else None,
-        "config_schema_version": payload.get("config_schema_version"),
+        "config_schema_version": config_schema_version,
         "soc_at_22_used": _safe_float(inputs_used.get("soc_at_22_percent")),
         "yesterday_kwh_used": _safe_float(inputs_used.get("yesterday_consumption_kwh")),
         "planner_version": payload.get("planner_version"),
