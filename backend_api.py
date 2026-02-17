@@ -5,6 +5,7 @@ import datetime as dt
 import gc
 import json
 import os
+import time
 import secrets
 import threading
 import tempfile
@@ -29,6 +30,7 @@ from db_sqlite import (
 )
 from weather_ensemble import (
     DEFAULT_ACCURACY_MODELS,
+    WEATHER_DISPLAY_VARS,
     build_ensemble_forecast,
     weather_models_payload,
 )
@@ -305,6 +307,7 @@ class BackendState:
         pv_uncertainty: bool,
         fast_mode: bool = False,
     ) -> dict:
+        run_started = time.perf_counter()
         cfg = self.settings["config"]
         loc_cfg = cfg.get("location", {})
         tz = str(loc_cfg.get("timezone", "Europe/Brussels"))
@@ -317,17 +320,42 @@ class BackendState:
         selected_models = weather_models if weather_models is not None else DEFAULT_ACCURACY_MODELS
         if not selected_models:
             raise HTTPException(status_code=400, detail="Select at least one weather model.")
+        normalized_ensemble_method = str(ensemble_method).lower().strip()
 
         ensemble = build_ensemble_forecast(
             loc=loc,
             target_date=target_date,
             tz=tz,
             weather_models=selected_models,
-            ensemble_method=str(ensemble_method).lower().strip(),
+            ensemble_method=normalized_ensemble_method,
             pv_uncertainty=bool(pv_uncertainty),
             accuracy_mode=True,
             fast_mode=bool(fast_mode),
         )
+
+        important_weather_vars = set(WEATHER_DISPLAY_VARS)
+        warnings: list[str] = []
+        for model_id in ensemble.failed_models:
+            reason = ensemble.failed_model_reasons.get(model_id) if isinstance(ensemble.failed_model_reasons, dict) else None
+            if isinstance(reason, dict):
+                reason_msg = str(reason.get("message") or reason.get("category") or "unknown")
+            else:
+                reason_msg = "unknown"
+            warnings.append(f"model failed: {model_id} ({reason_msg})")
+
+        for model_id, used_derived in ensemble.derived_irradiance_by_model.items():
+            if used_derived:
+                warnings.append(f"derived irradiance used: {model_id}")
+
+        for model_id, missing_vars in ensemble.missing_vars_by_model.items():
+            if not missing_vars:
+                continue
+            missing_important = sorted(var for var in set(missing_vars) if var in important_weather_vars)
+            if missing_important:
+                warnings.append(f"important vars missing: {model_id} ({', '.join(missing_important)})")
+
+        warnings = list(dict.fromkeys(warnings))
+        status = "degraded" if warnings else "ok"
 
         weather = ensemble.weather_primary
         pv = pd.DataFrame(index=ensemble.pv_ensemble_p50.index)
@@ -428,6 +456,22 @@ class BackendState:
 
         run_at_utc = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
         run_id = str(uuid.uuid4())
+        pv_totals_kwh = {
+            "p10": float(ensemble.pv_ensemble_p10.sum()) if ensemble.pv_ensemble_p10 is not None else None,
+            "p50": float(ensemble.pv_ensemble_p50.sum()),
+            "p90": float(ensemble.pv_ensemble_p90.sum()) if ensemble.pv_ensemble_p90 is not None else None,
+        }
+        run_duration_ms = int((time.perf_counter() - run_started) * 1000)
+        inputs_used = {
+            "soc_at_22_percent": float(soc_percent),
+            "yesterday_consumption_kwh": float(yesterday_kwh),
+            "buffer_percent": float(buffer_percent),
+            "max_ac_charge_power_kw": float(user_max_ac_kw),
+            "weather_models_selected": ensemble.selected_models,
+            "ensemble_method": normalized_ensemble_method,
+            "pv_uncertainty_enabled": bool(pv_uncertainty),
+            "fast_mode": bool(fast_mode),
+        }
         system_snapshot = {
             "lat": loc_cfg.get("latitude"),
             "lon": loc_cfg.get("longitude"),
@@ -468,15 +512,16 @@ class BackendState:
                 "cons_forecast_kwh": cons_forecast_kwh,
             },
             "pv_quality": pv_quality,
-            "warnings": [],
+            "warnings": warnings,
+            "warnings_count": len(warnings),
+            "status": status,
+            "run_duration_ms": run_duration_ms,
             "run_at": dt.datetime.now(self._tzinfo()).isoformat(),
             "run_at_utc": run_at_utc,
             "run_type": "manual",
             "timezone": tz,
-            "inputs_used": {
-                "soc_at_22_percent": float(soc_percent),
-                "yesterday_consumption_kwh": float(yesterday_kwh),
-            },
+            "inputs_used": inputs_used,
+            "pv_totals_kwh": pv_totals_kwh,
             "system_snapshot": {k: v for k, v in system_snapshot.items() if v is not None},
             "planner_version": "v2",
             "config_hash": config_hash,
@@ -484,14 +529,10 @@ class BackendState:
                 {
                     **cfg,
                     "weather_models_selected": ensemble.selected_models,
-                    "ensemble_method": ensemble_method,
+                    "ensemble_method": normalized_ensemble_method,
                     "pv_uncertainty_enabled": bool(pv_uncertainty),
                     "per_model_pv_totals_kwh": ensemble.per_model_pv_totals_kwh,
-                    "pv_totals_kwh": {
-                        "p10": float(ensemble.pv_ensemble_p10.sum()) if ensemble.pv_ensemble_p10 is not None else None,
-                        "p50": float(ensemble.pv_ensemble_p50.sum()),
-                        "p90": float(ensemble.pv_ensemble_p90.sum()) if ensemble.pv_ensemble_p90 is not None else None,
-                    },
+                    "pv_totals_kwh": pv_totals_kwh,
                 },
                 sort_keys=True,
             ),
@@ -499,14 +540,10 @@ class BackendState:
             "created_at_utc": run_at_utc,
             "weather_ensemble": {
                 "selected_models": ensemble.selected_models,
-                "ensemble_method": str(ensemble_method).lower().strip(),
+                "ensemble_method": normalized_ensemble_method,
                 "weights_used": ensemble.weights_used,
                 "per_model_pv_totals_kwh": ensemble.per_model_pv_totals_kwh,
-                "pv_totals_kwh": {
-                    "p10": float(ensemble.pv_ensemble_p10.sum()) if ensemble.pv_ensemble_p10 is not None else None,
-                    "p50": float(ensemble.pv_ensemble_p50.sum()),
-                    "p90": float(ensemble.pv_ensemble_p90.sum()) if ensemble.pv_ensemble_p90 is not None else None,
-                }
+                "pv_totals_kwh": pv_totals_kwh
                 if pv_uncertainty
                 else None,
                 "missing_vars_by_model": ensemble.missing_vars_by_model,
