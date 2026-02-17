@@ -1751,6 +1751,25 @@ def _render_history_log_block() -> None:
 
             drop_cols = [c for c in display_df.columns if c not in keep_columns]
             display_df = display_df.drop(columns=[c for c in drop_cols if c in display_df.columns])
+
+            start_date_for_filename: object = filtered["Date"].min()
+            end_date_for_filename: object = filtered["Date"].max()
+            if isinstance(selected_date_range, tuple) and len(selected_date_range) == 2:
+                start_date_for_filename, end_date_for_filename = selected_date_range
+            date_range_part = (
+                f"{_target_date_for_filename(start_date_for_filename)}"
+                f"-{_target_date_for_filename(end_date_for_filename)}"
+            )
+            mode_part = _safe_filename_part(st.session_state.get("history_mode", "Simple"), "simple")
+            csv_bytes = display_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "Export CSV",
+                data=csv_bytes,
+                file_name=f"history_{date_range_part}_{mode_part}.csv",
+                mime="text/csv",
+                key="history_log_export_csv",
+            )
+
             history_column_config = build_column_config(
                 display_df,
                 {
