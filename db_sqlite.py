@@ -424,7 +424,22 @@ def fetch_recent_run_summaries(db_path: str, limit: int = 30) -> list[dict]:
 
 
 def _summary_from_row(row: sqlite3.Row) -> dict:
+    models_summary: dict[str, Any] | None = None
+    raw_weather_ensemble = row["weather_ensemble_json"] if "weather_ensemble_json" in row.keys() else None
+    if raw_weather_ensemble:
+        try:
+            weather_ensemble = json.loads(raw_weather_ensemble)
+        except (TypeError, ValueError):
+            weather_ensemble = {}
+        if isinstance(weather_ensemble, dict):
+            models_summary = {
+                "selected_models": weather_ensemble.get("selected_models") or [],
+                "weights_used": weather_ensemble.get("weights_used") or {},
+                "failed_models": weather_ensemble.get("failed_models") or [],
+            }
+
     return {
+        "run_id": row["run_id"],
         "target_date": row["target_date"],
         "metrics": {
             "charge_kw": float(row["charge_kw"] or 0.0),
@@ -432,6 +447,12 @@ def _summary_from_row(row: sqlite3.Row) -> dict:
             "pv_forecast_kwh": float(row["pv_forecast_kwh"] or 0.0),
             "cons_forecast_kwh": float(row["cons_forecast_kwh"] or 0.0),
         },
+        "status": row["status"],
+        "warnings_count": int(row["warnings_count"] or 0),
+        "pv_p10_kwh": _safe_float(row["pv_p10_kwh"]),
+        "pv_p50_kwh": _safe_float(row["pv_p50_kwh"]),
+        "pv_p90_kwh": _safe_float(row["pv_p90_kwh"]),
+        "models_summary": models_summary,
         "run_at": row["run_at_utc"],
         "run_type": row["run_type"] or "manual",
     }
@@ -461,13 +482,33 @@ def fetch_history_latest_per_day(db_path: str, limit_days: int | None = None) ->
                     cutoff_soc,
                     pv_forecast_kwh,
                     cons_forecast_kwh,
+                    status,
+                    warnings_count,
+                    weather_ensemble_json,
+                    pv_p10_kwh,
+                    pv_p50_kwh,
+                    pv_p90_kwh,
                     ROW_NUMBER() OVER (
                         PARTITION BY target_date
                         ORDER BY run_at_utc DESC, COALESCE(created_at_utc, run_at_utc) DESC, run_id DESC
                     ) AS rn
                 FROM forecast_runs
             )
-            SELECT target_date, run_at_utc, run_type, charge_kw, cutoff_soc, pv_forecast_kwh, cons_forecast_kwh
+            SELECT
+                run_id,
+                target_date,
+                run_at_utc,
+                run_type,
+                charge_kw,
+                cutoff_soc,
+                pv_forecast_kwh,
+                cons_forecast_kwh,
+                status,
+                warnings_count,
+                weather_ensemble_json,
+                pv_p10_kwh,
+                pv_p50_kwh,
+                pv_p90_kwh
             FROM ranked
             WHERE {' AND '.join(where_clauses)}
             ORDER BY target_date ASC
@@ -488,7 +529,21 @@ def fetch_history_all_runs(db_path: str, limit_days: int | None = None) -> list[
     with _connect(db_path) as conn:
         rows = conn.execute(
             f"""
-            SELECT target_date, run_at_utc, run_type, charge_kw, cutoff_soc, pv_forecast_kwh, cons_forecast_kwh
+            SELECT
+                run_id,
+                target_date,
+                run_at_utc,
+                run_type,
+                charge_kw,
+                cutoff_soc,
+                pv_forecast_kwh,
+                cons_forecast_kwh,
+                status,
+                warnings_count,
+                weather_ensemble_json,
+                pv_p10_kwh,
+                pv_p50_kwh,
+                pv_p90_kwh
             FROM forecast_runs
             {date_filter_sql}
             ORDER BY target_date ASC, run_at_utc ASC, COALESCE(created_at_utc, run_at_utc) ASC, run_id ASC
