@@ -272,6 +272,7 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
             "soc_at_22_percent": payload.get("soc_at_22_percent"),
             "yesterday_consumption_kwh": payload.get("yesterday_consumption_kwh"),
         }
+    weather_ensemble = payload.get("weather_ensemble") if isinstance(payload.get("weather_ensemble"), dict) else {}
 
     run_id = str(payload.get("run_id") or uuid.uuid4())
     target_date = str(payload.get("target_date") or "")
@@ -301,6 +302,8 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
         config_json = json.dumps(config_obj, sort_keys=True)
 
     warnings_json = json.dumps(payload.get("warnings", []))
+    inputs_used_json = json.dumps(inputs_used, sort_keys=True)
+    weather_ensemble_json = json.dumps(weather_ensemble, sort_keys=True)
     pv_quality = payload.get("pv_quality")
     pv_quality_text = json.dumps(pv_quality) if isinstance(pv_quality, dict) else None
 
@@ -309,11 +312,20 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
         "target_date": target_date,
         "run_at_utc": run_at_utc,
         "run_type": payload.get("run_type"),
+        "status": payload.get("status"),
         "timezone": timezone,
         "charge_kw": _safe_float(metrics.get("charge_kw")),
         "cutoff_soc": cutoff_soc,
         "pv_forecast_kwh": pv_forecast_kwh,
         "cons_forecast_kwh": cons_forecast_kwh,
+        "warnings_count": int(payload.get("warnings_count") or len(payload.get("warnings", []))),
+        "inputs_used_json": inputs_used_json,
+        "weather_ensemble_json": weather_ensemble_json,
+        "pv_p10_kwh": _safe_float((payload.get("pv_totals_kwh") or {}).get("p10")),
+        "pv_p50_kwh": _safe_float((payload.get("pv_totals_kwh") or {}).get("p50")),
+        "pv_p90_kwh": _safe_float((payload.get("pv_totals_kwh") or {}).get("p90")),
+        "run_duration_ms": int(payload.get("run_duration_ms")) if payload.get("run_duration_ms") is not None else None,
+        "config_schema_version": payload.get("config_schema_version"),
         "soc_at_22_used": _safe_float(inputs_used.get("soc_at_22_percent")),
         "yesterday_kwh_used": _safe_float(inputs_used.get("yesterday_consumption_kwh")),
         "planner_version": payload.get("planner_version"),
@@ -329,13 +341,17 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
         conn.execute(
             """
             INSERT OR REPLACE INTO forecast_runs (
-                run_id, target_date, run_at_utc, run_type, timezone,
-                charge_kw, cutoff_soc, pv_forecast_kwh, cons_forecast_kwh,
+                run_id, target_date, run_at_utc, run_type, status, timezone,
+                charge_kw, cutoff_soc, pv_forecast_kwh, cons_forecast_kwh, warnings_count,
+                inputs_used_json, weather_ensemble_json, pv_p10_kwh, pv_p50_kwh, pv_p90_kwh,
+                run_duration_ms, config_schema_version,
                 soc_at_22_used, yesterday_kwh_used, planner_version,
                 config_hash, config_json, warnings_json, pv_quality, created_at_utc
             ) VALUES (
-                :run_id, :target_date, :run_at_utc, :run_type, :timezone,
-                :charge_kw, :cutoff_soc, :pv_forecast_kwh, :cons_forecast_kwh,
+                :run_id, :target_date, :run_at_utc, :run_type, :status, :timezone,
+                :charge_kw, :cutoff_soc, :pv_forecast_kwh, :cons_forecast_kwh, :warnings_count,
+                :inputs_used_json, :weather_ensemble_json, :pv_p10_kwh, :pv_p50_kwh, :pv_p90_kwh,
+                :run_duration_ms, :config_schema_version,
                 :soc_at_22_used, :yesterday_kwh_used, :planner_version,
                 :config_hash, :config_json, :warnings_json, :pv_quality, :created_at_utc
             )
