@@ -92,8 +92,8 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "capability": {
             "ghi_native": True,
             "direct_native": False,
-            "diffuse_native": False,
-            "dni_native": False,
+            "diffuse_native": True,
+            "dni_native": True,
             "notes": "Seamless provider blend; direct/diffuse/DNI may be derived depending on Open-Meteo feed.",
         },
     },
@@ -402,6 +402,51 @@ def _aggregate_minutely_15_to_hourly(minutely_payload: dict[str, Any], tz: str) 
         return hourly
     return hourly.groupby(hourly.index.floor("h")).mean(numeric_only=True)
 
+def _finalize_irradiance_components(
+    *,
+    ghi: pd.Series,
+    dni: pd.Series,
+    dhi: pd.Series,
+    loc: core.Location,
+    tz: str,
+    missing_vars: list[str],
+) -> tuple[pd.Series, pd.Series, list[str], bool]:
+    dni_out = pd.to_numeric(dni, errors="coerce")
+    dhi_out = pd.to_numeric(dhi, errors="coerce")
+    ghi_out = pd.to_numeric(ghi, errors="coerce")
+
+    derived_irradiance = False
+    needs_derivation = bool(dni_out.isna().any() or dhi_out.isna().any())
+    ghi_usable = bool(((ghi_out.notna()) & (ghi_out > 0)).any())
+
+    if needs_derivation and ghi_usable:
+        irradiance_df = pd.DataFrame(
+            {
+                "ghi_wm2": ghi_out,
+                "dni_wm2": dni_out,
+                "dhi_wm2": dhi_out,
+            },
+            index=ghi_out.index,
+        )
+        irradiance_df = _decompose_from_ghi(irradiance_df, loc, tz)
+        dni_out = pd.to_numeric(irradiance_df["dni_wm2"], errors="coerce")
+        dhi_out = pd.to_numeric(irradiance_df["dhi_wm2"], errors="coerce")
+        derived_irradiance = True
+
+    missing_set = set(missing_vars)
+    irradiance_fields = {
+        "direct_normal_irradiance": dni_out,
+        "diffuse_radiation": dhi_out,
+    }
+    for field, values in irradiance_fields.items():
+        if values.isna().all():
+            missing_set.add(field)
+        else:
+            missing_set.discard(field)
+
+    return dni_out, dhi_out, sorted(missing_set), derived_irradiance
+
+
 def fetch_open_meteo_weather(
     model_id: str,
     loc: core.Location,
@@ -521,10 +566,11 @@ def fetch_open_meteo_weather(
 
     missing_vars: list[str] = []
 
-    def _series(name: str, default: float = 0.0) -> pd.Series:
+    def _series(name: str, default: float = 0.0, *, record_missing: bool = True) -> pd.Series:
         vals = hourly.get(name)
         if vals is None:
-            missing_vars.append(name)
+            if record_missing:
+                missing_vars.append(name)
             vals = [default] * len(times)
         return pd.to_numeric(pd.Series(vals, index=times), errors="coerce")
 
@@ -543,19 +589,32 @@ def fetch_open_meteo_weather(
                 if col in agg15.columns:
                     df[col] = pd.to_numeric(agg15[col], errors="coerce")
 
-    dni = df["dni_wm2"] if "dni_wm2" in df.columns else _series("direct_normal_irradiance", float("nan"))
-    dhi = df["dhi_wm2"] if "dhi_wm2" in df.columns else _series("diffuse_radiation", float("nan"))
-    df["dni_wm2"] = pd.to_numeric(dni, errors="coerce")
-    df["dhi_wm2"] = pd.to_numeric(dhi, errors="coerce")
-    derived_irradiance = bool(df[["dni_wm2", "dhi_wm2"]].isna().any(axis=None))
-    if derived_irradiance:
-        df = _decompose_from_ghi(df, loc, tz)
-    df["dni_wm2"] = pd.to_numeric(df["dni_wm2"], errors="coerce").fillna(0.0).clip(lower=0.0)
-    df["dhi_wm2"] = pd.to_numeric(df["dhi_wm2"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    dni = df["dni_wm2"] if "dni_wm2" in df.columns else _series("direct_normal_irradiance", np.nan, record_missing=False)
+    dhi = df["dhi_wm2"] if "dhi_wm2" in df.columns else _series("diffuse_radiation", np.nan, record_missing=False)
+    dni_final, dhi_final, missing_vars, derived_irradiance = _finalize_irradiance_components(
+        ghi=df["ghi_wm2"],
+        dni=dni,
+        dhi=dhi,
+        loc=loc,
+        tz=tz,
+        missing_vars=missing_vars,
+    )
+    df["dni_wm2"] = dni_final
+    df["dhi_wm2"] = dhi_final
+
+    if not df["dni_wm2"].isna().all() or not df["dhi_wm2"].isna().all():
+        missing_vars = [
+            v
+            for v in missing_vars
+            if v not in ("direct_normal_irradiance", "diffuse_radiation")
+        ]
 
     availability = pd.DataFrame(index=df.index)
     for col in ["ghi_wm2", "dni_wm2", "dhi_wm2"]:
         availability[col] = pd.to_numeric(df.get(col), errors="coerce").notna()
+
+    df["dni_wm2"] = pd.to_numeric(df["dni_wm2"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    df["dhi_wm2"] = pd.to_numeric(df["dhi_wm2"], errors="coerce").fillna(0.0).clip(lower=0.0)
 
     df = core.normalize_hourly_forecast_index(
         df[["temp_air_c", "ghi_wm2", "dni_wm2", "dhi_wm2", "cloud_cover_pct", "wind_speed_ms"]],
