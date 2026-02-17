@@ -219,6 +219,80 @@ def test_fetch_open_meteo_partially_missing_dni_dhi_backfills_gaps(monkeypatch: 
 
 
 
+
+
+def test_fetch_open_meteo_adds_ui_alias_columns(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex) -> None:
+    payload = {
+        "hourly": {
+            "time": [ts.isoformat() for ts in hourly_index],
+            "temperature_2m": [11.0] * 24,
+            "wind_speed_10m": [2.0] * 24,
+            "shortwave_radiation": [120.0] * 24,
+            "direct_normal_irradiance": [55.0] * 24,
+            "diffuse_radiation": [25.0] * 24,
+            "cloud_cover": [30.0] * 24,
+        },
+        "daily": {"sunrise": [hourly_index[7].isoformat()], "sunset": [hourly_index[17].isoformat()]},
+    }
+
+    we._WEATHER_CACHE.clear()
+    monkeypatch.setattr(we, "_request_open_meteo", lambda *args, **kwargs: payload)
+    forecast, _, _ = we.fetch_open_meteo_weather(
+        model_id="knmi_harmonie_arome",
+        loc=core.Location(name="x", latitude=50.8, longitude=4.3),
+        tz="Europe/Brussels",
+        target_date=dt.date(2026, 1, 10),
+    )
+
+    for column in [
+        "shortwave_radiation",
+        "direct_normal_irradiance",
+        "diffuse_radiation",
+        "temperature_2m",
+        "wind_speed_10m",
+        "cloud_cover",
+    ]:
+        assert column in forecast.df.columns
+
+    assert forecast.df["shortwave_radiation"].iloc[0] == pytest.approx(120.0)
+    assert forecast.df["direct_normal_irradiance"].iloc[0] == pytest.approx(55.0)
+    assert forecast.df["diffuse_radiation"].iloc[0] == pytest.approx(25.0)
+
+
+def test_fetch_open_meteo_knmi_requests_dni_dhi_when_supported(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex) -> None:
+    payload = {
+        "hourly": {
+            "time": [ts.isoformat() for ts in hourly_index],
+            "temperature_2m": [10.0] * 24,
+            "wind_speed_10m": [1.0] * 24,
+            "shortwave_radiation": [100.0] * 24,
+            "direct_normal_irradiance": [50.0] * 24,
+            "diffuse_radiation": [20.0] * 24,
+            "cloud_cover": [25.0] * 24,
+        },
+        "daily": {"sunrise": [hourly_index[7].isoformat()], "sunset": [hourly_index[17].isoformat()]},
+    }
+
+    calls: list[dict[str, object]] = []
+
+    def fake_request(url: str, params: dict[str, object], model_id: str):
+        calls.append(params)
+        return payload
+
+    we._WEATHER_CACHE.clear()
+    monkeypatch.setattr(we, "_request_open_meteo", fake_request)
+
+    we.fetch_open_meteo_weather(
+        model_id="knmi_harmonie_arome",
+        loc=core.Location(name="x", latitude=50.8, longitude=4.3),
+        tz="Europe/Brussels",
+        target_date=dt.date(2026, 1, 10),
+    )
+
+    assert calls
+    hourly_requested = str(calls[0]["hourly"])
+    assert "direct_normal_irradiance" in hourly_requested
+    assert "diffuse_radiation" in hourly_requested
 def test_fetch_open_meteo_retries_404_with_forecast_endpoint(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex) -> None:
     payload = {
         "hourly": {

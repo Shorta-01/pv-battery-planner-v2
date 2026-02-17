@@ -36,8 +36,8 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "capability": {
             "ghi_native": True,
             "direct_native": False,
-            "diffuse_native": False,
-            "dni_native": False,
+            "diffuse_native": True,
+            "dni_native": True,
             "notes": "GHI only; direct/diffuse derived by Open-Meteo separation.",
         },
     },
@@ -565,6 +565,19 @@ def fetch_open_meteo_weather(
     availability = availability.reindex(df.index).fillna(False)
     for col in ["ghi_wm2", "dni_wm2", "dhi_wm2"]:
         df.loc[~availability[col], col] = np.nan
+
+    def _alias(dst: str, src: str) -> None:
+        if src in df.columns:
+            df[dst] = df[src]
+        else:
+            df[dst] = np.nan
+
+    _alias("shortwave_radiation", "ghi_wm2")
+    _alias("direct_normal_irradiance", "dni_wm2")
+    _alias("diffuse_radiation", "dhi_wm2")
+    _alias("temperature_2m", "temp_air_c")
+    _alias("wind_speed_10m", "wind_speed_ms")
+    _alias("cloud_cover", "cloud_cover_pct")
 
     daily = data.get("daily") if isinstance(data.get("daily"), dict) else {}
     sunrise = pd.to_datetime((daily.get("sunrise") or [None])[0], errors="coerce")
