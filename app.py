@@ -942,8 +942,100 @@ def _render_run_inspector(filtered_df: pd.DataFrame) -> None:
                 st.info("Settings snapshot is not available for this run.")
 
         with tab_debug:
-            debug_bundle = detail.get("debug_bundle") if isinstance(detail.get("debug_bundle"), dict) else detail
-            st.json(debug_bundle, expanded=False)
+            def _parse_config_json(raw: object) -> dict | str:
+                if isinstance(raw, dict):
+                    return raw
+                if isinstance(raw, str):
+                    try:
+                        parsed = json.loads(raw)
+                        if isinstance(parsed, dict):
+                            return parsed
+                    except (TypeError, ValueError):
+                        pass
+                    return raw
+                return {}
+
+            def _hourly_records_from_detail(detail_payload: dict) -> list[dict]:
+                if isinstance(detail_payload.get("hourly"), list):
+                    return [r for r in detail_payload.get("hourly", []) if isinstance(r, dict)]
+
+                if not (
+                    isinstance(detail_payload.get("pv"), dict)
+                    and isinstance(detail_payload.get("flows"), dict)
+                    and isinstance(detail_payload.get("soc"), dict)
+                ):
+                    return []
+
+                try:
+                    pv_df = df_from_split(detail_payload["pv"])
+                    flows_df = df_from_split(detail_payload["flows"])
+                    soc_series = series_from_split(detail_payload["soc"])
+                except Exception:
+                    return []
+
+                pv_df = pv_df.copy()
+                if "index" in pv_df.columns:
+                    pv_df = pv_df.drop(columns=["index"])
+                flows_df = flows_df.copy()
+                if "index" in flows_df.columns:
+                    flows_df = flows_df.drop(columns=["index"])
+
+                hourly_df = pd.concat([pv_df, flows_df], axis=1)
+                hourly_df["soc_end_pct"] = pd.to_numeric(soc_series, errors="coerce") * 100.0
+                hourly_df = hourly_df.reset_index().rename(columns={"index": "ts_local"})
+                hourly_df["ts_local"] = hourly_df["ts_local"].astype(str)
+                return json.loads(hourly_df.to_json(orient="records", date_format="iso"))
+
+            def _build_debug_bundle(detail_payload: dict, history_row: pd.Series, warnings: list[str]) -> dict:
+                prebuilt = detail_payload.get("debug_bundle") if isinstance(detail_payload.get("debug_bundle"), dict) else {}
+                weather_ensemble = detail_payload.get("weather_ensemble") if isinstance(detail_payload.get("weather_ensemble"), dict) else {}
+                if not weather_ensemble and isinstance(prebuilt.get("weather_ensemble"), dict):
+                    weather_ensemble = prebuilt.get("weather_ensemble", {})
+
+                pv_totals = detail_payload.get("pv_totals_kwh") if isinstance(detail_payload.get("pv_totals_kwh"), dict) else {}
+                if not pv_totals and isinstance(weather_ensemble.get("pv_totals_kwh"), dict):
+                    pv_totals = weather_ensemble.get("pv_totals_kwh", {})
+                if not pv_totals:
+                    pv_totals = {
+                        "p10": float(history_row.get("PV p10") or 0.0),
+                        "p50": float(history_row.get("PV p50") or 0.0),
+                        "p90": float(history_row.get("PV p90") or 0.0),
+                    }
+
+                outputs = detail_payload.get("outputs") if isinstance(detail_payload.get("outputs"), dict) else {}
+                if not outputs:
+                    outputs = detail_payload.get("metrics") if isinstance(detail_payload.get("metrics"), dict) else {}
+                if not outputs and isinstance(prebuilt.get("outputs"), dict):
+                    outputs = prebuilt.get("outputs", {})
+
+                bundle: dict[str, object] = {
+                    "run_id": str(detail_payload.get("run_id") or history_row.get("run_id") or ""),
+                    "inputs_used": detail_payload.get("inputs_used") if isinstance(detail_payload.get("inputs_used"), dict) else prebuilt.get("inputs_used", {}),
+                    "config_hash": str(detail_payload.get("config_hash") or prebuilt.get("config_hash") or ""),
+                    "config_json": _parse_config_json(detail_payload.get("config_json") or prebuilt.get("config_json") or {}),
+                    "weather_ensemble": weather_ensemble,
+                    "warnings": warnings,
+                    "outputs": outputs,
+                    "pv_totals": pv_totals,
+                }
+
+                hourly_records = _hourly_records_from_detail(detail_payload)
+                if hourly_records:
+                    bundle["hourly"] = hourly_records
+                return bundle
+
+            debug_bundle = _build_debug_bundle(detail, row, warnings_list)
+            debug_bundle_json = json.dumps(debug_bundle, indent=2, ensure_ascii=False)
+
+            st.code(debug_bundle_json, language="json")
+            st.caption("Copy JSON debug bundle: use the copy icon in the top-right of the code block.")
+            st.download_button(
+                "Download JSON debug bundle",
+                data=debug_bundle_json,
+                file_name=f"debug_bundle_{debug_bundle.get('run_id') or 'run'}.json",
+                mime="application/json",
+                key=f"history_inspector_debug_bundle_download_{run_id or 'row'}",
+            )
 
 
 def _render_history_log_block() -> None:
