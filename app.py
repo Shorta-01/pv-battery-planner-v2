@@ -751,12 +751,24 @@ def series_from_split(payload: dict) -> pd.Series:
 
 def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.DataFrame:
     history_columns = [
+        "run_id",
         "Date",
         "Run at",
-        "AC charge cutoff SOC (%)",
-        "Allowed AC charge power (kW)",
-        "PV forecast total (kWh)",
-        "Consumption forecast total (kWh)",
+        "Status",
+        "Status label",
+        "Models",
+        "PV p50",
+        "PV p10",
+        "PV p90",
+        "PV range (p10–p90)",
+        "Load",
+        "Charge",
+        "Warnings",
+        "warnings_count",
+        "run_type",
+        "models_raw",
+        "warnings_raw",
+        "models_summary_raw",
     ]
     try:
         show_all_text = "true" if show_all_runs else "false"
@@ -767,14 +779,46 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
     rows = []
     for item in items:
         metrics = item.get("metrics", {})
-        cutoff_soc = float(metrics.get("cutoff_soc", 0.0))
+        status_raw = str(item.get("status") or "").strip().lower()
+        warnings_count = int(item.get("warnings_count") or 0)
+        if status_raw == "error":
+            status_label = "❌ Error"
+        elif status_raw == "degraded" or warnings_count > 0:
+            status_label = "⚠️ Degraded"
+        else:
+            status_label = "✅ OK"
+
+        models_summary = item.get("models_summary") if isinstance(item.get("models_summary"), dict) else {}
+        models_list = models_summary.get("selected_models") if isinstance(models_summary, dict) else []
+        if not isinstance(models_list, list):
+            models_list = []
+        models_text = ", ".join(str(m) for m in models_list) if models_list else "—"
+
+        pv_p10 = float(item.get("pv_p10_kwh") or 0.0)
+        pv_p50 = float(item.get("pv_p50_kwh") or metrics.get("pv_forecast_kwh") or 0.0)
+        pv_p90 = float(item.get("pv_p90_kwh") or 0.0)
+        warnings_raw = item.get("warnings") if isinstance(item.get("warnings"), list) else []
+        warnings_text = " | ".join(str(w) for w in warnings_raw) if warnings_raw else (f"{warnings_count} warning(s)" if warnings_count else "None")
+
         rows.append({
+            "run_id": str(item.get("run_id") or ""),
             "Date": item.get("target_date"),
             "Run at": item.get("run_at"),
-            "AC charge cutoff SOC (%)": round((cutoff_soc * 100.0) if cutoff_soc <= 1.0 else cutoff_soc, 1),
-            "Allowed AC charge power (kW)": round(float(metrics.get("charge_kw", 0.0)), 2),
-            "PV forecast total (kWh)": round(float(metrics.get("pv_forecast_kwh", 0.0)), 2),
-            "Consumption forecast total (kWh)": round(float(metrics.get("cons_forecast_kwh", 0.0)), 2),
+            "Status": status_raw or "ok",
+            "Status label": status_label,
+            "Models": models_text,
+            "PV p50": round(pv_p50, 2),
+            "PV p10": round(pv_p10, 2),
+            "PV p90": round(pv_p90, 2),
+            "PV range (p10–p90)": f"{pv_p10:.2f}–{pv_p90:.2f} kWh" if (pv_p10 or pv_p90) else "—",
+            "Load": round(float(metrics.get("cons_forecast_kwh", 0.0)), 2),
+            "Charge": round(float(metrics.get("charge_kw", 0.0)), 2),
+            "Warnings": warnings_text,
+            "warnings_count": warnings_count,
+            "run_type": str(item.get("run_type") or "manual"),
+            "models_raw": models_text,
+            "warnings_raw": warnings_raw,
+            "models_summary_raw": models_summary,
         })
 
     if not rows:
@@ -785,8 +829,6 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
     history_df["Run at"] = pd.to_datetime(history_df["Run at"], errors="coerce")
     history_df = history_df.dropna(subset=["Date"])
     history_df = history_df.sort_values(["Date", "Run at"], ascending=[True, True])
-    history_df["Date"] = history_df["Date"].dt.date.astype(str)
-    history_df["Run at"] = history_df["Run at"].dt.strftime("%Y-%m-%d %H:%M:%S").fillna("")
     return history_df
 
 
@@ -826,18 +868,82 @@ def _prepare_history_df(df: pd.DataFrame, all_runs: bool, show_run_at: bool) -> 
     if sort_cols:
         working = working.sort_values(sort_cols, ascending=True)
 
-    if (not show_run_at) and ("Run at" in working.columns):
-        working = working.drop(columns=["Run at"])
-
-    if "Date" in working.columns:
-        working["Date"] = working["Date"].astype(str)
-    if "Run at" in working.columns:
-        try:
-            working["Run at"] = working["Run at"].dt.strftime("%Y-%m-%d %H:%M:%S")
-        except Exception:
-            working["Run at"] = working["Run at"].astype(str)
-
     return working.reset_index(drop=True)
+
+
+def _render_run_inspector(filtered_df: pd.DataFrame) -> None:
+    if filtered_df.empty:
+        return
+
+    filtered_df = filtered_df.sort_values(["Date", "Run at"], ascending=[False, False]).reset_index(drop=True)
+    options = {
+        f"{row['Date'].date().isoformat()} · {row['Status label']} · {row['run_type']} · {row.get('run_id') or ('row-' + str(i + 1))}": i
+        for i, row in filtered_df.iterrows()
+    }
+    picked = st.selectbox("Inspect a run", list(options.keys()), key="history_inspector_run")
+    row = filtered_df.iloc[options[picked]]
+
+    detail = {}
+    run_id = str(row.get("run_id") or "").strip()
+    if run_id:
+        try:
+            detail = api_get(f"/v1/results/run/{run_id}")
+        except Exception:
+            detail = {}
+
+    warnings_list = []
+    if isinstance(detail.get("warnings"), list):
+        warnings_list = [str(w) for w in detail.get("warnings", [])]
+    elif isinstance(row.get("warnings_raw"), list):
+        warnings_list = [str(w) for w in row.get("warnings_raw", [])]
+
+    with st.expander("Run Inspector", expanded=False):
+        tab_summary, tab_models, tab_inputs, tab_settings, tab_debug = st.tabs(
+            ["Summary", "Weather models", "Inputs used", "Settings used", "Debug bundle"]
+        )
+
+        with tab_summary:
+            st.markdown(
+                f"**Date:** {row['Date'].date().isoformat()}  \\\n"
+                f"**Run at:** {row['Run at'].strftime('%Y-%m-%d %H:%M:%S') if pd.notna(row['Run at']) else '—'}  \\\n"
+                f"**Status:** {row['Status label']}  \\\n"
+                f"**Run type:** {row.get('run_type', 'manual')}"
+            )
+            if warnings_list:
+                st.warning("\n".join(f"• {w}" for w in warnings_list))
+            elif int(row.get("warnings_count") or 0) > 0:
+                st.warning(f"{int(row.get('warnings_count') or 0)} warning(s) were recorded for this run.")
+            else:
+                st.success("No warnings recorded.")
+
+        with tab_models:
+            models_summary = detail.get("models_summary") if isinstance(detail.get("models_summary"), dict) else row.get("models_summary_raw", {})
+            selected_models = models_summary.get("selected_models", []) if isinstance(models_summary, dict) else []
+            failed_models = models_summary.get("failed_models", []) if isinstance(models_summary, dict) else []
+            weights_used = models_summary.get("weights_used", {}) if isinstance(models_summary, dict) else {}
+            st.write("Selected models:", ", ".join(selected_models) if selected_models else "—")
+            st.write("Failed models:", ", ".join(failed_models) if failed_models else "None")
+            if isinstance(weights_used, dict) and weights_used:
+                weights_df = pd.DataFrame([{"Model": k, "Weight": float(v)} for k, v in weights_used.items()])
+                st.dataframe(weights_df, use_container_width=True, hide_index=True)
+
+        with tab_inputs:
+            inputs_used = detail.get("inputs_used") if isinstance(detail.get("inputs_used"), dict) else {}
+            if inputs_used:
+                st.json(inputs_used, expanded=False)
+            else:
+                st.info("Inputs snapshot is not available for this run.")
+
+        with tab_settings:
+            settings_used = detail.get("settings_used") if isinstance(detail.get("settings_used"), dict) else {}
+            if settings_used:
+                st.json(settings_used, expanded=False)
+            else:
+                st.info("Settings snapshot is not available for this run.")
+
+        with tab_debug:
+            debug_bundle = detail.get("debug_bundle") if isinstance(detail.get("debug_bundle"), dict) else detail
+            st.json(debug_bundle, expanded=False)
 
 
 def _render_history_log_block() -> None:
@@ -871,22 +977,71 @@ def _render_history_log_block() -> None:
             show_run_at=st.session_state["history_show_run_at"],
         )
 
+        if not prepared.empty:
+            date_min = prepared["Date"].min().date()
+            date_max = prepared["Date"].max().date()
+            f1, f2, f3 = st.columns([1.2, 1.2, 1.2])
+            with f1:
+                selected_date_range = st.date_input("Date range", value=(date_min, date_max), min_value=date_min, max_value=date_max)
+            with f2:
+                status_options = ["✅ OK", "⚠️ Degraded", "❌ Error"]
+                status_filter = st.multiselect("Status", options=status_options, default=status_options)
+            with f3:
+                run_types = sorted({str(v) for v in prepared["run_type"].dropna().tolist()})
+                run_type_filter = st.multiselect("Run type", options=run_types, default=run_types)
+
+            f4, f5 = st.columns([1.2, 2.4])
+            with f4:
+                has_warnings = st.selectbox("Has warnings", ["All", "Yes", "No"], index=0)
+            with f5:
+                all_models: set[str] = set()
+                for cell in prepared.get("models_raw", pd.Series(dtype=object)).dropna().tolist():
+                    all_models.update([x.strip() for x in str(cell).split(",") if x.strip() and x.strip() != "—"])
+                model_options = sorted(all_models)
+                model_filter = st.selectbox("Model filter (optional)", ["All models", *model_options], index=0)
+
+            filtered = prepared.copy()
+            if isinstance(selected_date_range, tuple) and len(selected_date_range) == 2:
+                start_date, end_date = selected_date_range
+                filtered = filtered[(filtered["Date"].dt.date >= start_date) & (filtered["Date"].dt.date <= end_date)]
+            if status_filter:
+                filtered = filtered[filtered["Status label"].isin(status_filter)]
+            if run_type_filter:
+                filtered = filtered[filtered["run_type"].isin(run_type_filter)]
+            if has_warnings == "Yes":
+                filtered = filtered[filtered["warnings_count"] > 0]
+            elif has_warnings == "No":
+                filtered = filtered[filtered["warnings_count"] == 0]
+            if model_filter != "All models":
+                filtered = filtered[filtered["models_raw"].str.contains(model_filter, na=False)]
+        else:
+            filtered = prepared
+
         with c3:
             st.caption("")
 
-        if prepared.empty:
+        if filtered.empty:
             st.info("No history records yet. Run a forecast to create the first record.")
         else:
+            display_df = filtered.copy()
+            display_df["Date"] = display_df["Date"].astype(str)
+            if "Run at" in display_df.columns:
+                display_df["Run at"] = display_df["Run at"].dt.strftime("%Y-%m-%d %H:%M:%S").fillna("")
+                if not st.session_state.get("history_show_run_at", False):
+                    display_df = display_df.drop(columns=["Run at"])
+
+            drop_cols = ["run_id", "Status", "PV p10", "PV p90", "warnings_count", "run_type", "models_raw", "warnings_raw", "models_summary_raw"]
+            display_df = display_df.drop(columns=[c for c in drop_cols if c in display_df.columns])
             history_column_config = build_column_config(
-                prepared,
+                display_df,
                 {
-                    "AC charge cutoff SOC (%)": st.column_config.NumberColumn(format="%.1f"),
-                    "Allowed AC charge power (kW)": st.column_config.NumberColumn(format="%.2f"),
-                    "PV forecast total (kWh)": st.column_config.NumberColumn(format="%.2f"),
-                    "Consumption forecast total (kWh)": st.column_config.NumberColumn(format="%.2f"),
+                    "PV p50": st.column_config.NumberColumn(format="%.2f kWh"),
+                    "Load": st.column_config.NumberColumn(format="%.2f kWh"),
+                    "Charge": st.column_config.NumberColumn(format="%.2f kW"),
                 },
             )
-            render_modern_table(prepared, column_config=history_column_config)
+            render_modern_table(display_df, column_config=history_column_config)
+            _render_run_inspector(filtered)
 
 
 if hasattr(st, "fragment"):
