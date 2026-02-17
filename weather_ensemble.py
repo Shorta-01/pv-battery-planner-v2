@@ -746,7 +746,11 @@ def build_ensemble_forecast(
             )
 
     if not per_model_pv_columns["pv_total_kwh"]:
-        raise RuntimeError("All weather model requests failed.")
+        err = RuntimeError("All weather model requests failed.")
+        setattr(err, "failed_models", list(failed_models))
+        setattr(err, "failed_model_reasons", dict(failed_model_reasons))
+        setattr(err, "weights_used", None)
+        raise err
 
     canonical_index = next(iter(weather_ok.values())).df.index
 
