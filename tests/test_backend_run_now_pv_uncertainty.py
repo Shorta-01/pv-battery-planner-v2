@@ -104,6 +104,17 @@ def test_run_now_pv_uncertainty_false_omits_uncertainty_outputs(monkeypatch, tmp
     result = state.run_now(backend_api.RunNowPayload(pv_uncertainty=False, weather_models=["ecmwf_ifs"]))["result"]
 
     assert calls == [False]
+    assert result["status"] == "ok"
+    assert result["warnings_count"] == 0
+    assert isinstance(result["run_duration_ms"], int)
+    assert result["run_duration_ms"] >= 0
+    assert result["pv_totals_kwh"] == {"p10": None, "p50": 3.0, "p90": None}
+    assert result["inputs_used"]["buffer_percent"] == 0.0
+    assert result["inputs_used"]["max_ac_charge_power_kw"] == 5.0
+    assert result["inputs_used"]["weather_models_selected"] == ["ecmwf_ifs"]
+    assert result["inputs_used"]["ensemble_method"] == "weighted"
+    assert result["inputs_used"]["pv_uncertainty_enabled"] is False
+    assert result["inputs_used"]["fast_mode"] is False
     assert result["weather_ensemble"]["pv_totals_kwh"] is None
     assert "pv_total_low_kwh" not in result["pv"]["columns"]
     assert "pv_total_high_kwh" not in result["pv"]["columns"]
@@ -125,7 +136,39 @@ def test_run_now_pv_uncertainty_true_returns_uncertainty_outputs(monkeypatch, tm
 
     result = state.run_now(backend_api.RunNowPayload(pv_uncertainty=True, weather_models=["ecmwf_ifs"]))["result"]
 
+    assert result["status"] == "ok"
+    assert result["warnings_count"] == 0
+    assert result["pv_totals_kwh"] == {"p10": 1.5, "p50": 3.0, "p90": 4.5}
     assert result["weather_ensemble"]["pv_totals_kwh"]["p10"] == 1.5
     assert result["weather_ensemble"]["pv_totals_kwh"]["p90"] == 4.5
     assert "pv_total_low_kwh" in result["pv"]["columns"]
     assert "pv_total_high_kwh" in result["pv"]["columns"]
+
+
+def test_run_now_degraded_generates_health_warnings(monkeypatch, tmp_path):
+    state = _new_state(monkeypatch, tmp_path)
+    _patch_core_for_run(monkeypatch)
+
+    idx = pd.date_range("2026-01-10", periods=2, freq="h", tz="Europe/Brussels")
+    weather_df = pd.DataFrame({"temp_air_c": [10.0, 11.0], "wind_speed_ms": [1.0, 1.0], "cloud_cover_pct": [20.0, 30.0]}, index=idx)
+    weather = core.ForecastResult(df=weather_df, sunrise=idx[0].to_pydatetime(), sunset=idx[-1].to_pydatetime())
+
+    ensemble = _fake_ensemble(idx, weather, pv_uncertainty=False)
+    ensemble.failed_models = ["dwd_icon_d2"]
+    ensemble.failed_model_reasons = {"dwd_icon_d2": {"message": "rate limited"}}
+    ensemble.derived_irradiance_by_model = {"ecmwf_ifs": True}
+    ensemble.missing_vars_by_model = {"ecmwf_ifs": ["direct_normal_irradiance", "foo"]}
+
+    monkeypatch.setattr(
+        backend_api,
+        "build_ensemble_forecast",
+        lambda **_kwargs: ensemble,
+    )
+
+    result = state.run_now(backend_api.RunNowPayload(pv_uncertainty=False, weather_models=["ecmwf_ifs"]))["result"]
+
+    assert result["status"] == "degraded"
+    assert result["warnings_count"] == 3
+    assert any("model failed: dwd_icon_d2 (rate limited)" == w for w in result["warnings"])
+    assert any("derived irradiance used: ecmwf_ifs" == w for w in result["warnings"])
+    assert any("important vars missing: ecmwf_ifs (direct_normal_irradiance)" == w for w in result["warnings"])
