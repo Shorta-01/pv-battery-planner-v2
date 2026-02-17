@@ -1515,24 +1515,27 @@ def _render_history_log_block() -> None:
             )
 
         history_debug_mode = st.session_state.get("history_mode", "Simple") == "Debug"
-
-        with c1:
-            st.toggle(
-                "All runs",
-                key="history_all_runs",
-                help="Off = only the latest run per forecast day. On = show every run you made.",
-            )
-
-        with c2:
-            if st.session_state.get("history_all_runs", False):
-                st.checkbox(
-                    "Show run time",
-                    key="history_show_run_at",
-                    help="Shows when you pressed Run forecast / when the nightly job ran. Useful if you have multiple runs for the same day.",
+        if history_debug_mode:
+            with c1:
+                st.toggle(
+                    "All runs",
+                    key="history_all_runs",
+                    help="Off = only the latest run per forecast day. On = show every run you made.",
                 )
-            else:
-                st.session_state["history_show_run_at"] = False
-                st.caption("")
+
+            with c2:
+                if st.session_state.get("history_all_runs", False):
+                    st.checkbox(
+                        "Show run time",
+                        key="history_show_run_at",
+                        help="Shows when you pressed Run forecast / when the nightly job ran. Useful if you have multiple runs for the same day.",
+                    )
+                else:
+                    st.session_state["history_show_run_at"] = False
+                    st.caption("")
+        else:
+            st.session_state["history_all_runs"] = False
+            st.session_state["history_show_run_at"] = False
 
         st.caption("Open Run Inspector to see full model reasons and settings snapshot.")
 
@@ -1549,25 +1552,29 @@ def _render_history_log_block() -> None:
             if date_min is None or date_max is None:
                 date_min = dt.date.today()
                 date_max = dt.date.today()
-            f1, f2, f3 = st.columns([1.2, 1.2, 1.2])
+            f1, f2 = st.columns([1.2, 1.2])
             with f1:
                 selected_date_range = st.date_input("Date range", value=(date_min, date_max), min_value=date_min, max_value=date_max)
             with f2:
                 status_options = ["✅ OK", "⚠️ Degraded", "❌ Error"]
                 status_filter = st.multiselect("Status", options=status_options, default=status_options)
-            with f3:
-                run_types = sorted({str(v) for v in prepared["run_type"].dropna().tolist()})
-                run_type_filter = st.multiselect("Run type", options=run_types, default=run_types)
 
-            f4, f5 = st.columns([1.2, 2.4])
-            with f4:
-                has_warnings = st.selectbox("Has warnings", ["All", "Yes", "No"], index=0)
-            with f5:
-                all_models: set[str] = set()
-                for cell in prepared.get("models_raw", pd.Series(dtype=object)).dropna().tolist():
-                    all_models.update([x.strip() for x in str(cell).split(",") if x.strip() and x.strip() != "—"])
-                model_options = sorted(all_models)
-                model_filter = st.selectbox("Model filter (optional)", ["All models", *model_options], index=0)
+            run_type_filter: list[str] | None = None
+            has_warnings = "All"
+            model_filter = "All models"
+            if history_debug_mode:
+                f3, f4, f5 = st.columns([1.2, 1.2, 2.4])
+                with f3:
+                    run_types = sorted({str(v) for v in prepared["run_type"].dropna().tolist()})
+                    run_type_filter = st.multiselect("Run type", options=run_types, default=run_types)
+                with f4:
+                    has_warnings = st.selectbox("Has warnings", ["All", "Yes", "No"], index=0)
+                with f5:
+                    all_models: set[str] = set()
+                    for cell in prepared.get("models_raw", pd.Series(dtype=object)).dropna().tolist():
+                        all_models.update([x.strip() for x in str(cell).split(",") if x.strip() and x.strip() != "—"])
+                    model_options = sorted(all_models)
+                    model_filter = st.selectbox("Model filter (optional)", ["All models", *model_options], index=0)
 
             filtered = prepared.copy()
             if isinstance(selected_date_range, tuple) and len(selected_date_range) == 2:
@@ -1575,14 +1582,15 @@ def _render_history_log_block() -> None:
                 filtered = filtered[(filtered["Date"].dt.date >= start_date) & (filtered["Date"].dt.date <= end_date)]
             if status_filter:
                 filtered = filtered[filtered["Status label"].isin(status_filter)]
-            if run_type_filter:
-                filtered = filtered[filtered["run_type"].isin(run_type_filter)]
-            if has_warnings == "Yes":
-                filtered = filtered[filtered["warnings_count"] > 0]
-            elif has_warnings == "No":
-                filtered = filtered[filtered["warnings_count"] == 0]
-            if model_filter != "All models":
-                filtered = filtered[filtered["models_raw"].str.contains(model_filter, na=False)]
+            if history_debug_mode:
+                if run_type_filter:
+                    filtered = filtered[filtered["run_type"].isin(run_type_filter)]
+                if has_warnings == "Yes":
+                    filtered = filtered[filtered["warnings_count"] > 0]
+                elif has_warnings == "No":
+                    filtered = filtered[filtered["warnings_count"] == 0]
+                if model_filter != "All models":
+                    filtered = filtered[filtered["models_raw"].str.contains(model_filter, na=False)]
         else:
             filtered = prepared
 
