@@ -830,9 +830,11 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
         else:
             models_summary_text = "—"
 
-        pv_p10 = float(item.get("pv_p10_kwh") or 0.0)
+        pv_p10_raw = item.get("pv_p10_kwh")
+        pv_p10 = float(pv_p10_raw) if pv_p10_raw is not None else None
         pv_p50 = float(item.get("pv_p50_kwh") or metrics.get("pv_forecast_kwh") or 0.0)
-        pv_p90 = float(item.get("pv_p90_kwh") or 0.0)
+        pv_p90_raw = item.get("pv_p90_kwh")
+        pv_p90 = float(pv_p90_raw) if pv_p90_raw is not None else None
         warnings_raw = item.get("warnings") if isinstance(item.get("warnings"), list) else []
         warnings_text = " | ".join(str(w) for w in warnings_raw) if warnings_raw else (f"{warnings_count} warning(s)" if warnings_count else "None")
 
@@ -844,9 +846,9 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
             "Status label": status_label,
             "Models": models_summary_text,
             "PV p50": round(pv_p50, 2),
-            "PV p10": round(pv_p10, 2),
-            "PV p90": round(pv_p90, 2),
-            "PV range (p10–p90)": f"{pv_p10:.2f}–{pv_p90:.2f} kWh" if (pv_p10 or pv_p90) else "—",
+            "PV p10": round(pv_p10, 2) if pv_p10 is not None else None,
+            "PV p90": round(pv_p90, 2) if pv_p90 is not None else None,
+            "PV range (p10–p90)": f"{pv_p10:.2f}–{pv_p90:.2f} kWh" if (pv_p10 is not None and pv_p90 is not None) else "—",
             "Load": round(float(metrics.get("cons_forecast_kwh", 0.0)), 2),
             "Charge": round(float(metrics.get("charge_kw", 0.0)), 2),
             "Warnings": warnings_text,
@@ -1251,9 +1253,9 @@ def _render_run_inspector(filtered_df: pd.DataFrame) -> None:
                     pv_totals = weather_ensemble.get("pv_totals_kwh", {})
                 if not pv_totals:
                     pv_totals = {
-                        "p10": float(history_row.get("PV p10") or 0.0),
+                        "p10": float(history_row.get("PV p10")) if pd.notna(history_row.get("PV p10")) else None,
                         "p50": float(history_row.get("PV p50") or 0.0),
-                        "p90": float(history_row.get("PV p90") or 0.0),
+                        "p90": float(history_row.get("PV p90")) if pd.notna(history_row.get("PV p90")) else None,
                     }
 
                 outputs = detail_payload.get("outputs") if isinstance(detail_payload.get("outputs"), dict) else {}
@@ -1606,7 +1608,10 @@ def _render_history_log_block() -> None:
 
             display_df["Allowed AC charge power"] = display_df["Charge"]
             display_df["Warnings badge"] = display_df["warnings_count"].apply(lambda n: f"⚠️ {int(n)}" if int(n or 0) > 0 else "✅ 0")
-            display_df["PV range width"] = (pd.to_numeric(display_df["PV p90"], errors="coerce") - pd.to_numeric(display_df["PV p10"], errors="coerce")).round(2)
+            pv_p10_vals = pd.to_numeric(display_df["PV p10"], errors="coerce")
+            pv_p90_vals = pd.to_numeric(display_df["PV p90"], errors="coerce")
+            pv_range_width = (pv_p90_vals - pv_p10_vals).round(2)
+            display_df["PV range width"] = pv_range_width.where(pv_p10_vals.notna() & pv_p90_vals.notna(), None)
             cutoff_soc_pct = pd.to_numeric(display_df.get("cutoff_soc", pd.Series([None] * len(display_df))), errors="coerce") * 100.0
             display_df["Cutoff SOC"] = cutoff_soc_pct.round(1)
             display_df["Run duration"] = pd.to_numeric(display_df["Duration (ms)"], errors="coerce").round(0)
