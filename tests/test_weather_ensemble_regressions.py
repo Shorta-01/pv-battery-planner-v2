@@ -53,27 +53,30 @@ def test_build_ensemble_mean_ignores_missing_model_hours(monkeypatch: pytest.Mon
     )
 
     def fake_weather(model_id, *_args, **_kwargs):
-        return core.ForecastResult(df=weather_df.copy(), sunrise=hourly_index[7].to_pydatetime(), sunset=hourly_index[17].to_pydatetime()), [], False
+        out = weather_df.copy()
+        out["temp_air_c"] = 10.0 if model_id == "knmi_harmonie_arome" else 11.0
+        return core.ForecastResult(df=out, sunrise=hourly_index[7].to_pydatetime(), sunset=hourly_index[17].to_pydatetime()), [], False
 
     values = {
         "knmi_harmonie_arome": [1.0, 2.0, 3.0],
         "dwd_icon_d2": [3.0, float("nan"), 9.0],
     }
-    call_seq = {"i": 0}
 
-    def fake_build_pv(_df, _loc, tz=None):
-        model_id = ["knmi_harmonie_arome", "dwd_icon_d2"][call_seq["i"]]
-        call_seq["i"] += 1
-        s = pd.Series(values[model_id], index=hourly_index[:3])
+    def fake_build_pv(df, _loc, tz=None):
+        if float(df["temp_air_c"].iloc[0]) > 10.5:
+            model_id = "dwd_icon_d2"
+        else:
+            model_id = "knmi_harmonie_arome"
+        s = pd.Series(values[model_id], index=hourly_index[:3]).reindex(df.index)
         return pd.DataFrame(
             {
                 "pv_total_kwh": s,
                 "pv_total_unclipped_kwh": s,
                 "pv_east_kwh": s / 2,
                 "pv_south_kwh": s / 2,
-                "pv_clipped_kwh": [0.0, 0.0, 0.0],
+                "pv_clipped_kwh": [0.0] * len(df.index),
             },
-            index=hourly_index[:3],
+            index=df.index,
         )
 
     monkeypatch.setattr(we, "fetch_open_meteo_weather", fake_weather)
@@ -112,7 +115,9 @@ def test_fast_mode_limits_models(monkeypatch: pytest.MonkeyPatch, hourly_index: 
 
     def fake_weather(model_id, *_args, **_kwargs):
         calls.append(model_id)
-        return core.ForecastResult(df=weather_df.copy(), sunrise=hourly_index[7].to_pydatetime(), sunset=hourly_index[17].to_pydatetime()), [], False
+        out = weather_df.copy()
+        out["temp_air_c"] = 10.0 if model_id == "ecmwf_ifs" else 11.0
+        return core.ForecastResult(df=out, sunrise=hourly_index[7].to_pydatetime(), sunset=hourly_index[17].to_pydatetime()), [], False
 
     def fake_build_pv(df, _loc, tz=None):
         s = pd.Series([1.0] * len(df.index), index=df.index)
@@ -141,8 +146,8 @@ def test_fast_mode_limits_models(monkeypatch: pytest.MonkeyPatch, hourly_index: 
         fast_mode=True,
     )
 
-    assert calls == ["ecmwf_ifs", "dwd_icon_d2"]
-    assert out.selected_models == ["ecmwf_ifs", "dwd_icon_d2"]
+    assert sorted(calls) == ["dwd_icon_d2", "ecmwf_ifs"]
+    assert sorted(out.selected_models) == ["dwd_icon_d2", "ecmwf_ifs"]
 
 
 def test_fetch_open_meteo_sets_derived_flag_from_missing_dni_dhi(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex) -> None:

@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
 
@@ -109,6 +110,7 @@ BASE_HOURLY_VARIABLES = [
 IRRADIANCE_HOURLY_VARIABLES = [
     "direct_normal_irradiance",
     "diffuse_radiation",
+    "direct_radiation",
 ]
 
 WEATHER_DISPLAY_VARS = [
@@ -466,12 +468,7 @@ def fetch_open_meteo_weather(
         return cached[1], list(cached[2]), bool(cached[3])
 
     spec = WEATHER_MODELS[model_id]
-    capability = spec.get("capability", {}) if isinstance(spec, dict) else {}
-    hourly_variables = BASE_HOURLY_VARIABLES[:]
-    if bool(capability.get("dni_native")):
-        hourly_variables.append("direct_normal_irradiance")
-    if bool(capability.get("diffuse_native")):
-        hourly_variables.append("diffuse_radiation")
+    hourly_variables = BASE_HOURLY_VARIABLES[:] + IRRADIANCE_HOURLY_VARIABLES
 
     params = {
         "latitude": loc.latitude,
@@ -621,7 +618,7 @@ def fetch_open_meteo_weather(
         target_date,
         tz,
     )
-    availability = availability.reindex(df.index).fillna(False)
+    availability = availability.reindex(df.index).fillna(False).astype(bool)
     for col in ["ghi_wm2", "dni_wm2", "dhi_wm2"]:
         df.loc[~availability[col], col] = np.nan
 
@@ -764,58 +761,88 @@ def build_ensemble_forecast(
     failed_model_reasons: dict[str, dict[str, Any]] = {}
     weather_ok: dict[str, core.ForecastResult] = {}
 
-    for model_id in selected:
-        try:
-            weather, missing_vars, derived_irradiance = fetch_open_meteo_weather(
-                model_id,
-                loc,
-                tz,
-                target_date,
-                accuracy_mode=accuracy_mode,
-                fast_mode=fast_mode,
-            )
-            model_pv = core.build_pv_forecast(weather.df, loc, tz=tz)
-            for req in ["pv_total_kwh", "pv_total_unclipped_kwh", "pv_east_kwh", "pv_south_kwh", "pv_clipped_kwh"]:
-                if req not in model_pv.columns:
-                    model_pv[req] = np.nan
-            pv_total = pd.to_numeric(model_pv["pv_total_kwh"], errors="coerce").clip(lower=0.0)
-            pv_unclipped = pd.to_numeric(model_pv["pv_total_unclipped_kwh"], errors="coerce").clip(lower=0.0)
-            pv_unclipped = pd.Series(np.maximum(pv_unclipped, pv_total), index=pv_total.index)
-            pv_east = pd.to_numeric(model_pv["pv_east_kwh"], errors="coerce").clip(lower=0.0)
-            pv_south = pd.to_numeric(model_pv["pv_south_kwh"], errors="coerce").clip(lower=0.0)
-            pv_clipped = pd.to_numeric(model_pv["pv_clipped_kwh"], errors="coerce").clip(lower=0.0)
+    canonical_index = pd.date_range(
+        pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz),
+        pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=1), dt.time(0, 0)), tz=tz),
+        freq="h",
+        inclusive="left",
+    )
 
-            per_model_pv_columns["pv_total_kwh"][model_id] = pv_total
-            per_model_pv_columns["pv_total_unclipped_kwh"][model_id] = pv_unclipped
-            per_model_pv_columns["pv_east_kwh"][model_id] = pv_east
-            per_model_pv_columns["pv_south_kwh"][model_id] = pv_south
-            per_model_pv_columns["pv_clipped_kwh"][model_id] = pv_clipped
-            per_model_pv_totals[model_id] = float(pv_total.sum())
-            missing_vars_by_model[model_id] = missing_vars
-            derived_irradiance_by_model[model_id] = bool(derived_irradiance)
-            weather_ok[model_id] = weather
-        except WeatherProviderError as exc:
-            failed_models.append(model_id)
-            failed_model_reasons[model_id] = exc.to_reason()
-            _LOGGER.warning(
-                "[weather_ensemble] model_failed model=%s category=%s status=%s message=%s",
-                model_id,
-                exc.category,
-                exc.status,
-                exc.message,
-            )
-        except Exception as exc:
-            failed_models.append(model_id)
-            failed_model_reasons[model_id] = {
-                "category": "unexpected_error",
-                "status": None,
-                "message": str(exc),
-            }
-            _LOGGER.exception(
-                "[weather_ensemble] model_failed model=%s category=unexpected_error message=%s",
-                model_id,
-                exc,
-            )
+    def _fetch_and_prepare(model_id: str) -> tuple[str, core.ForecastResult, dict[str, pd.Series], float, list[str], bool, float]:
+        weather, missing_vars, derived_irradiance = fetch_open_meteo_weather(
+            model_id,
+            loc,
+            tz,
+            target_date,
+            accuracy_mode=accuracy_mode,
+            fast_mode=fast_mode,
+        )
+        missing_hours = float(weather.df.reindex(canonical_index).isna().all(axis=1).sum())
+        model_weather_df = weather.df.reindex(canonical_index).copy()
+        for irr_col in ["ghi_wm2", "dni_wm2", "dhi_wm2", "cloud_cover_pct"]:
+            if irr_col in model_weather_df.columns:
+                model_weather_df[irr_col] = pd.to_numeric(model_weather_df[irr_col], errors="coerce").fillna(0.0).clip(lower=0.0)
+        if "temp_air_c" in model_weather_df.columns:
+            model_weather_df["temp_air_c"] = pd.to_numeric(model_weather_df["temp_air_c"], errors="coerce").ffill().bfill().fillna(10.0)
+        if "wind_speed_ms" in model_weather_df.columns:
+            model_weather_df["wind_speed_ms"] = pd.to_numeric(model_weather_df["wind_speed_ms"], errors="coerce").fillna(1.0).clip(lower=0.0)
+        weather = core.ForecastResult(df=model_weather_df, sunrise=weather.sunrise, sunset=weather.sunset)
+
+        model_pv = core.build_pv_forecast(weather.df, loc, tz=tz).reindex(canonical_index)
+        for req in ["pv_total_kwh", "pv_total_unclipped_kwh", "pv_east_kwh", "pv_south_kwh", "pv_clipped_kwh"]:
+            if req not in model_pv.columns:
+                model_pv[req] = np.nan
+        pv_total = pd.to_numeric(model_pv["pv_total_kwh"], errors="coerce").clip(lower=0.0)
+        pv_unclipped = pd.to_numeric(model_pv["pv_total_unclipped_kwh"], errors="coerce").clip(lower=0.0)
+        pv_unclipped = pd.Series(np.maximum(pv_unclipped, pv_total), index=pv_total.index)
+        pv_east = pd.to_numeric(model_pv["pv_east_kwh"], errors="coerce").clip(lower=0.0)
+        pv_south = pd.to_numeric(model_pv["pv_south_kwh"], errors="coerce").clip(lower=0.0)
+        pv_clipped = pd.to_numeric(model_pv["pv_clipped_kwh"], errors="coerce").clip(lower=0.0)
+        return model_id, weather, {
+            "pv_total_kwh": pv_total,
+            "pv_total_unclipped_kwh": pv_unclipped,
+            "pv_east_kwh": pv_east,
+            "pv_south_kwh": pv_south,
+            "pv_clipped_kwh": pv_clipped,
+        }, float(pv_total.sum()), missing_vars, bool(derived_irradiance), missing_hours
+
+    max_workers = min(max(len(selected), 1), 5)
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        future_map = {ex.submit(_fetch_and_prepare, model_id): model_id for model_id in selected}
+        for fut in as_completed(future_map):
+            model_id = future_map[fut]
+            try:
+                model_id, weather, pv_cols, pv_total_sum, missing_vars, derived_irradiance, missing_hours = fut.result()
+                for col_name, series in pv_cols.items():
+                    per_model_pv_columns[col_name][model_id] = series
+                per_model_pv_totals[model_id] = pv_total_sum
+                missing_vars_by_model[model_id] = missing_vars
+                derived_irradiance_by_model[model_id] = bool(derived_irradiance)
+                weather_ok[model_id] = weather
+                if missing_hours > 2:
+                    _LOGGER.warning("[weather_ensemble] model=%s missing_hours=%s on canonical index", model_id, int(missing_hours))
+            except WeatherProviderError as exc:
+                failed_models.append(model_id)
+                failed_model_reasons[model_id] = exc.to_reason()
+                _LOGGER.warning(
+                    "[weather_ensemble] model_failed model=%s category=%s status=%s message=%s",
+                    model_id,
+                    exc.category,
+                    exc.status,
+                    exc.message,
+                )
+            except Exception as exc:
+                failed_models.append(model_id)
+                failed_model_reasons[model_id] = {
+                    "category": "unexpected_error",
+                    "status": None,
+                    "message": str(exc),
+                }
+                _LOGGER.exception(
+                    "[weather_ensemble] model_failed model=%s category=unexpected_error message=%s",
+                    model_id,
+                    exc,
+                )
 
     if not per_model_pv_columns["pv_total_kwh"]:
         err = RuntimeError("All weather model requests failed.")
@@ -823,8 +850,6 @@ def build_ensemble_forecast(
         setattr(err, "failed_model_reasons", dict(failed_model_reasons))
         setattr(err, "weights_used", None)
         raise err
-
-    canonical_index = next(iter(weather_ok.values())).df.index
 
     def _ensemble_column(column_name: str) -> tuple[pd.Series, dict[str, float] | None]:
         model_series = per_model_pv_columns[column_name]
@@ -874,8 +899,8 @@ def build_ensemble_forecast(
         p10 = matrix.quantile(0.10, axis=1)
         p90 = matrix.quantile(0.90, axis=1)
 
-    primary_model = next(iter(weather_ok.keys()))
-    weather_index = weather_ok[primary_model].df.index
+    primary_model = next((m for m in selected if m in weather_ok), next(iter(weather_ok.keys())))
+    weather_index = canonical_index
     ensemble_weather_df = build_weather_ensemble_table(
         weather_ok=weather_ok,
         index=weather_index,
@@ -902,7 +927,7 @@ def build_ensemble_forecast(
         derived_irradiance_by_model=derived_irradiance_by_model,
         failed_models=failed_models,
         failed_model_reasons=failed_model_reasons,
-        selected_models=list(per_model_pv_columns["pv_total_kwh"].keys()),
+        selected_models=[m for m in selected if m in per_model_pv_columns["pv_total_kwh"]],
         weights_used=weights_used,
         weather_primary_model_id=primary_model,
         weather_by_model=weather_ok,

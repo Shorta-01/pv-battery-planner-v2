@@ -157,6 +157,7 @@ DEFAULT_CONFIG = {
         "tilt_south_deg": TILT_SOUTH_DEG,
         "azimuth_east_deg": AZIMUTH_EAST_DEG,
         "azimuth_south_deg": AZIMUTH_SOUTH_DEG,
+        "loss_model": PV_LOSS_MODEL,
         "performance_ratio": PERFORMANCE_RATIO,
         "inverter_eff": INVERTER_EFF,
         "pv_loss_model": PV_LOSS_MODEL,
@@ -323,9 +324,11 @@ def validate_config(cfg: dict) -> None:
         raise ValueError("pv.performance_ratio must be in (0, 1].")
     if not (0.0 < float(pv["inverter_eff"]) <= 1.0):
         raise ValueError("pv.inverter_eff must be in (0, 1].")
-    pv_loss_model = str(pv.get("pv_loss_model", "split")).strip().lower()
+    pv_loss_model = str(pv.get("loss_model", pv.get("pv_loss_model", "split"))).strip().lower()
     if pv_loss_model not in {"split", "combined"}:
-        raise ValueError("pv.pv_loss_model must be either 'split' or 'combined'.")
+        raise ValueError("pv.loss_model (or legacy pv.pv_loss_model) must be either 'split' or 'combined'.")
+    if pv_loss_model == "combined" and abs(float(pv["inverter_eff"]) - 1.0) > 1e-9:
+        raise ValueError("pv.inverter_eff must be 1.0 when pv.loss_model='combined'.")
     iam_model = str(pv.get("iam_model", "none")).strip().lower()
     if iam_model not in {"none", "ashrae"}:
         raise ValueError("pv.iam_model must be either 'none' or 'ashrae'.")
@@ -446,7 +449,7 @@ def apply_config(cfg: dict) -> None:
     AZIMUTH_SOUTH_DEG = float(pv["azimuth_south_deg"])
     PERFORMANCE_RATIO = float(pv["performance_ratio"])
     INVERTER_EFF = float(pv["inverter_eff"])
-    PV_LOSS_MODEL = str(pv.get("pv_loss_model", "split")).strip().lower()
+    PV_LOSS_MODEL = str(pv.get("loss_model", pv.get("pv_loss_model", "split"))).strip().lower()
     PV_IAM_MODEL = str(pv.get("iam_model", "none")).strip().lower()
     PV_IAM_ASHRAE_B = float(pv.get("iam_ashrae_b", 0.05))
     PV_ALBEDO = None if pv.get("albedo") is None else float(pv.get("albedo"))
@@ -479,8 +482,29 @@ def apply_config(cfg: dict) -> None:
 def build_effective_config(user_cfg: dict) -> dict:
     migrated_cfg = migrate_legacy_tilt_config(user_cfg)
     merged_cfg = deep_update(copy.deepcopy(DEFAULT_CONFIG), migrated_cfg)
+    pv_cfg = merged_cfg.get("pv", {}) if isinstance(merged_cfg.get("pv"), dict) else {}
+    loss_model = str(pv_cfg.get("loss_model", pv_cfg.get("pv_loss_model", "split"))).strip().lower()
+    pv_cfg["loss_model"] = loss_model
+    pv_cfg["pv_loss_model"] = loss_model
+    if loss_model == "combined" and abs(float(pv_cfg.get("inverter_eff", 1.0)) - 1.0) > 1e-9:
+        warnings.warn(
+            "pv.loss_model='combined' already includes inverter losses; forcing pv.inverter_eff=1.0 to avoid double-counting.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        pv_cfg["inverter_eff"] = 1.0
     validate_config(merged_cfg)
     return merged_cfg
+
+
+def resolve_pv_loss_multipliers(performance_ratio: float, inverter_eff: float, loss_model: str) -> tuple[float, float]:
+    """Return (DC-side PR multiplier, AC-side inverter efficiency multiplier)."""
+    mode = str(loss_model).strip().lower()
+    if mode == "combined":
+        return float(performance_ratio), 1.0
+    if mode == "split":
+        return float(performance_ratio), float(inverter_eff)
+    raise ValueError("loss_model must be 'combined' or 'split'.")
 
 
 @contextmanager
@@ -1440,7 +1464,7 @@ def estimate_pv_with_pvlib(
     df: "pd.DataFrame",
     loc: Location,
     tz: str | None = None,
-) -> Tuple["pd.Series", "pd.Series", "pd.Series", "pd.Series", "pd.Series", "pd.Series"]:
+) -> Tuple["pd.Series", "pd.Series", "pd.Series", "pd.Series"]:
     tz_use = tz or TIMEZONE
     pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz_use)
     times = df.index
@@ -1556,7 +1580,11 @@ def estimate_pv_with_pvlib(
     temp_air = pd.to_numeric(df_local["temp_air_c"], errors="coerce").ffill().bfill().fillna(10.0)
 
     dt_h = timestep_hours(df_local.index)
-    pre_inverter_loss_multiplier = PERFORMANCE_RATIO
+    dc_pr_multiplier, ac_inv_eff_multiplier = resolve_pv_loss_multipliers(
+        PERFORMANCE_RATIO,
+        INVERTER_EFF,
+        PV_LOSS_MODEL,
+    )
 
     def array_energy(tilt: float, az: float, pdc0_kw: float) -> Tuple["pd.Series", "pd.Series"]:
         irradiance_kwargs = {}
@@ -1592,7 +1620,7 @@ def estimate_pv_with_pvlib(
         dc_w = pvlib.pvsystem.pvwatts_dc(
             poa, pdc0=pdc0_kw * 1000.0, gamma_pdc=PV_GAMMA_PDC, temp_cell=temp_cell
         )
-        dc_kw = ((dc_w / 1000.0) * pre_inverter_loss_multiplier).clip(lower=0)
+        dc_kw = ((dc_w / 1000.0) * dc_pr_multiplier).clip(lower=0)
         dc_kwh = (dc_kw * dt_h).fillna(0).clip(lower=0)
         return dc_kw.astype(float), dc_kwh.astype(float)
 
@@ -1610,38 +1638,51 @@ def estimate_pv_with_pvlib(
 
     total_dc_kw = (east_dc_kw + south_dc_kw).fillna(0).clip(lower=0)
     if INVERTER_AC_MODEL == "pvwatts":
-        eta_nom = INVERTER_EFF if PV_LOSS_MODEL == "split" else 1.0
-        total_ac_kw_unclipped = pd.Series(
+        total_kwp = max(dc_kwp(ARRAY_EAST_PANELS) + dc_kwp(ARRAY_SOUTH_PANELS), 1e-9)
+        east_pdc0 = INVERTER_AC_KW_LIMIT * (dc_kwp(ARRAY_EAST_PANELS) / total_kwp)
+        south_pdc0 = INVERTER_AC_KW_LIMIT * (dc_kwp(ARRAY_SOUTH_PANELS) / total_kwp)
+
+        east_ac_kw_unclipped = pd.Series(
             pvlib.inverter.pvwatts(
-                pdc=total_dc_kw * 1000.0,
-                pdc0=(INVERTER_AC_KW_LIMIT * 1000.0) / max(eta_nom, 1e-6),
-                eta_inv_nom=eta_nom,
+                pdc=east_dc_kw * 1000.0,
+                pdc0=(east_pdc0 * 1000.0) / max(ac_inv_eff_multiplier, 1e-6),
+                eta_inv_nom=ac_inv_eff_multiplier,
             ),
-            index=total_dc_kw.index,
+            index=east_dc_kw.index,
             dtype=float,
         ) / 1000.0
-        total_ac_kw_unclipped = total_ac_kw_unclipped.fillna(0.0).clip(lower=0.0)
+        south_ac_kw_unclipped = pd.Series(
+            pvlib.inverter.pvwatts(
+                pdc=south_dc_kw * 1000.0,
+                pdc0=(south_pdc0 * 1000.0) / max(ac_inv_eff_multiplier, 1e-6),
+                eta_inv_nom=ac_inv_eff_multiplier,
+            ),
+            index=south_dc_kw.index,
+            dtype=float,
+        ) / 1000.0
+        east_ac_kw_unclipped = east_ac_kw_unclipped.fillna(0.0).clip(lower=0.0)
+        south_ac_kw_unclipped = south_ac_kw_unclipped.fillna(0.0).clip(lower=0.0)
     else:
-        linear_ac_eff = INVERTER_EFF if PV_LOSS_MODEL == "split" else 1.0
-        total_ac_kw_unclipped = (total_dc_kw * linear_ac_eff).fillna(0).clip(lower=0)
+        east_ac_kw_unclipped = (east_dc_kw * ac_inv_eff_multiplier).fillna(0).clip(lower=0)
+        south_ac_kw_unclipped = (south_dc_kw * ac_inv_eff_multiplier).fillna(0).clip(lower=0)
 
-    total_dc_kwh = (east_dc_kwh + south_dc_kwh).fillna(0).clip(lower=0)
-    total_ac_kwh_unclipped = (total_ac_kw_unclipped * dt_h).fillna(0).clip(lower=0)
+    east_ac_kwh_unclipped = (east_ac_kw_unclipped * dt_h).fillna(0.0).clip(lower=0.0)
+    south_ac_kwh_unclipped = (south_ac_kw_unclipped * dt_h).fillna(0.0).clip(lower=0.0)
+    total_ac_kw_unclipped = (east_ac_kw_unclipped + south_ac_kw_unclipped).fillna(0.0).clip(lower=0.0)
+    total_ac_kwh_unclipped = (east_ac_kwh_unclipped + south_ac_kwh_unclipped).fillna(0.0).clip(lower=0.0)
 
-    ac_share = (total_ac_kwh_unclipped / total_dc_kwh.replace(0.0, float("nan"))).fillna(0.0).clip(lower=0.0)
-    east_ac_kwh_unclipped = (east_dc_kwh * ac_share).fillna(0.0).clip(lower=0.0)
-    south_ac_kwh_unclipped = (south_dc_kwh * ac_share).fillna(0.0).clip(lower=0.0)
-    east_ac_kw_unclipped = (east_ac_kwh_unclipped / dt_h.replace(0.0, float("nan"))).fillna(0).clip(lower=0)
-    south_ac_kw_unclipped = (south_ac_kwh_unclipped / dt_h.replace(0.0, float("nan"))).fillna(0).clip(lower=0)
+    clip_scale = (INVERTER_AC_KW_LIMIT / total_ac_kw_unclipped.replace(0.0, float("nan"))).fillna(1.0).clip(upper=1.0)
+    east_ac_kw_clipped = (east_ac_kw_unclipped * clip_scale).fillna(0.0).clip(lower=0.0)
+    south_ac_kw_clipped = (south_ac_kw_unclipped * clip_scale).fillna(0.0).clip(lower=0.0)
+    total_ac_kw_clipped = (east_ac_kw_clipped + south_ac_kw_clipped).fillna(0.0).clip(lower=0.0, upper=INVERTER_AC_KW_LIMIT)
 
-    total_ac_kw_clipped = total_ac_kw_unclipped.clip(upper=INVERTER_AC_KW_LIMIT)
-    total_ac_kwh_clipped = (total_ac_kw_clipped * dt_h).fillna(0).clip(lower=0)
+    east_ac_kwh_clipped = (east_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
+    south_ac_kwh_clipped = (south_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
+    total_ac_kwh_clipped = (east_ac_kwh_clipped + south_ac_kwh_clipped).fillna(0.0).clip(lower=0.0)
 
     return (
-        east_ac_kw_unclipped.astype(float),
-        south_ac_kw_unclipped.astype(float),
-        east_ac_kwh_unclipped.astype(float),
-        south_ac_kwh_unclipped.astype(float),
+        east_ac_kwh_clipped.astype(float),
+        south_ac_kwh_clipped.astype(float),
         total_ac_kwh_unclipped.astype(float),
         total_ac_kwh_clipped.astype(float),
     )
@@ -1651,10 +1692,8 @@ def build_pv_forecast(df: "pd.DataFrame", loc: Location, tz: str | None = None) 
         raise SystemExit("pvlib is required. Install with: pip install pvlib")
 
     (
-        east_ac_kw_unclipped,
-        south_ac_kw_unclipped,
-        east_ac_kwh_unclipped,
-        south_ac_kwh_unclipped,
+        east_ac_kwh_clipped,
+        south_ac_kwh_clipped,
         total_ac_kwh_unclipped,
         total_ac_kwh_clipped,
     ) = estimate_pv_with_pvlib(df, loc, tz=tz)
@@ -1662,8 +1701,8 @@ def build_pv_forecast(df: "pd.DataFrame", loc: Location, tz: str | None = None) 
     out = df.copy()
     dt_h = timestep_hours(out.index)
 
-    out["pv_east_kwh"] = east_ac_kwh_unclipped.fillna(0.0).clip(lower=0.0)
-    out["pv_south_kwh"] = south_ac_kwh_unclipped.fillna(0.0).clip(lower=0.0)
+    out["pv_east_kwh"] = east_ac_kwh_clipped.fillna(0.0).clip(lower=0.0)
+    out["pv_south_kwh"] = south_ac_kwh_clipped.fillna(0.0).clip(lower=0.0)
     out["pv_total_unclipped_kwh"] = total_ac_kwh_unclipped.fillna(0.0).clip(lower=0.0)
     out["pv_total_kwh"] = total_ac_kwh_clipped.fillna(0.0).clip(lower=0.0)
 
@@ -1677,16 +1716,6 @@ def build_pv_forecast(df: "pd.DataFrame", loc: Location, tz: str | None = None) 
     out["pv_ac_limited_kw"] = out["pv_total_kw"]
 
     out["pv_clipped_kwh"] = (out["pv_total_unclipped_kwh"] - out["pv_total_kwh"]).clip(lower=0.0)
-
-    # Keep array split consistent with AC-clipped total during clipping.
-    clipped_mask = out["pv_total_unclipped_kwh"] > out["pv_total_kwh"] + 1e-12
-    clip_factor = (out["pv_total_kwh"] / out["pv_total_unclipped_kwh"].replace(0.0, float("nan"))).fillna(1.0).clip(lower=0.0, upper=1.0)
-    out.loc[clipped_mask, "pv_east_kwh"] = (out.loc[clipped_mask, "pv_east_kwh"] * clip_factor.loc[clipped_mask]).astype(float)
-    out.loc[clipped_mask, "pv_south_kwh"] = (out.loc[clipped_mask, "pv_south_kwh"] * clip_factor.loc[clipped_mask]).astype(float)
-
-    split_sum = out["pv_east_kwh"] + out["pv_south_kwh"]
-    split_residual = (out["pv_total_kwh"] - split_sum).astype(float)
-    out.loc[clipped_mask, "pv_south_kwh"] = (out.loc[clipped_mask, "pv_south_kwh"] + split_residual.loc[clipped_mask]).clip(lower=0.0)
 
     out["pv_east_kw"] = (out["pv_east_kwh"] / dt_h.replace(0.0, float("nan"))).fillna(0.0).clip(lower=0.0)
     out["pv_south_kw"] = (out["pv_south_kwh"] / dt_h.replace(0.0, float("nan"))).fillna(0.0).clip(lower=0.0)
@@ -1739,13 +1768,6 @@ def ensure_pv_columns(df: "pd.DataFrame", *, prefer_split: bool = True, split_ra
     out["pv_total_unclipped_kwh"] = np.maximum(out["pv_total_unclipped_kwh"], out["pv_total_kwh"])
     out["pv_east_kwh"] = pd.to_numeric(out["pv_east_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
     out["pv_south_kwh"] = pd.to_numeric(out["pv_south_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
-
-    split_total = out["pv_east_kwh"] + out["pv_south_kwh"]
-    need_rebalance = split_total > 0
-    rebalance_factor = pd.Series(1.0, index=out.index, dtype=float)
-    rebalance_factor.loc[need_rebalance] = out.loc[need_rebalance, "pv_total_kwh"] / split_total.loc[need_rebalance]
-    out["pv_east_kwh"] = (out["pv_east_kwh"] * rebalance_factor).fillna(0.0).clip(lower=0.0)
-    out["pv_south_kwh"] = (out["pv_south_kwh"] * rebalance_factor).fillna(0.0).clip(lower=0.0)
 
     out["pv_dc_available_kwh"] = out["pv_total_unclipped_kwh"]
     out["pv_ac_limited_kwh"] = out["pv_total_kwh"]
