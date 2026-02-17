@@ -785,6 +785,7 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
         "models_raw",
         "warnings_raw",
         "models_summary_raw",
+        "cutoff_soc",
     ]
     try:
         show_all_text = "true" if show_all_runs else "false"
@@ -847,6 +848,7 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
             "models_raw": models_text,
             "warnings_raw": warnings_raw,
             "models_summary_raw": models_summary,
+            "cutoff_soc": metrics.get("cutoff_soc"),
         })
 
     if not rows:
@@ -1491,7 +1493,18 @@ def _render_history_log_block() -> None:
     tooltip_heading("History log", TABLE_TOOLTIPS["History log"])
 
     with st.expander("History log", expanded=True):
-        c1, c2, c3 = st.columns([1.2, 1.2, 1.6])
+        mode_col, c1, c2 = st.columns([1.3, 1.2, 1.2])
+
+        with mode_col:
+            st.radio(
+                "Mode",
+                options=["Simple", "Debug"],
+                key="history_mode",
+                horizontal=True,
+                help="Simple keeps History easy to scan. Debug reveals deeper run diagnostics.",
+            )
+
+        history_debug_mode = st.session_state.get("history_mode", "Simple") == "Debug"
 
         with c1:
             st.toggle(
@@ -1510,6 +1523,8 @@ def _render_history_log_block() -> None:
             else:
                 st.session_state["history_show_run_at"] = False
                 st.caption("")
+
+        st.caption("Open Run Inspector to see full model reasons and settings snapshot.")
 
         raw = run_history_from_backend(show_all_runs=st.session_state["history_all_runs"], days=365)
         prepared = _prepare_history_df(
@@ -1561,13 +1576,6 @@ def _render_history_log_block() -> None:
         else:
             filtered = prepared
 
-        with c3:
-            st.toggle(
-                "Debug columns",
-                key="history_debug_columns",
-                help="Show extra debugging details like run duration and model health.",
-            )
-
         if filtered.empty:
             st.info("No history records yet. Run a forecast to create the first record.")
         else:
@@ -1578,19 +1586,59 @@ def _render_history_log_block() -> None:
                 if not st.session_state.get("history_show_run_at", False):
                     display_df = display_df.drop(columns=["Run at"])
 
-            drop_cols = ["run_id", "Status", "PV p10", "PV p90", "warnings_count", "run_type", "models_raw", "warnings_raw", "models_summary_raw"]
-            if not st.session_state.get("history_debug_columns", False):
-                drop_cols.extend(["Duration (ms)", "Models OK/Failed", "Primary model"])
+            display_df["Allowed AC charge power"] = display_df["Charge"]
+            display_df["Warnings badge"] = display_df["warnings_count"].apply(lambda n: f"⚠️ {int(n)}" if int(n or 0) > 0 else "✅ 0")
+            display_df["PV range width"] = (pd.to_numeric(display_df["PV p90"], errors="coerce") - pd.to_numeric(display_df["PV p10"], errors="coerce")).round(2)
+            cutoff_soc_pct = pd.to_numeric(display_df.get("cutoff_soc", pd.Series([None] * len(display_df))), errors="coerce") * 100.0
+            display_df["Cutoff SOC"] = cutoff_soc_pct.round(1)
+            display_df["Run duration"] = pd.to_numeric(display_df["Duration (ms)"], errors="coerce").round(0)
+            display_df["Run type"] = display_df["run_type"].fillna("manual")
+            display_df["Run id"] = display_df["run_id"].fillna("")
+
+            display_df = display_df.rename(columns={"Status label": "Status", "Models": "Models summary"})
+
+            simple_columns = ["Date", "Status", "PV p50", "Load", "Allowed AC charge power", "Warnings badge"]
+            debug_columns = [
+                "Date",
+                "Status",
+                "PV p50",
+                "PV p10",
+                "PV p90",
+                "PV range width",
+                "Load",
+                "Allowed AC charge power",
+                "Warnings badge",
+                "Models summary",
+                "Cutoff SOC",
+                "Run duration",
+                "Run type",
+                "Run id",
+            ]
+            active_columns = debug_columns if history_debug_mode else simple_columns
+            keep_columns = [c for c in active_columns if c in display_df.columns]
+
+            drop_cols = [c for c in display_df.columns if c not in keep_columns]
             display_df = display_df.drop(columns=[c for c in drop_cols if c in display_df.columns])
             history_column_config = build_column_config(
                 display_df,
                 {
                     "PV p50": st.column_config.NumberColumn(format="%.2f kWh"),
+                    "PV p10": st.column_config.NumberColumn(format="%.2f kWh"),
+                    "PV p90": st.column_config.NumberColumn(format="%.2f kWh"),
+                    "PV range width": st.column_config.NumberColumn(format="%.2f kWh"),
                     "Load": st.column_config.NumberColumn(format="%.2f kWh"),
-                    "Charge": st.column_config.NumberColumn(format="%.2f kW"),
+                    "Allowed AC charge power": st.column_config.NumberColumn(format="%.2f kW"),
+                    "Run duration": st.column_config.NumberColumn(format="%.0f ms"),
+                    "Cutoff SOC": st.column_config.NumberColumn(format="%.1f%%"),
                 },
             )
             render_modern_table(display_df, column_config=history_column_config)
+            if history_debug_mode and not filtered.empty:
+                run_id_options = [str(v) for v in filtered["run_id"].dropna().tolist() if str(v).strip()]
+                if run_id_options:
+                    selected_copy_run_id = st.selectbox("Run id", options=run_id_options, key="history_copy_run_id")
+                    st.code(selected_copy_run_id, language="text")
+                    st.caption("Use the copy button in the code block to copy the selected run id.")
             _render_run_inspector(filtered)
             _render_compare_runs_block(filtered)
 
