@@ -172,3 +172,46 @@ def test_run_now_degraded_generates_health_warnings(monkeypatch, tmp_path):
     assert any("model failed: dwd_icon_d2 (rate limited)" == w for w in result["warnings"])
     assert any("derived irradiance used: ecmwf_ifs" == w for w in result["warnings"])
     assert any("important vars missing: ecmwf_ifs (direct_normal_irradiance)" == w for w in result["warnings"])
+
+
+def test_run_now_all_weather_models_failed_persists_error_run(monkeypatch, tmp_path):
+    state = _new_state(monkeypatch, tmp_path)
+    _patch_core_for_run(monkeypatch)
+
+    inserted = {}
+
+    def fake_insert(_db_path, payload):
+        inserted["payload"] = payload
+
+    monkeypatch.setattr(backend_api, "insert_forecast_run", fake_insert)
+
+    exc = RuntimeError("All weather model requests failed.")
+    setattr(exc, "failed_models", ["ecmwf_ifs", "dwd_icon_d2"])
+    setattr(
+        exc,
+        "failed_model_reasons",
+        {
+            "ecmwf_ifs": {"category": "provider_down", "message": "service unavailable"},
+            "dwd_icon_d2": {"category": "timeout", "message": "request timed out"},
+        },
+    )
+
+    def fail_ensemble(**_kwargs):
+        raise exc
+
+    monkeypatch.setattr(backend_api, "build_ensemble_forecast", fail_ensemble)
+
+    result = state.run_now(
+        backend_api.RunNowPayload(pv_uncertainty=False, weather_models=["ecmwf_ifs", "dwd_icon_d2"])
+    )["result"]
+
+    assert result["status"] == "error"
+    assert result["warnings_count"] == 3
+    assert "all weather model requests failed" in result["warnings"]
+    assert "model failed: ecmwf_ifs (service unavailable)" in result["warnings"]
+    assert "model failed: dwd_icon_d2 (request timed out)" in result["warnings"]
+    assert result["inputs_used"]["weather_models_selected"] == ["ecmwf_ifs", "dwd_icon_d2"]
+    assert result["weather_ensemble"]["failed_models"] == ["ecmwf_ifs", "dwd_icon_d2"]
+    assert result["weather_ensemble"]["failure_reasons_by_model"]["ecmwf_ifs"]["category"] == "provider_down"
+    assert inserted["payload"]["status"] == "error"
+    assert inserted["payload"]["warnings_count"] == 3

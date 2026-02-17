@@ -323,16 +323,92 @@ class BackendState:
             raise HTTPException(status_code=400, detail="Select at least one weather model.")
         normalized_ensemble_method = str(ensemble_method).lower().strip()
 
-        ensemble = build_ensemble_forecast(
-            loc=loc,
-            target_date=target_date,
-            tz=tz,
-            weather_models=selected_models,
-            ensemble_method=normalized_ensemble_method,
-            pv_uncertainty=bool(pv_uncertainty),
-            accuracy_mode=True,
-            fast_mode=bool(fast_mode),
-        )
+        run_at_utc = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+        run_id = str(uuid.uuid4())
+        config_hash = compute_config_hash(cfg)
+        inputs_used = {
+            "soc_at_22_percent": float(soc_percent),
+            "yesterday_consumption_kwh": float(yesterday_kwh),
+            "buffer_percent": float(buffer_percent),
+            "max_ac_charge_power_kw": float(user_max_ac_kw),
+            "weather_models_selected": selected_models,
+            "ensemble_method": normalized_ensemble_method,
+            "pv_uncertainty_enabled": bool(pv_uncertainty),
+            "fast_mode": bool(fast_mode),
+        }
+
+        try:
+            ensemble = build_ensemble_forecast(
+                loc=loc,
+                target_date=target_date,
+                tz=tz,
+                weather_models=selected_models,
+                ensemble_method=normalized_ensemble_method,
+                pv_uncertainty=bool(pv_uncertainty),
+                accuracy_mode=True,
+                fast_mode=bool(fast_mode),
+            )
+        except RuntimeError as exc:
+            if "All weather model requests failed" not in str(exc):
+                raise
+            failed_models = list(getattr(exc, "failed_models", selected_models) or selected_models)
+            failed_reasons = getattr(exc, "failed_model_reasons", {})
+            if not isinstance(failed_reasons, dict):
+                failed_reasons = {}
+            warnings: list[str] = ["all weather model requests failed"]
+            for model_id in failed_models:
+                reason = failed_reasons.get(model_id)
+                if isinstance(reason, dict):
+                    reason_msg = str(reason.get("message") or reason.get("category") or "unknown")
+                else:
+                    reason_msg = "unknown"
+                warnings.append(f"model failed: {model_id} ({reason_msg})")
+            warnings = list(dict.fromkeys(warnings))
+            error_payload = {
+                "run_id": run_id,
+                "target_date": target_date.isoformat(),
+                "run_at": dt.datetime.now(self._tzinfo()).isoformat(),
+                "run_at_utc": run_at_utc,
+                "run_type": "manual",
+                "timezone": tz,
+                "status": "error",
+                "warnings": warnings,
+                "warnings_count": len(warnings),
+                "inputs_used": inputs_used,
+                "planner_version": "v2",
+                "config_hash": config_hash,
+                "config_json": json.dumps(
+                    {
+                        **cfg,
+                        "weather_models_selected": selected_models,
+                        "ensemble_method": normalized_ensemble_method,
+                        "pv_uncertainty_enabled": bool(pv_uncertainty),
+                    },
+                    sort_keys=True,
+                ),
+                "config": cfg,
+                "created_at_utc": run_at_utc,
+                "metrics": {
+                    "pv_forecast_kwh": 0.0,
+                    "cons_forecast_kwh": float(yesterday_kwh),
+                },
+                "weather_ensemble": {
+                    "selected_models": selected_models,
+                    "ensemble_method": normalized_ensemble_method,
+                    "weights_used": getattr(exc, "weights_used", None),
+                    "failed_models": failed_models,
+                    "failure_reasons_by_model": failed_reasons,
+                    "failed_model_reasons": failed_reasons,
+                    "fast_mode": bool(fast_mode),
+                },
+                "weather_by_model": {},
+            }
+            insert_forecast_run(str(SQLITE_PATH), error_payload)
+            self.latest_result = error_payload
+            self.history.append(_to_history_summary(error_payload))
+            self.history = self.history[-MAX_HISTORY:]
+            self._save_results()
+            return error_payload
 
         important_weather_vars = set(WEATHER_DISPLAY_VARS)
         warnings: list[str] = []
@@ -484,8 +560,6 @@ class BackendState:
             "inverter_ac_limit_kw": cfg.get("inverter", {}).get("ac_limit_kw"),
             "loss_factor": cfg.get("system", {}).get("loss_factor"),
         }
-        config_hash = compute_config_hash(cfg)
-
         payload = {
             "run_id": run_id,
             "target_date": target_date.isoformat(),
