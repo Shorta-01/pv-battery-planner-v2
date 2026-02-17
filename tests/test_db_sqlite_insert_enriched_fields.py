@@ -30,6 +30,7 @@ def test_insert_forecast_run_persists_enriched_fields(tmp_path):
             "selected_models": ["ecmwf_ifs"],
             "weights_used": {"ecmwf_ifs": 1.0},
             "failed_models": [],
+            "primary_model_id": "ecmwf_ifs",
         },
         "pv_totals_kwh": {"p10": 1.1, "p50": 2.2, "p90": 3.3},
         "run_duration_ms": 1234,
@@ -109,8 +110,10 @@ def test_fetch_history_includes_run_id_and_summary_fields(tmp_path):
             "selected_models": ["ecmwf_ifs", "gfs"],
             "weights_used": {"ecmwf_ifs": 0.6, "gfs": 0.4},
             "failed_models": ["icon"],
+            "primary_model_id": "ecmwf_ifs",
         },
         "pv_totals_kwh": {"p10": 1.0, "p50": 2.0, "p90": 3.0},
+        "run_duration_ms": 3210,
         "metrics": {
             "charge_kw": 2.5,
             "cutoff_soc": 0.4,
@@ -129,8 +132,10 @@ def test_fetch_history_includes_run_id_and_summary_fields(tmp_path):
             "selected_models": ["ecmwf_ifs"],
             "weights_used": {"ecmwf_ifs": 1.0},
             "failed_models": [],
+            "primary_model_id": "ecmwf_ifs",
         },
         "pv_totals_kwh": {"p10": 1.1, "p50": 2.2, "p90": 3.3},
+        "run_duration_ms": 654,
         "metrics": {
             "charge_kw": 3.0,
             "cutoff_soc": 0.5,
@@ -148,6 +153,10 @@ def test_fetch_history_includes_run_id_and_summary_fields(tmp_path):
     assert latest["run_id"] == "run-new"
     assert latest["status"] == "degraded"
     assert latest["warnings_count"] == 3
+    assert latest["run_duration_ms"] == 654
+    assert latest["models_ok_count"] == 1
+    assert latest["models_failed_count"] == 0
+    assert latest["primary_model_id"] == "ecmwf_ifs"
     assert latest["pv_p10_kwh"] == 1.1
     assert latest["pv_p50_kwh"] == 2.2
     assert latest["pv_p90_kwh"] == 3.3
@@ -159,6 +168,10 @@ def test_fetch_history_includes_run_id_and_summary_fields(tmp_path):
 
     all_runs = fetch_history_all_runs(str(db_path))
     assert [row["run_id"] for row in all_runs] == ["run-old", "run-new"]
+    assert all_runs[0]["run_duration_ms"] == 3210
+    assert all_runs[0]["models_ok_count"] == 1
+    assert all_runs[0]["models_failed_count"] == 1
+    assert all_runs[0]["primary_model_id"] == "ecmwf_ifs"
     assert all_runs[0]["models_summary"] == {
         "selected_models": ["ecmwf_ifs", "gfs"],
         "weights_used": {"ecmwf_ifs": 0.6, "gfs": 0.4},

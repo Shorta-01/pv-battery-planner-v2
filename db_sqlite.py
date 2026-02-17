@@ -431,6 +431,9 @@ def fetch_recent_run_summaries(db_path: str, limit: int = 30) -> list[dict]:
 
 def _summary_from_row(row: sqlite3.Row) -> dict:
     models_summary: dict[str, Any] | None = None
+    models_ok_count = 0
+    models_failed_count = 0
+    primary_model_id: str | None = None
     raw_weather_ensemble = row["weather_ensemble_json"] if "weather_ensemble_json" in row.keys() else None
     if raw_weather_ensemble:
         try:
@@ -438,10 +441,20 @@ def _summary_from_row(row: sqlite3.Row) -> dict:
         except (TypeError, ValueError):
             weather_ensemble = {}
         if isinstance(weather_ensemble, dict):
+            selected_models = weather_ensemble.get("selected_models") or []
+            if not isinstance(selected_models, list):
+                selected_models = []
+            failed_models = weather_ensemble.get("failed_models") or []
+            if not isinstance(failed_models, list):
+                failed_models = []
+            failed_set = {str(model_id) for model_id in failed_models}
+            models_failed_count = len(failed_set)
+            models_ok_count = max(0, len(selected_models) - models_failed_count)
+            primary_model_id = weather_ensemble.get("primary_model_id") or weather_ensemble.get("weather_primary_model_id")
             models_summary = {
-                "selected_models": weather_ensemble.get("selected_models") or [],
+                "selected_models": selected_models,
                 "weights_used": weather_ensemble.get("weights_used") or {},
-                "failed_models": weather_ensemble.get("failed_models") or [],
+                "failed_models": failed_models,
             }
 
     return {
@@ -455,6 +468,10 @@ def _summary_from_row(row: sqlite3.Row) -> dict:
         },
         "status": row["status"],
         "warnings_count": int(row["warnings_count"] or 0),
+        "run_duration_ms": row["run_duration_ms"],
+        "models_ok_count": models_ok_count,
+        "models_failed_count": models_failed_count,
+        "primary_model_id": primary_model_id,
         "pv_p10_kwh": _safe_float(row["pv_p10_kwh"]),
         "pv_p50_kwh": _safe_float(row["pv_p50_kwh"]),
         "pv_p90_kwh": _safe_float(row["pv_p90_kwh"]),
@@ -490,6 +507,7 @@ def fetch_history_latest_per_day(db_path: str, limit_days: int | None = None) ->
                     cons_forecast_kwh,
                     status,
                     warnings_count,
+                    run_duration_ms,
                     weather_ensemble_json,
                     pv_p10_kwh,
                     pv_p50_kwh,
@@ -511,6 +529,7 @@ def fetch_history_latest_per_day(db_path: str, limit_days: int | None = None) ->
                 cons_forecast_kwh,
                 status,
                 warnings_count,
+                run_duration_ms,
                 weather_ensemble_json,
                 pv_p10_kwh,
                 pv_p50_kwh,
@@ -546,6 +565,7 @@ def fetch_history_all_runs(db_path: str, limit_days: int | None = None) -> list[
                 cons_forecast_kwh,
                 status,
                 warnings_count,
+                run_duration_ms,
                 weather_ensemble_json,
                 pv_p10_kwh,
                 pv_p50_kwh,

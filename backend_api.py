@@ -364,6 +364,7 @@ class BackendState:
                     reason_msg = "unknown"
                 warnings.append(f"model failed: {model_id} ({reason_msg})")
             warnings = list(dict.fromkeys(warnings))
+            run_duration_ms = int((time.perf_counter() - run_started) * 1000)
             error_payload = {
                 "run_id": run_id,
                 "target_date": target_date.isoformat(),
@@ -372,6 +373,7 @@ class BackendState:
                 "run_type": "manual",
                 "timezone": tz,
                 "status": "error",
+                "run_duration_ms": run_duration_ms,
                 "warnings": warnings,
                 "warnings_count": len(warnings),
                 "inputs_used": inputs_used,
@@ -396,6 +398,7 @@ class BackendState:
                     "selected_models": selected_models,
                     "ensemble_method": normalized_ensemble_method,
                     "weights_used": getattr(exc, "weights_used", None),
+                    "primary_model_id": None,
                     "failed_models": failed_models,
                     "failure_reasons_by_model": failed_reasons,
                     "failed_model_reasons": failed_reasons,
@@ -617,6 +620,7 @@ class BackendState:
                 "selected_models": ensemble.selected_models,
                 "ensemble_method": normalized_ensemble_method,
                 "weights_used": ensemble.weights_used,
+                "primary_model_id": ensemble.weather_primary_model_id,
                 "per_model_pv_totals_kwh": ensemble.per_model_pv_totals_kwh,
                 "pv_totals_kwh": pv_totals_kwh
                 if pv_uncertainty
