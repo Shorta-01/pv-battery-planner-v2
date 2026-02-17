@@ -849,7 +849,8 @@ def _prepare_history_df(df: pd.DataFrame, all_runs: bool, show_run_at: bool) -> 
         working = working.rename(columns=colmap)
 
     if "Date" in working.columns:
-        working["Date"] = pd.to_datetime(working["Date"], errors="coerce").dt.date
+        # Keep as datetime64 for reliable downstream .dt filtering/rendering.
+        working["Date"] = pd.to_datetime(working["Date"], errors="coerce").dt.normalize()
 
     if "Run at" in working.columns:
         working["Run at"] = pd.to_datetime(working["Run at"], errors="coerce")
@@ -872,7 +873,10 @@ def _prepare_history_df(df: pd.DataFrame, all_runs: bool, show_run_at: bool) -> 
 
 
 def _run_label(row: pd.Series, fallback_index: int = 0) -> str:
-    date_part = row["Date"].date().isoformat() if pd.notna(row.get("Date")) else "unknown-date"
+    if pd.notna(row.get("Date")):
+        date_part = pd.Timestamp(row["Date"]).date().isoformat()
+    else:
+        date_part = "unknown-date"
     status = str(row.get("Status label") or "—")
     run_type = str(row.get("run_type") or "manual")
     run_id = str(row.get("run_id") or f"row-{fallback_index + 1}")
