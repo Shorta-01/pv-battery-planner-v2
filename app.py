@@ -483,6 +483,56 @@ def render_modern_table(df: pd.DataFrame, column_config: dict | None = None) -> 
     )
 
 
+def render_selectable_table(
+    df: pd.DataFrame,
+    *,
+    key: str,
+    column_config: dict | None = None,
+) -> int | None:
+    if df is None or df.empty:
+        st.info("No data available.")
+        return None
+
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()].copy()
+
+    if column_config:
+        column_config = {k: v for k, v in column_config.items() if k in df.columns}
+
+    dataframe_kwargs = {
+        "use_container_width": True,
+        "hide_index": True,
+        "column_config": column_config,
+        "key": key,
+    }
+
+    if "on_select" not in inspect.signature(st.dataframe).parameters:
+        st.dataframe(df, **dataframe_kwargs)
+        return None
+
+    event = st.dataframe(
+        df,
+        on_select="rerun",
+        selection_mode="single-row",
+        **dataframe_kwargs,
+    )
+
+    selection_rows: list[int] = []
+    if isinstance(event, dict):
+        selection_rows = event.get("selection", {}).get("rows", []) or []
+    else:
+        selection = getattr(event, "selection", None)
+        selection_rows = getattr(selection, "rows", []) if selection is not None else []
+
+    if not selection_rows:
+        return None
+
+    try:
+        return int(selection_rows[0])
+    except Exception:
+        return None
+
+
 def metric_with_help(container, label: str, value: str) -> None:
     if "help" in inspect.signature(st.metric).parameters:
         container.metric(label, value, help=METRIC_TOOLTIPS[label])
@@ -1103,7 +1153,18 @@ def _render_run_inspector(filtered_df: pd.DataFrame) -> None:
         f"{_run_label(row, i)}": i
         for i, row in filtered_df.iterrows()
     }
-    picked = st.selectbox("Inspect a run", list(options.keys()), key="history_inspector_run")
+    default_pick_label = None
+    selected_run_id = str(st.session_state.get("history_inspector_selected_run_id") or "").strip()
+    if selected_run_id:
+        for label, idx in options.items():
+            option_run_id = str(filtered_df.iloc[idx].get("run_id") or "").strip()
+            if option_run_id and option_run_id == selected_run_id:
+                default_pick_label = label
+                break
+    labels = list(options.keys())
+    default_idx = labels.index(default_pick_label) if default_pick_label in labels else 0
+
+    picked = st.selectbox("Inspect a run", labels, key="history_inspector_run", index=default_idx)
     row = filtered_df.iloc[options[picked]]
 
     detail = {}
@@ -1120,7 +1181,7 @@ def _render_run_inspector(filtered_df: pd.DataFrame) -> None:
     elif isinstance(row.get("warnings_raw"), list):
         warnings_list = [str(w) for w in row.get("warnings_raw", [])]
 
-    with st.expander("Run Inspector", expanded=False):
+    with st.expander("Run Inspector", expanded=bool(default_pick_label)):
         tab_summary, tab_models, tab_inputs, tab_settings, tab_debug = st.tabs(
             ["Summary", "Weather models", "Inputs used", "Settings used", "Debug bundle"]
         )
@@ -1615,6 +1676,7 @@ def _render_history_log_block() -> None:
                     filtered = filtered[filtered["warnings_count"] == 0]
                 if model_filter != "All models":
                     filtered = filtered[filtered["models_raw"].str.contains(model_filter, na=False)]
+            filtered = filtered.reset_index(drop=True)
         else:
             filtered = prepared
 
@@ -1704,7 +1766,16 @@ def _render_history_log_block() -> None:
                     "Cutoff SOC": st.column_config.NumberColumn(format="%.1f%%"),
                 },
             )
-            render_modern_table(display_df, column_config=history_column_config)
+            selected_history_row = render_selectable_table(
+                display_df,
+                key="history_log_table",
+                column_config=history_column_config,
+            )
+            if selected_history_row is not None and 0 <= selected_history_row < len(filtered):
+                selected_row = filtered.iloc[selected_history_row]
+                selected_run_id = str(selected_row.get("run_id") or "").strip()
+                if selected_run_id:
+                    st.session_state["history_inspector_selected_run_id"] = selected_run_id
             if history_debug_mode and not filtered.empty:
                 run_id_options = [str(v) for v in filtered["run_id"].dropna().tolist() if str(v).strip()]
                 if run_id_options:
