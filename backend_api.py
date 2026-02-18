@@ -573,6 +573,10 @@ class BackendState:
                 model_id: self._serialize_df(fr.df)
                 for model_id, fr in ensemble.weather_by_model.items()
             },
+            "pv_by_model": {
+                model_id: self._serialize_df(model_pv)
+                for model_id, model_pv in ensemble.pv_by_model.items()
+            },
             "pv": self._serialize_df(pv),
             "detail": self._serialize_df(detail_df),
             "flows": self._serialize_df(flows_df),

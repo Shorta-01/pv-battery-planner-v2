@@ -82,6 +82,35 @@ def init_db(db_path: str) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_forecast_hourly_ts ON forecast_hourly (ts_local);
 
+            CREATE TABLE IF NOT EXISTS weather_hourly_by_model (
+                run_id TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                ts_local TEXT NOT NULL,
+                ghi REAL,
+                dni REAL,
+                dhi REAL,
+                temp_c REAL,
+                wind_ms REAL,
+                cloud_pct REAL,
+                PRIMARY KEY (run_id, model_id, ts_local)
+            );
+            CREATE INDEX IF NOT EXISTS idx_weather_hourly_model_ts ON weather_hourly_by_model (model_id, ts_local);
+            CREATE INDEX IF NOT EXISTS idx_weather_hourly_run_model ON weather_hourly_by_model (run_id, model_id);
+
+            CREATE TABLE IF NOT EXISTS pv_hourly_by_model (
+                run_id TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                ts_local TEXT NOT NULL,
+                pv_east_kwh REAL,
+                pv_south_kwh REAL,
+                pv_total_kwh REAL,
+                pv_unclipped_kwh REAL,
+                pv_clipped_kwh REAL,
+                PRIMARY KEY (run_id, model_id, ts_local)
+            );
+            CREATE INDEX IF NOT EXISTS idx_pv_hourly_model_ts ON pv_hourly_by_model (model_id, ts_local);
+            CREATE INDEX IF NOT EXISTS idx_pv_hourly_run_model ON pv_hourly_by_model (run_id, model_id);
+
             -- Future FusionSolar ingestion table. Join with forecast_hourly on ts_local.
             CREATE TABLE IF NOT EXISTS actual_hourly (
                 source TEXT NOT NULL,
@@ -262,6 +291,61 @@ def _normalize_hourly(payload: dict) -> list[dict]:
     return rows
 
 
+def _normalize_weather_by_model(payload: dict) -> list[tuple[str, str, str, float | None, float | None, float | None, float | None, float | None, float | None]]:
+    weather_by_model = payload.get("weather_by_model") if isinstance(payload.get("weather_by_model"), dict) else {}
+    rows: list[tuple[str, str, str, float | None, float | None, float | None, float | None, float | None, float | None]] = []
+    for model_id, frame_payload in weather_by_model.items():
+        if not isinstance(model_id, str):
+            continue
+        model_df = _parse_df({"frame": frame_payload}, "frame")
+        if model_df.empty:
+            continue
+        for ts in model_df.index:
+            ts_local = _to_local_hour_str(ts)
+            if not ts_local:
+                continue
+            rows.append(
+                (
+                    model_id,
+                    ts_local,
+                    _safe_float(model_df.at[ts, "ghi_wm2"]) if "ghi_wm2" in model_df.columns else None,
+                    _safe_float(model_df.at[ts, "dni_wm2"]) if "dni_wm2" in model_df.columns else None,
+                    _safe_float(model_df.at[ts, "dhi_wm2"]) if "dhi_wm2" in model_df.columns else None,
+                    _safe_float(model_df.at[ts, "temp_air_c"]) if "temp_air_c" in model_df.columns else None,
+                    _safe_float(model_df.at[ts, "wind_speed_ms"]) if "wind_speed_ms" in model_df.columns else None,
+                    _safe_float(model_df.at[ts, "cloud_cover_pct"]) if "cloud_cover_pct" in model_df.columns else None,
+                )
+            )
+    return rows
+
+
+def _normalize_pv_by_model(payload: dict) -> list[tuple[str, str, float | None, float | None, float | None, float | None, float | None]]:
+    pv_by_model = payload.get("pv_by_model") if isinstance(payload.get("pv_by_model"), dict) else {}
+    rows: list[tuple[str, str, float | None, float | None, float | None, float | None, float | None]] = []
+    for model_id, frame_payload in pv_by_model.items():
+        if not isinstance(model_id, str):
+            continue
+        model_df = _parse_df({"frame": frame_payload}, "frame")
+        if model_df.empty:
+            continue
+        for ts in model_df.index:
+            ts_local = _to_local_hour_str(ts)
+            if not ts_local:
+                continue
+            rows.append(
+                (
+                    model_id,
+                    ts_local,
+                    _safe_float(model_df.at[ts, "pv_east_kwh"]) if "pv_east_kwh" in model_df.columns else None,
+                    _safe_float(model_df.at[ts, "pv_south_kwh"]) if "pv_south_kwh" in model_df.columns else None,
+                    _safe_float(model_df.at[ts, "pv_total_kwh"]) if "pv_total_kwh" in model_df.columns else None,
+                    _safe_float(model_df.at[ts, "pv_total_unclipped_kwh"]) if "pv_total_unclipped_kwh" in model_df.columns else None,
+                    _safe_float(model_df.at[ts, "pv_clipped_kwh"]) if "pv_clipped_kwh" in model_df.columns else None,
+                )
+            )
+    return rows
+
+
 def insert_forecast_run(db_path: str, payload: dict) -> None:
     if not isinstance(payload, dict):
         return
@@ -284,6 +368,8 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
     timezone = str(payload.get("timezone") or payload.get("system_snapshot", {}).get("timezone") or DEFAULT_TIMEZONE)
 
     hourly_rows = _normalize_hourly(payload)
+    weather_rows = _normalize_weather_by_model(payload)
+    pv_model_rows = _normalize_pv_by_model(payload)
 
     pv_forecast_kwh = _safe_float(metrics.get("pv_forecast_kwh"))
     cons_forecast_kwh = _safe_float(metrics.get("cons_forecast_kwh"))
@@ -391,6 +477,53 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
                         row["soc_pct"],
                     )
                     for row in hourly_rows
+                ],
+            )
+
+        conn.execute("DELETE FROM weather_hourly_by_model WHERE run_id = ?", (run_id,))
+        if weather_rows:
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO weather_hourly_by_model (
+                    run_id, model_id, ts_local, ghi, dni, dhi, temp_c, wind_ms, cloud_pct
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        run_id,
+                        model_id,
+                        ts_local,
+                        ghi,
+                        dni,
+                        dhi,
+                        temp_c,
+                        wind_ms,
+                        cloud_pct,
+                    )
+                    for model_id, ts_local, ghi, dni, dhi, temp_c, wind_ms, cloud_pct in weather_rows
+                ],
+            )
+
+        conn.execute("DELETE FROM pv_hourly_by_model WHERE run_id = ?", (run_id,))
+        if pv_model_rows:
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO pv_hourly_by_model (
+                    run_id, model_id, ts_local, pv_east_kwh, pv_south_kwh, pv_total_kwh, pv_unclipped_kwh, pv_clipped_kwh
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        run_id,
+                        model_id,
+                        ts_local,
+                        pv_east_kwh,
+                        pv_south_kwh,
+                        pv_total_kwh,
+                        pv_unclipped_kwh,
+                        pv_clipped_kwh,
+                    )
+                    for model_id, ts_local, pv_east_kwh, pv_south_kwh, pv_total_kwh, pv_unclipped_kwh, pv_clipped_kwh in pv_model_rows
                 ],
             )
         conn.commit()

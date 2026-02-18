@@ -70,6 +70,18 @@ def _fake_ensemble(idx, weather, pv_uncertainty):
         weather_primary_model_id="ecmwf_ifs",
         weather_ensemble_table=SimpleNamespace(df=weather.df.copy()),
         weather_by_model={"ecmwf_ifs": weather},
+        pv_by_model={
+            "ecmwf_ifs": pd.DataFrame(
+                {
+                    "pv_total_kwh": p50,
+                    "pv_total_unclipped_kwh": p50,
+                    "pv_east_kwh": p50 / 2,
+                    "pv_south_kwh": p50 / 2,
+                    "pv_clipped_kwh": pd.Series([0.0, 0.0], index=idx),
+                },
+                index=idx,
+            ),
+        },
         pv_ensemble_east_p50=p50 / 2,
         pv_ensemble_south_p50=p50 / 2,
         pv_ensemble_unclipped_p50=p50,
