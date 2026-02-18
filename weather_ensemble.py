@@ -37,6 +37,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "params": {"models": "knmi_harmonie_arome_netherlands"},
         "badges": ["🏅", "📡", "∑"],
         "recommended_for_be": True,
+        "max_days": 7,
         "capability": {
             "ghi_native": True,
             "direct_native": False,
@@ -51,6 +52,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "params": {"models": "icon_d2"},
         "badges": ["🏅", "📡", "☀️", "⏱️"],
         "recommended_for_be": True,
+        "max_days": 2,
         "capability": {
             "ghi_native": True,
             "direct_native": True,
@@ -65,6 +67,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "params": {},
         "badges": ["🏅", "🌐", "☀️"],
         "recommended_for_be": True,
+        "max_days": 7,
         "capability": {
             "ghi_native": True,
             "direct_native": True,
@@ -79,6 +82,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "params": {"models": "icon_eu"},
         "badges": ["🇪🇺", "☀️"],
         "recommended_for_be": True,
+        "max_days": 7,
         "capability": {
             "ghi_native": True,
             "direct_native": True,
@@ -93,6 +97,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "params": {"models": "meteofrance_seamless"},
         "badges": ["🇪🇺", "∑"],
         "recommended_for_be": True,
+        "max_days": 4,
         "capability": {
             "ghi_native": True,
             "direct_native": False,
@@ -122,6 +127,7 @@ BASE_HOURLY_VARIABLES = [
     "wind_speed_10m",
     "shortwave_radiation",
     "cloud_cover",
+    "weather_code",
 ]
 
 IRRADIANCE_HOURLY_VARIABLES = [
@@ -790,6 +796,7 @@ def fetch_open_meteo_weather(
     fast_mode: bool = False,
     endpoint_override: str | None = None,
     extra_params: dict[str, Any] | None = None,
+    requested_days: int = 1,
 ) -> tuple[core.ForecastResult, list[str], bool, dict[str, Any]]:
     model_id = normalize_weather_model_id(model_id)
     if model_id not in WEATHER_MODELS:
@@ -802,6 +809,7 @@ def fetch_open_meteo_weather(
         bool(fast_mode),
         str(endpoint_override or ""),
         cache_extra_key,
+        int(max(1, requested_days)),
     )
     now = time.time()
     cached = _WEATHER_CACHE.get(key)
@@ -809,6 +817,8 @@ def fetch_open_meteo_weather(
         return cached[1], list(cached[2]), bool(cached[3]), {"source": "in_memory_cache"}
 
     spec = WEATHER_MODELS[model_id]
+    model_max_days = max(1, int(spec.get("max_days", 1)))
+    horizon_days = max(1, min(int(requested_days), model_max_days))
     hourly_variables = BASE_HOURLY_VARIABLES[:] + IRRADIANCE_HOURLY_VARIABLES
 
     params = {
@@ -819,7 +829,7 @@ def fetch_open_meteo_weather(
         "temperature_unit": "celsius",
         "timeformat": "iso8601",
         "start_date": target_date.isoformat(),
-        "end_date": target_date.isoformat(),
+        "end_date": (target_date + dt.timedelta(days=horizon_days - 1)).isoformat(),
         "hourly": ",".join(hourly_variables),
         "daily": "sunrise,sunset",
     }
@@ -849,6 +859,8 @@ def fetch_open_meteo_weather(
         "run_hour": int(run_hour),
         "circuit_breaker_open": bool(circuit_open),
         "circuit_breaker_open_for_seconds": int(open_for_seconds),
+        "requested_days": int(requested_days),
+        "horizon_days": int(horizon_days),
     }
     request_params = dict(params)
     request_endpoint = str(endpoint_override or spec["endpoint"])
@@ -862,7 +874,11 @@ def fetch_open_meteo_weather(
                 status=None,
                 message=f"Circuit breaker open for {model_id}; skip live fetch for {open_for_seconds}s",
             )
-        data, response_meta = _request_open_meteo(request_endpoint, params, model_id=model_id)
+        request_out = _request_open_meteo(request_endpoint, params, model_id=model_id)
+        if isinstance(request_out, tuple) and len(request_out) == 2:
+            data, response_meta = request_out
+        else:
+            data, response_meta = request_out, None
         _log_model_fetch(
             model_id=model_id,
             endpoint=request_endpoint,
@@ -892,7 +908,11 @@ def fetch_open_meteo_weather(
             fallback_endpoint = "https://api.open-meteo.com/v1/forecast"
             fallback_start = time.perf_counter()
             try:
-                data, response_meta = _request_open_meteo(fallback_endpoint, fallback_params, model_id=model_id)
+                request_out = _request_open_meteo(fallback_endpoint, fallback_params, model_id=model_id)
+                if isinstance(request_out, tuple) and len(request_out) == 2:
+                    data, response_meta = request_out
+                else:
+                    data, response_meta = request_out, None
                 _log_model_fetch(
                     model_id=model_id,
                     endpoint=fallback_endpoint,
@@ -989,6 +1009,7 @@ def fetch_open_meteo_weather(
     df["wind_speed_ms"] = _series("wind_speed_10m", 1.0).fillna(1.0).clip(lower=0.0)
     df["cloud_cover_pct"] = _series("cloud_cover", 0.0).fillna(0.0).clip(lower=0.0)
     df["ghi_wm2"] = _series("shortwave_radiation", 0.0).fillna(0.0).clip(lower=0.0)
+    weather_code_series = _series("weather_code", np.nan, record_missing=False)
 
     minutely = data.get("minutely_15") if isinstance(data.get("minutely_15"), dict) else {}
     if use_icon15 and minutely:
@@ -1026,14 +1047,29 @@ def fetch_open_meteo_weather(
     df["dni_wm2"] = pd.to_numeric(df["dni_wm2"], errors="coerce").fillna(0.0).clip(lower=0.0)
     df["dhi_wm2"] = pd.to_numeric(df["dhi_wm2"], errors="coerce").fillna(0.0).clip(lower=0.0)
 
-    df = core.normalize_hourly_forecast_index(
-        df[["temp_air_c", "ghi_wm2", "dni_wm2", "dhi_wm2", "cloud_cover_pct", "wind_speed_ms"]],
-        target_date,
-        tz,
-    )
+    df = df[["temp_air_c", "ghi_wm2", "dni_wm2", "dhi_wm2", "cloud_cover_pct", "wind_speed_ms"]]
+    idx = pd.to_datetime(df.index, errors="coerce")
+    if idx.isna().all():
+        raise RuntimeError(f"Open-Meteo hourly forecast index invalid for {model_id}")
+    if idx.tz is None:
+        idx = idx.tz_localize(tz, ambiguous="infer", nonexistent="shift_forward")
+    else:
+        idx = idx.tz_convert(tz)
+    df.index = idx
+    df = df[~df.index.isna()]
+    df = df[~df.index.duplicated(keep="last")].sort_index()
+
+    range_start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz)
+    range_end = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=horizon_days), dt.time(0, 0)), tz=tz)
+    expected_index = pd.date_range(range_start, range_end, freq="h", inclusive="left")
+    df = df.reindex(expected_index)
+
     availability = availability.reindex(df.index).fillna(False).astype(bool)
     for col in ["ghi_wm2", "dni_wm2", "dhi_wm2"]:
         df.loc[~availability[col], col] = np.nan
+
+    weather_code_series = pd.to_numeric(weather_code_series, errors="coerce").reindex(df.index)
+    df["weather_code"] = weather_code_series
 
     def _alias(dst: str, src: str) -> None:
         if src in df.columns:
@@ -1211,6 +1247,7 @@ def build_ensemble_forecast(
     pv_uncertainty: bool,
     accuracy_mode: bool = True,
     fast_mode: bool = False,
+    requested_days: int = 1,
 ) -> EnsembleWeatherResult:
     selected = weather_models[:] if weather_models else DEFAULT_ACCURACY_MODELS[:]
     selected = [m for m in selected if m in WEATHER_MODELS]
@@ -1239,9 +1276,10 @@ def build_ensemble_forecast(
     pv_by_model: dict[str, pd.DataFrame] = {}
     provider_payloads_by_model: dict[str, dict[str, Any]] = {}
 
+    horizon_days = max(1, int(requested_days))
     canonical_index = pd.date_range(
         pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz),
-        pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=1), dt.time(0, 0)), tz=tz),
+        pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=horizon_days), dt.time(0, 0)), tz=tz),
         freq="h",
         inclusive="left",
     )
@@ -1254,6 +1292,7 @@ def build_ensemble_forecast(
             target_date,
             accuracy_mode=accuracy_mode,
             fast_mode=fast_mode,
+            requested_days=horizon_days,
         )
         missing_hours = float(weather.df.reindex(canonical_index).isna().all(axis=1).sum())
         model_weather_df = weather.df.reindex(canonical_index).copy()
