@@ -197,6 +197,75 @@ class EnsembleWeatherResult:
     weather_ensemble_table: core.ForecastResult
     provider_payloads_by_model: dict[str, dict[str, Any]]
     fetch_meta_by_model: dict[str, dict[str, Any]]
+    pv_tomorrow_low_high_kwh: dict[str, float | int | None] | None = None
+
+
+def _local_day_window(target_date: dt.date, tz: str) -> tuple[pd.Timestamp, pd.Timestamp]:
+    start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz)
+    return start, start + pd.Timedelta(days=1)
+
+
+def _sum_pv_kwh_for_local_day(pv_df: pd.DataFrame, target_date: dt.date, tz: str) -> tuple[float | None, int]:
+    if not isinstance(pv_df, pd.DataFrame) or pv_df.empty:
+        return None, 0
+
+    series = None
+    for col in ("pv_total_kwh", "pv_kwh", "pv_kwh_p50"):
+        if col in pv_df.columns:
+            series = pd.to_numeric(pv_df[col], errors="coerce")
+            break
+    if series is None:
+        return None, 0
+
+    start, end = _local_day_window(target_date, tz)
+    index = pv_df.index
+    if not isinstance(index, pd.DatetimeIndex):
+        return None, 0
+
+    if index.tz is None:
+        index = index.tz_localize(tz)
+    else:
+        index = index.tz_convert(tz)
+
+    mask = (index >= start) & (index < end)
+    day_series = series.loc[mask]
+    hours_count = int(day_series.notna().sum())
+    if day_series.empty:
+        return None, 0
+
+    total_kwh = float(day_series.fillna(0.0).sum())
+    if not math.isfinite(total_kwh):
+        return None, hours_count
+    return total_kwh, hours_count
+
+
+def compute_pv_tomorrow_low_high_kwh(
+    pv_by_model: dict[str, pd.DataFrame],
+    target_date: dt.date,
+    tz: str,
+    *,
+    min_hours: int = 18,
+) -> dict[str, float | int | None]:
+    model_totals: list[float] = []
+    for _model_id, model_df in (pv_by_model or {}).items():
+        total_kwh, hours_count = _sum_pv_kwh_for_local_day(model_df, target_date, tz)
+        if total_kwh is None or hours_count < int(min_hours):
+            continue
+        if math.isfinite(total_kwh):
+            model_totals.append(float(total_kwh))
+
+    valid_models = len(model_totals)
+    if valid_models >= 2:
+        return {
+            "low": float(min(model_totals)),
+            "high": float(max(model_totals)),
+            "valid_models": int(valid_models),
+        }
+    return {
+        "low": None,
+        "high": None,
+        "valid_models": int(valid_models),
+    }
 
 
 class WeatherProviderError(RuntimeError):
@@ -1520,6 +1589,11 @@ def build_ensemble_forecast(
         sunrise=weather_ok[primary_model].sunrise,
         sunset=weather_ok[primary_model].sunset,
     )
+    pv_tomorrow_low_high_kwh = compute_pv_tomorrow_low_high_kwh(
+        pv_by_model=pv_by_model,
+        target_date=target_date,
+        tz=tz,
+    )
 
     return EnsembleWeatherResult(
         weather_primary=weather_ok[primary_model],
@@ -1545,4 +1619,5 @@ def build_ensemble_forecast(
         weather_ensemble_table=ensemble_weather,
         provider_payloads_by_model=provider_payloads_by_model,
         fetch_meta_by_model=fetch_meta_by_model,
+        pv_tomorrow_low_high_kwh=pv_tomorrow_low_high_kwh,
     )

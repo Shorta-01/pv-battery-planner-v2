@@ -821,6 +821,7 @@ def resolve_forecast_summary_pv_kwh(
 def resolve_tomorrow_pv_low_high_kwh(
     result: dict | None,
     weather_ensemble: dict | None,
+    tomorrow_p50_kwh: float | None = None,
 ) -> tuple[float | None, float | None]:
     range_payload = result.get("pv_tomorrow_low_high_kwh") if isinstance(result, dict) else None
     if not isinstance(range_payload, dict) and isinstance(weather_ensemble, dict):
@@ -832,7 +833,17 @@ def resolve_tomorrow_pv_low_high_kwh(
         valid_models_raw = pd.to_numeric(pd.Series([range_payload.get("valid_models")]), errors="coerce").iloc[0]
         valid_models = int(valid_models_raw) if not pd.isna(valid_models_raw) else 0
         if valid_models >= 2 and not pd.isna(low_raw) and not pd.isna(high_raw):
-            return float(low_raw), float(high_raw)
+            low = float(low_raw)
+            high = float(high_raw)
+            if low > high or low < 0 or high < 0:
+                return None, None
+            if tomorrow_p50_kwh is not None:
+                p50_raw = pd.to_numeric(pd.Series([tomorrow_p50_kwh]), errors="coerce").iloc[0]
+                if not pd.isna(p50_raw):
+                    p50 = float(p50_raw)
+                    if p50 < (low - 0.01) or p50 > (high + 0.01):
+                        return None, None
+            return low, high
 
     return None, None
 
@@ -3214,7 +3225,11 @@ if run:
                 tomorrow_weather_code = pwa[0].get("weather_code")
                 tomorrow_source_label = pwa[0].get("weather_code_source_model_label")
                 tomorrow_source_days = pwa[0].get("weather_code_source_max_days")
-            pv_low, pv_high = resolve_tomorrow_pv_low_high_kwh(result, weather_ensemble)
+            pv_low, pv_high = resolve_tomorrow_pv_low_high_kwh(
+                result,
+                weather_ensemble,
+                tomorrow_p50_kwh=(pv_quality.get("pv_total_kwh") if isinstance(pv_quality, dict) else None),
+            )
 
             weather_primary_model_id = result.get("weather_primary_model_id")
             weather_ensemble_table_payload = result.get("weather_ensemble_table")
