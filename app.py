@@ -972,6 +972,41 @@ def _pv_quality_flag_html(color: str, tooltip: str) -> str:
     )
 
 
+def _pv_quality_level_from_label(label: str) -> int:
+    m = {
+        "Excellent": 5,
+        "Good": 4,
+        "Mixed": 3,
+        "Poor": 2,
+        "Very low": 1,
+    }
+    return m.get((label or "").strip(), 3)
+
+
+def _pv_quality_signal_html(label: str, color: str, tooltip: str) -> str:
+    lvl = _pv_quality_level_from_label(label)
+    col = (color or "").strip() or "#94a3b8"
+    tip = html.escape(tooltip or "", quote=True)
+
+    heights = [6, 8, 10, 12, 14]
+    bars: list[str] = []
+    for i, h in enumerate(heights, start=1):
+        filled = i <= lvl
+        bg = col if filled else "rgba(255,255,255,0.16)"
+        bars.append(
+            f"<span style='display:inline-block;width:4px;height:{h}px;"
+            f"background:{bg};border-radius:2px;'></span>"
+        )
+
+    return (
+        f"<span title=\"{tip}\" style='display:inline-flex;gap:2px;align-items:flex-end;"
+        "padding:2px 6px;border-radius:999px;background:rgba(255,255,255,0.05);"
+        "border:1px solid rgba(255,255,255,0.10);'>"
+        + "".join(bars)
+        + "</span>"
+    )
+
+
 def render_pv_quality_widget(
     container,
     pv_df: pd.DataFrame,
@@ -1082,21 +1117,24 @@ def render_pv_quality_widget(
         w_tip += f" | Source: {tomorrow_source_label}"
     if tomorrow_source_days:
         w_tip += f" ({tomorrow_source_days}d)"
-    pv_tip = f"PV quality indicator (not weather). Score: {score}/100. Clear-sky ratio: {ratio_percent:.0f}%."
+    pv_tip = (
+        f"PV quality indicator (not weather). Label: {pv_label}. "
+        f"Score: {score}/100. Clear-sky ratio: {ratio_percent:.0f}%."
+    )
 
-    pv_flag = _pv_quality_flag_html(pv_color, pv_tip)
+    pv_quality_icon = _pv_quality_signal_html(pv_label, pv_color, pv_tip)
     icons_html = (
-        "<div style='display:flex;gap:0.5rem;align-items:center;white-space:nowrap;'>"
-        f"{pv_flag}"
+        "<div style='display:inline-flex;gap:0.5rem;align-items:center;white-space:nowrap;'>"
+        f"{pv_quality_icon}"
         f"<span title=\"{_esc_attr(w_tip)}\" style='font-size:1.25rem;line-height:1;'>{weather_icon}</span>"
         "</div>"
     )
 
     header_html = f"""
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
-      <div style="display:flex;align-items:center;gap:10px;min-width:0;">
-        {icons_html}
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;white-space:nowrap;">
+      <div style="display:flex;align-items:center;gap:10px;min-width:0;overflow:hidden;">
         <div style="font-weight:700;letter-spacing:0.03em;opacity:0.92;">PV OUTLOOK</div>
+        {icons_html}
       </div>
       <div style="font-weight:700;opacity:0.9;white-space:nowrap;">{score}/100</div>
     </div>
