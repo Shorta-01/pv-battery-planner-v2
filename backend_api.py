@@ -49,6 +49,8 @@ RUN_HISTORY_PATH = Path("run_history_log.json")
 TOKEN_PATH = LOCAL_STATE_DIR / "api_token.txt"
 DEFAULT_NIGHTLY_TIME = "22:00"
 DEFAULT_MAX_AC_CAP = 5.0
+SETTINGS_SOURCE_SETTINGS_JSON = "settings.json"
+SETTINGS_SOURCE_CONFIG_DEFAULTS = "config.json(defaults)"
 MAX_HISTORY = 30
 
 PV_QUALITY_COLORS = {
@@ -231,20 +233,30 @@ class BackendState:
         if SETTINGS_PATH.exists():
             loaded = self._read_json(SETTINGS_PATH, {})
             if isinstance(loaded, dict) and "config" in loaded:
+                merged = core.set_user_config(loaded["config"])
+                loaded["config"] = merged
+                loaded.setdefault("nightly_run_time", DEFAULT_NIGHTLY_TIME)
+                loaded.setdefault("timezone", str(merged.get("location", {}).get("timezone") or "Europe/Brussels"))
+                loaded.setdefault("max_ac_charge_power_kw_default", DEFAULT_MAX_AC_CAP)
+                loaded.setdefault("settings_source", SETTINGS_SOURCE_SETTINGS_JSON)
                 return loaded
 
+        settings = self._build_settings_from_repo_defaults()
+        self._write_json(SETTINGS_PATH, settings)
+        return settings
+
+    def _build_settings_from_repo_defaults(self) -> dict:
         cfg = core.DEFAULT_CONFIG
         if core.CONFIG_PATH.exists():
             cfg = core.load_config_file(core.CONFIG_PATH)
         merged = core.set_user_config(cfg)
-        settings = {
+        return {
             "config": merged,
             "nightly_run_time": DEFAULT_NIGHTLY_TIME,
-            "timezone": "Europe/Brussels",
+            "timezone": str(merged.get("location", {}).get("timezone") or "Europe/Brussels"),
             "max_ac_charge_power_kw_default": DEFAULT_MAX_AC_CAP,
+            "settings_source": SETTINGS_SOURCE_CONFIG_DEFAULTS,
         }
-        self._write_json(SETTINGS_PATH, settings)
-        return settings
 
     def _save_settings(self) -> None:
         self._write_json(SETTINGS_PATH, self.settings)
@@ -282,8 +294,14 @@ class BackendState:
                 "nightly_run_time": payload.nightly_run_time,
                 "timezone": canonical_tz,
                 "max_ac_charge_power_kw_default": float(payload.max_ac_charge_power_kw_default),
+                "settings_source": SETTINGS_SOURCE_SETTINGS_JSON,
             }
         )
+        self._save_settings()
+        return self.settings
+
+    def reset_settings_to_repo_defaults(self) -> dict:
+        self.settings = self._build_settings_from_repo_defaults()
         self._save_settings()
         return self.settings
 
@@ -812,6 +830,12 @@ def get_settings(authorization: str | None = Header(default=None)) -> dict:
 def put_settings(payload: SettingsPayload, authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
     return state.update_settings(payload)
+
+
+@app.post("/v1/settings/reset_to_repo_defaults")
+def reset_settings_to_repo_defaults(authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return state.reset_settings_to_repo_defaults()
 
 
 @app.get("/v1/inputs/last")
