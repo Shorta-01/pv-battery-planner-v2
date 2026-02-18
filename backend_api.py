@@ -35,6 +35,7 @@ from db_sqlite import (
 from weather_ensemble import (
     DEFAULT_ACCURACY_MODELS,
     WEATHER_DISPLAY_VARS,
+    WEATHER_MODELS,
     build_ensemble_forecast,
     weather_models_payload,
 )
@@ -184,53 +185,130 @@ def _best_of_day_weather_code(day_df: pd.DataFrame) -> int | None:
     return candidates[0]
 
 
+def _model_max_days(model_id: str) -> int:
+    try:
+        return int((WEATHER_MODELS.get(model_id) or {}).get("max_days") or 0)
+    except Exception:
+        return 0
+
+
+def _best_of_day_from_model(
+    fr: object,
+    day_start: pd.Timestamp,
+    day_end: pd.Timestamp,
+    tz: str,
+) -> int | None:
+    df = getattr(fr, "df", None)
+    if not isinstance(df, pd.DataFrame) or "weather_code" not in df.columns:
+        return None
+
+    idx = df.index
+    if isinstance(idx, pd.DatetimeIndex):
+        if idx.tz is None:
+            df = df.copy()
+            df.index = df.index.tz_localize(tz)
+        else:
+            df = df.tz_convert(tz)
+
+    day_df = df.loc[(df.index >= day_start) & (df.index < day_end), ["weather_code"]]
+    return _best_of_day_weather_code(day_df)
+
+
+def _pick_week_ahead_weather_code(
+    day_offset: int,
+    *,
+    target_date: dt.date,
+    tz: str,
+    weather_by_model: dict[str, object],
+    weights_used: dict[str, float] | None,
+    primary_id: str | None,
+) -> tuple[int | None, str | None, int | None]:
+    """
+    Returns (best_code, source_model_id, source_model_max_days)
+
+    Policy:
+      - Day 0–1: prefer short-range (max_days<=2) if available
+      - Day 2–3: prefer mid-range (max_days<=4) if available
+      - Day 4–6: prefer long-range (max_days>=7) if available
+
+    Tie-break: higher ensemble weight, then primary model.
+    """
+    day = target_date + dt.timedelta(days=day_offset)
+    day_start = pd.Timestamp(dt.datetime.combine(day, dt.time(0, 0)), tz=tz)
+    day_end = day_start + pd.Timedelta(days=1)
+
+    candidates: list[tuple[int, float, int, str, int, int]] = []
+    # (pref_bucket, -weight, primary_penalty, model_id, code, max_days)
+
+    for model_id, fr in (weather_by_model or {}).items():
+        code = _best_of_day_from_model(fr, day_start, day_end, tz)
+        if code is None:
+            continue
+
+        max_days = _model_max_days(model_id)
+        w = float((weights_used or {}).get(model_id, 0.0))
+        primary_penalty = 0 if (primary_id and model_id == primary_id) else 1
+
+        if day_offset <= 1:
+            pref_bucket = 0 if max_days <= 2 else (1 if max_days <= 4 else 2)
+        elif day_offset <= 3:
+            pref_bucket = 0 if max_days <= 4 else 1
+        else:
+            pref_bucket = 0 if max_days >= 7 else 1
+
+        candidates.append((pref_bucket, -w, primary_penalty, model_id, int(code), int(max_days)))
+
+    if not candidates:
+        return None, None, None
+
+    candidates.sort()
+    _, _, _, best_model_id, best_code, best_max_days = candidates[0]
+    return best_code, best_model_id, best_max_days
+
+
 def _build_pv_week_ahead(
     *,
     target_date: dt.date,
     tz: str,
-    hourly_pv_p50: pd.Series,
-    hourly_pv_p10: pd.Series | None,
-    hourly_pv_p90: pd.Series | None,
-    weather_code_series: pd.Series | None,
-) -> list[dict[str, float | int | str | None]]:
-    start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz)
-    week: list[dict[str, float | int | str | None]] = []
+    pv_totals_p50: list[float],
+    pv_totals_p10: list[float] | None,
+    pv_totals_p90: list[float] | None,
+    weather_by_model: dict[str, object] | None,
+    weights_used: dict[str, float] | None,
+    weather_primary_model_id: str | None,
+) -> list[dict[str, object]]:
+    days = min(7, len(pv_totals_p50))
+    out: list[dict[str, object]] = []
 
-    p50 = pd.to_numeric(hourly_pv_p50, errors="coerce") if isinstance(hourly_pv_p50, pd.Series) else pd.Series(dtype=float)
-    p10 = pd.to_numeric(hourly_pv_p10, errors="coerce") if isinstance(hourly_pv_p10, pd.Series) else None
-    p90 = pd.to_numeric(hourly_pv_p90, errors="coerce") if isinstance(hourly_pv_p90, pd.Series) else None
-    weather_code = pd.to_numeric(weather_code_series, errors="coerce") if isinstance(weather_code_series, pd.Series) else pd.Series(dtype=float)
+    for i in range(days):
+        day = target_date + dt.timedelta(days=i)
 
-    for day_offset in range(7):
-        day_start = start + dt.timedelta(days=day_offset)
-        day_end = day_start + dt.timedelta(days=1)
+        code, source_model_id, source_max_days = _pick_week_ahead_weather_code(
+            i,
+            target_date=target_date,
+            tz=tz,
+            weather_by_model=weather_by_model or {},
+            weights_used=weights_used,
+            primary_id=weather_primary_model_id,
+        )
 
-        day_p50 = p50[(p50.index >= day_start) & (p50.index < day_end)] if not p50.empty else pd.Series(dtype=float)
-        day_p10 = p10[(p10.index >= day_start) & (p10.index < day_end)] if isinstance(p10, pd.Series) and not p10.empty else pd.Series(dtype=float)
-        day_p90 = p90[(p90.index >= day_start) & (p90.index < day_end)] if isinstance(p90, pd.Series) and not p90.empty else pd.Series(dtype=float)
+        out.append(
+            {
+                "date": day.isoformat(),
+                "p50_kwh": float(pv_totals_p50[i]),
+                "p10_kwh": float(pv_totals_p10[i]) if pv_totals_p10 and i < len(pv_totals_p10) else None,
+                "p90_kwh": float(pv_totals_p90[i]) if pv_totals_p90 and i < len(pv_totals_p90) else None,
+                "weather_code": int(code) if code is not None else None,
+                "weather_best_of_day": True,
+                "weather_code_source_model_id": source_model_id,
+                "weather_code_source_model_label": (
+                    (WEATHER_MODELS.get(source_model_id) or {}).get("label") if source_model_id else None
+                ),
+                "weather_code_source_max_days": int(source_max_days) if source_max_days is not None else None,
+            }
+        )
 
-        daily_weather = weather_code[(weather_code.index >= day_start) & (weather_code.index < day_end)] if not weather_code.empty else pd.Series(dtype=float)
-        representative_code: int | None = None
-        if not daily_weather.empty:
-            day_weather_df = pd.DataFrame({"weather_code": daily_weather})
-            representative_code = _best_of_day_weather_code(day_weather_df)
-            if representative_code is None and daily_weather.notna().any():
-                # Fallback for days with data but no daytime samples.
-                representative_code = int(daily_weather.dropna().iloc[0])
-
-        item: dict[str, float | int | str | None] = {
-            "date": day_start.date().isoformat(),
-            "weather_code": representative_code,
-            "pv_p50_kwh": float(day_p50.fillna(0.0).sum()) if not day_p50.empty else 0.0,
-        }
-        if isinstance(p10, pd.Series):
-            item["pv_p10_kwh"] = float(day_p10.fillna(0.0).sum()) if not day_p10.empty else 0.0
-        if isinstance(p90, pd.Series):
-            item["pv_p90_kwh"] = float(day_p90.fillna(0.0).sum()) if not day_p90.empty else 0.0
-
-        week.append(item)
-
-    return week
+    return out
 
 
 class BackendState:
@@ -585,38 +663,47 @@ class BackendState:
             if missing_important:
                 warnings.append(f"important vars missing: {model_id} ({', '.join(missing_important)})")
 
-        # Use weather_code from the primary weather model (icons are display-only, so primary model is a sane source)
-        weather_code_series = None
         primary_id = getattr(ensemble, "weather_primary_model_id", None)
         weather_by_model = getattr(ensemble, "weather_by_model", {}) or {}
 
-        if primary_id and primary_id in weather_by_model:
-            primary_df = getattr(weather_by_model[primary_id], "df", None)
-            if isinstance(primary_df, pd.DataFrame):
-                weather_code_series = primary_df.get("weather_code")
+        def _daily_totals(series: pd.Series | None) -> list[float] | None:
+            if not isinstance(series, pd.Series) or series.empty:
+                return None
+            s = pd.to_numeric(series, errors="coerce")
+            if not isinstance(s.index, pd.DatetimeIndex):
+                return None
+            if s.index.tz is None:
+                s = s.copy()
+                s.index = s.index.tz_localize(tz)
+            else:
+                s = s.tz_convert(tz)
+            per_day = s.resample("1D").sum(min_count=1)
+            vals = [float(v) if not pd.isna(v) else 0.0 for v in per_day.iloc[:7].tolist()]
+            return vals
 
-        if weather_code_series is None:
-            for _mid, fr in weather_by_model.items():
-                df = getattr(fr, "df", None)
-                if isinstance(df, pd.DataFrame) and df.get("weather_code") is not None:
-                    weather_code_series = df.get("weather_code")
-                    break
+        pv_totals_p50 = _daily_totals(ensemble.pv_ensemble_p50) or []
+        pv_totals_p10 = _daily_totals(ensemble.pv_ensemble_p10)
+        pv_totals_p90 = _daily_totals(ensemble.pv_ensemble_p90)
 
-        if weather_code_series is None:
-            warnings.append("weather_code_missing_for_week_ahead_icons=true")
+        pv_week_ahead = _build_pv_week_ahead(
+            target_date=target_date,
+            tz=tz,
+            pv_totals_p50=pv_totals_p50,
+            pv_totals_p10=pv_totals_p10,
+            pv_totals_p90=pv_totals_p90,
+            weather_by_model=weather_by_model,
+            weights_used=getattr(ensemble, "weights_used", None),
+            weather_primary_model_id=primary_id,
+        )
+
+        for day_item in pv_week_ahead:
+            if isinstance(day_item, dict) and day_item.get("weather_code") is None:
+                warnings.append(f"weather_code_missing_for_week_ahead_icons={day_item.get('date')}")
 
         warnings = list(dict.fromkeys(warnings))
         status = "degraded" if warnings else "ok"
 
         weather = ensemble.weather_primary
-        pv_week_ahead = _build_pv_week_ahead(
-            target_date=target_date,
-            tz=tz,
-            hourly_pv_p50=ensemble.pv_ensemble_p50,
-            hourly_pv_p10=ensemble.pv_ensemble_p10,
-            hourly_pv_p90=ensemble.pv_ensemble_p90,
-            weather_code_series=weather_code_series,
-        )
         tomorrow_start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz)
         tomorrow_end = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=1), dt.time(0, 0)), tz=tz)
         tomorrow_index = pd.date_range(tomorrow_start, tomorrow_end, freq="h", inclusive="left")
