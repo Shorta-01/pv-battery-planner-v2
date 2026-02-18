@@ -148,16 +148,27 @@ def _build_pv_week_ahead(
         daily_weather = weather_code[(weather_code.index >= day_start) & (weather_code.index < day_end)] if not weather_code.empty else pd.Series(dtype=float)
         representative_code: int | None = None
         if not daily_weather.empty:
-            noon_ts = day_start + dt.timedelta(hours=12)
-            noon_matches = daily_weather[daily_weather.index == noon_ts]
-            if not noon_matches.empty and pd.notna(noon_matches.iloc[0]):
-                representative_code = int(noon_matches.iloc[0])
-            else:
-                mode_vals = daily_weather.dropna().mode()
-                if not mode_vals.empty:
-                    representative_code = int(mode_vals.iloc[0])
-                elif daily_weather.notna().any():
-                    representative_code = int(daily_weather.dropna().iloc[0])
+            # Prefer the weather code from the hour with the highest expected PV production.
+            # This keeps the icon representative for solar output instead of overnight conditions.
+            pv_for_icon = day_p50.reindex(daily_weather.index)
+            pv_for_icon = pd.to_numeric(pv_for_icon, errors="coerce")
+            if pv_for_icon.notna().any():
+                peak_pv_idx = pv_for_icon.fillna(-1.0).idxmax()
+                peak_matches = daily_weather[daily_weather.index == peak_pv_idx]
+                if not peak_matches.empty and pd.notna(peak_matches.iloc[0]):
+                    representative_code = int(peak_matches.iloc[0])
+
+            if representative_code is None:
+                noon_ts = day_start + dt.timedelta(hours=12)
+                noon_matches = daily_weather[daily_weather.index == noon_ts]
+                if not noon_matches.empty and pd.notna(noon_matches.iloc[0]):
+                    representative_code = int(noon_matches.iloc[0])
+                else:
+                    mode_vals = daily_weather.dropna().mode()
+                    if not mode_vals.empty:
+                        representative_code = int(mode_vals.iloc[0])
+                    elif daily_weather.notna().any():
+                        representative_code = int(daily_weather.dropna().iloc[0])
 
         item: dict[str, float | int | str | None] = {
             "date": day_start.date().isoformat(),
