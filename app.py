@@ -1204,7 +1204,7 @@ def render_pv_quality_widget(
     )
 
 
-def render_key_charging_widget(container, allowed_charge_kw: float, cutoff_soc_pct: float, cutoff_note: str) -> None:
+def render_key_charging_widget(container, allowed_charge_kw: float, cutoff_soc_pct: float) -> None:
     power_pct = clamp_pct((allowed_charge_kw / 7.0) * 100.0)
     soc_pct = clamp_pct(cutoff_soc_pct)
     container.markdown(
@@ -1233,7 +1233,6 @@ def render_key_charging_widget(container, allowed_charge_kw: float, cutoff_soc_p
             "<div style='margin-top:0.22rem;font-size:0.68rem;opacity:0.78;'>Range: 0 to 100%</div>"
             "</div>"
             "</div>"
-            f"<div style='margin-top:0.5rem;font-size:0.72rem;opacity:0.84;'>{cutoff_note}</div>"
             "</div>"
         ),
         unsafe_allow_html=True,
@@ -3202,7 +3201,6 @@ if run:
             cutoff_soc = float(metrics.get("cutoff_soc", 0.0))
             charge_kw = float(metrics.get("charge_kw", 0.0))
             charge_note = str(metrics.get("charge_note", ""))
-            cutoff_reason_ui = str(metrics.get("cutoff_reason", ""))
             grid_import = float(metrics.get("grid_import", 0.0))
             grid_export = float(metrics.get("grid_export", 0.0))
             weather_ensemble = result.get("weather_ensemble", {}) if isinstance(result.get("weather_ensemble"), dict) else {}
@@ -3243,7 +3241,6 @@ if run:
                     st.container(),
                     allowed_charge_kw=float(charge_kw),
                     cutoff_soc_pct=float(cutoff_soc * 100.0),
-                    cutoff_note=cutoff_reason_ui,
                 )
             with top_right:
                 render_pv_quality_widget(
@@ -3414,9 +3411,6 @@ if run:
                     p1, p2 = st.columns(2)
                     p1.download_button("Download CSV", data=planning_csv, file_name=f"{planning_name}.csv", mime="text/csv", key="planning_csv_download")
                     p2.download_button("Download JSON", data=planning_json, file_name=f"{planning_name}.json", mime="application/json", key="planning_json_download")
-            else:
-                st.info("Run Inspector tables are hidden in Simple mode. Switch History mode to Debug to inspect weather/planning tables.")
-
             render_history_fragment()
 
             for warning in result.get("warnings", []):
