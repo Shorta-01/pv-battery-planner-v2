@@ -2834,7 +2834,42 @@ if run:
 
             st.markdown("### Forecast summary")
             c1, c2, c3, c4 = st.columns(4)
-            metric_with_help(c1, "Forecast total PV (kWh)", f"{pv['pv_total_kwh'].sum():.2f}")
+
+            def _pick_float_value(*candidate_values: object) -> float | None:
+                for candidate in candidate_values:
+                    value = pd.to_numeric(pd.Series([candidate]), errors="coerce").iloc[0]
+                    if not pd.isna(value):
+                        return float(value)
+                return None
+
+            pv_p50 = _pick_float_value(
+                result.get("pv_kwh_p50"),
+                result.get("pv_p50_kwh"),
+                metrics.get("pv_kwh_p50") if isinstance(metrics, dict) else None,
+                metrics.get("pv_p50_kwh") if isinstance(metrics, dict) else None,
+                weather_ensemble.get("pv_totals_kwh", {}).get("p50") if isinstance(weather_ensemble.get("pv_totals_kwh"), dict) else None,
+                pv["pv_total_kwh"].sum() if "pv_total_kwh" in pv.columns else None,
+                0.0,
+            )
+            pv_low = _pick_float_value(
+                result.get("pv_kwh_p10"),
+                result.get("pv_p10_kwh"),
+                metrics.get("pv_kwh_p10") if isinstance(metrics, dict) else None,
+                metrics.get("pv_p10_kwh") if isinstance(metrics, dict) else None,
+                weather_ensemble.get("pv_totals_kwh", {}).get("p10") if isinstance(weather_ensemble.get("pv_totals_kwh"), dict) else None,
+            )
+            pv_high = _pick_float_value(
+                result.get("pv_kwh_p90"),
+                result.get("pv_p90_kwh"),
+                metrics.get("pv_kwh_p90") if isinstance(metrics, dict) else None,
+                metrics.get("pv_p90_kwh") if isinstance(metrics, dict) else None,
+                weather_ensemble.get("pv_totals_kwh", {}).get("p90") if isinstance(weather_ensemble.get("pv_totals_kwh"), dict) else None,
+            )
+            pv_low = pv_p50 if pv_low is None else pv_low
+            pv_high = pv_p50 if pv_high is None else pv_high
+
+            metric_with_help(c1, "Forecast total PV (kWh)", f"{pv_p50:.2f}")
+            c1.caption(f"Low {pv_low:.2f} kWh - High {pv_high:.2f} kWh")
             metric_with_help(c2, "Forecast total load (kWh)", f"{pv['load_kwh'].sum():.2f}")
             metric_with_help(c3, "Estimated grid import (expensive h)", f"{grid_import:.2f}")
             metric_with_help(c4, "Estimated export/curtailment (kWh)", f"{(grid_export + detail_df['curtailed_kwh'].sum() if not detail_df.empty else 0.0):.2f}")
