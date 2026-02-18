@@ -153,6 +153,7 @@ class EnsembleWeatherResult:
     weights_used: dict[str, float] | None
     weather_primary_model_id: str
     weather_by_model: dict[str, core.ForecastResult]
+    pv_by_model: dict[str, pd.DataFrame]
     weather_ensemble_table: core.ForecastResult
 
 
@@ -760,6 +761,7 @@ def build_ensemble_forecast(
     failed_models: list[str] = []
     failed_model_reasons: dict[str, dict[str, Any]] = {}
     weather_ok: dict[str, core.ForecastResult] = {}
+    pv_by_model: dict[str, pd.DataFrame] = {}
 
     canonical_index = pd.date_range(
         pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz),
@@ -815,6 +817,7 @@ def build_ensemble_forecast(
                 model_id, weather, pv_cols, pv_total_sum, missing_vars, derived_irradiance, missing_hours = fut.result()
                 for col_name, series in pv_cols.items():
                     per_model_pv_columns[col_name][model_id] = series
+                pv_by_model[model_id] = pd.DataFrame(pv_cols).reindex(canonical_index)
                 per_model_pv_totals[model_id] = pv_total_sum
                 missing_vars_by_model[model_id] = missing_vars
                 derived_irradiance_by_model[model_id] = bool(derived_irradiance)
@@ -931,5 +934,6 @@ def build_ensemble_forecast(
         weights_used=weights_used,
         weather_primary_model_id=primary_model,
         weather_by_model=weather_ok,
+        pv_by_model=pv_by_model,
         weather_ensemble_table=ensemble_weather,
     )
