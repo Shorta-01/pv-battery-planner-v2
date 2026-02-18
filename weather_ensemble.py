@@ -103,6 +103,20 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
     },
 }
 
+WEATHER_MODEL_ALIASES: dict[str, str] = {
+    "icon_d2": "dwd_icon_d2",
+    "icon_eu": "dwd_icon_eu",
+    "ifs": "ecmwf_ifs",
+}
+
+HISTORICAL_FORECAST_MODEL_PARAMS: dict[str, str] = {
+    "knmi_harmonie_arome": "knmi_harmonie_arome_netherlands",
+    "dwd_icon_d2": "icon_d2",
+    "ecmwf_ifs": "ecmwf_ifs",
+    "dwd_icon_eu": "icon_eu",
+    "meteofrance_seamless": "meteofrance_seamless",
+}
+
 BASE_HOURLY_VARIABLES = [
     "temperature_2m",
     "wind_speed_10m",
@@ -747,6 +761,25 @@ def _finalize_irradiance_components(
     return dni_out, dhi_out, sorted(missing_set), derived_irradiance
 
 
+
+
+def normalize_weather_model_id(model_id: str) -> str:
+    key = str(model_id or "").strip().lower()
+    return WEATHER_MODEL_ALIASES.get(key, key)
+
+
+def supported_weather_models() -> list[str]:
+    return sorted(WEATHER_MODELS.keys())
+
+
+def historical_forecast_params(model_id: str) -> tuple[str, dict[str, Any]]:
+    canonical = normalize_weather_model_id(model_id)
+    if canonical not in WEATHER_MODELS:
+        raise RuntimeError(f"Unsupported weather model: {model_id}")
+    params = {
+        "models": HISTORICAL_FORECAST_MODEL_PARAMS.get(canonical, canonical),
+    }
+    return "https://historical-forecast-api.open-meteo.com/v1/forecast", params
 def fetch_open_meteo_weather(
     model_id: str,
     loc: core.Location,
@@ -755,11 +788,21 @@ def fetch_open_meteo_weather(
     *,
     accuracy_mode: bool = True,
     fast_mode: bool = False,
+    endpoint_override: str | None = None,
+    extra_params: dict[str, Any] | None = None,
 ) -> tuple[core.ForecastResult, list[str], bool, dict[str, Any]]:
+    model_id = normalize_weather_model_id(model_id)
     if model_id not in WEATHER_MODELS:
         raise RuntimeError(f"Unsupported weather model: {model_id}")
 
-    key = (_cache_key(model_id, loc.latitude, loc.longitude, tz, target_date), bool(accuracy_mode), bool(fast_mode))
+    cache_extra_key = json.dumps(extra_params, sort_keys=True, default=str) if extra_params else ""
+    key = (
+        _cache_key(model_id, loc.latitude, loc.longitude, tz, target_date),
+        bool(accuracy_mode),
+        bool(fast_mode),
+        str(endpoint_override or ""),
+        cache_extra_key,
+    )
     now = time.time()
     cached = _WEATHER_CACHE.get(key)
     if cached and now - cached[0] < _WEATHER_CACHE_TTL_S:
@@ -781,6 +824,8 @@ def fetch_open_meteo_weather(
         "daily": "sunrise,sunset",
     }
     params.update(spec.get("params", {}))
+    if extra_params:
+        params.update(extra_params)
 
     use_icon15 = (
         model_id == "dwd_icon_d2"
@@ -806,7 +851,7 @@ def fetch_open_meteo_weather(
         "circuit_breaker_open_for_seconds": int(open_for_seconds),
     }
     request_params = dict(params)
-    request_endpoint = str(spec["endpoint"])
+    request_endpoint = str(endpoint_override or spec["endpoint"])
     response_meta: dict[str, Any] | None = None
 
     request_start = time.perf_counter()
@@ -817,10 +862,10 @@ def fetch_open_meteo_weather(
                 status=None,
                 message=f"Circuit breaker open for {model_id}; skip live fetch for {open_for_seconds}s",
             )
-        data, response_meta = _request_open_meteo(spec["endpoint"], params, model_id=model_id)
+        data, response_meta = _request_open_meteo(request_endpoint, params, model_id=model_id)
         _log_model_fetch(
             model_id=model_id,
-            endpoint=spec["endpoint"],
+            endpoint=request_endpoint,
             params=params,
             elapsed_ms=int((time.perf_counter() - request_start) * 1000),
             category="ok",
@@ -830,7 +875,7 @@ def fetch_open_meteo_weather(
     except WeatherProviderError as exc:
         _log_model_fetch(
             model_id=model_id,
-            endpoint=spec["endpoint"],
+            endpoint=request_endpoint,
             params=params,
             elapsed_ms=int((time.perf_counter() - request_start) * 1000),
             category=exc.category,
