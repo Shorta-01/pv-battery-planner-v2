@@ -309,10 +309,12 @@ def inject_tooltip_css() -> None:
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            padding: 2px 6px;
-            border-radius: 999px;
-            border: 1px solid rgba(255,255,255,0.14);
-            background: rgba(255,255,255,0.06);
+            padding: 0;
+            border-radius: 0;
+            border: none;
+            background: transparent;
+            box-shadow: none;
+            outline: none;
             font-size: 12px;
             line-height: 1;
             margin-left: 6px;
@@ -409,9 +411,6 @@ def render_weather_models(
     widget_key_prefix: str = "wm",
 ) -> list[str]:
     with st.expander("Weather models", expanded=True):
-        st.caption("Select which weather models to use. We combine them automatically using Belgium-tuned weighting.")
-        st.caption("After you run a forecast, we show warnings (⚠) or failures (❌) next to models if needed.")
-
         model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
         selected_models: list[str] = []
 
