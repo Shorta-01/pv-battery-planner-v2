@@ -819,6 +819,25 @@ def resolve_forecast_summary_pv_kwh(
     return float(pv_total_kwh or 0.0)
 
 
+def resolve_tomorrow_pv_low_high_kwh(
+    result: dict | None,
+    weather_ensemble: dict | None,
+) -> tuple[float | None, float | None]:
+    range_payload = result.get("pv_tomorrow_low_high_kwh") if isinstance(result, dict) else None
+    if not isinstance(range_payload, dict) and isinstance(weather_ensemble, dict):
+        range_payload = weather_ensemble.get("pv_tomorrow_low_high_kwh")
+
+    if isinstance(range_payload, dict):
+        low_raw = pd.to_numeric(pd.Series([range_payload.get("low")]), errors="coerce").iloc[0]
+        high_raw = pd.to_numeric(pd.Series([range_payload.get("high")]), errors="coerce").iloc[0]
+        valid_models_raw = pd.to_numeric(pd.Series([range_payload.get("valid_models")]), errors="coerce").iloc[0]
+        valid_models = int(valid_models_raw) if not pd.isna(valid_models_raw) else 0
+        if valid_models >= 2 and not pd.isna(low_raw) and not pd.isna(high_raw):
+            return float(low_raw), float(high_raw)
+
+    return None, None
+
+
 def resolve_week_ahead_total_pv_kwh(pv_week_ahead: list[dict] | list[float] | None) -> float:
     if not isinstance(pv_week_ahead, list) or not pv_week_ahead:
         return 0.0
@@ -1011,6 +1030,8 @@ def render_pv_quality_widget(
     pv_df: pd.DataFrame,
     pv_quality_dict: dict,
     tomorrow_date: dt.date,
+    pv_tomorrow_low_kwh: float | None = None,
+    pv_tomorrow_high_kwh: float | None = None,
     tomorrow_weather_code: int | float | str | None = None,
     tomorrow_source_label: str | None = None,
     tomorrow_source_days: int | float | str | None = None,
@@ -1135,6 +1156,14 @@ def render_pv_quality_widget(
     </div>
     """
 
+    pv_range_html = ""
+    if pv_tomorrow_low_kwh is not None and pv_tomorrow_high_kwh is not None:
+        pv_range_html = (
+            "<div style='margin-top:0.20rem;font-size:0.74rem;opacity:0.82;'>"
+            f"Low {pv_tomorrow_low_kwh:.2f} kWh - High {pv_tomorrow_high_kwh:.2f} kWh"
+            "</div>"
+        )
+
     container.markdown(
         (
             "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.65rem 0.75rem;"
@@ -1145,7 +1174,8 @@ def render_pv_quality_widget(
             "<div style='margin-top:0.35rem;font-size:0.95rem;font-weight:650;'>"
             f"{pv_label} day · {pv_quality_dict['pv_total_kwh']:.1f} kWh"
             "</div>"
-            "<div style='margin-top:0.45rem;height:8px;border-radius:999px;overflow:hidden;background:rgba(255,255,255,0.12);'>"
+            + pv_range_html
+            + "<div style='margin-top:0.45rem;height:8px;border-radius:999px;overflow:hidden;background:rgba(255,255,255,0.12);'>"
             f"<div style='height:100%;width:{ratio_percent:.1f}%;background:linear-gradient(90deg,#d62828 0%,#f4a261 45%,#52b788 70%,#2a9d8f 100%);'></div>"
             "</div>"
             "<div style='margin-top:0.32rem;font-size:0.72rem;opacity:0.8;'>"
@@ -3187,6 +3217,8 @@ if run:
                 tomorrow_weather_code = pwa[0].get("weather_code")
                 tomorrow_source_label = pwa[0].get("weather_code_source_model_label")
                 tomorrow_source_days = pwa[0].get("weather_code_source_max_days")
+            pv_low, pv_high = resolve_tomorrow_pv_low_high_kwh(result, weather_ensemble)
+
             weather_primary_model_id = result.get("weather_primary_model_id")
             weather_ensemble_table_payload = result.get("weather_ensemble_table")
             weather_by_model_payload = result.get("weather_by_model")
@@ -3220,6 +3252,8 @@ if run:
                     pv,
                     pv_quality,
                     tomorrow,
+                    pv_tomorrow_low_kwh=pv_low,
+                    pv_tomorrow_high_kwh=pv_high,
                     tomorrow_weather_code=tomorrow_weather_code,
                     tomorrow_source_label=tomorrow_source_label,
                     tomorrow_source_days=tomorrow_source_days,
@@ -3233,13 +3267,6 @@ if run:
             st.markdown("### Forecast summary")
             c1, c2, c3, c4, c5 = st.columns(5)
 
-            def _pick_float_value(*candidate_values: object) -> float | None:
-                for candidate in candidate_values:
-                    value = pd.to_numeric(pd.Series([candidate]), errors="coerce").iloc[0]
-                    if not pd.isna(value):
-                        return float(value)
-                return None
-
             pv_p50 = resolve_forecast_summary_pv_kwh(
                 pv_quality,
                 pv_week_ahead,
@@ -3248,27 +3275,14 @@ if run:
                 metrics,
                 weather_ensemble,
             )
-            pv_low = _pick_float_value(
-                result.get("pv_kwh_p10"),
-                result.get("pv_p10_kwh"),
-                metrics.get("pv_kwh_p10") if isinstance(metrics, dict) else None,
-                metrics.get("pv_p10_kwh") if isinstance(metrics, dict) else None,
-                weather_ensemble.get("pv_totals_kwh", {}).get("p10") if isinstance(weather_ensemble.get("pv_totals_kwh"), dict) else None,
-            )
-            pv_high = _pick_float_value(
-                result.get("pv_kwh_p90"),
-                result.get("pv_p90_kwh"),
-                metrics.get("pv_kwh_p90") if isinstance(metrics, dict) else None,
-                metrics.get("pv_p90_kwh") if isinstance(metrics, dict) else None,
-                weather_ensemble.get("pv_totals_kwh", {}).get("p90") if isinstance(weather_ensemble.get("pv_totals_kwh"), dict) else None,
-            )
-            pv_low = pv_p50 if pv_low is None else pv_low
-            pv_high = pv_p50 if pv_high is None else pv_high
-
             pv_week_total = resolve_week_ahead_total_pv_kwh(pv_week_ahead)
 
             metric_with_help(c1, "Forecast total PV (kWh)", f"{pv_p50:.2f}")
-            c1.caption(f"Low {pv_low:.2f} kWh - High {pv_high:.2f} kWh")
+            if APP_DEBUG:
+                if pv_low is not None and pv_high is not None:
+                    st.caption(f"DEBUG Tomorrow PV low/high from usable models: {pv_low:.2f}/{pv_high:.2f} kWh")
+                else:
+                    st.caption("DEBUG Tomorrow PV low/high unavailable (<2 usable models)")
             metric_with_help(c2, "Next 7 days PV (kWh)", f"{pv_week_total:.2f}")
             metric_with_help(c3, "Forecast total load (kWh)", f"{pv['load_kwh'].sum():.2f}")
             metric_with_help(c4, "Estimated grid import (expensive h)", f"{grid_import:.2f}")

@@ -858,6 +858,20 @@ class BackendState:
             "p50": float(ensemble.pv_ensemble_p50.sum()),
             "p90": float(ensemble.pv_ensemble_p90.sum()) if ensemble.pv_ensemble_p90 is not None else None,
         }
+        usable_model_totals = [
+            float(v)
+            for v in (ensemble.per_model_pv_totals_kwh or {}).values()
+            if v is not None
+        ]
+        pv_tomorrow_low_high_kwh = (
+            {
+                "low": float(min(usable_model_totals)),
+                "high": float(max(usable_model_totals)),
+                "valid_models": int(len(usable_model_totals)),
+            }
+            if len(usable_model_totals) >= 2
+            else None
+        )
         run_duration_ms = int((time.perf_counter() - run_started) * 1000)
         inputs_used = {
             "soc_at_22_percent": float(soc_percent),
@@ -921,6 +935,7 @@ class BackendState:
             "timezone": tz,
             "inputs_used": inputs_used,
             "pv_totals_kwh": pv_totals_kwh,
+            "pv_tomorrow_low_high_kwh": pv_tomorrow_low_high_kwh,
             "pv_week_ahead": pv_week_ahead,
             "system_snapshot": {k: v for k, v in system_snapshot.items() if v is not None},
             "planner_version": "v2",
@@ -947,6 +962,7 @@ class BackendState:
                 "pv_totals_kwh": pv_totals_kwh
                 if pv_uncertainty
                 else None,
+                "pv_tomorrow_low_high_kwh": pv_tomorrow_low_high_kwh,
                 "pv_week_ahead": pv_week_ahead,
                 "missing_vars_by_model": ensemble.missing_vars_by_model,
                 "derived_irradiance_by_model": ensemble.derived_irradiance_by_model,
