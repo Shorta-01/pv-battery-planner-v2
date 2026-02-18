@@ -77,14 +77,23 @@ WEATHER_MODEL_HOVERTEXT = {
     "meteofrance_seamless": "Météo-France seamless blend. Helpful extra perspective for Western Europe cloud patterns.",
 }
 
-BADGE_HOVERTEXT = {
-    "⭐": "Core model. Recommended default for Belgium.",
-    "🟩": "Best PV inputs. This model provides the main solar irradiance fields directly, which usually improves PV accuracy.",
-    "🧩": "Derived PV inputs. Some solar irradiance fields are missing, so we estimate them. PV still works, but accuracy can drop on difficult cloud days.",
-    "🔎": "High-resolution (local). Best for short-term local cloud timing, which often improves PV ramps and hour-to-hour changes.",
-    "🗺️": "Regional (Europe-scale). A good second opinion that is usually smoother and more stable than high-resolution models.",
-    "🌍": "Global. Stable big-picture baseline for fronts and the overall weather pattern.",
-    "⏱️": "Uses 15-minute solar radiation (then aggregated to hourly). Can improve the PV curve shape when clouds change quickly.",
+BADGE_META = {
+    "🏅": {"label": "CORE", "tip": "Core model. Recommended default for Belgium."},
+    "📡": {"label": "HI-RES", "tip": "High-resolution (local). Best for short-term local cloud timing, which often improves PV ramps and hour-to-hour changes."},
+    "🇪🇺": {"label": "EU", "tip": "Regional (Europe-scale). A good second opinion that is usually smoother and more stable than high-resolution models."},
+    "🌐": {"label": "GLOBAL", "tip": "Global. Stable big-picture baseline for fronts and the overall weather pattern."},
+    "☀️": {"label": "SOLAR+", "tip": "Best PV inputs. This model provides the main solar irradiance fields directly, which usually improves PV accuracy."},
+    "∑": {"label": "SOLAR∼", "tip": "Derived PV inputs. Some solar irradiance fields are missing, so we estimate them. PV still works, but accuracy can drop on difficult cloud days."},
+    "⏱️": {"label": "15m", "tip": "Uses 15-minute solar radiation (then aggregated to hourly). Can improve the PV curve shape when clouds change quickly."},
+}
+
+BADGE_ALIASES = {
+    "⭐": "🏅",
+    "🔎": "📡",
+    "🗺️": "🇪🇺",
+    "🌍": "🌐",
+    "🟩": "☀️",
+    "🧩": "∑",
 }
 
 
@@ -294,33 +303,71 @@ def inject_tooltip_css() -> None:
             font-size: 1.05rem;
             font-weight: 600;
         }
+        .pvbp-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 2px 8px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.14);
+            background: rgba(255,255,255,0.06);
+            font-size: 12px;
+            line-height: 1;
+            margin-left: 6px;
+            cursor: help;
+            white-space: nowrap;
+        }
+        .pvbp-badge-icon {
+            font-size: 14px;
+            line-height: 1;
+        }
+        .pvbp-badge-label {
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            opacity: 0.95;
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
-def weather_model_option_help(model: dict) -> str:
-    badge_meanings = {
-        "⭐": "recommended for Belgium",
-        "🟩": "full irradiance fields",
-        "🧩": "derived/approximated components",
-    }
-    badge_meanings.update(
-        {
-            "🔎": "high-resolution local",
-            "🗺️": "regional Europe-scale",
-            "🌍": "global baseline",
-            "⏱️": "uses 15-minute solar data",
-        }
+def _normalize_badge_icon(icon: str) -> str:
+    return BADGE_ALIASES.get(icon, icon)
+
+
+def badge_chip(icon: str, label: str, tip: str) -> str:
+    title_attr = f' title="{html.escape(tip)}"' if tip else ""
+    return (
+        f'<span class="pvbp-badge"{title_attr}>'
+        f'<span class="pvbp-badge-icon">{html.escape(icon)}</span>'
+        f'<span class="pvbp-badge-label">{html.escape(label)}</span>'
+        "</span>"
     )
-    badges = [badge for badge in model.get("badges", []) if badge in badge_meanings]
-    unique_badges = list(dict.fromkeys(badges))
-    badge_summary = ", ".join(f"{badge} {badge_meanings[badge]}" for badge in unique_badges)
+
+
+def weather_model_option_help(model: dict) -> str:
+    badges_raw = list(model.get("badges", []) or [])
+    normalized_badges: list[str] = []
+    for badge in badges_raw:
+        if not str(badge).strip():
+            continue
+        normalized = _normalize_badge_icon(str(badge))
+        if normalized in BADGE_META:
+            normalized_badges.append(normalized)
+
+    unique_badges = list(dict.fromkeys(normalized_badges))
+    badge_summary = ", ".join(
+        f"{icon} {BADGE_META[icon]['label'].lower()}" for icon in unique_badges
+    )
     notes = str(model.get("notes") or model.get("capability", {}).get("notes") or "")
-    if notes:
+    if notes and badge_summary:
         return f"{notes}\n\nLegend: {badge_summary}."
-    return f"Legend: {badge_summary}."
+    if notes:
+        return notes
+    if badge_summary:
+        return f"Legend: {badge_summary}."
+    return ""
 
 
 def last_run_status_badge(model_id: str) -> tuple[str | None, str]:
@@ -373,7 +420,7 @@ def render_weather_models(
         selected_models: list[str] = []
 
         st.markdown(
-            "<style>.wm-name{cursor:help}.wm-icon{cursor:help;margin-left:6px}</style>",
+            "<style>.wm-name{cursor:help}.wm-badges{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;row-gap:4px}</style>",
             unsafe_allow_html=True,
         )
 
@@ -404,18 +451,25 @@ def render_weather_models(
                 static_badges = list(model.get("badges") or [])
                 status_icon, status_tip = last_run_status_badge(model_id)
 
-                badge_items: list[tuple[str, str]] = []
+                badge_html: list[str] = []
                 if status_icon:
-                    badge_items.append((status_icon, status_tip))
+                    badge_html.append(
+                        f"<span class='pvbp-badge' title='{_esc(status_tip)}'><span class='pvbp-badge-icon'>{_esc(status_icon)}</span></span>"
+                    )
 
-                for b in static_badges:
-                    badge_items.append((b, BADGE_HOVERTEXT.get(b, "")))
+                for badge in static_badges:
+                    badge_raw = str(badge)
+                    if not badge_raw.strip():
+                        continue
+                    icon = _normalize_badge_icon(badge_raw)
+                    meta = BADGE_META.get(icon)
+                    if not meta:
+                        continue
+                    badge_html.append(
+                        badge_chip(icon=icon, label=str(meta.get("label") or ""), tip=str(meta.get("tip") or ""))
+                    )
 
-                icon_html = " ".join(
-                    f"<span class='wm-icon' title='{_esc(tip)}'>{_esc(icon)}</span>"
-                    for icon, tip in badge_items
-                )
-                st.markdown(icon_html, unsafe_allow_html=True)
+                st.markdown(f"<div class='wm-badges'>{''.join(badge_html)}</div>", unsafe_allow_html=True)
 
             if checked:
                 selected_models.append(model_id)
