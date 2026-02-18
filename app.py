@@ -984,12 +984,19 @@ def render_pv_quality_widget(container, pv_df: pd.DataFrame, pv_quality_dict: di
     else:
         savings_html = "<div style='margin-top:0.50rem;font-size:0.70rem;opacity:0.78;'>Run forecast to see € savings.</div>"
 
+    pv_icon = quality_emojis.get(pv_quality_dict["label"], "☁️")
+    icon_html = (
+        "<div title='PV quality indicator (not a weather forecast)' "
+        "style='font-size:1.25rem;line-height:1;'>"
+        f"{pv_icon}</div>"
+    )
+
     container.markdown(
         (
             "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.65rem 0.75rem;"
             "background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));min-width:245px;'>"
             "<div style='display:flex;align-items:center;justify-content:space-between;gap:0.5rem;'>"
-            f"<div style='font-size:1.25rem;line-height:1;'>{quality_emojis.get(pv_quality_dict['label'], '☁️')}</div>"
+            f"{icon_html}"
             "<div style='font-size:0.72rem;opacity:0.8;text-transform:uppercase;letter-spacing:0.06em;'>PV Outlook</div>"
             f"<div style='font-size:0.9rem;font-weight:700;color:{pv_quality_dict['color']};'>{score}/100</div>"
             "</div>"

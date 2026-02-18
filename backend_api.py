@@ -540,6 +540,26 @@ class BackendState:
             if missing_important:
                 warnings.append(f"important vars missing: {model_id} ({', '.join(missing_important)})")
 
+        # Use weather_code from the primary weather model (icons are display-only, so primary model is a sane source)
+        weather_code_series = None
+        primary_id = getattr(ensemble, "weather_primary_model_id", None)
+        weather_by_model = getattr(ensemble, "weather_by_model", {}) or {}
+
+        if primary_id and primary_id in weather_by_model:
+            primary_df = weather_by_model[primary_id].df
+            if isinstance(primary_df, pd.DataFrame):
+                weather_code_series = primary_df.get("weather_code")
+
+        if weather_code_series is None:
+            for _mid, fr in weather_by_model.items():
+                df = getattr(fr, "df", None)
+                if isinstance(df, pd.DataFrame) and df.get("weather_code") is not None:
+                    weather_code_series = df.get("weather_code")
+                    break
+
+        if weather_code_series is None:
+            warnings.append("weather_code_missing_for_week_ahead_icons=true")
+
         warnings = list(dict.fromkeys(warnings))
         status = "degraded" if warnings else "ok"
 
@@ -550,7 +570,7 @@ class BackendState:
             hourly_pv_p50=ensemble.pv_ensemble_p50,
             hourly_pv_p10=ensemble.pv_ensemble_p10,
             hourly_pv_p90=ensemble.pv_ensemble_p90,
-            weather_code_series=ensemble.weather_ensemble_table.df.get("weather_code"),
+            weather_code_series=weather_code_series,
         )
         tomorrow_start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz)
         tomorrow_end = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=1), dt.time(0, 0)), tz=tz)
