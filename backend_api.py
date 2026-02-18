@@ -520,8 +520,10 @@ class BackendState:
                 reason_msg = "unknown"
             warnings.append(f"model failed: {model_id} ({reason_msg})")
 
+        derived_hours_by_model = getattr(ensemble, "derived_irradiance_hours_by_model", {})
         for model_id, used_derived in ensemble.derived_irradiance_by_model.items():
-            if used_derived:
+            derived_hours = int(derived_hours_by_model.get(model_id, 0)) if isinstance(derived_hours_by_model, dict) else 0
+            if used_derived and derived_hours > 0:
                 warnings.append(f"derived irradiance used: {model_id}")
 
         for model_id, used_cached in getattr(ensemble, "model_live_failed_used_cached", {}).items():
@@ -752,6 +754,8 @@ class BackendState:
                 "pv_week_ahead": pv_week_ahead,
                 "missing_vars_by_model": ensemble.missing_vars_by_model,
                 "derived_irradiance_by_model": ensemble.derived_irradiance_by_model,
+                "derived_irradiance_hours_by_model": getattr(ensemble, "derived_irradiance_hours_by_model", {}),
+                "fetch_meta_by_model": getattr(ensemble, "fetch_meta_by_model", {}),
                 "failed_models": ensemble.failed_models,
                 "failed_model_reasons": ensemble.failed_model_reasons,
                 "model_live_failed_used_cached": getattr(ensemble, "model_live_failed_used_cached", {}),
