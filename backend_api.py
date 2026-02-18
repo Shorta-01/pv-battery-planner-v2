@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import csv
 import datetime as dt
 import gc
 import json
@@ -15,11 +16,12 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 import planner_core as core
+import scoring
 from db_sqlite import (
     compute_config_hash,
     fetch_history_all_runs,
@@ -27,6 +29,7 @@ from db_sqlite import (
     fetch_latest_full_run,
     fetch_full_run_by_id,
     init_db,
+    insert_actual_hourly_rows,
     insert_forecast_run,
 )
 from weather_ensemble import (
@@ -106,6 +109,11 @@ class RunNowPayload(BaseModel):
 
 class NightlyTickPayload(BaseModel):
     force: bool = False
+
+
+class ActualsHourlyPayload(BaseModel):
+    rows: list[dict]
+    source: str = "manual_csv"
 
 
 class BackendState:
@@ -765,6 +773,18 @@ def _require_token(authorization: str | None) -> None:
         raise HTTPException(status_code=401, detail="Invalid bearer token")
 
 
+def _parse_actual_rows_csv_text(csv_text: str) -> list[dict]:
+    reader = csv.DictReader(csv_text.splitlines())
+    expected = ["ts_local", "pv_kwh", "load_kwh", "grid_import_kwh", "grid_export_kwh", "soc_pct"]
+    if reader.fieldnames != expected:
+        raise HTTPException(status_code=400, detail=f"CSV headers must be exactly: {','.join(expected)}")
+
+    rows: list[dict] = []
+    for row in reader:
+        rows.append(dict(row))
+    return rows
+
+
 @app.get("/v1/health")
 def health(authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
@@ -805,6 +825,61 @@ def run_now(payload: RunNowPayload, authorization: str | None = Header(default=N
 def run_nightly(payload: NightlyTickPayload, authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
     return state.run_nightly_tick(payload)
+
+
+@app.post("/v1/actuals/hourly")
+async def ingest_actuals_hourly(request: Request, authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    content_type = (request.headers.get("content-type") or "").lower()
+
+    source = "manual_csv"
+    rows: list[dict]
+
+    if "text/csv" in content_type:
+        csv_text = (await request.body()).decode("utf-8")
+        rows = _parse_actual_rows_csv_text(csv_text)
+    else:
+        payload = await request.json()
+        if isinstance(payload, list):
+            rows = payload
+        elif isinstance(payload, dict):
+            source = str(payload.get("source") or source)
+            payload_rows = payload.get("rows")
+            if not isinstance(payload_rows, list):
+                raise HTTPException(status_code=400, detail="JSON payload must include rows[]")
+            rows = payload_rows
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported payload")
+
+    try:
+        inserted = insert_actual_hourly_rows(str(SQLITE_PATH), rows, source=source)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"inserted": inserted, "source": source}
+
+
+@app.post("/v1/score/day")
+def score_day(date: str, source: str = "manual_csv", authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    try:
+        result = scoring.score_day(str(SQLITE_PATH), date, source=source)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "run_id": result["run_id"],
+        "score_date": result["score_date"],
+        "source": result["source"],
+        "pv_mae_kwh": result["pv_mae_kwh"],
+        "pv_rmse_kwh": result["pv_rmse_kwh"],
+        "pv_bias_kwh": result["pv_bias_kwh"],
+        "pv_daily_forecast_kwh": result["pv_daily_forecast_kwh"],
+        "pv_daily_actual_kwh": result["pv_daily_actual_kwh"],
+        "pv_daily_error_kwh": result["pv_daily_error_kwh"],
+        "pv_hourly_points": result["pv_hourly_points"],
+        "models_scored": sorted(result.get("model_scores", {}).keys()),
+    }
 
 
 @app.get("/v1/weather/models")
