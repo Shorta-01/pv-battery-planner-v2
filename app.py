@@ -609,27 +609,35 @@ def get_preset_columns(columns: tuple[str, ...], preset: str, table_kind: str) -
 
 
 def weather_code_to_icon(weather_code: int | float | None) -> str:
+    if weather_code is None:
+        return "❓"
     try:
         code = int(float(weather_code))
     except (TypeError, ValueError):
-        return "❔"
+        return "❓"
     if code == 0:
         return "☀️"
-    if code in (1, 2):
+    if code == 1:
         return "🌤️"
+    if code == 2:
+        return "⛅"
     if code == 3:
         return "☁️"
     if code in (45, 48):
         return "🌫️"
     if code in (51, 53, 55, 56, 57):
         return "🌦️"
-    if code in (61, 63, 65, 66, 67, 80, 81, 82):
+    if code in (61, 63, 65, 66, 67):
         return "🌧️"
     if code in (71, 73, 75, 77, 85, 86):
         return "🌨️"
+    if code in (80, 81):
+        return "🌦️"
+    if code == 82:
+        return "🌧️"
     if code in (95, 96, 99):
         return "⛈️"
-    return "🌥️"
+    return "❓"
 
 
 def render_pv_week_ahead_widget(items: list[dict]) -> None:
