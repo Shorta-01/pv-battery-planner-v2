@@ -606,6 +606,76 @@ def get_preset_columns(columns: tuple[str, ...], preset: str, table_kind: str) -
 
 
 @st.cache_data(show_spinner=False)
+
+
+def weather_code_to_icon(weather_code: int | float | None) -> str:
+    try:
+        code = int(float(weather_code))
+    except (TypeError, ValueError):
+        return "❔"
+    if code == 0:
+        return "☀️"
+    if code in (1, 2):
+        return "🌤️"
+    if code == 3:
+        return "☁️"
+    if code in (45, 48):
+        return "🌫️"
+    if code in (51, 53, 55, 56, 57):
+        return "🌦️"
+    if code in (61, 63, 65, 66, 67, 80, 81, 82):
+        return "🌧️"
+    if code in (71, 73, 75, 77, 85, 86):
+        return "🌨️"
+    if code in (95, 96, 99):
+        return "⛈️"
+    return "🌥️"
+
+
+def render_pv_week_ahead_widget(items: list[dict]) -> None:
+    st.markdown("### PV Week Ahead")
+    st.caption(
+        "Week-ahead PV is less certain after day 3–4. "
+        "Short-range models cover the first days; long-range models drive later days."
+    )
+
+    cols = st.columns(7, gap="small")
+    for idx, col in enumerate(cols):
+        item = items[idx] if idx < len(items) and isinstance(items[idx], dict) else {}
+        date_raw = item.get("date")
+        label = "—"
+        date_label = ""
+        try:
+            d = dt.date.fromisoformat(str(date_raw))
+            label = d.strftime("%a")
+            date_label = d.strftime("%d %b")
+        except Exception:
+            date_label = str(date_raw or "")
+
+        pv_p50 = float(pd.to_numeric(pd.Series([item.get("pv_p50_kwh")]), errors="coerce").iloc[0] or 0.0)
+        pv_p10_raw = pd.to_numeric(pd.Series([item.get("pv_p10_kwh")]), errors="coerce").iloc[0]
+        pv_p90_raw = pd.to_numeric(pd.Series([item.get("pv_p90_kwh")]), errors="coerce").iloc[0]
+        pv_range = ""
+        if not pd.isna(pv_p10_raw) and not pd.isna(pv_p90_raw):
+            pv_range = f"{float(pv_p10_raw):.1f}–{float(pv_p90_raw):.1f} kWh"
+
+        icon = weather_code_to_icon(item.get("weather_code"))
+        with col:
+            st.markdown(
+                (
+                    "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:14px;padding:0.5rem;"
+                    "background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));text-align:center;'>"
+                    f"<div style='font-size:0.72rem;opacity:0.8;'>{label}</div>"
+                    f"<div style='font-size:0.7rem;opacity:0.75;margin-top:0.05rem;'>{date_label}</div>"
+                    f"<div style='font-size:1.2rem;margin-top:0.25rem;'>{icon}</div>"
+                    f"<div style='font-size:1rem;font-weight:700;margin-top:0.2rem;'>{pv_p50:.1f} kWh</div>"
+                    f"<div style='font-size:0.68rem;opacity:0.75;margin-top:0.12rem;min-height:1.1em;'>{pv_range}</div>"
+                    "</div>"
+                ),
+                unsafe_allow_html=True,
+            )
+
+
 def summarize_model_diagnostics(weather_ensemble: dict) -> dict:
     if not isinstance(weather_ensemble, dict):
         return {"selected": 0, "ok": 0, "failed": 0, "failed_models": [], "derived_models": [], "missing_important": []}
@@ -2847,6 +2917,7 @@ if run:
             grid_import = float(metrics.get("grid_import", 0.0))
             grid_export = float(metrics.get("grid_export", 0.0))
             weather_ensemble = result.get("weather_ensemble", {}) if isinstance(result.get("weather_ensemble"), dict) else {}
+            pv_week_ahead = result.get("pv_week_ahead") if isinstance(result.get("pv_week_ahead"), list) else []
             weather_primary_model_id = result.get("weather_primary_model_id")
             weather_ensemble_table_payload = result.get("weather_ensemble_table")
             weather_by_model_payload = result.get("weather_by_model")
@@ -2876,6 +2947,8 @@ if run:
                 )
             with top_right:
                 render_pv_quality_widget(top_right, pv, pv_quality, tomorrow)
+
+            render_pv_week_ahead_widget(pv_week_ahead)
 
             if charge_note.startswith("Warning"):
                 st.warning(charge_note)

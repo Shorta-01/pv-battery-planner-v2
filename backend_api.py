@@ -118,6 +118,62 @@ class ActualsHourlyPayload(BaseModel):
     source: str = "manual_csv"
 
 
+
+
+def _build_pv_week_ahead(
+    *,
+    target_date: dt.date,
+    tz: str,
+    hourly_pv_p50: pd.Series,
+    hourly_pv_p10: pd.Series | None,
+    hourly_pv_p90: pd.Series | None,
+    weather_code_series: pd.Series | None,
+) -> list[dict[str, float | int | str | None]]:
+    start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz)
+    week: list[dict[str, float | int | str | None]] = []
+
+    p50 = pd.to_numeric(hourly_pv_p50, errors="coerce") if isinstance(hourly_pv_p50, pd.Series) else pd.Series(dtype=float)
+    p10 = pd.to_numeric(hourly_pv_p10, errors="coerce") if isinstance(hourly_pv_p10, pd.Series) else None
+    p90 = pd.to_numeric(hourly_pv_p90, errors="coerce") if isinstance(hourly_pv_p90, pd.Series) else None
+    weather_code = pd.to_numeric(weather_code_series, errors="coerce") if isinstance(weather_code_series, pd.Series) else pd.Series(dtype=float)
+
+    for day_offset in range(7):
+        day_start = start + dt.timedelta(days=day_offset)
+        day_end = day_start + dt.timedelta(days=1)
+
+        day_p50 = p50[(p50.index >= day_start) & (p50.index < day_end)] if not p50.empty else pd.Series(dtype=float)
+        day_p10 = p10[(p10.index >= day_start) & (p10.index < day_end)] if isinstance(p10, pd.Series) and not p10.empty else pd.Series(dtype=float)
+        day_p90 = p90[(p90.index >= day_start) & (p90.index < day_end)] if isinstance(p90, pd.Series) and not p90.empty else pd.Series(dtype=float)
+
+        daily_weather = weather_code[(weather_code.index >= day_start) & (weather_code.index < day_end)] if not weather_code.empty else pd.Series(dtype=float)
+        representative_code: int | None = None
+        if not daily_weather.empty:
+            noon_ts = day_start + dt.timedelta(hours=12)
+            noon_matches = daily_weather[daily_weather.index == noon_ts]
+            if not noon_matches.empty and pd.notna(noon_matches.iloc[0]):
+                representative_code = int(noon_matches.iloc[0])
+            else:
+                mode_vals = daily_weather.dropna().mode()
+                if not mode_vals.empty:
+                    representative_code = int(mode_vals.iloc[0])
+                elif daily_weather.notna().any():
+                    representative_code = int(daily_weather.dropna().iloc[0])
+
+        item: dict[str, float | int | str | None] = {
+            "date": day_start.date().isoformat(),
+            "weather_code": representative_code,
+            "pv_p50_kwh": float(day_p50.fillna(0.0).sum()) if not day_p50.empty else 0.0,
+        }
+        if isinstance(p10, pd.Series):
+            item["pv_p10_kwh"] = float(day_p10.fillna(0.0).sum()) if not day_p10.empty else 0.0
+        if isinstance(p90, pd.Series):
+            item["pv_p90_kwh"] = float(day_p90.fillna(0.0).sum()) if not day_p90.empty else 0.0
+
+        week.append(item)
+
+    return week
+
+
 class BackendState:
     def __init__(self) -> None:
         LOCAL_STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -375,6 +431,7 @@ class BackendState:
                 pv_uncertainty=bool(pv_uncertainty),
                 accuracy_mode=True,
                 fast_mode=bool(fast_mode),
+                requested_days=7,
             )
         except RuntimeError as exc:
             if "All weather model requests failed" not in str(exc):
@@ -471,7 +528,19 @@ class BackendState:
         status = "degraded" if warnings else "ok"
 
         weather = ensemble.weather_primary
-        pv = pd.DataFrame(index=ensemble.pv_ensemble_p50.index)
+        pv_week_ahead = _build_pv_week_ahead(
+            target_date=target_date,
+            tz=tz,
+            hourly_pv_p50=ensemble.pv_ensemble_p50,
+            hourly_pv_p10=ensemble.pv_ensemble_p10,
+            hourly_pv_p90=ensemble.pv_ensemble_p90,
+            weather_code_series=ensemble.weather_ensemble_table.df.get("weather_code"),
+        )
+        tomorrow_start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz)
+        tomorrow_end = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=1), dt.time(0, 0)), tz=tz)
+        tomorrow_index = pd.date_range(tomorrow_start, tomorrow_end, freq="h", inclusive="left")
+
+        pv = pd.DataFrame(index=tomorrow_index)
         pv["pv_east_kwh"] = ensemble.pv_ensemble_east_p50.reindex(pv.index).fillna(0.0)
         pv["pv_south_kwh"] = ensemble.pv_ensemble_south_p50.reindex(pv.index).fillna(0.0)
         pv["pv_total_unclipped_kwh"] = ensemble.pv_ensemble_unclipped_p50.reindex(pv.index).fillna(0.0)
@@ -643,6 +712,7 @@ class BackendState:
             "timezone": tz,
             "inputs_used": inputs_used,
             "pv_totals_kwh": pv_totals_kwh,
+            "pv_week_ahead": pv_week_ahead,
             "system_snapshot": {k: v for k, v in system_snapshot.items() if v is not None},
             "planner_version": "v2",
             "config_hash": config_hash,
@@ -668,6 +738,7 @@ class BackendState:
                 "pv_totals_kwh": pv_totals_kwh
                 if pv_uncertainty
                 else None,
+                "pv_week_ahead": pv_week_ahead,
                 "missing_vars_by_model": ensemble.missing_vars_by_model,
                 "derived_irradiance_by_model": ensemble.derived_irradiance_by_model,
                 "failed_models": ensemble.failed_models,

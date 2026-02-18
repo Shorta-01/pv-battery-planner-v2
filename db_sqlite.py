@@ -48,6 +48,7 @@ def init_db(db_path: str) -> None:
                 warnings_count INTEGER,
                 inputs_used_json TEXT,
                 weather_ensemble_json TEXT,
+                pv_week_ahead_json TEXT,
                 pv_p10_kwh REAL,
                 pv_p50_kwh REAL,
                 pv_p90_kwh REAL,
@@ -191,6 +192,7 @@ def init_db(db_path: str) -> None:
             ("warnings_count", "INTEGER"),
             ("inputs_used_json", "TEXT"),
             ("weather_ensemble_json", "TEXT"),
+            ("pv_week_ahead_json", "TEXT"),
             ("pv_p10_kwh", "REAL"),
             ("pv_p50_kwh", "REAL"),
             ("pv_p90_kwh", "REAL"),
@@ -569,6 +571,8 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
     warnings_json = json.dumps(payload.get("warnings", []))
     inputs_used_json = json.dumps(inputs_used, sort_keys=True)
     weather_ensemble_json = json.dumps(weather_ensemble, sort_keys=True)
+    pv_week_ahead = payload.get("pv_week_ahead") if isinstance(payload.get("pv_week_ahead"), list) else []
+    pv_week_ahead_json = json.dumps(pv_week_ahead, sort_keys=True)
     pv_quality = payload.get("pv_quality")
     pv_quality_text = json.dumps(pv_quality) if isinstance(pv_quality, dict) else None
     config_schema_version_raw = payload.get("config_schema_version")
@@ -591,6 +595,7 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
         "warnings_count": int(payload.get("warnings_count") or len(payload.get("warnings", []))),
         "inputs_used_json": inputs_used_json,
         "weather_ensemble_json": weather_ensemble_json,
+        "pv_week_ahead_json": pv_week_ahead_json,
         "pv_p10_kwh": _safe_float((payload.get("pv_totals_kwh") or {}).get("p10")),
         "pv_p50_kwh": _safe_float((payload.get("pv_totals_kwh") or {}).get("p50")),
         "pv_p90_kwh": _safe_float((payload.get("pv_totals_kwh") or {}).get("p90")),
@@ -613,14 +618,14 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
             INSERT OR REPLACE INTO forecast_runs (
                 run_id, target_date, run_at_utc, run_type, status, timezone,
                 charge_kw, cutoff_soc, pv_forecast_kwh, cons_forecast_kwh, warnings_count,
-                inputs_used_json, weather_ensemble_json, pv_p10_kwh, pv_p50_kwh, pv_p90_kwh,
+                inputs_used_json, weather_ensemble_json, pv_week_ahead_json, pv_p10_kwh, pv_p50_kwh, pv_p90_kwh,
                 run_duration_ms, config_schema_version,
                 soc_at_22_used, yesterday_kwh_used, planner_version,
                 config_hash, config_json, warnings_json, pv_quality, created_at_utc
             ) VALUES (
                 :run_id, :target_date, :run_at_utc, :run_type, :status, :timezone,
                 :charge_kw, :cutoff_soc, :pv_forecast_kwh, :cons_forecast_kwh, :warnings_count,
-                :inputs_used_json, :weather_ensemble_json, :pv_p10_kwh, :pv_p50_kwh, :pv_p90_kwh,
+                :inputs_used_json, :weather_ensemble_json, :pv_week_ahead_json, :pv_p10_kwh, :pv_p50_kwh, :pv_p90_kwh,
                 :run_duration_ms, :config_schema_version,
                 :soc_at_22_used, :yesterday_kwh_used, :planner_version,
                 :config_hash, :config_json, :warnings_json, :pv_quality, :created_at_utc
