@@ -2075,7 +2075,13 @@ def run_forecast_pipeline(
 
         tariff_cfg = effective_cfg.get("tariff", DEFAULT_CONFIG["tariff"])
         soc_low = compute_soc_low_timing_aware(pv, yesterday_kwh, target_date, tariff_cfg=tariff_cfg)
-        _, soc_high = compute_soc_high_headroom(pv, yesterday_kwh, target_date)
+        _, soc_high = compute_soc_high_headroom(
+            pv,
+            yesterday_kwh,
+            target_date,
+            sunrise=weather.sunrise,
+            sunset=weather.sunset,
+        )
         cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high)
         cutoff_soc = cutoff_soc_raw + (float(buffer_percent) / 100.0)
 
@@ -2125,28 +2131,44 @@ def run_forecast_pipeline(
             charge_note=charge_note,
         )
 
-def compute_soc_high_headroom(df: "pd.DataFrame", total_consumption_kwh: float, for_date: dt.date) -> Tuple[float, float]:
+def compute_soc_high_headroom(
+    df: "pd.DataFrame",
+    total_consumption_kwh: float,
+    for_date: dt.date,
+    sunrise: dt.datetime,
+    sunset: dt.datetime,
+) -> Tuple[float, float]:
     """
-    Headroom doel: hoeveel PV-overschot verwacht je BINNEN hoog-tarief uren.
+    Headroom doel: hoeveel PV-overschot verwacht je BINNEN daglichturen.
     Hoe meer overschot, hoe lager je bij start van hoog tarief wil zitten om injectie te vermijden.
     """
-    expensive_windows = get_expensive_windows(for_date)
-    if not expensive_windows:
-        return 0.0, MIN_SOC
+    _ = for_date
+
+    _, _, daylight_mask = normalize_daylight_window(df.index, sunrise, sunset)
+    if not bool(daylight_mask.any()):
+        return 0.0, 1.0
 
     loads = build_hourly_load_series(df.index, total_consumption_kwh)
-    surplus_sum = 0.0
-    for ts in df.index:
-        if not in_any_window(ts.time(), expensive_windows):
-            continue
-        pv = float(df.loc[ts, "pv_total_kwh"])
-        load = float(loads.loc[ts])
-        surplus_sum += max(0.0, pv - load)
+    dt_h = timestep_hours(df.index)
+    surplus_sum_ac = 0.0
+    stored_kwh_sum = 0.0
 
-    storable_kwh = surplus_sum * BATTERY_PV_CHARGE_EFF
-    soc_high = 1.0 - (storable_kwh / BATTERY_KWH)
+    for ts in df.index:
+        if not bool(daylight_mask.loc[ts]):
+            continue
+
+        pv_ac_kwh = float(df.loc[ts, "pv_total_kwh"])
+        load_ac_kwh = float(loads.loc[ts])
+        surplus_ac_kwh = max(0.0, pv_ac_kwh - load_ac_kwh)
+        surplus_sum_ac += surplus_ac_kwh
+
+        stored_candidate_kwh = surplus_ac_kwh * BATTERY_PV_CHARGE_EFF
+        max_store_kwh = float(BATTERY_MAX_CHARGE_KW) * float(dt_h.loc[ts])
+        stored_kwh_sum += min(stored_candidate_kwh, max_store_kwh)
+
+    soc_high = 1.0 - (stored_kwh_sum / BATTERY_KWH)
     soc_high = min(max(soc_high, MIN_SOC), 1.0)
-    return surplus_sum, soc_high
+    return surplus_sum_ac, soc_high
 
 
 def choose_cutoff_soc(for_date: dt.date, soc_low: float, soc_high: float) -> Tuple[float, str]:
@@ -2156,7 +2178,10 @@ def choose_cutoff_soc(for_date: dt.date, soc_low: float, soc_high: float) -> Tup
 
     if soc_low <= soc_high + 1e-9:
         return soc_low, "OK: bridge expensive hours and keep headroom to reduce export."
-    return soc_low, "CONFLICT: both high deficit and high PV surplus. Priority is bridging expensive hours safely."
+    return soc_high, (
+        "CONFLICT: required SOC to bridge expensive hours is higher than PV headroom target. "
+        "Using headroom target to avoid morning PV export; expect some grid import later if PV underperforms."
+    )
 
 
 def plan_charge_power(soc_start: float, soc_cutoff: float, charge_date: dt.date, user_cap_kw: Optional[float] = None) -> Tuple[float, float, str, float]:
