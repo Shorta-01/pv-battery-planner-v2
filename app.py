@@ -1000,9 +1000,7 @@ def _pv_quality_signal_html(label: str, color: str, tooltip: str) -> str:
         )
 
     return (
-        f"<span title=\"{tip}\" style='display:inline-flex;gap:2px;align-items:flex-end;"
-        "padding:2px 6px;border-radius:999px;background:rgba(255,255,255,0.05);"
-        "border:1px solid rgba(255,255,255,0.10);'>"
+        f"<span title=\"{tip}\" style='display:inline-flex;gap:2px;align-items:flex-end;'>"
         + "".join(bars)
         + "</span>"
     )
@@ -1018,9 +1016,6 @@ def render_pv_quality_widget(
     tomorrow_source_days: int | float | str | None = None,
 ) -> None:
     _ = pv_df
-    fallback_note = ""
-    if pv_quality_dict.get("is_fallback"):
-        fallback_note = "<div style='font-size:0.72rem;opacity:0.75;margin-top:0.25rem;'>(fallback scoring)</div>"
 
     score = int(float((pv_quality_dict or {}).get("score", 0)))
     score = min(100, max(0, score))
@@ -1058,10 +1053,8 @@ def render_pv_quality_widget(
 
     summary_start, summary_end = (offpeak_windows[0] if offpeak_windows else ("00:00", "24:00"))
     offpeak_summary, peak_summary = make_summary_lines(summary_start, summary_end)
-    summary_html = (
-        f"<div style='margin-top:0.30rem;font-size:0.70rem;opacity:0.92;'>{offpeak_summary}</div>"
-        + (f"<div style='font-size:0.70rem;opacity:0.86;'>{peak_summary}</div>" if peak_summary else "")
-    )
+    summary_line = offpeak_summary if not peak_summary else f"{offpeak_summary} - {peak_summary}"
+    summary_html = f"<div style='margin-top:0.30rem;font-size:0.70rem;opacity:0.92;'>{summary_line}</div>"
 
     savings_total = pv_quality_dict.get("savings_eur_total")
     hourly = pv_quality_dict.get("hourly_savings_eur_tomorrow")
@@ -1089,7 +1082,7 @@ def render_pv_quality_widget(
             "<div style='margin-top:0.65rem;padding-top:0.55rem;border-top:1px solid rgba(255,255,255,0.10);'>"
             "<div style='display:flex;align-items:center;justify-content:space-between;'>"
             "<div style='font-size:0.72rem;opacity:0.85;text-transform:uppercase;letter-spacing:0.06em;'>"
-            "Savings (no battery vs battery plan)"
+            "Savings"
             "</div>"
             f"<div style='font-size:0.95rem;font-weight:800;color:{pill_color};'>{pill}</div>"
             "</div>"
@@ -1102,7 +1095,7 @@ def render_pv_quality_widget(
             + "".join(bars)
             + "</div>"
             "<div style='margin-top:0.22rem;font-size:0.68rem;opacity:0.75;'>"
-            "Hourly savings for tomorrow (00–24). Total includes tonight 22–24 charging."
+            "Hourly savings (00–24). Total includes tonight 22–24 charging."
             "</div>"
             "</div>"
         )
@@ -1177,7 +1170,6 @@ def render_pv_quality_widget(
             )
             + "</div>"
             "</div>"
-            f"{fallback_note}"
         ),
         unsafe_allow_html=True,
     )
