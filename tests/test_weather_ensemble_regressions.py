@@ -16,6 +16,15 @@ def hourly_index() -> pd.DatetimeIndex:
     return pd.date_range(pd.Timestamp("2026-01-10 00:00:00", tz="Europe/Brussels"), periods=24, freq="h")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_provider_cache(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setattr(we, "PROVIDER_CACHE_DIR", tmp_path / "provider_cache")
+    monkeypatch.setattr(we, "PROVIDER_CIRCUIT_STATE_PATH", we.PROVIDER_CACHE_DIR / "circuit_breaker_state.json")
+    we._WEATHER_CACHE.clear()
+    we._CIRCUIT_BREAKER_STATE.clear()
+    we._CIRCUIT_BREAKER_LOADED = False
+
+
 def test_weighted_ensemble_renormalizes_per_timestamp(hourly_index: pd.DatetimeIndex) -> None:
     a = pd.Series([1.0, 2.0], index=hourly_index[:2])
     b = pd.Series([3.0, 4.0], index=hourly_index[:2])
@@ -55,7 +64,7 @@ def test_build_ensemble_mean_ignores_missing_model_hours(monkeypatch: pytest.Mon
     def fake_weather(model_id, *_args, **_kwargs):
         out = weather_df.copy()
         out["temp_air_c"] = 10.0 if model_id == "knmi_harmonie_arome" else 11.0
-        return core.ForecastResult(df=out, sunrise=hourly_index[7].to_pydatetime(), sunset=hourly_index[17].to_pydatetime()), [], False
+        return core.ForecastResult(df=out, sunrise=hourly_index[7].to_pydatetime(), sunset=hourly_index[17].to_pydatetime()), [], False, {"source": "live", "live_failed_used_cached": False}
 
     values = {
         "knmi_harmonie_arome": [1.0, 2.0, 3.0],
@@ -117,7 +126,7 @@ def test_fast_mode_limits_models(monkeypatch: pytest.MonkeyPatch, hourly_index: 
         calls.append(model_id)
         out = weather_df.copy()
         out["temp_air_c"] = 10.0 if model_id == "ecmwf_ifs" else 11.0
-        return core.ForecastResult(df=out, sunrise=hourly_index[7].to_pydatetime(), sunset=hourly_index[17].to_pydatetime()), [], False
+        return core.ForecastResult(df=out, sunrise=hourly_index[7].to_pydatetime(), sunset=hourly_index[17].to_pydatetime()), [], False, {"source": "live", "live_failed_used_cached": False}
 
     def fake_build_pv(df, _loc, tz=None):
         s = pd.Series([1.0] * len(df.index), index=df.index)
@@ -165,7 +174,7 @@ def test_fetch_open_meteo_sets_derived_flag_from_missing_dni_dhi(monkeypatch: py
     }
 
     monkeypatch.setattr(we, "_request_open_meteo", lambda *args, **kwargs: payload_with_native)
-    _, _, derived = we.fetch_open_meteo_weather(
+    _, _, derived, _meta = we.fetch_open_meteo_weather(
         model_id="ecmwf_ifs",
         loc=core.Location(name="x", latitude=50.8, longitude=4.3),
         tz="Europe/Brussels",
@@ -184,7 +193,7 @@ def test_fetch_open_meteo_sets_derived_flag_from_missing_dni_dhi(monkeypatch: py
         "daily": {"sunrise": [hourly_index[7].isoformat()], "sunset": [hourly_index[17].isoformat()]},
     }
     monkeypatch.setattr(we, "_request_open_meteo", lambda *args, **kwargs: payload_missing)
-    _, _, derived_missing = we.fetch_open_meteo_weather(
+    _, _, derived_missing, _meta = we.fetch_open_meteo_weather(
         model_id="ecmwf_ifs",
         loc=core.Location(name="x", latitude=50.8, longitude=4.3),
         tz="Europe/Brussels",
@@ -211,7 +220,7 @@ def test_fetch_open_meteo_partially_missing_dni_dhi_backfills_gaps(monkeypatch: 
 
     we._WEATHER_CACHE.clear()
     monkeypatch.setattr(we, "_request_open_meteo", lambda *args, **kwargs: payload_partial)
-    forecast, _, derived = we.fetch_open_meteo_weather(
+    forecast, _, derived, _meta = we.fetch_open_meteo_weather(
         model_id="ecmwf_ifs",
         loc=core.Location(name="x", latitude=50.8, longitude=4.3),
         tz="Europe/Brussels",
@@ -242,7 +251,7 @@ def test_fetch_open_meteo_adds_ui_alias_columns(monkeypatch: pytest.MonkeyPatch,
 
     we._WEATHER_CACHE.clear()
     monkeypatch.setattr(we, "_request_open_meteo", lambda *args, **kwargs: payload)
-    forecast, _, _ = we.fetch_open_meteo_weather(
+    forecast, _, _, _meta = we.fetch_open_meteo_weather(
         model_id="knmi_harmonie_arome",
         loc=core.Location(name="x", latitude=50.8, longitude=4.3),
         tz="Europe/Brussels",
@@ -284,7 +293,6 @@ def test_fetch_open_meteo_knmi_requests_dni_dhi_when_supported(monkeypatch: pyte
         calls.append(params)
         return payload
 
-    we._WEATHER_CACHE.clear()
     monkeypatch.setattr(we, "_request_open_meteo", fake_request)
 
     we.fetch_open_meteo_weather(
@@ -324,10 +332,9 @@ def test_fetch_open_meteo_retries_404_with_forecast_endpoint(monkeypatch: pytest
             )
         return payload
 
-    we._WEATHER_CACHE.clear()
     monkeypatch.setattr(we, "_request_open_meteo", fake_request)
 
-    forecast, _, derived = we.fetch_open_meteo_weather(
+    forecast, _, derived, _meta = we.fetch_open_meteo_weather(
         model_id="knmi_harmonie_arome",
         loc=core.Location(name="x", latitude=50.8, longitude=4.3),
         tz="Europe/Brussels",
@@ -372,7 +379,7 @@ def test_fetch_open_meteo_retries_400_with_forecast_endpoint_for_model_support_e
     we._WEATHER_CACHE.clear()
     monkeypatch.setattr(we, "_request_open_meteo", fake_request)
 
-    forecast, _, derived = we.fetch_open_meteo_weather(
+    forecast, _, derived, _meta = we.fetch_open_meteo_weather(
         model_id="knmi_harmonie_arome",
         loc=core.Location(name="x", latitude=50.8, longitude=4.3),
         tz="Europe/Brussels",
@@ -387,7 +394,7 @@ def test_fetch_open_meteo_retries_400_with_forecast_endpoint_for_model_support_e
     assert forecast.df["ghi_wm2"].iloc[0] == pytest.approx(100.0)
 
 
-def test_fetch_open_meteo_does_not_retry_400_for_invalid_request(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fetch_open_meteo_does_not_retry_400_for_invalid_request(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     calls: list[tuple[str, str | None]] = []
 
     def fake_request(url: str, params: dict[str, object], model_id: str):
@@ -504,7 +511,7 @@ def test_build_ensemble_surfaces_failed_model_reasons(monkeypatch: pytest.Monkey
     def fake_weather(model_id, *_args, **_kwargs):
         if model_id == "dwd_icon_d2":
             raise we.WeatherProviderError(category="rate_limited", status=429, message="rate limited")
-        return core.ForecastResult(df=weather_df.copy(), sunrise=hourly_index[7].to_pydatetime(), sunset=hourly_index[17].to_pydatetime()), [], False
+        return core.ForecastResult(df=weather_df.copy(), sunrise=hourly_index[7].to_pydatetime(), sunset=hourly_index[17].to_pydatetime()), [], False, {"source": "live", "live_failed_used_cached": False}
 
     def fake_build_pv(df, _loc, tz=None):
         s = pd.Series([1.0] * len(df.index), index=df.index)
@@ -592,7 +599,7 @@ def test_fetch_open_meteo_logs_structured_success(monkeypatch: pytest.MonkeyPatc
     assert "latitude=50.8" not in msg
 
 
-def test_fetch_open_meteo_logs_structured_failure(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+def test_fetch_open_meteo_logs_structured_failure(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, tmp_path) -> None:
     def fake_request(_url: str, _params: dict[str, object], model_id: str):
         raise we.WeatherProviderError(
             category="rate_limited",
@@ -645,7 +652,7 @@ def test_irradiance_anomaly_excludes_model_and_keeps_ensemble_running(
         else:
             out["ghi_wm2"] = 50.0
             out["shortwave_radiation"] = 50.0
-        return core.ForecastResult(df=out, sunrise=hourly_index[7].to_pydatetime(), sunset=hourly_index[17].to_pydatetime()), [], False
+        return core.ForecastResult(df=out, sunrise=hourly_index[7].to_pydatetime(), sunset=hourly_index[17].to_pydatetime()), [], False, {"source": "live", "live_failed_used_cached": False}
 
     def fake_build_pv(df, _loc, tz=None):
         s = pd.Series([1.0] * len(df.index), index=df.index)
@@ -679,3 +686,119 @@ def test_irradiance_anomaly_excludes_model_and_keeps_ensemble_running(
     assert "irradiance anomaly" in out.failed_model_reasons["dwd_icon_d2"]["message"]
     assert out.selected_models == ["knmi_harmonie_arome"]
     assert out.pv_ensemble_p50.sum() > 0
+
+
+def test_fetch_open_meteo_uses_last_good_cache_when_live_fetch_fails(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex, tmp_path) -> None:
+    payload = {
+        "hourly": {
+            "time": [ts.isoformat() for ts in hourly_index],
+            "temperature_2m": [11.0] * 24,
+            "wind_speed_10m": [1.0] * 24,
+            "shortwave_radiation": [101.0] * 24,
+            "direct_normal_irradiance": [50.0] * 24,
+            "diffuse_radiation": [20.0] * 24,
+            "cloud_cover": [25.0] * 24,
+        },
+        "daily": {"sunrise": [hourly_index[7].isoformat()], "sunset": [hourly_index[17].isoformat()]},
+    }
+
+    monkeypatch.setattr(we, "PROVIDER_CACHE_DIR", tmp_path / "provider_cache")
+    monkeypatch.setattr(we, "PROVIDER_CIRCUIT_STATE_PATH", we.PROVIDER_CACHE_DIR / "circuit_breaker_state.json")
+    we._WEATHER_CACHE.clear()
+    we._CIRCUIT_BREAKER_STATE.clear()
+    we._CIRCUIT_BREAKER_LOADED = False
+
+    monkeypatch.setattr(we, "_request_open_meteo", lambda *_args, **_kwargs: payload)
+    forecast, _, _, first_meta = we.fetch_open_meteo_weather(
+        model_id="ecmwf_ifs",
+        loc=core.Location(name="x", latitude=50.8, longitude=4.3),
+        tz="Europe/Brussels",
+        target_date=dt.date(2026, 1, 10),
+    )
+    assert first_meta["source"] == "live"
+    assert forecast.df["ghi_wm2"].iloc[0] == pytest.approx(101.0)
+
+    we._WEATHER_CACHE.clear()
+
+    def fail_request(*_args, **_kwargs):
+        raise we.WeatherProviderError(category="provider_down", status=503, message="provider down")
+
+    monkeypatch.setattr(we, "_request_open_meteo", fail_request)
+    forecast_cached, _, _, second_meta = we.fetch_open_meteo_weather(
+        model_id="ecmwf_ifs",
+        loc=core.Location(name="x", latitude=50.8, longitude=4.3),
+        tz="Europe/Brussels",
+        target_date=dt.date(2026, 1, 10),
+    )
+
+    assert second_meta["source"] == "provider_cache"
+    assert second_meta["live_failed_used_cached"] is True
+    assert forecast_cached.df["ghi_wm2"].iloc[0] == pytest.approx(101.0)
+
+
+def test_circuit_breaker_opens_and_skips_live_calls(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex, tmp_path) -> None:
+    monkeypatch.setattr(we, "PROVIDER_CACHE_DIR", tmp_path / "provider_cache")
+    monkeypatch.setattr(we, "PROVIDER_CIRCUIT_STATE_PATH", we.PROVIDER_CACHE_DIR / "circuit_breaker_state.json")
+    we._WEATHER_CACHE.clear()
+    we._CIRCUIT_BREAKER_STATE.clear()
+    we._CIRCUIT_BREAKER_LOADED = False
+
+    run_hour = 12
+    monkeypatch.setattr(
+        we.dt,
+        "datetime",
+        type(
+            "FixedDateTime",
+            (dt.datetime,),
+            {
+                "now": classmethod(lambda cls, tz=None: dt.datetime(2026, 1, 10, run_hour, 0, tzinfo=tz or dt.timezone.utc)),
+            },
+        ),
+    )
+
+    payload = {
+        "hourly": {
+            "time": [ts.isoformat() for ts in hourly_index],
+            "temperature_2m": [10.0] * 24,
+            "wind_speed_10m": [1.0] * 24,
+            "shortwave_radiation": [90.0] * 24,
+            "direct_normal_irradiance": [45.0] * 24,
+            "diffuse_radiation": [18.0] * 24,
+            "cloud_cover": [20.0] * 24,
+        },
+        "daily": {"sunrise": [hourly_index[7].isoformat()], "sunset": [hourly_index[17].isoformat()]},
+    }
+
+    we._store_provider_cache("ecmwf_ifs", dt.date(2026, 1, 10), run_hour, payload)
+
+    calls = {"count": 0}
+
+    def fail_request(*_args, **_kwargs):
+        calls["count"] += 1
+        raise we.WeatherProviderError(category="provider_down", status=503, message="provider down")
+
+    monkeypatch.setattr(we, "_request_open_meteo", fail_request)
+
+    for _ in range(we.CIRCUIT_BREAKER_FAILURE_THRESHOLD):
+        we._WEATHER_CACHE.clear()
+        _, _, _, meta = we.fetch_open_meteo_weather(
+            model_id="ecmwf_ifs",
+            loc=core.Location(name="x", latitude=50.8, longitude=4.3),
+            tz="Europe/Brussels",
+            target_date=dt.date(2026, 1, 10),
+        )
+        assert meta["source"] == "provider_cache"
+
+    expected_live_calls = we.CIRCUIT_BREAKER_FAILURE_THRESHOLD
+    assert calls["count"] == expected_live_calls
+
+    we._WEATHER_CACHE.clear()
+    _, _, _, meta = we.fetch_open_meteo_weather(
+        model_id="ecmwf_ifs",
+        loc=core.Location(name="x", latitude=50.8, longitude=4.3),
+        tz="Europe/Brussels",
+        target_date=dt.date(2026, 1, 10),
+    )
+    assert meta["source"] == "provider_cache"
+    assert meta["circuit_breaker_open"] is True
+    assert calls["count"] == expected_live_calls
