@@ -609,13 +609,39 @@ def get_preset_columns(columns: tuple[str, ...], preset: str, table_kind: str) -
 @st.cache_data(show_spinner=False)
 
 
-def weather_code_to_icon(weather_code: int | float | None) -> str:
+def weather_code_to_icon(weather_code: int | float | str | None) -> str:
     if weather_code is None:
-        return "❓"
+        return "🌥️"
+
+    if isinstance(weather_code, str):
+        token = weather_code.strip().lower()
+        symbol_map = {
+            "clear": "☀️",
+            "clearsky": "☀️",
+            "sunny": "☀️",
+            "mainly_clear": "🌤️",
+            "partly_cloudy": "⛅",
+            "partlycloudy": "⛅",
+            "cloudy": "☁️",
+            "overcast": "☁️",
+            "fog": "🌫️",
+            "drizzle": "🌦️",
+            "rain": "🌧️",
+            "snow": "🌨️",
+            "sleet": "🌨️",
+            "thunder": "⛈️",
+        }
+        if token in symbol_map:
+            return symbol_map[token]
+
+        for key, value in symbol_map.items():
+            if key in token:
+                return value
+
     try:
         code = int(float(weather_code))
     except (TypeError, ValueError):
-        return "❓"
+        return "🌥️"
     if code == 0:
         return "☀️"
     if code == 1:
@@ -638,7 +664,7 @@ def weather_code_to_icon(weather_code: int | float | None) -> str:
         return "🌧️"
     if code in (95, 96, 99):
         return "⛈️"
-    return "❓"
+    return "🌥️"
 
 
 def render_pv_week_ahead_widget(items: list[dict]) -> None:

@@ -30,7 +30,15 @@ def test_weather_code_to_icon_common_codes_are_non_empty() -> None:
 def test_weather_code_to_icon_none_and_unknown() -> None:
     weather_code_to_icon = _load_weather_code_to_icon()
 
-    assert weather_code_to_icon(None) == "❓"
-    assert weather_code_to_icon(12345) == "❓"
+    assert weather_code_to_icon(None) == "🌥️"
+    assert weather_code_to_icon(12345) == "🌥️"
     assert weather_code_to_icon("0") == "☀️"
     assert weather_code_to_icon(1.0) == "🌤️"
+
+
+def test_weather_code_to_icon_symbolic_strings() -> None:
+    weather_code_to_icon = _load_weather_code_to_icon()
+
+    assert weather_code_to_icon("rain") == "🌧️"
+    assert weather_code_to_icon("partly_cloudy") == "⛅"
+    assert weather_code_to_icon("unknown") == "🌥️"
