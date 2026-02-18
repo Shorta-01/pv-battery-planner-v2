@@ -112,6 +112,7 @@ def get_selected_weather_models(valid_model_ids: set[str]) -> list[str]:
 LOCAL_STATE_DIR = Path("local_state")
 API_BASE_URL = os.getenv("PVBP_BACKEND_URL", "http://127.0.0.1:8787")
 API_TOKEN_FILE = LOCAL_STATE_DIR / "api_token.txt"
+APP_DEBUG = os.getenv("DEBUG", "").strip() in ("1", "true", "True", "yes", "YES")
 
 st.session_state.setdefault("history_all_runs", False)
 st.session_state.setdefault("history_show_run_at", False)
@@ -1021,7 +1022,8 @@ def render_pv_quality_widget(
     if pv_quality_dict.get("is_fallback"):
         fallback_note = "<div style='font-size:0.72rem;opacity:0.75;margin-top:0.25rem;'>(fallback scoring)</div>"
 
-    score = int(pv_quality_dict["score"])
+    score = int(float((pv_quality_dict or {}).get("score", 0)))
+    score = min(100, max(0, score))
     ratio_percent = max(0.0, min(float(pv_quality_dict.get("ratio", 0.0)) * 100.0, 100.0))
 
     pv_label = str((pv_quality_dict or {}).get("label") or "Mixed")
@@ -1166,6 +1168,13 @@ def render_pv_quality_widget(
             "</div>"
             + summary_html
             + savings_html
+            + (
+                f"<div style='margin-top:0.30rem;font-size:0.68rem;opacity:0.78;'>"
+                f"DEBUG PV score: {score} label: {pv_label} ratio: {ratio_percent:.1f}%"
+                "</div>"
+                if APP_DEBUG
+                else ""
+            )
             + "</div>"
             "</div>"
             f"{fallback_note}"
