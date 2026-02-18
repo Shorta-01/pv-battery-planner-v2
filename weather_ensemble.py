@@ -17,6 +17,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 import planner_core as core
+import db_sqlite
 
 DEFAULT_ACCURACY_MODELS = ["knmi_harmonie_arome", "dwd_icon_d2", "ecmwf_ifs"]
 DEFAULT_WEIGHTED_BELGIUM = {
@@ -724,18 +725,80 @@ def fetch_open_meteo_weather(
     return forecast, list(set(missing_vars)), bool(derived_irradiance)
 
 
-def _weighted_ensemble(series_map: dict[str, pd.Series], selected_models: list[str]) -> tuple[pd.Series, dict[str, float] | None]:
-    weighted_subset = {m: DEFAULT_WEIGHTED_BELGIUM[m] for m in selected_models if m in DEFAULT_WEIGHTED_BELGIUM}
+def _dynamic_weight_settings() -> dict[str, Any]:
+    cfg = core.get_effective_config()
+    weather_cfg = cfg.get("weather") if isinstance(cfg, dict) else {}
+    if not isinstance(weather_cfg, dict):
+        return {}
+    dynamic_cfg = weather_cfg.get("dynamic_weights")
+    return dynamic_cfg if isinstance(dynamic_cfg, dict) else {}
+
+
+def _load_dynamic_weights(selected_models: list[str]) -> dict[str, float] | None:
+    settings = _dynamic_weight_settings()
+    if not bool(settings.get("enabled", False)):
+        return None
+
+    lookback_days = max(int(settings.get("lookback_days", 30)), 1)
+    min_days = max(int(settings.get("min_days", 10)), 1)
+    epsilon = 1e-6
+    db_path = str(settings.get("db_path") or "local_state/planner_history.sqlite")
+
+    try:
+        model_stats = db_sqlite.fetch_recent_model_mae_scores(db_path, lookback_days=lookback_days)
+    except Exception as exc:
+        _LOGGER.debug("[weather_ensemble] dynamic_weights disabled err=%s", exc)
+        return None
+
+    mae_by_model: dict[str, float] = {}
+    for model_id in sorted(selected_models):
+        stats = model_stats.get(model_id) if isinstance(model_stats, dict) else None
+        if not isinstance(stats, dict):
+            continue
+        days = float(stats.get("days") or 0.0)
+        mae = stats.get("pv_mae_kwh")
+        if days < min_days:
+            continue
+        try:
+            mae_f = float(mae)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(mae_f) or mae_f < 0.0:
+            continue
+        mae_by_model[model_id] = mae_f
+
+    if not mae_by_model:
+        return None
+
+    inv = {model_id: 1.0 / (mae + epsilon) for model_id, mae in mae_by_model.items()}
+    total = float(sum(inv.values()))
+    if total <= 0.0:
+        return None
+    return {model_id: weight / total for model_id, weight in inv.items()}
+
+
+def _weighted_ensemble(
+    series_map: dict[str, pd.Series],
+    selected_models: list[str],
+    dynamic_weights: dict[str, float] | None = None,
+) -> tuple[pd.Series, dict[str, float] | None]:
+    weighted_subset = dict(dynamic_weights or {})
+    if not weighted_subset:
+        weighted_subset = {m: DEFAULT_WEIGHTED_BELGIUM[m] for m in selected_models if m in DEFAULT_WEIGHTED_BELGIUM}
     if not weighted_subset:
         return pd.concat(series_map.values(), axis=1).mean(axis=1), None
     total = sum(weighted_subset.values())
+    if total <= 0:
+        return pd.concat(series_map.values(), axis=1).mean(axis=1), None
     normalized = {m: w / total for m, w in weighted_subset.items()}
-    matrix = pd.DataFrame({m: series_map[m] for m in normalized})
+    matrix = pd.DataFrame({m: series_map[m] for m in normalized if m in series_map})
+    if matrix.empty:
+        return pd.concat(series_map.values(), axis=1).mean(axis=1), None
     weighted_values = matrix.mul(pd.Series(normalized), axis=1)
     numerator = weighted_values.sum(axis=1, skipna=True)
     denominator = matrix.notna().mul(pd.Series(normalized), axis=1).sum(axis=1)
     out = numerator.div(denominator.where(denominator > 0))
-    return out.astype(float), normalized
+    return out.astype(float), {m: normalized[m] for m in matrix.columns}
 
 
 def build_weather_ensemble_table(
@@ -927,7 +990,8 @@ def build_ensemble_forecast(
         if ensemble_method == "mean":
             return matrix.mean(axis=1, skipna=True), None
         model_keys = list(model_series.keys())
-        return _weighted_ensemble(model_series, model_keys)
+        dynamic_weights = _load_dynamic_weights(model_keys)
+        return _weighted_ensemble(model_series, model_keys, dynamic_weights=dynamic_weights)
 
     ensemble_ac_p50, weights_used = _ensemble_column("pv_total_kwh")
     ensemble_unclipped_p50, _ = _ensemble_column("pv_total_unclipped_kwh")

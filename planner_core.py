@@ -199,6 +199,14 @@ DEFAULT_CONFIG = {
             [["00:00", "24:00"]],  # Sunday
         ]
     },
+    "weather": {
+        "dynamic_weights": {
+            "enabled": False,
+            "lookback_days": 30,
+            "min_days": 10,
+            "db_path": "local_state/planner_history.sqlite",
+        }
+    },
     "system": {
         "enable_invariant_checks": ENABLE_INVARIANT_CHECKS,
     },
@@ -318,6 +326,7 @@ def validate_config(cfg: dict) -> None:
     load_profile = cfg["load_profile"]
     tariff = cfg["tariff"]
     system = cfg.get("system", {})
+    weather = cfg.get("weather", {})
 
     if not (-90.0 <= float(location["latitude"]) <= 90.0):
         raise ValueError("location.latitude must be in [-90, 90].")
@@ -416,6 +425,17 @@ def validate_config(cfg: dict) -> None:
     enable_invariant_checks = system.get("enable_invariant_checks", ENABLE_INVARIANT_CHECKS)
     if not isinstance(enable_invariant_checks, bool):
         raise ValueError("system.enable_invariant_checks must be a boolean.")
+
+    dynamic_weights = weather.get("dynamic_weights", {}) if isinstance(weather, dict) else {}
+    enabled = dynamic_weights.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("weather.dynamic_weights.enabled must be a boolean.")
+    lookback_days = int(dynamic_weights.get("lookback_days", 30))
+    min_days = int(dynamic_weights.get("min_days", 10))
+    if lookback_days <= 0:
+        raise ValueError("weather.dynamic_weights.lookback_days must be > 0.")
+    if min_days <= 0:
+        raise ValueError("weather.dynamic_weights.min_days must be > 0.")
 
 
 def apply_config(cfg: dict) -> None:
