@@ -306,8 +306,8 @@ def inject_tooltip_css() -> None:
         .pvbp-badge {
             display: inline-flex;
             align-items: center;
-            gap: 6px;
-            padding: 2px 8px;
+            justify-content: center;
+            padding: 2px 6px;
             border-radius: 999px;
             border: 1px solid rgba(255,255,255,0.14);
             background: rgba(255,255,255,0.06);
@@ -321,11 +321,6 @@ def inject_tooltip_css() -> None:
             font-size: 14px;
             line-height: 1;
         }
-        .pvbp-badge-label {
-            font-weight: 600;
-            letter-spacing: 0.02em;
-            opacity: 0.95;
-        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -336,12 +331,11 @@ def _normalize_badge_icon(icon: str) -> str:
     return BADGE_ALIASES.get(icon, icon)
 
 
-def badge_chip(icon: str, label: str, tip: str) -> str:
+def badge_chip(icon: str, tip: str) -> str:
     title_attr = f' title="{html.escape(tip)}"' if tip else ""
     return (
         f'<span class="pvbp-badge"{title_attr}>'
         f'<span class="pvbp-badge-icon">{html.escape(icon)}</span>'
-        f'<span class="pvbp-badge-label">{html.escape(label)}</span>'
         "</span>"
     )
 
@@ -466,7 +460,7 @@ def render_weather_models(
                     if not meta:
                         continue
                     badge_html.append(
-                        badge_chip(icon=icon, label=str(meta.get("label") or ""), tip=str(meta.get("tip") or ""))
+                        badge_chip(icon=icon, tip=str(meta.get("tip") or ""))
                     )
 
                 st.markdown(f"<div class='wm-badges'>{''.join(badge_html)}</div>", unsafe_allow_html=True)
