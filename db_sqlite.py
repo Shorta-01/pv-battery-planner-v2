@@ -152,6 +152,21 @@ def init_db(db_path: str) -> None:
                 export_error_kwh REAL,
                 created_at_utc TEXT NOT NULL
             );
+                        CREATE TABLE IF NOT EXISTS backtest_daily_scores (
+                score_date TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                pv_forecast_kwh REAL,
+                pv_actual_kwh REAL,
+                pv_mae_kwh REAL,
+                pv_rmse_kwh REAL,
+                pv_bias_kwh REAL,
+                pv_daily_error_kwh REAL,
+                pv_hourly_points INTEGER,
+                created_at_utc TEXT NOT NULL,
+                PRIMARY KEY (score_date, model_id, source)
+            );
+            CREATE INDEX IF NOT EXISTS idx_backtest_daily_scores_date ON backtest_daily_scores (score_date);
             """
         )
 
@@ -1170,6 +1185,57 @@ def upsert_daily_score(db_path: str, payload: dict[str, Any]) -> None:
         conn.commit()
 
 
+
+
+def upsert_backtest_daily_score(db_path: str, payload: dict[str, Any]) -> None:
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO backtest_daily_scores (
+                score_date, model_id, source,
+                pv_forecast_kwh, pv_actual_kwh,
+                pv_mae_kwh, pv_rmse_kwh, pv_bias_kwh, pv_daily_error_kwh,
+                pv_hourly_points, created_at_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload.get("score_date"),
+                payload.get("model_id"),
+                payload.get("source") or "backtest",
+                payload.get("pv_forecast_kwh"),
+                payload.get("pv_actual_kwh"),
+                payload.get("pv_mae_kwh"),
+                payload.get("pv_rmse_kwh"),
+                payload.get("pv_bias_kwh"),
+                payload.get("pv_daily_error_kwh"),
+                payload.get("pv_hourly_points"),
+                payload.get("created_at_utc") or _iso_utc_now(),
+            ),
+        )
+        conn.commit()
+
+
+def fetch_backtest_daily_scores(
+    db_path: str,
+    *,
+    start_date: str,
+    end_date: str,
+    source: str = "backtest",
+) -> list[dict[str, Any]]:
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT score_date, model_id, source,
+                   pv_forecast_kwh, pv_actual_kwh,
+                   pv_mae_kwh, pv_rmse_kwh, pv_bias_kwh, pv_daily_error_kwh,
+                   pv_hourly_points, created_at_utc
+            FROM backtest_daily_scores
+            WHERE score_date >= ? AND score_date <= ? AND source = ?
+            ORDER BY score_date ASC, model_id ASC
+            """,
+            (start_date, end_date, source),
+        ).fetchall()
+    return [dict(r) for r in rows]
 def fetch_recent_model_mae_scores(
     db_path: str,
     *,
