@@ -275,3 +275,42 @@ def test_fetch_full_run_by_id_returns_stored_run_details(tmp_path):
     assert len(full["soc"]["data"]) == 1
 
     assert fetch_full_run_by_id(str(db_path), "does-not-exist") is None
+
+
+def test_insert_forecast_run_persists_run_events(tmp_path):
+    db_path = tmp_path / "planner.sqlite"
+    init_db(str(db_path))
+
+    payload = {
+        "run_id": "run-events-1",
+        "target_date": "2026-03-01",
+        "run_at_utc": "2026-02-29T23:00:00+00:00",
+        "warnings": ["derived irradiance used: ecmwf_ifs"],
+        "run_events": [
+            {
+                "ts_utc": "2026-02-29T23:00:01+00:00",
+                "level": "warning",
+                "category": "irradiance_anomaly",
+                "code": "derived_irradiance",
+                "message": "derived irradiance used: ecmwf_ifs",
+                "context": {"model_id": "ecmwf_ifs"},
+            }
+        ],
+        "metrics": {"pv_forecast_kwh": 1.0, "cons_forecast_kwh": 2.0},
+    }
+
+    insert_forecast_run(str(db_path), payload)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT level, category, code, message, context_json FROM run_events WHERE run_id = ?",
+            ("run-events-1",),
+        ).fetchone()
+
+    assert row is not None
+    assert row["level"] == "warning"
+    assert row["category"] == "irradiance_anomaly"
+    assert row["code"] == "derived_irradiance"
+    assert row["message"] == "derived irradiance used: ecmwf_ifs"
+    assert json.loads(row["context_json"]) == {"model_id": "ecmwf_ifs"}

@@ -14,6 +14,7 @@ import traceback
 import uuid
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from typing import Any
 
 import pandas as pd
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -63,6 +64,108 @@ PV_QUALITY_COLORS = {
 
 FULL_RESULT_HEAVY_KEYS = {"weather", "pv", "detail", "flows", "soc"}
 DEBUG = os.getenv("DEBUG", "").strip() in ("1", "true", "True", "yes", "YES")
+
+
+def _event(level: str, category: str, code: str, message: str, *, context: dict[str, Any] | None = None, ts_utc: str | None = None) -> dict[str, Any]:
+    return {
+        "ts_utc": ts_utc or dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
+        "level": str(level).lower(),
+        "category": str(category),
+        "code": str(code),
+        "message": str(message),
+        "context": context or {},
+    }
+
+
+def _run_events_from_warnings(
+    warnings: list[str],
+    *,
+    failed_model_reasons: dict[str, Any] | None = None,
+    derived_irradiance_by_model: dict[str, bool] | None = None,
+    model_live_failed_used_cached: dict[str, bool] | None = None,
+    missing_vars_by_model: dict[str, list[str]] | None = None,
+    ts_utc: str | None = None,
+) -> list[dict[str, Any]]:
+    failed_model_reasons = failed_model_reasons if isinstance(failed_model_reasons, dict) else {}
+    derived_irradiance_by_model = derived_irradiance_by_model if isinstance(derived_irradiance_by_model, dict) else {}
+    model_live_failed_used_cached = model_live_failed_used_cached if isinstance(model_live_failed_used_cached, dict) else {}
+    missing_vars_by_model = missing_vars_by_model if isinstance(missing_vars_by_model, dict) else {}
+
+    events: list[dict[str, Any]] = []
+    for warning in warnings:
+        text = str(warning)
+        if text == "all weather model requests failed":
+            events.append(_event("error", "weather_provider", "all_models_failed", text, ts_utc=ts_utc))
+            continue
+
+        if text.startswith("model failed: "):
+            model_id = text.removeprefix("model failed: ").split(" (", 1)[0]
+            reason = failed_model_reasons.get(model_id)
+            events.append(
+                _event(
+                    "error",
+                    "weather_provider",
+                    "model_failed",
+                    text,
+                    context={"model_id": model_id, "reason": reason},
+                    ts_utc=ts_utc,
+                )
+            )
+            continue
+
+        if text.startswith("derived irradiance used: "):
+            model_id = text.removeprefix("derived irradiance used: ").strip()
+            events.append(
+                _event(
+                    "warning",
+                    "irradiance_anomaly",
+                    "derived_irradiance",
+                    text,
+                    context={"model_id": model_id, "derived_irradiance": bool(derived_irradiance_by_model.get(model_id))},
+                    ts_utc=ts_utc,
+                )
+            )
+            continue
+
+        if text.startswith("model_live_failed_used_cached=true: "):
+            model_id = text.removeprefix("model_live_failed_used_cached=true: ").strip()
+            events.append(
+                _event(
+                    "warning",
+                    "cache_fallback",
+                    "live_failed_used_cached",
+                    text,
+                    context={"model_id": model_id, "used_cached": bool(model_live_failed_used_cached.get(model_id))},
+                    ts_utc=ts_utc,
+                )
+            )
+            continue
+
+        if text.startswith("important vars missing: "):
+            model_id = text.removeprefix("important vars missing: ").split(" (", 1)[0]
+            events.append(
+                _event(
+                    "warning",
+                    "weather_provider",
+                    "important_vars_missing",
+                    text,
+                    context={"model_id": model_id, "missing_vars": missing_vars_by_model.get(model_id, [])},
+                    ts_utc=ts_utc,
+                )
+            )
+            continue
+
+        events.append(_event("warning", "general", "warning", text, ts_utc=ts_utc))
+
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for evt in events:
+        key = (str(evt.get("level")), str(evt.get("category")), str(evt.get("code")), str(evt.get("message")))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(evt)
+    return deduped
 
 
 def _to_history_summary(payload: dict) -> dict:
@@ -393,6 +496,11 @@ class BackendState:
                 warnings.append(f"model failed: {model_id} ({reason_msg})")
             warnings = list(dict.fromkeys(warnings))
             run_duration_ms = int((time.perf_counter() - run_started) * 1000)
+            error_run_events = _run_events_from_warnings(
+                warnings,
+                failed_model_reasons=failed_reasons,
+                ts_utc=run_at_utc,
+            )
             error_payload = {
                 "run_id": run_id,
                 "target_date": target_date.isoformat(),
@@ -404,6 +512,7 @@ class BackendState:
                 "run_duration_ms": run_duration_ms,
                 "warnings": warnings,
                 "warnings_count": len(warnings),
+                "run_events": error_run_events,
                 "inputs_used": inputs_used,
                 "planner_version": "v2",
                 "config_hash": config_hash,
@@ -469,6 +578,14 @@ class BackendState:
 
         warnings = list(dict.fromkeys(warnings))
         status = "degraded" if warnings else "ok"
+        run_events = _run_events_from_warnings(
+            warnings,
+            failed_model_reasons=ensemble.failed_model_reasons,
+            derived_irradiance_by_model=ensemble.derived_irradiance_by_model,
+            model_live_failed_used_cached=getattr(ensemble, "model_live_failed_used_cached", {}),
+            missing_vars_by_model=ensemble.missing_vars_by_model,
+            ts_utc=run_at_utc,
+        )
 
         weather = ensemble.weather_primary
         pv = pd.DataFrame(index=ensemble.pv_ensemble_p50.index)
@@ -518,6 +635,24 @@ class BackendState:
             cutoff_soc,
             target_date,
         )
+
+        if core.ENABLE_INVARIANT_CHECKS:
+            inverter_limit_kw = float(core.INVERTER_AC_KW_LIMIT)
+            pv_ac = pd.to_numeric(pv.get("pv_total_kwh", 0.0), errors="coerce").fillna(0.0)
+            if not pv_ac.empty and float(pv_ac.max()) > inverter_limit_kw + 1e-6:
+                raise RuntimeError(
+                    f"Invariant failed (PV AC limit): max_pv_total_kwh={float(pv_ac.max()):.6f}, inverter_ac_kw_limit={inverter_limit_kw:.6f}"
+                )
+            soc_pct = pd.to_numeric(flows_df.get("soc_end_pct", 0.0), errors="coerce").fillna(0.0)
+            if not soc_pct.empty and ((soc_pct < -1e-6) | (soc_pct > 100.0 + 1e-6)).any():
+                bad = soc_pct[(soc_pct < -1e-6) | (soc_pct > 100.0 + 1e-6)]
+                raise RuntimeError(
+                    f"Invariant failed (SOC bounds [0,100]): min={float(bad.min()):.6f}, max={float(bad.max()):.6f}"
+                )
+            if len(pv.index) != len(weather.df.index):
+                raise RuntimeError(
+                    f"Invariant failed (local-day index length mismatch): pv_len={len(pv.index)}, weather_len={len(weather.df.index)}"
+                )
 
         charge_date = target_date - dt.timedelta(days=1)
 
@@ -629,6 +764,7 @@ class BackendState:
             "pv_quality": pv_quality,
             "warnings": warnings,
             "warnings_count": len(warnings),
+            "run_events": run_events,
             "status": status,
             "run_duration_ms": run_duration_ms,
             "run_at": dt.datetime.now(self._tzinfo()).isoformat(),

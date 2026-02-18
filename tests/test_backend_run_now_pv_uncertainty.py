@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pandas as pd
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -46,6 +47,43 @@ def _patch_core_for_run(monkeypatch):
     )
     monkeypatch.setattr(core, "compute_euro_savings_no_battery_vs_plan", lambda *_args, **_kwargs: {})
 
+
+
+
+def _patch_core_for_run_without_insert(monkeypatch):
+    monkeypatch.setattr(core, "ensure_pv_columns", lambda df, split_ratio=None: df)
+    monkeypatch.setattr(core, "apply_daylight_clamp", lambda df, *_args, **_kwargs: df)
+    monkeypatch.setattr(core, "add_sun_percent", lambda df, *_args, **_kwargs: df)
+
+    def fake_add_load(df, yesterday_kwh):
+        out = df.copy()
+        out["load_kwh"] = float(yesterday_kwh) / max(len(out.index), 1)
+        return out
+
+    monkeypatch.setattr(core, "add_load_and_surplus_columns", fake_add_load)
+    monkeypatch.setattr(core, "compute_soc_low_timing_aware", lambda *_args, **_kwargs: 0.2)
+    monkeypatch.setattr(core, "compute_soc_high_headroom", lambda *_args, **_kwargs: (0.0, 0.8))
+    monkeypatch.setattr(core, "choose_cutoff_soc", lambda *_args, **_kwargs: (0.5, "ok"))
+    monkeypatch.setattr(core, "plan_charge_power", lambda *_args, **_kwargs: (None, 2.0, "ok", 0.4))
+    monkeypatch.setattr(
+        core,
+        "simulate_expensive_hours_detailed",
+        lambda pv, *_args, **_kwargs: (pd.DataFrame(index=pv.index), 1.0, 0.5, 0.0, 0.0),
+    )
+    monkeypatch.setattr(
+        core,
+        "simulate_full_day_soc",
+        lambda pv, *_args, **_kwargs: (
+            pd.Series([0.5] * len(pv.index), index=pv.index),
+            pd.DataFrame(index=pv.index),
+        ),
+    )
+    monkeypatch.setattr(
+        core,
+        "estimate_pv_with_pvlib",
+        lambda clear_df, *_args, **_kwargs: (None, None, None, None, None, pd.Series([2.0] * len(clear_df.index), index=clear_df.index)),
+    )
+    monkeypatch.setattr(core, "compute_euro_savings_no_battery_vs_plan", lambda *_args, **_kwargs: {})
 
 def _new_state(monkeypatch, tmp_path):
     monkeypatch.setattr(backend_api, "LOCAL_STATE_DIR", tmp_path / "local_state")
@@ -231,6 +269,7 @@ def test_run_now_all_weather_models_failed_persists_error_run(monkeypatch, tmp_p
     assert result["weather_ensemble"]["failure_reasons_by_model"]["ecmwf_ifs"]["category"] == "provider_down"
     assert inserted["payload"]["status"] == "error"
     assert inserted["payload"]["warnings_count"] == 3
+    assert len(inserted["payload"].get("run_events", [])) >= 1
 
 
 def test_run_now_includes_provider_payloads_when_enabled(monkeypatch, tmp_path):
@@ -261,3 +300,34 @@ def test_run_now_includes_provider_payloads_when_enabled(monkeypatch, tmp_path):
 
     assert "provider_payloads_by_model" in result
     assert result["provider_payloads_by_model"]["ecmwf_ifs"]["http_status"] == 200
+
+
+def test_run_now_model_failure_persists_run_events_to_sqlite(monkeypatch, tmp_path):
+    monkeypatch.setattr(backend_api, "LOCAL_STATE_DIR", tmp_path / "local_state")
+    monkeypatch.setattr(backend_api, "SETTINGS_PATH", backend_api.LOCAL_STATE_DIR / "settings.json")
+    monkeypatch.setattr(backend_api, "INPUTS_PATH", backend_api.LOCAL_STATE_DIR / "last_inputs.json")
+    monkeypatch.setattr(backend_api, "LATEST_RESULT_PATH", backend_api.LOCAL_STATE_DIR / "latest_result.json")
+    monkeypatch.setattr(backend_api, "HISTORY_PATH", backend_api.LOCAL_STATE_DIR / "results_history.json")
+    monkeypatch.setattr(backend_api, "SQLITE_PATH", backend_api.LOCAL_STATE_DIR / "planner_history.sqlite")
+    monkeypatch.setattr(backend_api, "TOKEN_PATH", backend_api.LOCAL_STATE_DIR / "api_token.txt")
+    monkeypatch.setattr(backend_api, "RUN_HISTORY_PATH", tmp_path / "run_history_log.json")
+    monkeypatch.setattr(backend_api, "fetch_latest_full_run", lambda *_args, **_kwargs: None)
+
+    state = backend_api.BackendState()
+    _patch_core_for_run_without_insert(monkeypatch)
+
+    exc = RuntimeError("All weather model requests failed.")
+    setattr(exc, "failed_models", ["ecmwf_ifs"])
+    setattr(exc, "failed_model_reasons", {"ecmwf_ifs": {"category": "http_error", "message": "HTTP 502"}})
+
+    monkeypatch.setattr(backend_api, "build_ensemble_forecast", lambda **_kwargs: (_ for _ in ()).throw(exc))
+
+    result = state.run_now(backend_api.RunNowPayload(pv_uncertainty=False, weather_models=["ecmwf_ifs"]))["result"]
+
+    assert result["status"] == "error"
+    with sqlite3.connect(backend_api.SQLITE_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT COUNT(*) AS cnt FROM run_events WHERE run_id = ?", (result["run_id"],)).fetchone()
+
+    assert row is not None
+    assert int(row["cnt"]) >= 1

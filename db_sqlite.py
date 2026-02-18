@@ -125,6 +125,18 @@ def init_db(db_path: str) -> None:
                 PRIMARY KEY (run_id, model_id)
             );
 
+            CREATE TABLE IF NOT EXISTS run_events (
+                run_id TEXT NOT NULL,
+                ts_utc TEXT NOT NULL,
+                level TEXT NOT NULL,
+                category TEXT NOT NULL,
+                code TEXT NOT NULL,
+                message TEXT NOT NULL,
+                context_json TEXT,
+                PRIMARY KEY (run_id, ts_utc, code, message)
+            );
+            CREATE INDEX IF NOT EXISTS idx_run_events_run_id_ts ON run_events (run_id, ts_utc);
+
             -- Future FusionSolar ingestion table. Join with forecast_hourly on ts_local.
             CREATE TABLE IF NOT EXISTS actual_hourly (
                 source TEXT NOT NULL,
@@ -319,6 +331,36 @@ def _normalize_provider_payload_rows(run_id: str, payload: dict[str, Any]) -> li
             int(record.get("http_status")) if record.get("http_status") is not None else None,
             int(record.get("latency_ms")) if record.get("latency_ms") is not None else None,
         ))
+    return rows
+
+
+def _normalize_run_event_rows(run_id: str, payload: dict[str, Any]) -> list[tuple[Any, ...]]:
+    raw = payload.get("run_events")
+    if not isinstance(raw, list):
+        return []
+
+    rows: list[tuple[Any, ...]] = []
+    for event in raw:
+        if not isinstance(event, dict):
+            continue
+        ts_utc = str(event.get("ts_utc") or payload.get("run_at_utc") or _iso_utc_now())
+        level = str(event.get("level") or "warning").strip().lower() or "warning"
+        category = str(event.get("category") or "general").strip().lower() or "general"
+        code = str(event.get("code") or "unspecified").strip().lower() or "unspecified"
+        message = str(event.get("message") or "")
+        if not message:
+            continue
+        rows.append(
+            (
+                run_id,
+                ts_utc,
+                level,
+                category,
+                code,
+                message,
+                _safe_json_dumps(event.get("context")),
+            )
+        )
     return rows
 
 
@@ -548,6 +590,7 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
     weather_rows = _normalize_weather_by_model(payload)
     pv_model_rows = _normalize_pv_by_model(payload)
     provider_payload_rows = _normalize_provider_payload_rows(run_id, payload)
+    run_event_rows = _normalize_run_event_rows(run_id, payload)
 
     pv_forecast_kwh = _safe_float(metrics.get("pv_forecast_kwh"))
     cons_forecast_kwh = _safe_float(metrics.get("cons_forecast_kwh"))
@@ -719,6 +762,17 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
                 )
             except Exception:
                 pass
+
+        conn.execute("DELETE FROM run_events WHERE run_id = ?", (run_id,))
+        if run_event_rows:
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO run_events (
+                    run_id, ts_utc, level, category, code, message, context_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                run_event_rows,
+            )
         conn.commit()
 
 

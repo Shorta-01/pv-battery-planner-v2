@@ -247,6 +247,7 @@ def load_config_file(path: Path) -> dict:
 
 
 def migrate_legacy_tilt_config(user_cfg: dict) -> dict:
+    """Backward-compatible migration for legacy pv.tilt_common_deg alias."""
     migrated_cfg = copy.deepcopy(user_cfg)
     user_pv = migrated_cfg.get("pv")
     if not isinstance(user_pv, dict):
@@ -593,6 +594,23 @@ def validate_flow_invariants(flows_df: "pd.DataFrame", context: str, *, tol: flo
                 "Invariant failed (SOC bounds): "
                 f"context={context}, timestamp={ts_text}, soc_end_pct={soc_end:.6f}, "
                 f"expected_range=[{soc_lo:.6f}, {soc_hi:.6f}]"
+            )
+        if soc_start < -tol or soc_start > 100.0 + tol:
+            raise RuntimeError(
+                "Invariant failed (SOC bounds [0,100]): "
+                f"context={context}, timestamp={ts_text}, soc_start_pct={soc_start:.6f}, expected_range=[0.000000, 100.000000]"
+            )
+        if soc_end < -tol or soc_end > 100.0 + tol:
+            raise RuntimeError(
+                "Invariant failed (SOC bounds [0,100]): "
+                f"context={context}, timestamp={ts_text}, soc_end_pct={soc_end:.6f}, expected_range=[0.000000, 100.000000]"
+            )
+
+        pv_total_kwh = _as_float(row, "pv_total_kwh")
+        if pv_total_kwh > INVERTER_AC_KW_LIMIT + tol:
+            raise RuntimeError(
+                "Invariant failed (PV AC inverter limit): "
+                f"context={context}, timestamp={ts_text}, pv_total_kwh={pv_total_kwh:.6f}, inverter_ac_kw_limit={INVERTER_AC_KW_LIMIT:.6f}"
             )
 
         for col in kwh_cols:

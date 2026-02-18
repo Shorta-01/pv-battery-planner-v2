@@ -1036,6 +1036,7 @@ def fetch_open_meteo_weather(
         df.loc[~availability[col], col] = np.nan
 
     def _alias(dst: str, src: str) -> None:
+        # Backward-compatible aliases kept for downstream consumers using legacy weather keys.
         if src in df.columns:
             df[dst] = df[src]
         else:
@@ -1408,6 +1409,19 @@ def build_ensemble_forecast(
         sunrise=weather_ok[primary_model].sunrise,
         sunset=weather_ok[primary_model].sunset,
     )
+
+    if core.ENABLE_INVARIANT_CHECKS:
+        expected_len = len(canonical_index)
+        for series_name, series in {
+            "pv_ensemble_p50": ensemble_ac_p50,
+            "pv_ensemble_unclipped_p50": ensemble_unclipped_p50,
+            "pv_ensemble_east_p50": ensemble_east_p50,
+            "pv_ensemble_south_p50": ensemble_south_p50,
+        }.items():
+            if len(series.index) != expected_len:
+                raise RuntimeError(
+                    f"Invariant failed (local-day index length): {series_name} len={len(series.index)} expected={expected_len}"
+                )
 
     return EnsembleWeatherResult(
         weather_primary=weather_ok[primary_model],
