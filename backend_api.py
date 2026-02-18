@@ -66,6 +66,10 @@ FULL_RESULT_HEAVY_KEYS = {"weather", "pv", "detail", "flows", "soc"}
 DEBUG = os.getenv("DEBUG", "").strip() in ("1", "true", "True", "yes", "YES")
 
 
+def _clamp_score_0_100(value: float) -> int:
+    return int(min(100, max(0, round(float(value)))))
+
+
 def _to_history_summary(payload: dict) -> dict:
     if not isinstance(payload, dict):
         return {}
@@ -765,17 +769,44 @@ class BackendState:
         charge_date = target_date - dt.timedelta(days=1)
 
         try:
-            clear_df = pd.DataFrame(index=weather.df.index)
-            clear_df["temp_air_c"] = pd.to_numeric(weather.df.get("temp_air_c"), errors="coerce").fillna(10.0)
-            clear_df["wind_speed_ms"] = pd.to_numeric(weather.df.get("wind_speed_ms"), errors="coerce").fillna(1.0).clip(lower=0.0)
+            clear_df = pd.DataFrame(index=tomorrow_index)
+            clear_df["temp_air_c"] = (
+                pd.to_numeric(weather.df.get("temp_air_c"), errors="coerce")
+                .reindex(tomorrow_index)
+                .fillna(10.0)
+            )
+            clear_df["wind_speed_ms"] = (
+                pd.to_numeric(weather.df.get("wind_speed_ms"), errors="coerce")
+                .reindex(tomorrow_index)
+                .fillna(1.0)
+                .clip(lower=0.0)
+            )
             clear_df["cloud_cover_pct"] = 0.0
             _, _, _, _, _, pv_ac_limited_kwh = core.estimate_pv_with_pvlib(clear_df, loc, tz=tz)
             clear_kwh = float(pv_ac_limited_kwh.sum())
             pv_total_kwh = float(pd.to_numeric(pv.get("pv_total_kwh", 0.0), errors="coerce").fillna(0.0).sum())
-            score = int(min(max(round(100 * pv_total_kwh / max(clear_kwh, 0.1)), 0), 100))
-            pv_quality = {"score": score, "pv_total_kwh": pv_total_kwh, "ratio": score / 100.0, "is_fallback": False}
+            ratio = float(pv_total_kwh / clear_kwh) if clear_kwh > 0 else 0.0
+            ratio = min(max(ratio, 0.0), 1.0)
+            score = _clamp_score_0_100(ratio * 100.0)
+            pv_quality = {
+                "score": score,
+                "pv_total_kwh": pv_total_kwh,
+                "clear_sky_kwh": clear_kwh,
+                "ratio": ratio,
+                "is_fallback": False,
+            }
         except Exception:
-            pv_quality = {"score": 0, "pv_total_kwh": float(pv["pv_total_kwh"].sum()), "ratio": 0.0, "is_fallback": True}
+            pv_quality = {
+                "score": 0,
+                "pv_total_kwh": float(pv["pv_total_kwh"].sum()),
+                "clear_sky_kwh": 0.0,
+                "ratio": 0.0,
+                "is_fallback": True,
+            }
+
+        pv_quality["score"] = _clamp_score_0_100(pv_quality.get("score", 0))
+        pv_quality["ratio"] = min(max(float(pv_quality.get("ratio", 0.0)), 0.0), 1.0)
+        assert 0 <= int(pv_quality["score"]) <= 100
 
         for label, threshold in {
             "Excellent": 75,
@@ -789,6 +820,16 @@ class BackendState:
                 break
 
         pv_quality["color"] = PV_QUALITY_COLORS.get(pv_quality.get("label", "Very low"), "#d62828")
+
+        if DEBUG:
+            print(
+                "[DEBUG][pv_quality] "
+                f"label={pv_quality.get('label')} "
+                f"score={pv_quality.get('score')} "
+                f"ratio_percent={pv_quality.get('ratio', 0.0) * 100.0:.1f} "
+                f"pv_total_kwh={pv_quality.get('pv_total_kwh', 0.0):.3f} "
+                f"clear_sky_kwh={pv_quality.get('clear_sky_kwh', 0.0):.3f}"
+            )
 
         savings = core.compute_euro_savings_no_battery_vs_plan(
             pv_df=pv,
