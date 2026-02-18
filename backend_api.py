@@ -497,7 +497,13 @@ class BackendState:
 
         tariff_cfg = cfg.get("tariff", core.DEFAULT_CONFIG["tariff"])
         soc_low = core.compute_soc_low_timing_aware(pv, yesterday_kwh, target_date, tariff_cfg=tariff_cfg)
-        _, soc_high = core.compute_soc_high_headroom(pv, yesterday_kwh, target_date)
+        _, soc_high = core.compute_soc_high_headroom(
+            pv,
+            yesterday_kwh,
+            target_date,
+            sunrise=weather.sunrise,
+            sunset=weather.sunset,
+        )
         cutoff_soc_raw, cutoff_reason = core.choose_cutoff_soc(target_date, soc_low, soc_high)
         cutoff_soc = min(max(cutoff_soc_raw + (float(buffer_percent) / 100.0), core.MIN_SOC), core.MAX_CUTOFF_SOC)
         charge_date = target_date - dt.timedelta(days=1)
