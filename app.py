@@ -2346,10 +2346,11 @@ with left:
 
             tariff_source = tariff_cfg.get("offpeak_windows_by_dow", core.DEFAULT_CONFIG["tariff"]["offpeak_windows_by_dow"])
             tariff_by_day = core.parse_offpeak_windows_by_dow(tariff_source)
+            default_tariff_by_day = core.parse_offpeak_windows_by_dow(core.DEFAULT_CONFIG["tariff"]["offpeak_windows_by_dow"])
             tariff_inputs: list[tuple[str, str]] = []
             for day_idx, day_name in enumerate(day_names):
-                day_windows = tariff_by_day.get(day_idx, [("22:00", "07:00")])
-                day_from, day_to = day_windows[0] if day_windows else ("22:00", "07:00")
+                day_windows = tariff_by_day.get(day_idx) or default_tariff_by_day.get(day_idx, [("00:00", "24:00")])
+                day_from, day_to = day_windows[0]
                 cols = st.columns([1.0, 1.2, 1.2])
                 cols[0].markdown(f"**{day_name[:3]}**")
                 from_value = cols[1].text_input(
