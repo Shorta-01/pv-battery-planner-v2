@@ -2191,6 +2191,7 @@ st.title("PV Battery Planner")
 try:
     health_payload = api_get("/v1/health")
     backend_settings = api_get("/v1/settings")
+    settings_source = str(backend_settings.get("settings_source") or "settings.json")
     weather_models_catalog = api_get("/v1/weather/models").get("items", [])
     valid_model_ids = {m.get("id") for m in weather_models_catalog if isinstance(m.get("id"), str)}
 except Exception as exc:
@@ -2534,7 +2535,7 @@ with left:
                 )
             with btn_right:
                 reset_defaults = st.form_submit_button(
-                    "Reset to defaults",
+                    "Reset settings to repo defaults",
                     type="secondary",
                     width="stretch",
                     key="btn_reset_defaults",
@@ -2547,6 +2548,9 @@ with left:
         flash = st.session_state.pop("_settings_flash", None)
         if flash:
             st.success(flash)
+
+        source_label = "local_state/settings.json" if settings_source == "settings.json" else "repo config.json defaults"
+        st.caption(f"Settings source: **{source_label}**")
 
         if save_settings:
             tariff_error = None
@@ -2641,24 +2645,44 @@ with left:
                     st.error(f"Could not save settings: {exc}")
 
         if reset_defaults:
-            try:
-                updated = api_put(
-                    "/v1/settings",
-                    {
-                        "config": core.DEFAULT_CONFIG,
-                        "nightly_run_time": backend_settings.get("nightly_run_time", "22:00"),
-                        "timezone": str(core.DEFAULT_CONFIG["location"].get("timezone", backend_settings.get("timezone", "Europe/Brussels"))),
-                        "max_ac_charge_power_kw_default": backend_settings.get("max_ac_charge_power_kw_default", 5.0),
-                    },
+            st.session_state["confirm_reset_repo_defaults_open"] = True
+
+        if st.session_state.get("confirm_reset_repo_defaults_open"):
+            with st.container(border=True):
+                st.warning(
+                    "Resetting will overwrite local_state/settings.json with config.json defaults (plus required migrations)."
                 )
-                st.cache_data.clear()
-                st.session_state["_pending_location_state"] = updated["config"]["location"]
-                st.session_state["_settings_flash"] = "Reset settings to defaults."
-                for mid in WEATHER_MODEL_ORDER:
-                    st.session_state.pop(f"wm_{mid}", None)
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Could not reset settings: {exc}")
+                st.caption("This action cannot be undone.")
+                confirm_col, cancel_col = st.columns(2)
+                with confirm_col:
+                    confirm_reset = st.button(
+                        "Yes, reset now",
+                        type="primary",
+                        key="btn_confirm_reset_repo_defaults",
+                        width="stretch",
+                    )
+                with cancel_col:
+                    cancel_reset = st.button(
+                        "Cancel",
+                        key="btn_cancel_reset_repo_defaults",
+                        width="stretch",
+                    )
+
+                if confirm_reset:
+                    try:
+                        updated = api_post("/v1/settings/reset_to_repo_defaults", {})
+                        st.cache_data.clear()
+                        st.session_state["_pending_location_state"] = updated["config"]["location"]
+                        st.session_state["_settings_flash"] = "Reset settings to repo defaults."
+                        st.session_state["confirm_reset_repo_defaults_open"] = False
+                        for mid in WEATHER_MODEL_ORDER:
+                            st.session_state.pop(f"wm_{mid}", None)
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Could not reset settings: {exc}")
+                if cancel_reset:
+                    st.session_state["confirm_reset_repo_defaults_open"] = False
+                    st.rerun()
 
     with st.expander("Advanced"):
         buffer_percent = st.slider("Forecast safety buffer SOC (%)", 0.0, 10.0, 0.0, 0.5, help=INPUT_TOOLTIPS["buffer_percent"])
