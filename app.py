@@ -621,20 +621,23 @@ def weather_code_to_icon(weather_code: int | float | str | None) -> str:
     if isinstance(weather_code, str):
         key = weather_code.strip().lower()
         label_map = {
-            "clear": "☀",
-            "sunny": "☀",
-            "mainly_clear": "🌤",
+            "clear": "☀️",
+            "sunny": "☀️",
+            "mainly_clear": "🌤️",
             "partly_cloudy": "⛅",
-            "cloudy": "☁",
-            "overcast": "☁",
-            "fog": "🌫",
-            "mist": "🌫",
-            "drizzle": "🌦",
-            "rain": "🌧",
-            "showers": "🌧",
-            "snow": "🌨",
-            "sleet": "🌨",
-            "thunderstorm": "⛈",
+            "cloudy": "☁️",
+            "overcast": "☁️",
+            "fog": "🌫️",
+            "mist": "🌫️",
+            "drizzle": "🌦️",
+            "rain": "🌧️",
+            "showers": "🌦️",
+            "rain_showers": "🌦️",
+            "snow": "❄️",
+            "snowfall": "❄️",
+            "snow_showers": "🌨️",
+            "sleet": "🌨️",
+            "thunderstorm": "⛈️",
         }
         return label_map.get(key, "❔")
 
@@ -645,34 +648,34 @@ def weather_code_to_icon(weather_code: int | float | str | None) -> str:
         return "❔"
 
     if code == 0:
-        return "☀"      # Clear sky
+        return "☀️"      # Clear sky
     if code == 1:
-        return "🌤"     # Mainly clear
+        return "🌤️"     # Mainly clear
     if code == 2:
         return "⛅"      # Partly cloudy
     if code == 3:
-        return "☁"      # Overcast
+        return "☁️"      # Overcast
 
     if code in (45, 48):
-        return "🌫"     # Fog / depositing rime fog
+        return "🌫️"     # Fog / depositing rime fog
 
     if 51 <= code <= 57:
-        return "🌦"     # Drizzle / freezing drizzle (light→dense)
+        return "🌦️"     # Drizzle / freezing drizzle (light→dense)
 
     if 61 <= code <= 67:
-        return "🌧"     # Rain / freezing rain (light→heavy)
+        return "🌧️"     # Rain / freezing rain (light→heavy)
 
     if 71 <= code <= 77:
-        return "🌨"     # Snow fall / snow grains
+        return "❄️"     # Snow fall / snow grains
 
     if 80 <= code <= 82:
-        return "🌧"     # Rain showers (slight/moderate/violent)
+        return "🌦️"     # Rain showers (slight/moderate/violent)
 
     if code in (85, 86):
-        return "🌨"     # Snow showers
+        return "🌨️"     # Snow showers
 
     if code in (95, 96, 99):
-        return "⛈"     # Thunderstorm (slight/heavy w hail)
+        return "⛈️"     # Thunderstorm (slight/heavy w hail)
 
     return "❔"
 
@@ -950,6 +953,25 @@ def metric_with_help(container, label: str, value: str) -> None:
     container.metric(label="", value=value)
 
 
+def _esc_attr(s: object) -> str:
+    return html.escape("" if s is None else str(s), quote=True)
+
+
+def _pv_quality_flag_html(color: str, tooltip: str) -> str:
+    col = (color or "").strip() or "#94a3b8"
+    tip = _esc_attr(tooltip)
+    return (
+        f"<span title=\"{tip}\" "
+        "style=\"display:inline-block;width:16px;height:12px;"
+        f"background:{col};"
+        "clip-path:polygon(0 0, 90% 0, 100% 50%, 90% 100%, 0 100%);"
+        "border-radius:2px;"
+        "box-shadow:0 0 0 1px rgba(255,255,255,0.18) inset;"
+        "flex:0 0 auto;\">"
+        "</span>"
+    )
+
+
 def render_pv_quality_widget(
     container,
     pv_df: pd.DataFrame,
@@ -967,46 +989,8 @@ def render_pv_quality_widget(
     score = int(pv_quality_dict["score"])
     ratio_percent = max(0.0, min(float(pv_quality_dict.get("ratio", 0.0)) * 100.0, 100.0))
 
-    def _safe_color(c: str | None, fallback: str = "#94a3b8") -> str:
-        c = (c or "").strip()
-        return c if c else fallback
-
-    def _pv_quality_chip_gauge_html(label: str, score_0_100: int, color: str, ratio_percent: float) -> str:
-        s = max(0, min(100, int(score_0_100)))
-        col = _safe_color(color)
-
-        chip_bg = "rgba(255,255,255,0.06)"
-        border = "rgba(255,255,255,0.14)"
-
-        tip = (
-            f"PV quality indicator (not weather).\n"
-            f"Score: {s}/100\n"
-            f"Clear-sky ratio: {ratio_percent:.0f}%"
-        ).replace('"', "&quot;")
-
-        return f"""
-        <div title="{tip}" style="display:flex; flex-direction:column; gap:6px; min-width:230px;"> 
-          <div style="
-            display:inline-flex; align-items:center; gap:8px;
-            padding:4px 10px; border-radius:999px;
-            background:{chip_bg}; border:1px solid {border};
-          ">
-            <span style="
-              display:inline-block; width:10px; height:10px; border-radius:50%;
-              background:{col}; box-shadow:0 0 0 2px rgba(0,0,0,0.25);
-            "></span>
-            <span style="font-weight:700;">{html.escape(label)}</span>
-            <span style="opacity:0.85;">{s}/100</span>
-          </div>
-
-          <div style="
-            height:8px; border-radius:999px; overflow:hidden;
-            background:rgba(255,255,255,0.10); border:1px solid rgba(255,255,255,0.10);
-          ">
-            <div style="height:8px; width:{s}%; background:{col}; border-radius:999px;"></div>
-          </div>
-        </div>
-        """
+    pv_label = str((pv_quality_dict or {}).get("label") or "Mixed")
+    pv_color = str((pv_quality_dict or {}).get("color") or "#94a3b8")
     offpeak_windows = core.get_offpeak_windows(tomorrow_date)
     expensive_windows = core.get_expensive_windows(tomorrow_date)
     offpeak_segments = windows_to_segments(offpeak_windows)
@@ -1088,13 +1072,8 @@ def render_pv_quality_widget(
     else:
         savings_html = "<div style='margin-top:0.50rem;font-size:0.70rem;opacity:0.78;'>Run forecast to see € savings.</div>"
 
-    label_txt = str((pv_quality_dict or {}).get("label") or "PV")
-    color_txt = str((pv_quality_dict or {}).get("color") or "").strip()
-
-    pv_chip = _pv_quality_chip_gauge_html(label_txt, score, color_txt, ratio_percent)
-
     weather_icon = weather_code_to_icon(tomorrow_weather_code)
-    weather_label = weather_code_to_label(tomorrow_weather_code) if "weather_code_to_label" in globals() else "Tomorrow weather"
+    weather_label = weather_code_to_label(tomorrow_weather_code)
 
     w_tip = f"Tomorrow weather (forecast): {weather_label}"
     if tomorrow_weather_code is not None:
@@ -1103,14 +1082,23 @@ def render_pv_quality_widget(
         w_tip += f" | Source: {tomorrow_source_label}"
     if tomorrow_source_days:
         w_tip += f" ({tomorrow_source_days}d)"
-    w_tip = w_tip.replace('"', "&quot;")
+    pv_tip = f"PV quality indicator (not weather). Score: {score}/100. Clear-sky ratio: {ratio_percent:.0f}%."
 
-    icons_html = f"""
-    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
-      {pv_chip}
-      <div title="{w_tip}" style="font-size:1.25rem; line-height:1; padding-top:2px;">
-        {weather_icon}
+    pv_flag = _pv_quality_flag_html(pv_color, pv_tip)
+    icons_html = (
+        "<div style='display:flex;gap:0.5rem;align-items:center;white-space:nowrap;'>"
+        f"{pv_flag}"
+        f"<span title=\"{_esc_attr(w_tip)}\" style='font-size:1.25rem;line-height:1;'>{weather_icon}</span>"
+        "</div>"
+    )
+
+    header_html = f"""
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+      <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+        {icons_html}
+        <div style="font-weight:700;letter-spacing:0.03em;opacity:0.92;">PV OUTLOOK</div>
       </div>
+      <div style="font-weight:700;opacity:0.9;white-space:nowrap;">{score}/100</div>
     </div>
     """
 
@@ -1119,11 +1107,10 @@ def render_pv_quality_widget(
             "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.65rem 0.75rem;"
             "background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));min-width:245px;'>"
             "<div style='display:flex;flex-direction:column;gap:0.35rem;'>"
-            "<div style='font-size:0.72rem;opacity:0.8;text-transform:uppercase;letter-spacing:0.06em;'>PV Outlook</div>"
-            f"{icons_html}"
+            f"{header_html}"
             "</div>"
             "<div style='margin-top:0.35rem;font-size:0.95rem;font-weight:650;'>"
-            f"{pv_quality_dict['label']} day · {pv_quality_dict['pv_total_kwh']:.1f} kWh"
+            f"{pv_label} day · {pv_quality_dict['pv_total_kwh']:.1f} kWh"
             "</div>"
             "<div style='margin-top:0.45rem;height:8px;border-radius:999px;overflow:hidden;background:rgba(255,255,255,0.12);'>"
             f"<div style='height:100%;width:{ratio_percent:.1f}%;background:linear-gradient(90deg,#d62828 0%,#f4a261 45%,#52b788 70%,#2a9d8f 100%);'></div>"
