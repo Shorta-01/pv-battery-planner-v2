@@ -151,7 +151,7 @@ FORECAST_FALLBACK_MODELS: dict[str, str] = {
     "ecmwf_ifs": "ifs",
 }
 
-_WEATHER_CACHE: dict[tuple, tuple[float, core.ForecastResult, list[str], bool]] = {}
+_WEATHER_CACHE: dict[tuple, tuple[float, core.ForecastResult, list[str], bool, int]] = {}
 _WEATHER_CACHE_TTL_S = 600
 _SESSION: requests.Session | None = None
 _LOGGER = logging.getLogger(__name__)
@@ -185,6 +185,7 @@ class EnsembleWeatherResult:
     per_model_pv_totals_kwh: dict[str, float]
     missing_vars_by_model: dict[str, list[str]]
     derived_irradiance_by_model: dict[str, bool]
+    derived_irradiance_hours_by_model: dict[str, int]
     failed_models: list[str]
     failed_model_reasons: dict[str, dict[str, Any]]
     model_live_failed_used_cached: dict[str, bool]
@@ -195,6 +196,7 @@ class EnsembleWeatherResult:
     pv_by_model: dict[str, pd.DataFrame]
     weather_ensemble_table: core.ForecastResult
     provider_payloads_by_model: dict[str, dict[str, Any]]
+    fetch_meta_by_model: dict[str, dict[str, Any]]
 
 
 class WeatherProviderError(RuntimeError):
@@ -730,14 +732,21 @@ def _finalize_irradiance_components(
     loc: core.Location,
     tz: str,
     missing_vars: list[str],
-) -> tuple[pd.Series, pd.Series, list[str], bool]:
+) -> tuple[pd.Series, pd.Series, list[str], bool, int]:
     dni_out = pd.to_numeric(dni, errors="coerce")
     dhi_out = pd.to_numeric(dhi, errors="coerce")
     ghi_out = pd.to_numeric(ghi, errors="coerce")
 
-    derived_irradiance = False
-    needs_derivation = bool(dni_out.isna().any() or dhi_out.isna().any())
+    needs_derivation_mask = (
+        (ghi_out.notna())
+        & (
+            dni_out.isna()
+            | dhi_out.isna()
+        )
+    )
+    needs_derivation = bool(needs_derivation_mask.any())
     ghi_usable = bool(((ghi_out.notna()) & (ghi_out > 0)).any())
+    before_missing_count = int((dni_out.isna() | dhi_out.isna()).sum())
 
     if needs_derivation and ghi_usable:
         irradiance_df = pd.DataFrame(
@@ -751,7 +760,9 @@ def _finalize_irradiance_components(
         irradiance_df = _decompose_from_ghi(irradiance_df, loc, tz)
         dni_out = pd.to_numeric(irradiance_df["dni_wm2"], errors="coerce")
         dhi_out = pd.to_numeric(irradiance_df["dhi_wm2"], errors="coerce")
-        derived_irradiance = True
+    after_missing_count = int((dni_out.isna() | dhi_out.isna()).sum())
+    derived_irradiance_hours = max(0, before_missing_count - after_missing_count)
+    derived_irradiance = derived_irradiance_hours > 0
 
     missing_set = set(missing_vars)
     irradiance_fields = {
@@ -764,7 +775,7 @@ def _finalize_irradiance_components(
         else:
             missing_set.discard(field)
 
-    return dni_out, dhi_out, sorted(missing_set), derived_irradiance
+    return dni_out, dhi_out, sorted(missing_set), derived_irradiance, int(derived_irradiance_hours)
 
 
 
@@ -814,7 +825,11 @@ def fetch_open_meteo_weather(
     now = time.time()
     cached = _WEATHER_CACHE.get(key)
     if cached and now - cached[0] < _WEATHER_CACHE_TTL_S:
-        return cached[1], list(cached[2]), bool(cached[3]), {"source": "in_memory_cache"}
+        cached_derived_hours = int(cached[4]) if len(cached) >= 5 else (1 if bool(cached[3]) else 0)
+        return cached[1], list(cached[2]), bool(cached[3]), {
+            "source": "in_memory_cache",
+            "derived_irradiance_hours": int(cached_derived_hours),
+        }
 
     spec = WEATHER_MODELS[model_id]
     model_max_days = max(1, int(spec.get("max_days", 1)))
@@ -1008,28 +1023,62 @@ def fetch_open_meteo_weather(
     df["temp_air_c"] = _series("temperature_2m", 10.0).ffill().bfill().fillna(10.0)
     df["wind_speed_ms"] = _series("wind_speed_10m", 1.0).fillna(1.0).clip(lower=0.0)
     df["cloud_cover_pct"] = _series("cloud_cover", 0.0).fillna(0.0).clip(lower=0.0)
-    df["ghi_wm2"] = _series("shortwave_radiation", 0.0).fillna(0.0).clip(lower=0.0)
+    ghi = _series("shortwave_radiation", 0.0, record_missing=False).fillna(0.0).clip(lower=0.0)
+    bhi = _series("direct_radiation", np.nan, record_missing=False)
+    dni_api = _series("direct_normal_irradiance", np.nan, record_missing=False)
+    dhi_api = _series("diffuse_radiation", np.nan, record_missing=False)
+
+    df["ghi_wm2"] = ghi
     weather_code_series = _series("weather_code", np.nan, record_missing=False)
+
+    dni_candidate = dni_api.copy()
+    dhi_candidate = dhi_api.copy()
 
     minutely = data.get("minutely_15") if isinstance(data.get("minutely_15"), dict) else {}
     if use_icon15 and minutely:
         agg15 = _aggregate_minutely_15_to_hourly(minutely, tz=tz)
         if not agg15.empty:
             agg15 = agg15.reindex(df.index)
-            for col in ["ghi_wm2", "dni_wm2", "dhi_wm2"]:
-                if col in agg15.columns:
-                    df[col] = pd.to_numeric(agg15[col], errors="coerce")
+            if "ghi_wm2" in agg15.columns:
+                ghi_15 = pd.to_numeric(agg15["ghi_wm2"], errors="coerce")
+                df["ghi_wm2"] = ghi_15.combine_first(df["ghi_wm2"])
+            dni_15 = pd.to_numeric(agg15["dni_wm2"], errors="coerce") if "dni_wm2" in agg15.columns else pd.Series(np.nan, index=df.index)
+            dhi_15 = pd.to_numeric(agg15["dhi_wm2"], errors="coerce") if "dhi_wm2" in agg15.columns else pd.Series(np.nan, index=df.index)
+            dni_candidate = dni_15.combine_first(dni_candidate)
+            dhi_candidate = dhi_15.combine_first(dhi_candidate)
 
-    dni = df["dni_wm2"] if "dni_wm2" in df.columns else _series("direct_normal_irradiance", np.nan, record_missing=False)
-    dhi = df["dhi_wm2"] if "dhi_wm2" in df.columns else _series("diffuse_radiation", np.nan, record_missing=False)
-    dni_final, dhi_final, missing_vars, derived_irradiance = _finalize_irradiance_components(
+    if core.PVLIB_AVAILABLE and dni_candidate.isna().any() and bhi.notna().any():
+        import pvlib  # type: ignore
+
+        pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz)
+        solpos = pvloc.get_solarposition(df.index)
+        cos_zen = pd.to_numeric(solpos.get("apparent_zenith"), errors="coerce").apply(
+            lambda z: max(0.0, math.cos(math.radians(z))) if pd.notna(z) else 0.0
+        )
+        dni_from_bhi = pd.Series(0.0, index=df.index, dtype=float)
+        daylight_mask = cos_zen > 0
+        dni_from_bhi.loc[daylight_mask] = (
+            pd.to_numeric(bhi.loc[daylight_mask], errors="coerce")
+            / cos_zen.loc[daylight_mask]
+        )
+        dni_from_bhi = pd.to_numeric(dni_from_bhi, errors="coerce").clip(lower=0.0)
+        fill_mask = dni_candidate.isna() & bhi.notna()
+        dni_candidate = dni_candidate.where(~fill_mask, dni_from_bhi)
+
+    if dhi_candidate.isna().any() and bhi.notna().any():
+        dhi_from_bhi = (pd.to_numeric(df["ghi_wm2"], errors="coerce") - pd.to_numeric(bhi, errors="coerce")).clip(lower=0.0)
+        fill_mask = dhi_candidate.isna() & bhi.notna()
+        dhi_candidate = dhi_candidate.where(~fill_mask, dhi_from_bhi)
+
+    dni_final, dhi_final, missing_vars, derived_irradiance, derived_irradiance_hours = _finalize_irradiance_components(
         ghi=df["ghi_wm2"],
-        dni=dni,
-        dhi=dhi,
+        dni=dni_candidate,
+        dhi=dhi_candidate,
         loc=loc,
         tz=tz,
         missing_vars=missing_vars,
     )
+    fetch_meta["derived_irradiance_hours"] = int(derived_irradiance_hours)
     df["dni_wm2"] = dni_final
     df["dhi_wm2"] = dhi_final
 
@@ -1110,7 +1159,13 @@ def fetch_open_meteo_weather(
         sunset = sunset.tz_convert(tz)
 
     forecast = core.ForecastResult(df=df, sunrise=sunrise.to_pydatetime(), sunset=sunset.to_pydatetime())
-    _WEATHER_CACHE[key] = (time.time(), forecast, list(set(missing_vars)), bool(derived_irradiance))
+    _WEATHER_CACHE[key] = (
+        time.time(),
+        forecast,
+        list(set(missing_vars)),
+        bool(derived_irradiance),
+        int(derived_irradiance_hours),
+    )
     return forecast, list(set(missing_vars)), bool(derived_irradiance), fetch_meta
 
 
@@ -1269,12 +1324,14 @@ def build_ensemble_forecast(
     per_model_pv_totals: dict[str, float] = {}
     missing_vars_by_model: dict[str, list[str]] = {}
     derived_irradiance_by_model: dict[str, bool] = {}
+    derived_irradiance_hours_by_model: dict[str, int] = {}
     failed_models: list[str] = []
     failed_model_reasons: dict[str, dict[str, Any]] = {}
     model_live_failed_used_cached: dict[str, bool] = {}
     weather_ok: dict[str, core.ForecastResult] = {}
     pv_by_model: dict[str, pd.DataFrame] = {}
     provider_payloads_by_model: dict[str, dict[str, Any]] = {}
+    fetch_meta_by_model: dict[str, dict[str, Any]] = {}
 
     horizon_days = max(1, int(requested_days))
     canonical_index = pd.date_range(
@@ -1284,7 +1341,7 @@ def build_ensemble_forecast(
         inclusive="left",
     )
 
-    def _fetch_and_prepare(model_id: str) -> tuple[str, core.ForecastResult, dict[str, pd.Series], float, list[str], bool, float, dict[str, Any]]:
+    def _fetch_and_prepare(model_id: str) -> tuple[str, core.ForecastResult, dict[str, pd.Series], float, list[str], bool, int, dict[str, Any]]:
         weather, missing_vars, derived_irradiance, fetch_meta = fetch_open_meteo_weather(
             model_id,
             loc,
@@ -1294,7 +1351,15 @@ def build_ensemble_forecast(
             fast_mode=fast_mode,
             requested_days=horizon_days,
         )
-        missing_hours = float(weather.df.reindex(canonical_index).isna().all(axis=1).sum())
+        model_horizon_days = int(fetch_meta.get("horizon_days", horizon_days))
+        requested_days_int = int(horizon_days)
+        overlap_hours = int(max(0, model_horizon_days) * 24)
+        overlap_index = canonical_index[:overlap_hours] if overlap_hours > 0 else canonical_index[:0]
+        missing_overlap = int(weather.df.reindex(overlap_index).isna().all(axis=1).sum()) if len(overlap_index) else 0
+        missing_total = int(weather.df.reindex(canonical_index).isna().all(axis=1).sum())
+        fetch_meta["missing_hours_overlap"] = int(missing_overlap)
+        fetch_meta["missing_hours_total"] = int(missing_total)
+        fetch_meta["expected_tail_hours"] = int(max(0, (requested_days_int - model_horizon_days) * 24))
         model_weather_df = weather.df.reindex(canonical_index).copy()
         sanity_warnings = check_irradiance_sanity(model_weather_df, model_id, loc=loc, tz=tz)
         if sanity_warnings:
@@ -1328,7 +1393,7 @@ def build_ensemble_forecast(
             "pv_east_kwh": pv_east,
             "pv_south_kwh": pv_south,
             "pv_clipped_kwh": pv_clipped,
-        }, float(pv_total.sum()), missing_vars, bool(derived_irradiance), missing_hours, fetch_meta
+        }, float(pv_total.sum()), missing_vars, bool(derived_irradiance), int(fetch_meta.get("derived_irradiance_hours", 0)), fetch_meta
 
     max_workers = min(max(len(selected), 1), 5)
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -1336,20 +1401,28 @@ def build_ensemble_forecast(
         for fut in as_completed(future_map):
             model_id = future_map[fut]
             try:
-                model_id, weather, pv_cols, pv_total_sum, missing_vars, derived_irradiance, missing_hours, fetch_meta = fut.result()
+                model_id, weather, pv_cols, pv_total_sum, missing_vars, derived_irradiance, derived_irradiance_hours, fetch_meta = fut.result()
                 for col_name, series in pv_cols.items():
                     per_model_pv_columns[col_name][model_id] = series
                 pv_by_model[model_id] = pd.DataFrame(pv_cols).reindex(canonical_index)
                 per_model_pv_totals[model_id] = pv_total_sum
                 missing_vars_by_model[model_id] = missing_vars
                 derived_irradiance_by_model[model_id] = bool(derived_irradiance)
+                derived_irradiance_hours_by_model[model_id] = int(derived_irradiance_hours)
+                fetch_meta_by_model[model_id] = dict(fetch_meta) if isinstance(fetch_meta, dict) else {}
                 weather_ok[model_id] = weather
                 model_live_failed_used_cached[model_id] = bool(fetch_meta.get("live_failed_used_cached", False))
                 provider_payload = fetch_meta.get("provider_payload") if isinstance(fetch_meta, dict) else None
                 if isinstance(provider_payload, dict):
                     provider_payloads_by_model[model_id] = provider_payload
-                if missing_hours > 2:
-                    _LOGGER.warning("[weather_ensemble] model=%s missing_hours=%s on canonical index", model_id, int(missing_hours))
+                if int(fetch_meta.get("missing_hours_overlap", 0)) > 2:
+                    _LOGGER.warning(
+                        "[weather_ensemble] model=%s missing_hours_overlap=%s missing_hours_total=%s expected_tail_hours=%s",
+                        model_id,
+                        int(fetch_meta.get("missing_hours_overlap", 0)),
+                        int(fetch_meta.get("missing_hours_total", 0)),
+                        int(fetch_meta.get("expected_tail_hours", 0)),
+                    )
             except WeatherProviderError as exc:
                 failed_models.append(model_id)
                 failed_model_reasons[model_id] = exc.to_reason()
@@ -1460,6 +1533,7 @@ def build_ensemble_forecast(
         per_model_pv_totals_kwh=per_model_pv_totals,
         missing_vars_by_model=missing_vars_by_model,
         derived_irradiance_by_model=derived_irradiance_by_model,
+        derived_irradiance_hours_by_model=derived_irradiance_hours_by_model,
         failed_models=failed_models,
         failed_model_reasons=failed_model_reasons,
         model_live_failed_used_cached=model_live_failed_used_cached,
@@ -1470,4 +1544,5 @@ def build_ensemble_forecast(
         pv_by_model=pv_by_model,
         weather_ensemble_table=ensemble_weather,
         provider_payloads_by_model=provider_payloads_by_model,
+        fetch_meta_by_model=fetch_meta_by_model,
     )
