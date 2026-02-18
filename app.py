@@ -83,17 +83,17 @@ BADGE_META = {
     "📡": {"label": "HI-RES", "tip": "High-resolution (local). Best for short-term local cloud timing, which often improves PV ramps and hour-to-hour changes."},
     "🇪🇺": {"label": "EU", "tip": "Regional (Europe-scale). A good second opinion that is usually smoother and more stable than high-resolution models."},
     "🌐": {"label": "GLOBAL", "tip": "Global. Stable big-picture baseline for fronts and the overall weather pattern."},
-    "☀️": {"label": "SOLAR+", "tip": "Best PV inputs. This model provides the main solar irradiance fields directly, which usually improves PV accuracy."},
+    "☀": {"label": "SOLAR+", "tip": "Best PV inputs. This model provides the main solar irradiance fields directly, which usually improves PV accuracy."},
     "∑": {"label": "SOLAR∼", "tip": "Derived PV inputs. Some solar irradiance fields are missing, so we estimate them. PV still works, but accuracy can drop on difficult cloud days."},
-    "⏱️": {"label": "15m", "tip": "Uses 15-minute solar radiation (then aggregated to hourly). Can improve the PV curve shape when clouds change quickly."},
+    "⏱": {"label": "15m", "tip": "Uses 15-minute solar radiation (then aggregated to hourly). Can improve the PV curve shape when clouds change quickly."},
 }
 
 BADGE_ALIASES = {
     "⭐": "🏅",
     "🔎": "📡",
-    "🗺️": "🇪🇺",
+    "🗺": "🇪🇺",
     "🌍": "🌐",
-    "🟩": "☀️",
+    "🟩": "☀",
     "🧩": "∑",
 }
 
@@ -396,7 +396,7 @@ def last_run_status_badge(model_id: str) -> tuple[str | None, str]:
             parts.append("Missing: " + ", ".join(missing) + ".")
         if derived:
             parts.append("Solar irradiance components were derived/approximated.")
-        return ("⚠️", " ".join(parts))
+        return ("⚠", " ".join(parts))
 
     return (None, "")
 
@@ -409,7 +409,7 @@ def render_weather_models(
 ) -> list[str]:
     with st.expander("Weather models", expanded=True):
         st.caption("Select which weather models to use. We combine them automatically using Belgium-tuned weighting.")
-        st.caption("After you run a forecast, we show warnings (⚠️) or failures (❌) next to models if needed.")
+        st.caption("After you run a forecast, we show warnings (⚠) or failures (❌) next to models if needed.")
 
         model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
         selected_models: list[str] = []
@@ -610,61 +610,104 @@ def get_preset_columns(columns: tuple[str, ...], preset: str, table_kind: str) -
 
 
 def weather_code_to_icon(weather_code: int | float | str | None) -> str:
+    """
+    Map Open-Meteo/WMO weather codes to clear, modern emojis.
+    Accepts int codes or string labels; returns an emoji.
+    """
     if weather_code is None:
-        return "🌥️"
+        return "❔"
 
+    # Support string labels (defensive)
     if isinstance(weather_code, str):
-        token = weather_code.strip().lower()
-        symbol_map = {
-            "clear": "☀️",
-            "clearsky": "☀️",
-            "sunny": "☀️",
-            "mainly_clear": "🌤️",
+        key = weather_code.strip().lower()
+        label_map = {
+            "clear": "☀",
+            "sunny": "☀",
+            "mainly_clear": "🌤",
             "partly_cloudy": "⛅",
-            "partlycloudy": "⛅",
-            "cloudy": "☁️",
-            "overcast": "☁️",
-            "fog": "🌫️",
-            "drizzle": "🌦️",
-            "rain": "🌧️",
-            "snow": "🌨️",
-            "sleet": "🌨️",
-            "thunder": "⛈️",
+            "cloudy": "☁",
+            "overcast": "☁",
+            "fog": "🌫",
+            "mist": "🌫",
+            "drizzle": "🌦",
+            "rain": "🌧",
+            "showers": "🌧",
+            "snow": "🌨",
+            "sleet": "🌨",
+            "thunderstorm": "⛈",
         }
-        if token in symbol_map:
-            return symbol_map[token]
+        return label_map.get(key, "❔")
 
-        for key, value in symbol_map.items():
-            if key in token:
-                return value
-
+    # Numeric WMO mapping
     try:
-        code = int(float(weather_code))
-    except (TypeError, ValueError):
-        return "🌥️"
+        code = int(weather_code)
+    except Exception:
+        return "❔"
+
     if code == 0:
-        return "☀️"
+        return "☀"      # Clear sky
     if code == 1:
-        return "🌤️"
+        return "🌤"     # Mainly clear
     if code == 2:
-        return "⛅"
+        return "⛅"      # Partly cloudy
     if code == 3:
-        return "☁️"
+        return "☁"      # Overcast
+
     if code in (45, 48):
-        return "🌫️"
-    if code in (51, 53, 55, 56, 57):
-        return "🌦️"
-    if code in (61, 63, 65, 66, 67):
-        return "🌧️"
-    if code in (71, 73, 75, 77, 85, 86):
-        return "🌨️"
-    if code in (80, 81):
-        return "🌦️"
-    if code == 82:
-        return "🌧️"
+        return "🌫"     # Fog / depositing rime fog
+
+    if 51 <= code <= 57:
+        return "🌦"     # Drizzle / freezing drizzle (light→dense)
+
+    if 61 <= code <= 67:
+        return "🌧"     # Rain / freezing rain (light→heavy)
+
+    if 71 <= code <= 77:
+        return "🌨"     # Snow fall / snow grains
+
+    if 80 <= code <= 82:
+        return "🌧"     # Rain showers (slight/moderate/violent)
+
+    if code in (85, 86):
+        return "🌨"     # Snow showers
+
     if code in (95, 96, 99):
-        return "⛈️"
-    return "🌥️"
+        return "⛈"     # Thunderstorm (slight/heavy w hail)
+
+    return "❔"
+
+
+def weather_code_to_label(weather_code):
+    if weather_code is None:
+        return "Unknown"
+    try:
+        code = int(weather_code)
+    except Exception:
+        return str(weather_code)
+
+    if code == 0:
+        return "Clear sky"
+    if code == 1:
+        return "Mainly clear"
+    if code == 2:
+        return "Partly cloudy"
+    if code == 3:
+        return "Overcast"
+    if code in (45, 48):
+        return "Fog"
+    if 51 <= code <= 57:
+        return "Drizzle"
+    if 61 <= code <= 67:
+        return "Rain"
+    if 71 <= code <= 77:
+        return "Snow"
+    if 80 <= code <= 82:
+        return "Rain showers"
+    if code in (85, 86):
+        return "Snow showers"
+    if code in (95, 96, 99):
+        return "Thunderstorm"
+    return "Unknown"
 
 
 def render_pv_week_ahead_widget(items: list[dict]) -> None:
@@ -694,7 +737,12 @@ def render_pv_week_ahead_widget(items: list[dict]) -> None:
         if not pd.isna(pv_p10_raw) and not pd.isna(pv_p90_raw):
             pv_range = f"{float(pv_p10_raw):.1f}–{float(pv_p90_raw):.1f} kWh"
 
-        icon = weather_code_to_icon(item.get("weather_code"))
+        code_value = item.get("weather_code")
+        icon = weather_code_to_icon(code_value)
+        if code_value is None:
+            icon_tooltip = "No weather_code in pv_week_ahead payload"
+        else:
+            icon_tooltip = f"WMO code: {code_value}&#10;Meaning: {weather_code_to_label(code_value)}"
         with col:
             st.markdown(
                 (
@@ -702,7 +750,7 @@ def render_pv_week_ahead_widget(items: list[dict]) -> None:
                     "background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));text-align:center;'>"
                     f"<div style='font-size:0.72rem;opacity:0.8;'>{label}</div>"
                     f"<div style='font-size:0.7rem;opacity:0.75;margin-top:0.05rem;'>{date_label}</div>"
-                    f"<div style='font-size:1.2rem;margin-top:0.25rem;'>{icon}</div>"
+                    f"<div title='{icon_tooltip}' style='font-size:1.2rem;margin-top:0.25rem;cursor:help;'>{icon}</div>"
                     f"<div style='font-size:1rem;font-weight:700;margin-top:0.2rem;'>{pv_p50:.1f} kWh</div>"
                     f"<div style='font-size:0.68rem;opacity:0.75;margin-top:0.12rem;min-height:1.1em;'>{pv_range}</div>"
                     "</div>"
@@ -888,18 +936,24 @@ def metric_with_help(container, label: str, value: str) -> None:
     container.metric(label="", value=value)
 
 
-def render_pv_quality_widget(container, pv_df: pd.DataFrame, pv_quality_dict: dict, tomorrow_date: dt.date) -> None:
+def render_pv_quality_widget(
+    container,
+    pv_df: pd.DataFrame,
+    pv_quality_dict: dict,
+    tomorrow_date: dt.date,
+    tomorrow_weather_code: int | float | str | None = None,
+) -> None:
     _ = pv_df
     fallback_note = ""
     if pv_quality_dict.get("is_fallback"):
         fallback_note = "<div style='font-size:0.72rem;opacity:0.75;margin-top:0.25rem;'>(fallback scoring)</div>"
 
     quality_emojis = {
-        "Excellent": "☀️",
-        "Good": "🌤️",
-        "Mixed": "⛅",
-        "Poor": "🌥️",
-        "Very low": "🌧️",
+        "Excellent": "🟢",
+        "Good": "🟩",
+        "Mixed": "🟨",
+        "Poor": "🟧",
+        "Very low": "🟥",
     }
     score = int(pv_quality_dict["score"])
     ratio_percent = max(0.0, min(float(pv_quality_dict.get("ratio", 0.0)) * 100.0, 100.0))
@@ -984,11 +1038,15 @@ def render_pv_quality_widget(container, pv_df: pd.DataFrame, pv_quality_dict: di
     else:
         savings_html = "<div style='margin-top:0.50rem;font-size:0.70rem;opacity:0.78;'>Run forecast to see € savings.</div>"
 
-    pv_icon = quality_emojis.get(pv_quality_dict["label"], "☁️")
-    icon_html = (
+    pv_icon = quality_emojis.get(pv_quality_dict["label"], "🟨")
+    weather_icon = weather_code_to_icon(tomorrow_weather_code)
+    icons_html = (
         "<div title='PV quality indicator (not a weather forecast)' "
         "style='font-size:1.25rem;line-height:1;'>"
         f"{pv_icon}</div>"
+        "<div title='Tomorrow weather (from forecast)' "
+        "style='font-size:1.25rem;line-height:1;'>"
+        f"{weather_icon}</div>"
     )
 
     container.markdown(
@@ -996,7 +1054,9 @@ def render_pv_quality_widget(container, pv_df: pd.DataFrame, pv_quality_dict: di
             "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.65rem 0.75rem;"
             "background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));min-width:245px;'>"
             "<div style='display:flex;align-items:center;justify-content:space-between;gap:0.5rem;'>"
-            f"{icon_html}"
+            "<div style='display:flex;align-items:center;gap:0.35rem;'>"
+            f"{icons_html}"
+            "</div>"
             "<div style='font-size:0.72rem;opacity:0.8;text-transform:uppercase;letter-spacing:0.06em;'>PV Outlook</div>"
             f"<div style='font-size:0.9rem;font-weight:700;color:{pv_quality_dict['color']};'>{score}/100</div>"
             "</div>"
@@ -1214,7 +1274,7 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
         if status_raw == "error":
             status_label = "❌ Error"
         elif status_raw == "degraded" or warnings_count > 0:
-            status_label = "⚠️ Degraded"
+            status_label = "⚠ Degraded"
         else:
             status_label = "✅ OK"
 
@@ -1991,7 +2051,7 @@ def _render_history_log_block() -> None:
             with f1:
                 selected_date_range = st.date_input("Date range", value=(date_min, date_max), min_value=date_min, max_value=date_max)
             with f2:
-                status_options = ["✅ OK", "⚠️ Degraded", "❌ Error"]
+                status_options = ["✅ OK", "⚠ Degraded", "❌ Error"]
                 status_filter = st.multiselect("Status", options=status_options, default=status_options)
 
             run_type_filter: list[str] | None = None
@@ -2063,7 +2123,7 @@ def _render_history_log_block() -> None:
                     display_df = display_df.drop(columns=["Run at"])
 
             display_df["Allowed AC charge power"] = display_df["Charge"]
-            display_df["Warnings badge"] = display_df["warnings_count"].apply(lambda n: f"⚠️ {int(n)}" if int(n or 0) > 0 else "✅ 0")
+            display_df["Warnings badge"] = display_df["warnings_count"].apply(lambda n: f"⚠ {int(n)}" if int(n or 0) > 0 else "✅ 0")
             pv_p10_vals = pd.to_numeric(display_df["PV p10"], errors="coerce")
             pv_p90_vals = pd.to_numeric(display_df["PV p90"], errors="coerce")
             pv_range_width = (pv_p90_vals - pv_p10_vals).round(2)
@@ -3030,6 +3090,11 @@ if run:
             grid_export = float(metrics.get("grid_export", 0.0))
             weather_ensemble = result.get("weather_ensemble", {}) if isinstance(result.get("weather_ensemble"), dict) else {}
             pv_week_ahead = result.get("pv_week_ahead") if isinstance(result.get("pv_week_ahead"), list) else []
+            tomorrow_weather_code = None
+            if isinstance(result, dict):
+                pwa = result.get("pv_week_ahead") or []
+                if isinstance(pwa, list) and len(pwa) > 0 and isinstance(pwa[0], dict):
+                    tomorrow_weather_code = pwa[0].get("weather_code")
             weather_primary_model_id = result.get("weather_primary_model_id")
             weather_ensemble_table_payload = result.get("weather_ensemble_table")
             weather_by_model_payload = result.get("weather_by_model")
@@ -3058,7 +3123,13 @@ if run:
                     cutoff_note=cutoff_reason_ui,
                 )
             with top_right:
-                render_pv_quality_widget(top_right, pv, pv_quality, tomorrow)
+                render_pv_quality_widget(
+                    top_right,
+                    pv,
+                    pv_quality,
+                    tomorrow,
+                    tomorrow_weather_code=tomorrow_weather_code,
+                )
 
             render_pv_week_ahead_widget(pv_week_ahead)
 

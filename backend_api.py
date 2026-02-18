@@ -120,6 +120,70 @@ class ActualsHourlyPayload(BaseModel):
 
 
 
+def _wmo_severity(code: int) -> int:
+    # Higher = more severe / more “weather impact”
+    if code in (95, 96, 99):
+        return 6  # thunderstorm
+    if 61 <= code <= 67 or 80 <= code <= 82:
+        return 5  # rain / showers
+    if 71 <= code <= 77 or code in (85, 86):
+        return 4  # snow
+    if 51 <= code <= 57:
+        return 3  # drizzle
+    if code in (45, 48):
+        return 2  # fog
+    if code in (3,):
+        return 2  # overcast
+    if code in (2,):
+        return 1  # partly cloudy
+    if code in (1, 0):
+        return 0  # clear-ish
+    return 1
+
+
+def _best_of_day_weather_code(day_df: pd.DataFrame) -> int | None:
+    # Expect columns: 'weather_code' and datetime index or 'time'
+    if day_df is None or day_df.empty or "weather_code" not in day_df.columns:
+        return None
+
+    # Daytime filter: 08:00–18:00
+    df = day_df.copy()
+    if isinstance(df.index, pd.DatetimeIndex):
+        hours = df.index.hour
+    elif "time" in df.columns and isinstance(df["time"], pd.Series):
+        hours = pd.to_datetime(df["time"]).dt.hour
+    else:
+        return None
+
+    df = df[(hours >= 8) & (hours <= 18)]
+    if df.empty:
+        return None
+
+    # Build weighted counts
+    counts: dict[int, float] = {}
+    for v in df["weather_code"].dropna().tolist():
+        try:
+            c = int(v)
+        except Exception:
+            continue
+        sev = _wmo_severity(c)
+        # Weight scheme: base frequency + severity boost
+        w = 1.0 + (sev * 0.35)
+        counts[c] = counts.get(c, 0.0) + w
+
+    if not counts:
+        return None
+
+    # Choose max weighted, tie-break by highest severity
+    best_score = max(counts.values())
+    candidates = [c for c, score in counts.items() if score == best_score]
+    if len(candidates) == 1:
+        return candidates[0]
+
+    candidates.sort(key=lambda c: _wmo_severity(c), reverse=True)
+    return candidates[0]
+
+
 def _build_pv_week_ahead(
     *,
     target_date: dt.date,
@@ -148,30 +212,11 @@ def _build_pv_week_ahead(
         daily_weather = weather_code[(weather_code.index >= day_start) & (weather_code.index < day_end)] if not weather_code.empty else pd.Series(dtype=float)
         representative_code: int | None = None
         if not daily_weather.empty:
-            # Prefer the weather code from the hour with the highest expected PV production.
-            # This keeps the icon representative for solar output instead of overnight conditions.
-            pv_for_icon = day_p50.reindex(daily_weather.index)
-            pv_for_icon = pd.to_numeric(pv_for_icon, errors="coerce")
-            # Only use the peak-PV hour when there is an actual daytime PV signal.
-            # With all-zero winter days, idxmax() would otherwise select midnight,
-            # which can make the icon look like it was copied from overnight weather.
-            if pv_for_icon.fillna(0.0).gt(0.0).any():
-                peak_pv_idx = pv_for_icon.fillna(-1.0).idxmax()
-                peak_matches = daily_weather[daily_weather.index == peak_pv_idx]
-                if not peak_matches.empty and pd.notna(peak_matches.iloc[0]):
-                    representative_code = int(peak_matches.iloc[0])
-
-            if representative_code is None:
-                noon_ts = day_start + dt.timedelta(hours=12)
-                noon_matches = daily_weather[daily_weather.index == noon_ts]
-                if not noon_matches.empty and pd.notna(noon_matches.iloc[0]):
-                    representative_code = int(noon_matches.iloc[0])
-                else:
-                    mode_vals = daily_weather.dropna().mode()
-                    if not mode_vals.empty:
-                        representative_code = int(mode_vals.iloc[0])
-                    elif daily_weather.notna().any():
-                        representative_code = int(daily_weather.dropna().iloc[0])
+            day_weather_df = pd.DataFrame({"weather_code": daily_weather})
+            representative_code = _best_of_day_weather_code(day_weather_df)
+            if representative_code is None and daily_weather.notna().any():
+                # Fallback for days with data but no daytime samples.
+                representative_code = int(daily_weather.dropna().iloc[0])
 
         item: dict[str, float | int | str | None] = {
             "date": day_start.date().isoformat(),
@@ -546,7 +591,7 @@ class BackendState:
         weather_by_model = getattr(ensemble, "weather_by_model", {}) or {}
 
         if primary_id and primary_id in weather_by_model:
-            primary_df = weather_by_model[primary_id].df
+            primary_df = getattr(weather_by_model[primary_id], "df", None)
             if isinstance(primary_df, pd.DataFrame):
                 weather_code_series = primary_df.get("weather_code")
 
