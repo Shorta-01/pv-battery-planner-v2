@@ -619,3 +619,63 @@ def test_fetch_open_meteo_logs_structured_failure(monkeypatch: pytest.MonkeyPatc
     assert "status=429" in msg
     assert "category=rate_limited" in msg
     assert "outcome=failed" in msg
+
+def test_irradiance_anomaly_excludes_model_and_keeps_ensemble_running(
+    monkeypatch: pytest.MonkeyPatch,
+    hourly_index: pd.DatetimeIndex,
+) -> None:
+    loc = core.Location(name="x", latitude=50.8, longitude=4.3)
+    weather_df = pd.DataFrame(
+        {
+            "temp_air_c": [10.0] * len(hourly_index),
+            "ghi_wm2": [0.0] * len(hourly_index),
+            "dni_wm2": [0.0] * len(hourly_index),
+            "dhi_wm2": [0.0] * len(hourly_index),
+            "cloud_cover_pct": [0.0] * len(hourly_index),
+            "wind_speed_ms": [1.0] * len(hourly_index),
+        },
+        index=hourly_index,
+    )
+
+    def fake_weather(model_id, *_args, **_kwargs):
+        out = weather_df.copy()
+        if model_id == "dwd_icon_d2":
+            out["ghi_wm2"] = 50000.0
+            out["shortwave_radiation"] = 50000.0
+        else:
+            out["ghi_wm2"] = 50.0
+            out["shortwave_radiation"] = 50.0
+        return core.ForecastResult(df=out, sunrise=hourly_index[7].to_pydatetime(), sunset=hourly_index[17].to_pydatetime()), [], False
+
+    def fake_build_pv(df, _loc, tz=None):
+        s = pd.Series([1.0] * len(df.index), index=df.index)
+        return pd.DataFrame(
+            {
+                "pv_total_kwh": s,
+                "pv_total_unclipped_kwh": s,
+                "pv_east_kwh": s / 2,
+                "pv_south_kwh": s / 2,
+                "pv_clipped_kwh": [0.0] * len(df.index),
+            },
+            index=df.index,
+        )
+
+    monkeypatch.setattr(we, "fetch_open_meteo_weather", fake_weather)
+    monkeypatch.setattr(core, "build_pv_forecast", fake_build_pv)
+
+    out = we.build_ensemble_forecast(
+        loc=loc,
+        target_date=dt.date(2026, 1, 10),
+        tz="Europe/Brussels",
+        weather_models=["knmi_harmonie_arome", "dwd_icon_d2"],
+        ensemble_method="mean",
+        pv_uncertainty=False,
+        accuracy_mode=True,
+        fast_mode=False,
+    )
+
+    assert "dwd_icon_d2" in out.failed_models
+    assert out.failed_model_reasons["dwd_icon_d2"]["category"] == "irradiance_anomaly"
+    assert "irradiance anomaly" in out.failed_model_reasons["dwd_icon_d2"]["message"]
+    assert out.selected_models == ["knmi_harmonie_arome"]
+    assert out.pv_ensemble_p50.sum() > 0

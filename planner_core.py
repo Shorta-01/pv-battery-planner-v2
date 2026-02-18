@@ -96,6 +96,9 @@ IRR_REL_ERR_POINT_THRESHOLD = 0.35
 IRR_BAD_POINT_FRACTION = 0.40
 IRR_MIN_GHI_WM2 = 5.0
 IRR_REPAIR_METHOD = "disc"  # or "erbs"
+IRRADIANCE_HOURLY_MAX_WM2 = 1400.0
+IRRADIANCE_HOURLY_EXTREME_WM2 = 2500.0
+IRRADIANCE_DAILY_CLEARSKY_FACTOR = 1.35
 CLOUD_ATTENUATION_EXPONENT = 3.4
 CLOUD_ATTENUATION_WEIGHT = 0.75
 CLOUD_TRANSMITTANCE_MIN = 0.08
@@ -1460,6 +1463,51 @@ def normalize_hourly_forecast_index(df: "pd.DataFrame", date: dt.date, tz: str) 
 # PV forecast (pvlib-only)
 # ============================================================
 
+def irradiance_sanity_warnings(
+    df: "pd.DataFrame",
+    loc: "Location",
+    tz: str,
+    *,
+    model_id: str = "forecast",
+) -> list[str]:
+    warnings_out: list[str] = []
+    if "ghi_wm2" not in df.columns or df.empty:
+        return warnings_out
+
+    ghi = pd.to_numeric(df.get("ghi_wm2"), errors="coerce")
+    if ghi.notna().sum() == 0:
+        return warnings_out
+
+    max_ghi = float(ghi.max(skipna=True)) if ghi.notna().any() else 0.0
+    sustained_mask = ghi > IRRADIANCE_HOURLY_MAX_WM2
+    sustained_count = int(sustained_mask.sum())
+    extreme_count = int((ghi > IRRADIANCE_HOURLY_EXTREME_WM2).sum())
+
+    if sustained_count > 0:
+        sample_hours = [str(ts) for ts in ghi.index[sustained_mask][:5]]
+        warnings_out.append(
+            f"irradiance anomaly model={model_id}: hourly_ghi_exceeds={IRRADIANCE_HOURLY_MAX_WM2:.0f}W/m² "
+            f"count={sustained_count} extreme_count={extreme_count} max_ghi={max_ghi:.1f} sample_hours={sample_hours}"
+        )
+
+    if PVLIB_AVAILABLE and getattr(df.index, "tz", None) is not None:
+        try:
+            pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz)
+            clear = pvloc.get_clearsky(df.index.tz_convert(tz), model="ineichen")
+            clear_ghi = pd.to_numeric(clear.get("ghi"), errors="coerce").reindex(df.index).fillna(0.0).clip(lower=0.0)
+            measured_wh = float(ghi.fillna(0.0).clip(lower=0.0).sum())
+            clear_wh = float(clear_ghi.sum())
+            ratio = measured_wh / max(clear_wh, 1.0)
+            if measured_wh > clear_wh * IRRADIANCE_DAILY_CLEARSKY_FACTOR:
+                warnings_out.append(
+                    f"irradiance anomaly model={model_id}: daily_ghi_integral_whm2={measured_wh:.1f} "
+                    f"clear_sky_whm2={clear_wh:.1f} ratio={ratio:.2f} limit={IRRADIANCE_DAILY_CLEARSKY_FACTOR:.2f}"
+                )
+        except Exception:
+            pass
+
+    return warnings_out
+
 def estimate_pv_with_pvlib(
     df: "pd.DataFrame",
     loc: Location,
@@ -1503,7 +1551,13 @@ def estimate_pv_with_pvlib(
     irradiance_cols = ["ghi_wm2", "dni_wm2", "dhi_wm2"]
     missing_irr_cols = [c for c in irradiance_cols if c not in df_local.columns]
     irr_nan_ratio = float(df_local[irradiance_cols].isna().mean().mean()) if not missing_irr_cols else 1.0
-    use_clearsky = bool(missing_irr_cols) or irr_nan_ratio > 0.5
+    irradiance_anomalies = irradiance_sanity_warnings(df_local, loc, tz_use, model_id="pv_input")
+    use_clearsky = bool(missing_irr_cols) or irr_nan_ratio > 0.5 or bool(irradiance_anomalies)
+    if irradiance_anomalies:
+        print(
+            "Irradiance sanity fallback to clear-sky triggered: "
+            + " | ".join(irradiance_anomalies)
+        )
 
     if use_clearsky:
         provider_ghi = pd.to_numeric(df_local.get("ghi_wm2"), errors="coerce") if "ghi_wm2" in df_local.columns else pd.Series(np.nan, index=df_local.index)

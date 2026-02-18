@@ -133,6 +133,10 @@ _WEATHER_CACHE_TTL_S = 600
 _SESSION: requests.Session | None = None
 _LOGGER = logging.getLogger(__name__)
 
+IRRADIANCE_HOURLY_MAX_WM2 = 1400.0
+IRRADIANCE_HOURLY_EXTREME_WM2 = 2500.0
+IRRADIANCE_DAILY_CLEARSKY_FACTOR = 1.35
+
 
 @dataclass
 class EnsembleWeatherResult:
@@ -181,6 +185,60 @@ class WeatherProviderError(RuntimeError):
         if self.provider_reason is not None:
             reason["provider_reason"] = self.provider_reason
         return reason
+
+
+def check_irradiance_sanity(
+    df: pd.DataFrame,
+    model_id: str,
+    *,
+    loc: core.Location | None = None,
+    tz: str | None = None,
+) -> list[str]:
+    warnings: list[str] = []
+    if df.empty or "ghi_wm2" not in df.columns:
+        return warnings
+
+    ghi = pd.to_numeric(df.get("ghi_wm2"), errors="coerce")
+    if ghi.empty or ghi.notna().sum() == 0:
+        return warnings
+
+    max_ghi = float(ghi.max(skipna=True)) if ghi.notna().any() else 0.0
+    sustained_mask = ghi > IRRADIANCE_HOURLY_MAX_WM2
+    sustained_count = int(sustained_mask.sum())
+    extreme_count = int((ghi > IRRADIANCE_HOURLY_EXTREME_WM2).sum())
+    sustained_hours = sorted(str(ts) for ts in ghi.index[sustained_mask][:5])
+
+    if sustained_count > 0:
+        msg = (
+            f"irradiance anomaly model={model_id}: hourly_ghi_exceeds={IRRADIANCE_HOURLY_MAX_WM2:.0f}W/m² "
+            f"count={sustained_count} extreme_count={extreme_count} max_ghi={max_ghi:.1f} "
+            f"sample_hours={sustained_hours}"
+        )
+        warnings.append(msg)
+
+    tz_use = tz or (str(df.index.tz) if getattr(df.index, "tz", None) is not None else core.TIMEZONE)
+    loc_use = loc or core.Location("default", core.LATITUDE, core.LONGITUDE)
+    if core.PVLIB_AVAILABLE and getattr(df.index, "tz", None) is not None:
+        try:
+            import pvlib  # type: ignore
+
+            pvloc = pvlib.location.Location(latitude=loc_use.latitude, longitude=loc_use.longitude, tz=tz_use)
+            cs = pvloc.get_clearsky(df.index.tz_convert(tz_use), model="ineichen")
+            clear_ghi = pd.to_numeric(cs.get("ghi"), errors="coerce").reindex(df.index).fillna(0.0).clip(lower=0.0)
+            measured_wh = float(ghi.fillna(0.0).clip(lower=0.0).sum())
+            clear_wh = float(clear_ghi.sum())
+            ratio = measured_wh / max(clear_wh, 1.0)
+            if measured_wh > (clear_wh * IRRADIANCE_DAILY_CLEARSKY_FACTOR):
+                warnings.append(
+                    "irradiance anomaly model="
+                    f"{model_id}: daily_ghi_integral_whm2={measured_wh:.1f} clear_sky_whm2={clear_wh:.1f} "
+                    f"ratio={ratio:.2f} limit={IRRADIANCE_DAILY_CLEARSKY_FACTOR:.2f} "
+                    f"date={df.index[0].date().isoformat()} lat={loc_use.latitude:.4f} lon={loc_use.longitude:.4f}"
+                )
+        except Exception as exc:
+            _LOGGER.debug("[weather_ensemble] check_irradiance_sanity skipped model=%s err=%s", model_id, exc)
+
+    return warnings
 
 
 def _safe_provider_reason(resp: Any) -> str:
@@ -781,6 +839,13 @@ def build_ensemble_forecast(
         )
         missing_hours = float(weather.df.reindex(canonical_index).isna().all(axis=1).sum())
         model_weather_df = weather.df.reindex(canonical_index).copy()
+        sanity_warnings = check_irradiance_sanity(model_weather_df, model_id, loc=loc, tz=tz)
+        if sanity_warnings:
+            raise WeatherProviderError(
+                category="irradiance_anomaly",
+                message=sanity_warnings[0],
+                provider_reason=" | ".join(sanity_warnings),
+            )
         for irr_col in ["ghi_wm2", "dni_wm2", "dhi_wm2", "cloud_cover_pct"]:
             if irr_col in model_weather_df.columns:
                 model_weather_df[irr_col] = pd.to_numeric(model_weather_df[irr_col], errors="coerce").fillna(0.0).clip(lower=0.0)
