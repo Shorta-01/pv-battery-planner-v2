@@ -858,19 +858,10 @@ class BackendState:
             "p50": float(ensemble.pv_ensemble_p50.sum()),
             "p90": float(ensemble.pv_ensemble_p90.sum()) if ensemble.pv_ensemble_p90 is not None else None,
         }
-        usable_model_totals = [
-            float(v)
-            for v in (ensemble.per_model_pv_totals_kwh or {}).values()
-            if v is not None
-        ]
         pv_tomorrow_low_high_kwh = (
-            {
-                "low": float(min(usable_model_totals)),
-                "high": float(max(usable_model_totals)),
-                "valid_models": int(len(usable_model_totals)),
-            }
-            if len(usable_model_totals) >= 2
-            else None
+            dict(ensemble.pv_tomorrow_low_high_kwh)
+            if isinstance(ensemble.pv_tomorrow_low_high_kwh, dict)
+            else {"low": None, "high": None, "valid_models": 0}
         )
         run_duration_ms = int((time.perf_counter() - run_started) * 1000)
         inputs_used = {
