@@ -82,3 +82,63 @@ def test_insert_forecast_run_persists_model_hourly_weather_and_pv(tmp_path):
     assert pv_count == expected
     assert weather_distinct_pk == expected
     assert pv_distinct_pk == expected
+
+
+def test_insert_forecast_run_persists_provider_payload_rows(tmp_path):
+    db_path = tmp_path / "planner.sqlite"
+    init_db(str(db_path))
+
+    payload = {
+        "run_id": "run-provider-payloads-1",
+        "target_date": "2026-03-01",
+        "run_at_utc": "2026-02-29T23:10:00+00:00",
+        "metrics": {"pv_forecast_kwh": 3.0, "cons_forecast_kwh": 10.0},
+        "provider_payloads_by_model": {
+            "ecmwf_ifs": {
+                "fetched_at_utc": "2026-02-29T23:10:01+00:00",
+                "endpoint": "https://api.open-meteo.com/v1/ecmwf",
+                "params": {"latitude": 50.9, "longitude": 4.3, "models": "ifs"},
+                "response_headers": {"content-type": "application/json"},
+                "response_json": {"hourly": {"time": ["2026-03-01T00:00"]}},
+                "http_status": 200,
+                "latency_ms": 187,
+            },
+            "dwd_icon_d2": {
+                "fetched_at_utc": "2026-02-29T23:10:02+00:00",
+                "endpoint": "https://api.open-meteo.com/v1/dwd-icon",
+                "params": {"latitude": 50.9, "longitude": 4.3, "models": "icon_d2"},
+                "response_headers": {"content-type": "application/json", "x-request-id": "req-1"},
+                "response_json": "{\"hourly\":{\"time\":[\"2026-03-01T00:00\"]}}",
+                "http_status": 200,
+                "latency_ms": 223,
+            },
+        },
+    }
+
+    insert_forecast_run(str(db_path), payload)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT model_id, fetched_at_utc, endpoint, params_json,
+                   response_headers_json, response_json, http_status, latency_ms
+            FROM provider_payloads
+            WHERE run_id = ?
+            ORDER BY model_id
+            """,
+            ("run-provider-payloads-1",),
+        ).fetchall()
+
+    assert len(rows) == 2
+    assert rows[0]["model_id"] == "dwd_icon_d2"
+    assert rows[0]["http_status"] == 200
+    assert rows[0]["latency_ms"] == 223
+    assert "icon_d2" in rows[0]["params_json"]
+    assert "content-type" in rows[0]["response_headers_json"]
+    assert "hourly" in rows[0]["response_json"]
+
+    assert rows[1]["model_id"] == "ecmwf_ifs"
+    assert rows[1]["fetched_at_utc"].startswith("2026-02-29T23:10:01")
+    assert "ecmwf" in rows[1]["endpoint"]
+    assert "latitude" in rows[1]["params_json"]

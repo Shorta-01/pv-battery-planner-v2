@@ -200,6 +200,7 @@ DEFAULT_CONFIG = {
         ]
     },
     "weather": {
+        "store_provider_payloads": False,
         "dynamic_weights": {
             "enabled": False,
             "lookback_days": 30,
@@ -425,6 +426,10 @@ def validate_config(cfg: dict) -> None:
     enable_invariant_checks = system.get("enable_invariant_checks", ENABLE_INVARIANT_CHECKS)
     if not isinstance(enable_invariant_checks, bool):
         raise ValueError("system.enable_invariant_checks must be a boolean.")
+
+    store_provider_payloads = weather.get("store_provider_payloads", False) if isinstance(weather, dict) else False
+    if not isinstance(store_provider_payloads, bool):
+        raise ValueError("weather.store_provider_payloads must be a boolean.")
 
     dynamic_weights = weather.get("dynamic_weights", {}) if isinstance(weather, dict) else {}
     enabled = dynamic_weights.get("enabled", False)

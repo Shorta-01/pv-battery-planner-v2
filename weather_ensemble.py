@@ -149,6 +149,7 @@ _CIRCUIT_BREAKER_LOADED = False
 IRRADIANCE_HOURLY_MAX_WM2 = 1400.0
 IRRADIANCE_HOURLY_EXTREME_WM2 = 2500.0
 IRRADIANCE_DAILY_CLEARSKY_FACTOR = 1.35
+MAX_PROVIDER_RESPONSE_CHARS = 250_000
 
 
 @dataclass
@@ -173,6 +174,7 @@ class EnsembleWeatherResult:
     weather_by_model: dict[str, core.ForecastResult]
     pv_by_model: dict[str, pd.DataFrame]
     weather_ensemble_table: core.ForecastResult
+    provider_payloads_by_model: dict[str, dict[str, Any]]
 
 
 class WeatherProviderError(RuntimeError):
@@ -519,7 +521,35 @@ def weather_models_payload() -> list[dict[str, Any]]:
     return rows
 
 
-def _request_open_meteo(url: str, params: dict[str, Any], model_id: str) -> dict[str, Any]:
+def _trim_text(raw: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    if len(raw) <= max_chars:
+        return raw
+    suffix = f"... [truncated {len(raw) - max_chars} chars]"
+    keep = max(0, max_chars - len(suffix))
+    return raw[:keep] + suffix
+
+
+def _serialize_bounded_json(payload: Any, max_chars: int = MAX_PROVIDER_RESPONSE_CHARS) -> str | None:
+    try:
+        serialized = json.dumps(payload, sort_keys=True, default=str)
+    except Exception:
+        return None
+    if len(serialized) <= max_chars:
+        return serialized
+    fallback = {
+        "_truncated": True,
+        "original_length": len(serialized),
+        "preview": _trim_text(serialized, max_chars=max(0, max_chars - 128)),
+    }
+    try:
+        return json.dumps(fallback, sort_keys=True)
+    except Exception:
+        return None
+
+
+def _request_open_meteo(url: str, params: dict[str, Any], model_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
     global _SESSION
     if _SESSION is None:
         retry = Retry(
@@ -537,6 +567,8 @@ def _request_open_meteo(url: str, params: dict[str, Any], model_id: str) -> dict
         session.mount("http://", adapter)
         session.mount("https://", adapter)
         _SESSION = session
+    response = None
+    request_started = time.perf_counter()
     try:
         response = _SESSION.get(url, params=params, timeout=(5, 30))
         response.raise_for_status()
@@ -578,7 +610,14 @@ def _request_open_meteo(url: str, params: dict[str, Any], model_id: str) -> dict
             status=response.status_code,
             message=f"Unexpected weather payload shape for {model_id}",
         )
-    return data
+
+    response_meta = {
+        "http_status": int(response.status_code),
+        "latency_ms": int((time.perf_counter() - request_started) * 1000),
+        "response_headers": dict(response.headers),
+        "response_json": _serialize_bounded_json(data),
+    }
+    return data, response_meta
 
 
 def _params_hash(params: dict[str, Any]) -> str:
@@ -766,6 +805,9 @@ def fetch_open_meteo_weather(
         "circuit_breaker_open": bool(circuit_open),
         "circuit_breaker_open_for_seconds": int(open_for_seconds),
     }
+    request_params = dict(params)
+    request_endpoint = str(spec["endpoint"])
+    response_meta: dict[str, Any] | None = None
 
     request_start = time.perf_counter()
     try:
@@ -775,7 +817,7 @@ def fetch_open_meteo_weather(
                 status=None,
                 message=f"Circuit breaker open for {model_id}; skip live fetch for {open_for_seconds}s",
             )
-        data = _request_open_meteo(spec["endpoint"], params, model_id=model_id)
+        data, response_meta = _request_open_meteo(spec["endpoint"], params, model_id=model_id)
         _log_model_fetch(
             model_id=model_id,
             endpoint=spec["endpoint"],
@@ -805,7 +847,7 @@ def fetch_open_meteo_weather(
             fallback_endpoint = "https://api.open-meteo.com/v1/forecast"
             fallback_start = time.perf_counter()
             try:
-                data = _request_open_meteo(fallback_endpoint, fallback_params, model_id=model_id)
+                data, response_meta = _request_open_meteo(fallback_endpoint, fallback_params, model_id=model_id)
                 _log_model_fetch(
                     model_id=model_id,
                     endpoint=fallback_endpoint,
@@ -816,6 +858,8 @@ def fetch_open_meteo_weather(
                     outcome="success",
                 )
                 fetch_meta["source"] = "forecast_fallback"
+                request_params = dict(fallback_params)
+                request_endpoint = str(fallback_endpoint)
             except WeatherProviderError as fallback_exc:
                 _log_model_fetch(
                     model_id=model_id,
@@ -845,11 +889,36 @@ def fetch_open_meteo_weather(
                     "live_failure": final_exc.to_reason(),
                 })
             else:
+                setattr(final_exc, "fetch_meta", {
+                    **fetch_meta,
+                    "provider_payload": {
+                        "fetched_at_utc": _to_utc_iso(),
+                        "endpoint": request_endpoint,
+                        "params": request_params,
+                        "http_status": final_exc.status,
+                        "latency_ms": None,
+                        "response_headers": None,
+                        "response_json": None,
+                        "source": fetch_meta.get("source"),
+                    },
+                })
                 raise final_exc
 
     if fetch_meta.get("source") == "live" or fetch_meta.get("source") == "forecast_fallback":
         _mark_provider_success(model_id)
         _store_provider_cache(model_id, target_date, run_hour, data)
+
+    provider_payload = {
+        "fetched_at_utc": _to_utc_iso(),
+        "endpoint": request_endpoint,
+        "params": request_params,
+        "http_status": response_meta.get("http_status") if isinstance(response_meta, dict) else None,
+        "latency_ms": response_meta.get("latency_ms") if isinstance(response_meta, dict) else None,
+        "response_headers": response_meta.get("response_headers") if isinstance(response_meta, dict) else None,
+        "response_json": response_meta.get("response_json") if isinstance(response_meta, dict) else _serialize_bounded_json(data),
+        "source": fetch_meta.get("source"),
+    }
+    fetch_meta["provider_payload"] = provider_payload
 
     hourly = data.get("hourly") if isinstance(data.get("hourly"), dict) else {}
     times = pd.to_datetime(hourly.get("time", []), errors="coerce")
@@ -1123,6 +1192,7 @@ def build_ensemble_forecast(
     model_live_failed_used_cached: dict[str, bool] = {}
     weather_ok: dict[str, core.ForecastResult] = {}
     pv_by_model: dict[str, pd.DataFrame] = {}
+    provider_payloads_by_model: dict[str, dict[str, Any]] = {}
 
     canonical_index = pd.date_range(
         pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz),
@@ -1191,11 +1261,19 @@ def build_ensemble_forecast(
                 derived_irradiance_by_model[model_id] = bool(derived_irradiance)
                 weather_ok[model_id] = weather
                 model_live_failed_used_cached[model_id] = bool(fetch_meta.get("live_failed_used_cached", False))
+                provider_payload = fetch_meta.get("provider_payload") if isinstance(fetch_meta, dict) else None
+                if isinstance(provider_payload, dict):
+                    provider_payloads_by_model[model_id] = provider_payload
                 if missing_hours > 2:
                     _LOGGER.warning("[weather_ensemble] model=%s missing_hours=%s on canonical index", model_id, int(missing_hours))
             except WeatherProviderError as exc:
                 failed_models.append(model_id)
                 failed_model_reasons[model_id] = exc.to_reason()
+                exc_fetch_meta = getattr(exc, "fetch_meta", None)
+                if isinstance(exc_fetch_meta, dict):
+                    provider_payload = exc_fetch_meta.get("provider_payload")
+                    if isinstance(provider_payload, dict):
+                        provider_payloads_by_model[model_id] = provider_payload
                 _LOGGER.warning(
                     "[weather_ensemble] model_failed model=%s category=%s status=%s message=%s",
                     model_id,
@@ -1307,4 +1385,5 @@ def build_ensemble_forecast(
         weather_by_model=weather_ok,
         pv_by_model=pv_by_model,
         weather_ensemble_table=ensemble_weather,
+        provider_payloads_by_model=provider_payloads_by_model,
     )

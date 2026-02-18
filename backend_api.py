@@ -330,6 +330,8 @@ class BackendState:
         if not selected_models:
             raise HTTPException(status_code=400, detail="Select at least one weather model.")
         normalized_ensemble_method = str(ensemble_method).lower().strip()
+        weather_cfg = cfg.get("weather", {}) if isinstance(cfg, dict) else {}
+        store_provider_payloads = bool(weather_cfg.get("store_provider_payloads", False)) if isinstance(weather_cfg, dict) else False
 
         run_at_utc = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
         run_id = str(uuid.uuid4())
@@ -649,6 +651,9 @@ class BackendState:
                 "model_live_failed_used_cached": getattr(ensemble, "model_live_failed_used_cached", {}),
                 "fast_mode": bool(fast_mode),
             },
+            "provider_payloads_by_model": (
+                ensemble.provider_payloads_by_model if store_provider_payloads else {}
+            ),
         }
         insert_forecast_run(str(SQLITE_PATH), payload)
         self.latest_result = payload
