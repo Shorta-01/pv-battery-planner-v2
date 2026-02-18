@@ -1085,3 +1085,64 @@ def upsert_daily_score(db_path: str, payload: dict[str, Any]) -> None:
             ),
         )
         conn.commit()
+
+
+def fetch_recent_model_mae_scores(
+    db_path: str,
+    *,
+    lookback_days: int = 30,
+    source: str | None = None,
+) -> dict[str, dict[str, float]]:
+    lookback = max(int(lookback_days), 1)
+    end_date = dt.date.today()
+    start_date = end_date - dt.timedelta(days=lookback - 1)
+
+    query = """
+        SELECT score_date, model_scores_json
+        FROM daily_scores
+        WHERE score_date >= ? AND score_date <= ?
+    """
+    params: list[Any] = [start_date.isoformat(), end_date.isoformat()]
+    if source:
+        query += " AND source = ?"
+        params.append(source)
+
+    with _connect(db_path) as conn:
+        rows = conn.execute(query, tuple(params)).fetchall()
+
+    mae_values: dict[str, list[float]] = {}
+    rmse_values: dict[str, list[float]] = {}
+    day_values: dict[str, set[str]] = {}
+
+    for row in rows:
+        score_date = str(row["score_date"])
+        raw = row["model_scores_json"]
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        for model_id, metrics in parsed.items():
+            if not isinstance(metrics, dict):
+                continue
+            mae = _safe_float(metrics.get("pv_mae_kwh"))
+            rmse = _safe_float(metrics.get("pv_rmse_kwh"))
+            if mae is not None and mae >= 0.0:
+                mae_values.setdefault(str(model_id), []).append(float(mae))
+                day_values.setdefault(str(model_id), set()).add(score_date)
+            if rmse is not None and rmse >= 0.0:
+                rmse_values.setdefault(str(model_id), []).append(float(rmse))
+
+    result: dict[str, dict[str, float]] = {}
+    for model_id in sorted(set(mae_values) | set(rmse_values)):
+        maes = mae_values.get(model_id, [])
+        rmses = rmse_values.get(model_id, [])
+        result[model_id] = {
+            "pv_mae_kwh": float(sum(maes) / len(maes)) if maes else float("nan"),
+            "pv_rmse_kwh": float(sum(rmses) / len(rmses)) if rmses else float("nan"),
+            "days": float(len(day_values.get(model_id, set()))),
+        }
+    return result
