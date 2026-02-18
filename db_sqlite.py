@@ -13,6 +13,7 @@ import pandas as pd
 
 DEFAULT_TIMEZONE = "Europe/Brussels"
 CURRENT_CONFIG_SCHEMA_VERSION = 1
+MAX_PROVIDER_RESPONSE_CHARS = 250_000
 
 
 def _ensure_parent(path: Path) -> None:
@@ -110,6 +111,19 @@ def init_db(db_path: str) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_pv_hourly_model_ts ON pv_hourly_by_model (model_id, ts_local);
             CREATE INDEX IF NOT EXISTS idx_pv_hourly_run_model ON pv_hourly_by_model (run_id, model_id);
+
+            CREATE TABLE IF NOT EXISTS provider_payloads (
+                run_id TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                fetched_at_utc TEXT,
+                endpoint TEXT,
+                params_json TEXT,
+                response_headers_json TEXT,
+                response_json TEXT,
+                http_status INTEGER,
+                latency_ms INTEGER,
+                PRIMARY KEY (run_id, model_id)
+            );
 
             -- Future FusionSolar ingestion table. Join with forecast_hourly on ts_local.
             CREATE TABLE IF NOT EXISTS actual_hourly (
@@ -238,6 +252,59 @@ def _safe_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _trim_text(raw: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    if len(raw) <= max_chars:
+        return raw
+    suffix = f"... [truncated {len(raw) - max_chars} chars]"
+    keep = max(0, max_chars - len(suffix))
+    return raw[:keep] + suffix
+
+
+def _safe_json_dumps(payload: Any, *, max_chars: int | None = None) -> str | None:
+    if isinstance(payload, str):
+        serialized = payload
+    else:
+        try:
+            serialized = json.dumps(payload, sort_keys=True, default=str)
+        except Exception:
+            return None
+    if max_chars is None or len(serialized) <= max_chars:
+        return serialized
+    fallback = {
+        "_truncated": True,
+        "original_length": len(serialized),
+        "preview": _trim_text(serialized, max_chars=max(0, max_chars - 128)),
+    }
+    try:
+        return json.dumps(fallback, sort_keys=True)
+    except Exception:
+        return None
+
+
+def _normalize_provider_payload_rows(run_id: str, payload: dict[str, Any]) -> list[tuple[Any, ...]]:
+    raw = payload.get("provider_payloads_by_model")
+    if not isinstance(raw, dict):
+        return []
+    rows: list[tuple[Any, ...]] = []
+    for model_id, record in raw.items():
+        if not isinstance(record, dict):
+            continue
+        rows.append((
+            run_id,
+            str(model_id),
+            str(record.get("fetched_at_utc") or ""),
+            str(record.get("endpoint") or ""),
+            _safe_json_dumps(record.get("params")),
+            _safe_json_dumps(record.get("response_headers")),
+            _safe_json_dumps(record.get("response_json"), max_chars=MAX_PROVIDER_RESPONSE_CHARS),
+            int(record.get("http_status")) if record.get("http_status") is not None else None,
+            int(record.get("latency_ms")) if record.get("latency_ms") is not None else None,
+        ))
+    return rows
 
 
 def _required_actual_hourly_columns() -> tuple[str, ...]:
@@ -465,6 +532,7 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
     hourly_rows = _normalize_hourly(payload)
     weather_rows = _normalize_weather_by_model(payload)
     pv_model_rows = _normalize_pv_by_model(payload)
+    provider_payload_rows = _normalize_provider_payload_rows(run_id, payload)
 
     pv_forecast_kwh = _safe_float(metrics.get("pv_forecast_kwh"))
     cons_forecast_kwh = _safe_float(metrics.get("cons_forecast_kwh"))
@@ -621,6 +689,21 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
                     for model_id, ts_local, pv_east_kwh, pv_south_kwh, pv_total_kwh, pv_unclipped_kwh, pv_clipped_kwh in pv_model_rows
                 ],
             )
+
+        conn.execute("DELETE FROM provider_payloads WHERE run_id = ?", (run_id,))
+        if provider_payload_rows:
+            try:
+                conn.executemany(
+                    """
+                    INSERT OR REPLACE INTO provider_payloads (
+                        run_id, model_id, fetched_at_utc, endpoint, params_json,
+                        response_headers_json, response_json, http_status, latency_ms
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    provider_payload_rows,
+                )
+            except Exception:
+                pass
         conn.commit()
 
 

@@ -96,6 +96,7 @@ def _fake_ensemble(idx, weather, pv_uncertainty):
         failed_models=[],
         failed_model_reasons={},
         model_live_failed_used_cached={},
+        provider_payloads_by_model={},
     )
 
 
@@ -230,3 +231,33 @@ def test_run_now_all_weather_models_failed_persists_error_run(monkeypatch, tmp_p
     assert result["weather_ensemble"]["failure_reasons_by_model"]["ecmwf_ifs"]["category"] == "provider_down"
     assert inserted["payload"]["status"] == "error"
     assert inserted["payload"]["warnings_count"] == 3
+
+
+def test_run_now_includes_provider_payloads_when_enabled(monkeypatch, tmp_path):
+    state = _new_state(monkeypatch, tmp_path)
+    _patch_core_for_run(monkeypatch)
+    state.settings["config"].setdefault("weather", {})["store_provider_payloads"] = True
+
+    idx = pd.date_range("2026-01-10", periods=2, freq="h", tz="Europe/Brussels")
+    weather_df = pd.DataFrame({"temp_air_c": [10.0, 11.0], "wind_speed_ms": [1.0, 1.0], "cloud_cover_pct": [20.0, 30.0]}, index=idx)
+    weather = core.ForecastResult(df=weather_df, sunrise=idx[0].to_pydatetime(), sunset=idx[-1].to_pydatetime())
+
+    ensemble = _fake_ensemble(idx, weather, pv_uncertainty=False)
+    ensemble.provider_payloads_by_model = {
+        "ecmwf_ifs": {
+            "fetched_at_utc": "2026-01-09T22:00:00+00:00",
+            "endpoint": "https://api.open-meteo.com/v1/ecmwf",
+            "params": {"models": "ifs"},
+            "response_headers": {"content-type": "application/json"},
+            "response_json": "{\"hourly\":{}}",
+            "http_status": 200,
+            "latency_ms": 123,
+        }
+    }
+
+    monkeypatch.setattr(backend_api, "build_ensemble_forecast", lambda **_kwargs: ensemble)
+
+    result = state.run_now(backend_api.RunNowPayload(pv_uncertainty=False, weather_models=["ecmwf_ifs"]))["result"]
+
+    assert "provider_payloads_by_model" in result
+    assert result["provider_payloads_by_model"]["ecmwf_ifs"]["http_status"] == 200
