@@ -684,6 +684,49 @@ def render_pv_week_ahead_widget(items: list[dict]) -> None:
             )
 
 
+def resolve_forecast_summary_pv_kwh(
+    pv_quality_dict: dict | None,
+    pv_week_ahead: list[dict] | list[float] | None,
+    pv_df: pd.DataFrame,
+    result: dict | None,
+    metrics: dict | None,
+    weather_ensemble: dict | None,
+) -> float:
+    def _pick_float_value(*candidate_values: object) -> float | None:
+        for candidate in candidate_values:
+            value = pd.to_numeric(pd.Series([candidate]), errors="coerce").iloc[0]
+            if not pd.isna(value):
+                return float(value)
+        return None
+
+    day1_week_ahead = None
+    if isinstance(pv_week_ahead, list) and pv_week_ahead:
+        day1 = pv_week_ahead[0]
+        if isinstance(day1, dict):
+            day1_week_ahead = _pick_float_value(
+                day1.get("pv_p50_kwh"),
+                day1.get("pv_total_kwh"),
+                day1.get("pv_kwh"),
+            )
+        else:
+            day1_week_ahead = _pick_float_value(day1)
+
+    pv_total_kwh = _pick_float_value(
+        pv_quality_dict.get("pv_total_kwh") if isinstance(pv_quality_dict, dict) else None,
+        day1_week_ahead,
+        pv_df["pv_total_kwh"].sum() if "pv_total_kwh" in pv_df.columns else None,
+        result.get("pv_kwh_p50") if isinstance(result, dict) else None,
+        result.get("pv_p50_kwh") if isinstance(result, dict) else None,
+        metrics.get("pv_kwh_p50") if isinstance(metrics, dict) else None,
+        metrics.get("pv_p50_kwh") if isinstance(metrics, dict) else None,
+        weather_ensemble.get("pv_totals_kwh", {}).get("p50")
+        if isinstance(weather_ensemble, dict) and isinstance(weather_ensemble.get("pv_totals_kwh"), dict)
+        else None,
+        0.0,
+    )
+    return float(pv_total_kwh or 0.0)
+
+
 def summarize_model_diagnostics(weather_ensemble: dict) -> dict:
     if not isinstance(weather_ensemble, dict):
         return {"selected": 0, "ok": 0, "failed": 0, "failed_models": [], "derived_models": [], "missing_important": []}
@@ -2971,14 +3014,13 @@ if run:
                         return float(value)
                 return None
 
-            pv_p50 = _pick_float_value(
-                result.get("pv_kwh_p50"),
-                result.get("pv_p50_kwh"),
-                metrics.get("pv_kwh_p50") if isinstance(metrics, dict) else None,
-                metrics.get("pv_p50_kwh") if isinstance(metrics, dict) else None,
-                weather_ensemble.get("pv_totals_kwh", {}).get("p50") if isinstance(weather_ensemble.get("pv_totals_kwh"), dict) else None,
-                pv["pv_total_kwh"].sum() if "pv_total_kwh" in pv.columns else None,
-                0.0,
+            pv_p50 = resolve_forecast_summary_pv_kwh(
+                pv_quality,
+                pv_week_ahead,
+                pv,
+                result,
+                metrics,
+                weather_ensemble,
             )
             pv_low = _pick_float_value(
                 result.get("pv_kwh_p10"),
