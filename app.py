@@ -2873,18 +2873,6 @@ if run:
             metric_with_help(c2, "Forecast total load (kWh)", f"{pv['load_kwh'].sum():.2f}")
             metric_with_help(c3, "Estimated grid import (expensive h)", f"{grid_import:.2f}")
             metric_with_help(c4, "Estimated export/curtailment (kWh)", f"{(grid_export + detail_df['curtailed_kwh'].sum() if not detail_df.empty else 0.0):.2f}")
-            pv_totals = weather_ensemble.get("pv_totals_kwh") if isinstance(weather_ensemble.get("pv_totals_kwh"), dict) else {}
-            show_uncertainty = all(k in pv_totals for k in ("p10", "p90"))
-            if pv_totals:
-                st.caption(
-                    f"PV forecast P50: {float(pv_totals.get('p50', 0.0)):.2f} kWh"
-                    + (
-                        f" · Range P10–P90: {float(pv_totals.get('p10', 0.0)):.2f}–{float(pv_totals.get('p90', 0.0)):.2f} kWh"
-                        if show_uncertainty
-                        else ""
-                    )
-                )
-
             tooltip_heading("PV production vs Load (hourly)", CHART_TOOLTIPS["PV production vs Load (hourly)"])
             pv_load_fig = make_chart_pv_load(pv, soc_series, cutoff_soc, effective_cfg)
             add_tariff_and_sun_markers(pv_load_fig, tomorrow, sunrise, sunset)
