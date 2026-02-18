@@ -171,6 +171,23 @@ def init_db(db_path: str) -> None:
             if col_name not in forecast_runs_existing_cols:
                 conn.execute(f"ALTER TABLE forecast_runs ADD COLUMN {col_name} {col_type}")
 
+
+        daily_scores_existing_cols = {
+            str(row["name"]) for row in conn.execute("PRAGMA table_info(daily_scores)").fetchall()
+        }
+        for col_name, col_type in [
+            ("pv_rmse_kwh", "REAL"),
+            ("pv_bias_kwh", "REAL"),
+            ("pv_daily_forecast_kwh", "REAL"),
+            ("pv_daily_actual_kwh", "REAL"),
+            ("pv_daily_error_kwh", "REAL"),
+            ("pv_hourly_points", "INTEGER"),
+            ("source", "TEXT"),
+            ("model_scores_json", "TEXT"),
+        ]:
+            if col_name not in daily_scores_existing_cols:
+                conn.execute(f"ALTER TABLE daily_scores ADD COLUMN {col_name} {col_type}")
+
         conn.execute(
             """
             UPDATE forecast_hourly
@@ -221,6 +238,84 @@ def _safe_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _required_actual_hourly_columns() -> tuple[str, ...]:
+    return (
+        "ts_local",
+        "pv_kwh",
+        "load_kwh",
+        "grid_import_kwh",
+        "grid_export_kwh",
+        "soc_pct",
+    )
+
+
+def normalize_actual_hourly_row(row: dict[str, Any], *, strict: bool = True) -> dict[str, Any]:
+    required = _required_actual_hourly_columns()
+    row_keys = set(row.keys())
+    required_set = set(required)
+    if strict and row_keys != required_set:
+        missing = sorted(required_set - row_keys)
+        extra = sorted(row_keys - required_set)
+        parts: list[str] = []
+        if missing:
+            parts.append(f"missing={missing}")
+        if extra:
+            parts.append(f"extra={extra}")
+        raise ValueError(f"Invalid actual row columns: {' '.join(parts)}")
+
+    ts_local = _to_local_hour_str(row.get("ts_local"))
+    if not ts_local:
+        raise ValueError("Invalid ts_local value")
+
+    return {
+        "ts_local": ts_local,
+        "pv_kwh": _safe_float(row.get("pv_kwh")),
+        "load_kwh": _safe_float(row.get("load_kwh")),
+        "grid_import_kwh": _safe_float(row.get("grid_import_kwh")),
+        "grid_export_kwh": _safe_float(row.get("grid_export_kwh")),
+        "soc_pct": _safe_float(row.get("soc_pct")),
+    }
+
+
+def insert_actual_hourly_rows(db_path: str, rows: list[dict[str, Any]], *, source: str = "manual_csv") -> int:
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Each actual row must be an object")
+        normalized.append(normalize_actual_hourly_row(row, strict=True))
+
+    with _connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO actual_hourly (
+                source,
+                ts_local,
+                pv_kwh,
+                load_kwh,
+                grid_import_kwh,
+                grid_export_kwh,
+                soc_pct,
+                completeness
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    source,
+                    row["ts_local"],
+                    row["pv_kwh"],
+                    row["load_kwh"],
+                    row["grid_import_kwh"],
+                    row["grid_export_kwh"],
+                    row["soc_pct"],
+                    None,
+                )
+                for row in normalized
+            ],
+        )
+        conn.commit()
+    return len(normalized)
 
 
 def _to_local_hour_str(value: Any) -> str | None:
@@ -870,3 +965,123 @@ def fetch_latest_full_run(db_path: str) -> dict | None:
             return None
         run_id = str(row["run_id"])
     return fetch_full_run_by_id(db_path, run_id)
+
+
+def fetch_latest_run_id_for_date(db_path: str, target_date: str) -> str | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT run_id
+            FROM forecast_runs
+            WHERE target_date = ?
+            ORDER BY run_at_utc DESC
+            LIMIT 1
+            """,
+            (target_date,),
+        ).fetchone()
+    if row is None:
+        return None
+    return str(row["run_id"])
+
+
+def fetch_forecast_pv_hourly(db_path: str, run_id: str) -> list[dict[str, Any]]:
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT ts_local, pv_kwh
+            FROM forecast_hourly
+            WHERE run_id = ?
+            ORDER BY ts_local ASC
+            """,
+            (run_id,),
+        ).fetchall()
+    return [{"ts_local": str(r["ts_local"]), "pv_kwh": _safe_float(r["pv_kwh"])} for r in rows]
+
+
+def fetch_forecast_pv_hourly_by_model(db_path: str, run_id: str) -> dict[str, list[dict[str, Any]]]:
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT model_id, ts_local, pv_total_kwh
+            FROM pv_hourly_by_model
+            WHERE run_id = ?
+            ORDER BY model_id ASC, ts_local ASC
+            """,
+            (run_id,),
+        ).fetchall()
+
+    by_model: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        model_id = str(row["model_id"])
+        by_model.setdefault(model_id, []).append(
+            {
+                "ts_local": str(row["ts_local"]),
+                "pv_kwh": _safe_float(row["pv_total_kwh"]),
+            }
+        )
+    return by_model
+
+
+def fetch_actual_pv_hourly_for_date(db_path: str, score_date: str, source: str = "manual_csv") -> list[dict[str, Any]]:
+    prefix = f"{score_date}%"
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT ts_local, pv_kwh
+            FROM actual_hourly
+            WHERE source = ? AND ts_local LIKE ?
+            ORDER BY ts_local ASC
+            """,
+            (source, prefix),
+        ).fetchall()
+    return [{"ts_local": str(r["ts_local"]), "pv_kwh": _safe_float(r["pv_kwh"])} for r in rows]
+
+
+def upsert_daily_score(db_path: str, payload: dict[str, Any]) -> None:
+    model_scores_json = payload.get("model_scores")
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO daily_scores (
+                run_id,
+                score_date,
+                pv_mae_kwh,
+                pv_mape,
+                load_mae_kwh,
+                load_mape,
+                soc_mae_pct,
+                import_error_kwh,
+                export_error_kwh,
+                created_at_utc,
+                pv_rmse_kwh,
+                pv_bias_kwh,
+                pv_daily_forecast_kwh,
+                pv_daily_actual_kwh,
+                pv_daily_error_kwh,
+                pv_hourly_points,
+                source,
+                model_scores_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload.get("run_id"),
+                payload.get("score_date"),
+                payload.get("pv_mae_kwh"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                payload.get("created_at_utc") or _iso_utc_now(),
+                payload.get("pv_rmse_kwh"),
+                payload.get("pv_bias_kwh"),
+                payload.get("pv_daily_forecast_kwh"),
+                payload.get("pv_daily_actual_kwh"),
+                payload.get("pv_daily_error_kwh"),
+                payload.get("pv_hourly_points"),
+                payload.get("source") or "manual_csv",
+                json.dumps(model_scores_json or {}, sort_keys=True),
+            ),
+        )
+        conn.commit()
