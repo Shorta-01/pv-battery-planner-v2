@@ -730,19 +730,31 @@ def render_pv_week_ahead_widget(items: list[dict]) -> None:
         except Exception:
             date_label = str(date_raw or "")
 
-        pv_p50 = float(pd.to_numeric(pd.Series([item.get("pv_p50_kwh")]), errors="coerce").iloc[0] or 0.0)
-        pv_p10_raw = pd.to_numeric(pd.Series([item.get("pv_p10_kwh")]), errors="coerce").iloc[0]
-        pv_p90_raw = pd.to_numeric(pd.Series([item.get("pv_p90_kwh")]), errors="coerce").iloc[0]
+        pv_candidates = pd.to_numeric(pd.Series([item.get("p50_kwh"), item.get("pv_p50_kwh")]), errors="coerce").dropna()
+        pv_p50 = float(pv_candidates.iloc[0]) if not pv_candidates.empty else 0.0
+
+        pv_p10_raw = pd.to_numeric(pd.Series([item.get("p10_kwh"), item.get("pv_p10_kwh")]), errors="coerce").dropna()
+        pv_p90_raw = pd.to_numeric(pd.Series([item.get("p90_kwh"), item.get("pv_p90_kwh")]), errors="coerce").dropna()
         pv_range = ""
-        if not pd.isna(pv_p10_raw) and not pd.isna(pv_p90_raw):
-            pv_range = f"{float(pv_p10_raw):.1f}–{float(pv_p90_raw):.1f} kWh"
+        if not pv_p10_raw.empty and not pv_p90_raw.empty:
+            pv_range = f"{float(pv_p10_raw.iloc[0]):.1f}–{float(pv_p90_raw.iloc[0]):.1f} kWh"
 
         code_value = item.get("weather_code")
+        source_label = item.get("weather_code_source_model_label")
+        source_days = item.get("weather_code_source_max_days")
+        best_of_day = item.get("weather_best_of_day")
+
+        label_txt = weather_code_to_label(code_value)
         icon = weather_code_to_icon(code_value)
-        if code_value is None:
-            icon_tooltip = "No weather_code in pv_week_ahead payload"
-        else:
-            icon_tooltip = f"WMO code: {code_value}&#10;Meaning: {weather_code_to_label(code_value)}"
+
+        icon_tooltip = (
+            f"WMO: {code_value} ({label_txt})"
+            + (f" | Source: {source_label}" if source_label else " | Source: n/a")
+            + (f" ({source_days}d)" if source_days else "")
+            + (" | Best-of-day (08–18)" if best_of_day else "")
+        )
+        icon_tooltip = html.escape(icon_tooltip, quote=True)
+
         with col:
             st.markdown(
                 (
@@ -750,7 +762,7 @@ def render_pv_week_ahead_widget(items: list[dict]) -> None:
                     "background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));text-align:center;'>"
                     f"<div style='font-size:0.72rem;opacity:0.8;'>{label}</div>"
                     f"<div style='font-size:0.7rem;opacity:0.75;margin-top:0.05rem;'>{date_label}</div>"
-                    f"<div title='{icon_tooltip}' style='font-size:1.2rem;margin-top:0.25rem;cursor:help;'>{icon}</div>"
+                    f"<div title=\"{icon_tooltip}\" style='font-size:1.2rem;margin-top:0.25rem;cursor:help;'>{icon}</div>"
                     f"<div style='font-size:1rem;font-weight:700;margin-top:0.2rem;'>{pv_p50:.1f} kWh</div>"
                     f"<div style='font-size:0.68rem;opacity:0.75;margin-top:0.12rem;min-height:1.1em;'>{pv_range}</div>"
                     "</div>"
@@ -779,6 +791,7 @@ def resolve_forecast_summary_pv_kwh(
         day1 = pv_week_ahead[0]
         if isinstance(day1, dict):
             day1_week_ahead = _pick_float_value(
+                day1.get("p50_kwh"),
                 day1.get("pv_p50_kwh"),
                 day1.get("pv_total_kwh"),
                 day1.get("pv_kwh"),
@@ -812,6 +825,7 @@ def resolve_week_ahead_total_pv_kwh(pv_week_ahead: list[dict] | list[float] | No
         if isinstance(item, dict):
             value = pd.to_numeric(
                 pd.Series([
+                    item.get("p50_kwh"),
                     item.get("pv_p50_kwh"),
                     item.get("pv_total_kwh"),
                     item.get("pv_kwh"),
@@ -942,21 +956,57 @@ def render_pv_quality_widget(
     pv_quality_dict: dict,
     tomorrow_date: dt.date,
     tomorrow_weather_code: int | float | str | None = None,
+    tomorrow_source_label: str | None = None,
+    tomorrow_source_days: int | float | str | None = None,
 ) -> None:
     _ = pv_df
     fallback_note = ""
     if pv_quality_dict.get("is_fallback"):
         fallback_note = "<div style='font-size:0.72rem;opacity:0.75;margin-top:0.25rem;'>(fallback scoring)</div>"
 
-    quality_emojis = {
-        "Excellent": "🟢",
-        "Good": "🟩",
-        "Mixed": "🟨",
-        "Poor": "🟧",
-        "Very low": "🟥",
-    }
     score = int(pv_quality_dict["score"])
     ratio_percent = max(0.0, min(float(pv_quality_dict.get("ratio", 0.0)) * 100.0, 100.0))
+
+    def _safe_color(c: str | None, fallback: str = "#94a3b8") -> str:
+        c = (c or "").strip()
+        return c if c else fallback
+
+    def _pv_quality_chip_gauge_html(label: str, score_0_100: int, color: str, ratio_percent: float) -> str:
+        s = max(0, min(100, int(score_0_100)))
+        col = _safe_color(color)
+
+        chip_bg = "rgba(255,255,255,0.06)"
+        border = "rgba(255,255,255,0.14)"
+
+        tip = (
+            f"PV quality indicator (not weather).\n"
+            f"Score: {s}/100\n"
+            f"Clear-sky ratio: {ratio_percent:.0f}%"
+        ).replace('"', "&quot;")
+
+        return f"""
+        <div title="{tip}" style="display:flex; flex-direction:column; gap:6px; min-width:230px;"> 
+          <div style="
+            display:inline-flex; align-items:center; gap:8px;
+            padding:4px 10px; border-radius:999px;
+            background:{chip_bg}; border:1px solid {border};
+          ">
+            <span style="
+              display:inline-block; width:10px; height:10px; border-radius:50%;
+              background:{col}; box-shadow:0 0 0 2px rgba(0,0,0,0.25);
+            "></span>
+            <span style="font-weight:700;">{html.escape(label)}</span>
+            <span style="opacity:0.85;">{s}/100</span>
+          </div>
+
+          <div style="
+            height:8px; border-radius:999px; overflow:hidden;
+            background:rgba(255,255,255,0.10); border:1px solid rgba(255,255,255,0.10);
+          ">
+            <div style="height:8px; width:{s}%; background:{col}; border-radius:999px;"></div>
+          </div>
+        </div>
+        """
     offpeak_windows = core.get_offpeak_windows(tomorrow_date)
     expensive_windows = core.get_expensive_windows(tomorrow_date)
     offpeak_segments = windows_to_segments(offpeak_windows)
@@ -1038,27 +1088,39 @@ def render_pv_quality_widget(
     else:
         savings_html = "<div style='margin-top:0.50rem;font-size:0.70rem;opacity:0.78;'>Run forecast to see € savings.</div>"
 
-    pv_icon = quality_emojis.get(pv_quality_dict["label"], "🟨")
+    label_txt = str((pv_quality_dict or {}).get("label") or "PV")
+    color_txt = str((pv_quality_dict or {}).get("color") or "").strip()
+
+    pv_chip = _pv_quality_chip_gauge_html(label_txt, score, color_txt, ratio_percent)
+
     weather_icon = weather_code_to_icon(tomorrow_weather_code)
-    icons_html = (
-        "<div title='PV quality indicator (not a weather forecast)' "
-        "style='font-size:1.25rem;line-height:1;'>"
-        f"{pv_icon}</div>"
-        "<div title='Tomorrow weather (from forecast)' "
-        "style='font-size:1.25rem;line-height:1;'>"
-        f"{weather_icon}</div>"
-    )
+    weather_label = weather_code_to_label(tomorrow_weather_code) if "weather_code_to_label" in globals() else "Tomorrow weather"
+
+    w_tip = f"Tomorrow weather (forecast): {weather_label}"
+    if tomorrow_weather_code is not None:
+        w_tip += f" (WMO {tomorrow_weather_code})"
+    if tomorrow_source_label:
+        w_tip += f" | Source: {tomorrow_source_label}"
+    if tomorrow_source_days:
+        w_tip += f" ({tomorrow_source_days}d)"
+    w_tip = w_tip.replace('"', "&quot;")
+
+    icons_html = f"""
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+      {pv_chip}
+      <div title="{w_tip}" style="font-size:1.25rem; line-height:1; padding-top:2px;">
+        {weather_icon}
+      </div>
+    </div>
+    """
 
     container.markdown(
         (
             "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.65rem 0.75rem;"
             "background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));min-width:245px;'>"
-            "<div style='display:flex;align-items:center;justify-content:space-between;gap:0.5rem;'>"
-            "<div style='display:flex;align-items:center;gap:0.35rem;'>"
-            f"{icons_html}"
-            "</div>"
+            "<div style='display:flex;flex-direction:column;gap:0.35rem;'>"
             "<div style='font-size:0.72rem;opacity:0.8;text-transform:uppercase;letter-spacing:0.06em;'>PV Outlook</div>"
-            f"<div style='font-size:0.9rem;font-weight:700;color:{pv_quality_dict['color']};'>{score}/100</div>"
+            f"{icons_html}"
             "</div>"
             "<div style='margin-top:0.35rem;font-size:0.95rem;font-weight:650;'>"
             f"{pv_quality_dict['label']} day · {pv_quality_dict['pv_total_kwh']:.1f} kWh"
@@ -3091,10 +3153,14 @@ if run:
             weather_ensemble = result.get("weather_ensemble", {}) if isinstance(result.get("weather_ensemble"), dict) else {}
             pv_week_ahead = result.get("pv_week_ahead") if isinstance(result.get("pv_week_ahead"), list) else []
             tomorrow_weather_code = None
-            if isinstance(result, dict):
-                pwa = result.get("pv_week_ahead") or []
-                if isinstance(pwa, list) and len(pwa) > 0 and isinstance(pwa[0], dict):
-                    tomorrow_weather_code = pwa[0].get("weather_code")
+            tomorrow_source_label = None
+            tomorrow_source_days = None
+
+            pwa = (result or {}).get("pv_week_ahead") or []
+            if isinstance(pwa, list) and len(pwa) > 0 and isinstance(pwa[0], dict):
+                tomorrow_weather_code = pwa[0].get("weather_code")
+                tomorrow_source_label = pwa[0].get("weather_code_source_model_label")
+                tomorrow_source_days = pwa[0].get("weather_code_source_max_days")
             weather_primary_model_id = result.get("weather_primary_model_id")
             weather_ensemble_table_payload = result.get("weather_ensemble_table")
             weather_by_model_payload = result.get("weather_by_model")
@@ -3129,6 +3195,8 @@ if run:
                     pv_quality,
                     tomorrow,
                     tomorrow_weather_code=tomorrow_weather_code,
+                    tomorrow_source_label=tomorrow_source_label,
+                    tomorrow_source_days=tomorrow_source_days,
                 )
 
             render_pv_week_ahead_widget(pv_week_ahead)
