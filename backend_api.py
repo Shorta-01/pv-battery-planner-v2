@@ -152,7 +152,10 @@ def _build_pv_week_ahead(
             # This keeps the icon representative for solar output instead of overnight conditions.
             pv_for_icon = day_p50.reindex(daily_weather.index)
             pv_for_icon = pd.to_numeric(pv_for_icon, errors="coerce")
-            if pv_for_icon.notna().any():
+            # Only use the peak-PV hour when there is an actual daytime PV signal.
+            # With all-zero winter days, idxmax() would otherwise select midnight,
+            # which can make the icon look like it was copied from overnight weather.
+            if pv_for_icon.fillna(0.0).gt(0.0).any():
                 peak_pv_idx = pv_for_icon.fillna(-1.0).idxmax()
                 peak_matches = daily_weather[daily_weather.index == peak_pv_idx]
                 if not peak_matches.empty and pd.notna(peak_matches.iloc[0]):
