@@ -410,6 +410,7 @@ class BackendState:
                     "failed_models": failed_models,
                     "failure_reasons_by_model": failed_reasons,
                     "failed_model_reasons": failed_reasons,
+                    "model_live_failed_used_cached": {},
                     "fast_mode": bool(fast_mode),
                 },
                 "weather_by_model": {},
@@ -434,6 +435,10 @@ class BackendState:
         for model_id, used_derived in ensemble.derived_irradiance_by_model.items():
             if used_derived:
                 warnings.append(f"derived irradiance used: {model_id}")
+
+        for model_id, used_cached in getattr(ensemble, "model_live_failed_used_cached", {}).items():
+            if used_cached:
+                warnings.append(f"model_live_failed_used_cached=true: {model_id}")
 
         for model_id, missing_vars in ensemble.missing_vars_by_model.items():
             if not missing_vars:
@@ -641,6 +646,7 @@ class BackendState:
                 "derived_irradiance_by_model": ensemble.derived_irradiance_by_model,
                 "failed_models": ensemble.failed_models,
                 "failed_model_reasons": ensemble.failed_model_reasons,
+                "model_live_failed_used_cached": getattr(ensemble, "model_live_failed_used_cached", {}),
                 "fast_mode": bool(fast_mode),
             },
         }

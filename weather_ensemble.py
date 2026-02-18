@@ -6,6 +6,8 @@ import json
 import logging
 import math
 import time
+from pathlib import Path
+from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
@@ -134,6 +136,16 @@ _WEATHER_CACHE_TTL_S = 600
 _SESSION: requests.Session | None = None
 _LOGGER = logging.getLogger(__name__)
 
+PROVIDER_CACHE_DIR = Path("local_state/provider_cache")
+PROVIDER_CIRCUIT_STATE_PATH = PROVIDER_CACHE_DIR / "circuit_breaker_state.json"
+PROVIDER_CACHE_RETENTION_DAYS = 7
+CIRCUIT_BREAKER_FAILURE_THRESHOLD = 3
+CIRCUIT_BREAKER_OPEN_SECONDS = 10 * 60
+
+_CIRCUIT_BREAKER_STATE: dict[str, dict[str, float]] = {}
+_CIRCUIT_BREAKER_LOCK = Lock()
+_CIRCUIT_BREAKER_LOADED = False
+
 IRRADIANCE_HOURLY_MAX_WM2 = 1400.0
 IRRADIANCE_HOURLY_EXTREME_WM2 = 2500.0
 IRRADIANCE_DAILY_CLEARSKY_FACTOR = 1.35
@@ -154,6 +166,7 @@ class EnsembleWeatherResult:
     derived_irradiance_by_model: dict[str, bool]
     failed_models: list[str]
     failed_model_reasons: dict[str, dict[str, Any]]
+    model_live_failed_used_cached: dict[str, bool]
     selected_models: list[str]
     weights_used: dict[str, float] | None
     weather_primary_model_id: str
@@ -241,6 +254,192 @@ def check_irradiance_sanity(
 
     return warnings
 
+
+
+
+def _utc_now() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def _to_utc_iso(ts: dt.datetime | None = None) -> str:
+    use = ts or _utc_now()
+    if use.tzinfo is None:
+        use = use.replace(tzinfo=dt.timezone.utc)
+    return use.astimezone(dt.timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _parse_utc_timestamp(value: Any) -> dt.datetime | None:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = dt.datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, (dt.datetime, dt.date)):
+        return value.isoformat()
+    return str(value)
+
+
+def _read_json_file(path: Path, default: Any) -> Any:
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def _write_json_file(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, sort_keys=True, indent=2, default=_json_default), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _load_circuit_breaker_state() -> None:
+    global _CIRCUIT_BREAKER_LOADED
+    with _CIRCUIT_BREAKER_LOCK:
+        if _CIRCUIT_BREAKER_LOADED:
+            return
+        payload = _read_json_file(PROVIDER_CIRCUIT_STATE_PATH, default={})
+        if isinstance(payload, dict):
+            _CIRCUIT_BREAKER_STATE.clear()
+            for model_id, state in payload.items():
+                if not isinstance(state, dict):
+                    continue
+                _CIRCUIT_BREAKER_STATE[str(model_id)] = {
+                    "consecutive_failures": float(state.get("consecutive_failures", 0) or 0),
+                    "last_failure_ts": float(state.get("last_failure_ts", 0) or 0),
+                    "circuit_open_until_ts": float(state.get("circuit_open_until_ts", 0) or 0),
+                }
+        _CIRCUIT_BREAKER_LOADED = True
+
+
+def _persist_circuit_breaker_state() -> None:
+    with _CIRCUIT_BREAKER_LOCK:
+        payload = {
+            model_id: {
+                "consecutive_failures": int(state.get("consecutive_failures", 0) or 0),
+                "last_failure_ts": float(state.get("last_failure_ts", 0) or 0),
+                "circuit_open_until_ts": float(state.get("circuit_open_until_ts", 0) or 0),
+            }
+            for model_id, state in _CIRCUIT_BREAKER_STATE.items()
+        }
+    _write_json_file(PROVIDER_CIRCUIT_STATE_PATH, payload)
+
+
+def _is_circuit_open(model_id: str) -> tuple[bool, int]:
+    _load_circuit_breaker_state()
+    now_ts = time.time()
+    with _CIRCUIT_BREAKER_LOCK:
+        state = _CIRCUIT_BREAKER_STATE.get(model_id, {})
+        open_until = float(state.get("circuit_open_until_ts", 0) or 0)
+    if open_until <= now_ts:
+        return False, 0
+    return True, max(int(open_until - now_ts), 1)
+
+
+def _mark_provider_success(model_id: str) -> None:
+    _load_circuit_breaker_state()
+    changed = False
+    with _CIRCUIT_BREAKER_LOCK:
+        state = _CIRCUIT_BREAKER_STATE.get(model_id)
+        if not isinstance(state, dict):
+            return
+        if int(state.get("consecutive_failures", 0) or 0) != 0 or float(state.get("circuit_open_until_ts", 0) or 0) != 0.0:
+            state["consecutive_failures"] = 0
+            state["circuit_open_until_ts"] = 0.0
+            _CIRCUIT_BREAKER_STATE[model_id] = state
+            changed = True
+    if changed:
+        _persist_circuit_breaker_state()
+
+
+def _mark_provider_failure(model_id: str) -> dict[str, Any]:
+    _load_circuit_breaker_state()
+    now_ts = time.time()
+    with _CIRCUIT_BREAKER_LOCK:
+        state = _CIRCUIT_BREAKER_STATE.setdefault(model_id, {
+            "consecutive_failures": 0.0,
+            "last_failure_ts": 0.0,
+            "circuit_open_until_ts": 0.0,
+        })
+        failures = int(state.get("consecutive_failures", 0) or 0) + 1
+        state["consecutive_failures"] = float(failures)
+        state["last_failure_ts"] = now_ts
+        if failures >= CIRCUIT_BREAKER_FAILURE_THRESHOLD:
+            state["circuit_open_until_ts"] = now_ts + float(CIRCUIT_BREAKER_OPEN_SECONDS)
+        open_until = float(state.get("circuit_open_until_ts", 0) or 0)
+        _CIRCUIT_BREAKER_STATE[model_id] = state
+    _persist_circuit_breaker_state()
+    return {
+        "consecutive_failures": failures,
+        "circuit_open_until_ts": open_until,
+        "circuit_open_for_seconds": max(int(open_until - now_ts), 0),
+    }
+
+
+def _provider_cache_path(model_id: str, target_date: dt.date, run_hour: int) -> Path:
+    return PROVIDER_CACHE_DIR / f"{model_id}__{target_date.isoformat()}__{int(run_hour):02d}.json"
+
+
+def _cleanup_provider_cache(now: dt.datetime | None = None) -> None:
+    base = PROVIDER_CACHE_DIR
+    if not base.exists():
+        return
+    now_utc = (now or _utc_now()).astimezone(dt.timezone.utc)
+    cutoff = now_utc - dt.timedelta(days=PROVIDER_CACHE_RETENTION_DAYS)
+    for path in base.glob("*.json"):
+        if path == PROVIDER_CIRCUIT_STATE_PATH:
+            continue
+        try:
+            mtime = dt.datetime.fromtimestamp(path.stat().st_mtime, tz=dt.timezone.utc)
+            if mtime < cutoff:
+                path.unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
+def _store_provider_cache(model_id: str, target_date: dt.date, run_hour: int, data: dict[str, Any]) -> None:
+    PROVIDER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "model_id": model_id,
+        "target_date": target_date.isoformat(),
+        "run_hour": int(run_hour),
+        "cached_at_utc": _to_utc_iso(),
+        "weather_payload": data,
+    }
+    _write_json_file(_provider_cache_path(model_id, target_date, run_hour), payload)
+
+
+def _load_provider_cache(model_id: str, target_date: dt.date, run_hour: int) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    for hour in range(int(run_hour), -1, -1):
+        path = _provider_cache_path(model_id, target_date, hour)
+        payload = _read_json_file(path, default=None)
+        if not isinstance(payload, dict):
+            continue
+        weather_payload = payload.get("weather_payload")
+        if isinstance(weather_payload, dict):
+            meta = {
+                "model_id": model_id,
+                "target_date": target_date.isoformat(),
+                "requested_run_hour": int(run_hour),
+                "cache_run_hour": int(payload.get("run_hour", hour) or hour),
+                "cached_at_utc": str(payload.get("cached_at_utc") or ""),
+            }
+            return weather_payload, meta
+    return None, None
 
 def _safe_provider_reason(resp: Any) -> str:
     payload = None
@@ -517,7 +716,7 @@ def fetch_open_meteo_weather(
     *,
     accuracy_mode: bool = True,
     fast_mode: bool = False,
-) -> tuple[core.ForecastResult, list[str], bool]:
+) -> tuple[core.ForecastResult, list[str], bool, dict[str, Any]]:
     if model_id not in WEATHER_MODELS:
         raise RuntimeError(f"Unsupported weather model: {model_id}")
 
@@ -525,7 +724,7 @@ def fetch_open_meteo_weather(
     now = time.time()
     cached = _WEATHER_CACHE.get(key)
     if cached and now - cached[0] < _WEATHER_CACHE_TTL_S:
-        return cached[1], list(cached[2]), bool(cached[3])
+        return cached[1], list(cached[2]), bool(cached[3]), {"source": "in_memory_cache"}
 
     spec = WEATHER_MODELS[model_id]
     hourly_variables = BASE_HOURLY_VARIABLES[:] + IRRADIANCE_HOURLY_VARIABLES
@@ -557,8 +756,25 @@ def fetch_open_meteo_weather(
             "direct_normal_irradiance",
         ])
 
+    _cleanup_provider_cache()
+    run_hour = dt.datetime.now(dt.timezone.utc).hour
+    circuit_open, open_for_seconds = _is_circuit_open(model_id)
+    fetch_meta: dict[str, Any] = {
+        "source": "live",
+        "live_failed_used_cached": False,
+        "run_hour": int(run_hour),
+        "circuit_breaker_open": bool(circuit_open),
+        "circuit_breaker_open_for_seconds": int(open_for_seconds),
+    }
+
     request_start = time.perf_counter()
     try:
+        if circuit_open:
+            raise WeatherProviderError(
+                category="circuit_open",
+                status=None,
+                message=f"Circuit breaker open for {model_id}; skip live fetch for {open_for_seconds}s",
+            )
         data = _request_open_meteo(spec["endpoint"], params, model_id=model_id)
         _log_model_fetch(
             model_id=model_id,
@@ -579,38 +795,61 @@ def fetch_open_meteo_weather(
             status=exc.status,
             outcome="failed",
         )
+        final_exc: WeatherProviderError = exc
         fallback_model = FORECAST_FALLBACK_MODELS.get(model_id)
         requested_model = str(params.get("models") or "").strip()
-        if not _should_retry_with_forecast(exc, fallback_model, requested_model):
-            raise
+        if (not circuit_open) and _should_retry_with_forecast(exc, fallback_model, requested_model):
+            fallback_params = dict(params)
+            fallback_params["hourly"] = ",".join(BASE_HOURLY_VARIABLES + IRRADIANCE_HOURLY_VARIABLES)
+            fallback_params["models"] = fallback_model
+            fallback_endpoint = "https://api.open-meteo.com/v1/forecast"
+            fallback_start = time.perf_counter()
+            try:
+                data = _request_open_meteo(fallback_endpoint, fallback_params, model_id=model_id)
+                _log_model_fetch(
+                    model_id=model_id,
+                    endpoint=fallback_endpoint,
+                    params=fallback_params,
+                    elapsed_ms=int((time.perf_counter() - fallback_start) * 1000),
+                    category="ok",
+                    status=200,
+                    outcome="success",
+                )
+                fetch_meta["source"] = "forecast_fallback"
+            except WeatherProviderError as fallback_exc:
+                _log_model_fetch(
+                    model_id=model_id,
+                    endpoint=fallback_endpoint,
+                    params=fallback_params,
+                    elapsed_ms=int((time.perf_counter() - fallback_start) * 1000),
+                    category=fallback_exc.category,
+                    status=fallback_exc.status,
+                    outcome="failed",
+                )
+                final_exc = fallback_exc
+                data = None
+        else:
+            data = None
 
-        fallback_params = dict(params)
-        fallback_params["hourly"] = ",".join(BASE_HOURLY_VARIABLES + IRRADIANCE_HOURLY_VARIABLES)
-        fallback_params["models"] = fallback_model
-        fallback_endpoint = "https://api.open-meteo.com/v1/forecast"
-        fallback_start = time.perf_counter()
-        try:
-            data = _request_open_meteo(fallback_endpoint, fallback_params, model_id=model_id)
-            _log_model_fetch(
-                model_id=model_id,
-                endpoint=fallback_endpoint,
-                params=fallback_params,
-                elapsed_ms=int((time.perf_counter() - fallback_start) * 1000),
-                category="ok",
-                status=200,
-                outcome="success",
-            )
-        except WeatherProviderError as fallback_exc:
-            _log_model_fetch(
-                model_id=model_id,
-                endpoint=fallback_endpoint,
-                params=fallback_params,
-                elapsed_ms=int((time.perf_counter() - fallback_start) * 1000),
-                category=fallback_exc.category,
-                status=fallback_exc.status,
-                outcome="failed",
-            )
-            raise
+        if data is None:
+            failure_state = _mark_provider_failure(model_id)
+            cached_payload, cache_meta = _load_provider_cache(model_id, target_date, run_hour)
+            if isinstance(cached_payload, dict):
+                data = cached_payload
+                fetch_meta.update({
+                    "source": "provider_cache",
+                    "live_failed_used_cached": True,
+                    "cache_meta": cache_meta,
+                    "cache_hit": True,
+                    "failure_state": failure_state,
+                    "live_failure": final_exc.to_reason(),
+                })
+            else:
+                raise final_exc
+
+    if fetch_meta.get("source") == "live" or fetch_meta.get("source") == "forecast_fallback":
+        _mark_provider_success(model_id)
+        _store_provider_cache(model_id, target_date, run_hour, data)
 
     hourly = data.get("hourly") if isinstance(data.get("hourly"), dict) else {}
     times = pd.to_datetime(hourly.get("time", []), errors="coerce")
@@ -722,7 +961,7 @@ def fetch_open_meteo_weather(
 
     forecast = core.ForecastResult(df=df, sunrise=sunrise.to_pydatetime(), sunset=sunset.to_pydatetime())
     _WEATHER_CACHE[key] = (time.time(), forecast, list(set(missing_vars)), bool(derived_irradiance))
-    return forecast, list(set(missing_vars)), bool(derived_irradiance)
+    return forecast, list(set(missing_vars)), bool(derived_irradiance), fetch_meta
 
 
 def _dynamic_weight_settings() -> dict[str, Any]:
@@ -881,6 +1120,7 @@ def build_ensemble_forecast(
     derived_irradiance_by_model: dict[str, bool] = {}
     failed_models: list[str] = []
     failed_model_reasons: dict[str, dict[str, Any]] = {}
+    model_live_failed_used_cached: dict[str, bool] = {}
     weather_ok: dict[str, core.ForecastResult] = {}
     pv_by_model: dict[str, pd.DataFrame] = {}
 
@@ -891,8 +1131,8 @@ def build_ensemble_forecast(
         inclusive="left",
     )
 
-    def _fetch_and_prepare(model_id: str) -> tuple[str, core.ForecastResult, dict[str, pd.Series], float, list[str], bool, float]:
-        weather, missing_vars, derived_irradiance = fetch_open_meteo_weather(
+    def _fetch_and_prepare(model_id: str) -> tuple[str, core.ForecastResult, dict[str, pd.Series], float, list[str], bool, float, dict[str, Any]]:
+        weather, missing_vars, derived_irradiance, fetch_meta = fetch_open_meteo_weather(
             model_id,
             loc,
             tz,
@@ -934,7 +1174,7 @@ def build_ensemble_forecast(
             "pv_east_kwh": pv_east,
             "pv_south_kwh": pv_south,
             "pv_clipped_kwh": pv_clipped,
-        }, float(pv_total.sum()), missing_vars, bool(derived_irradiance), missing_hours
+        }, float(pv_total.sum()), missing_vars, bool(derived_irradiance), missing_hours, fetch_meta
 
     max_workers = min(max(len(selected), 1), 5)
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -942,7 +1182,7 @@ def build_ensemble_forecast(
         for fut in as_completed(future_map):
             model_id = future_map[fut]
             try:
-                model_id, weather, pv_cols, pv_total_sum, missing_vars, derived_irradiance, missing_hours = fut.result()
+                model_id, weather, pv_cols, pv_total_sum, missing_vars, derived_irradiance, missing_hours, fetch_meta = fut.result()
                 for col_name, series in pv_cols.items():
                     per_model_pv_columns[col_name][model_id] = series
                 pv_by_model[model_id] = pd.DataFrame(pv_cols).reindex(canonical_index)
@@ -950,6 +1190,7 @@ def build_ensemble_forecast(
                 missing_vars_by_model[model_id] = missing_vars
                 derived_irradiance_by_model[model_id] = bool(derived_irradiance)
                 weather_ok[model_id] = weather
+                model_live_failed_used_cached[model_id] = bool(fetch_meta.get("live_failed_used_cached", False))
                 if missing_hours > 2:
                     _LOGGER.warning("[weather_ensemble] model=%s missing_hours=%s on canonical index", model_id, int(missing_hours))
             except WeatherProviderError as exc:
@@ -1059,6 +1300,7 @@ def build_ensemble_forecast(
         derived_irradiance_by_model=derived_irradiance_by_model,
         failed_models=failed_models,
         failed_model_reasons=failed_model_reasons,
+        model_live_failed_used_cached=model_live_failed_used_cached,
         selected_models=[m for m in selected if m in per_model_pv_columns["pv_total_kwh"]],
         weights_used=weights_used,
         weather_primary_model_id=primary_model,

@@ -95,6 +95,7 @@ def _fake_ensemble(idx, weather, pv_uncertainty):
         derived_irradiance_by_model={"ecmwf_ifs": False},
         failed_models=[],
         failed_model_reasons={},
+        model_live_failed_used_cached={},
     )
 
 
@@ -169,6 +170,7 @@ def test_run_now_degraded_generates_health_warnings(monkeypatch, tmp_path):
     ensemble.failed_models = ["dwd_icon_d2"]
     ensemble.failed_model_reasons = {"dwd_icon_d2": {"message": "rate limited"}}
     ensemble.derived_irradiance_by_model = {"ecmwf_ifs": True}
+    ensemble.model_live_failed_used_cached = {"ecmwf_ifs": True}
     ensemble.missing_vars_by_model = {"ecmwf_ifs": ["direct_normal_irradiance", "foo"]}
 
     monkeypatch.setattr(
@@ -180,9 +182,10 @@ def test_run_now_degraded_generates_health_warnings(monkeypatch, tmp_path):
     result = state.run_now(backend_api.RunNowPayload(pv_uncertainty=False, weather_models=["ecmwf_ifs"]))["result"]
 
     assert result["status"] == "degraded"
-    assert result["warnings_count"] == 3
+    assert result["warnings_count"] == 4
     assert any("model failed: dwd_icon_d2 (rate limited)" == w for w in result["warnings"])
     assert any("derived irradiance used: ecmwf_ifs" == w for w in result["warnings"])
+    assert any("model_live_failed_used_cached=true: ecmwf_ifs" == w for w in result["warnings"])
     assert any("important vars missing: ecmwf_ifs (direct_normal_irradiance)" == w for w in result["warnings"])
 
 
