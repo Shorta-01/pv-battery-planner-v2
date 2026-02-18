@@ -42,6 +42,7 @@ METRIC_TOOLTIPS = {
     "Allowed AC charge power (kW)": "Final AC charge power used by the planner after all limits. It matters because this is the value to configure in FusionSolar. It never exceeds your safety cap, inverter limits, or battery limits.",
     "AC charge cutoff SOC (%)": "Battery SOC where FusionSolar should stop charging from the grid. Set this value as the 'AC charge cutoff SOC'.",
     "Forecast total PV (kWh)": "Estimated total PV energy produced tomorrow (after inverter AC limit).",
+    "Next 7 days PV (kWh)": "Sum of the PV Week Ahead p50 values for the next seven days.",
     "Forecast total load (kWh)": "Estimated total consumption for tomorrow. This is based on yesterday's total and a default hourly profile.",
     "Estimated grid import (expensive h)": "Estimated energy you may still buy from the grid during expensive tariff hours after using PV and the battery.",
     "Estimated export/curtailment (kWh)": "Estimated PV energy that cannot be used or stored and may be exported to the grid (or clipped/curtailed).",
@@ -725,6 +726,33 @@ def resolve_forecast_summary_pv_kwh(
         0.0,
     )
     return float(pv_total_kwh or 0.0)
+
+
+def resolve_week_ahead_total_pv_kwh(pv_week_ahead: list[dict] | list[float] | None) -> float:
+    if not isinstance(pv_week_ahead, list) or not pv_week_ahead:
+        return 0.0
+
+    pv_totals = 0.0
+    for item in pv_week_ahead[:7]:
+        value = None
+        if isinstance(item, dict):
+            value = pd.to_numeric(
+                pd.Series([
+                    item.get("pv_p50_kwh"),
+                    item.get("pv_total_kwh"),
+                    item.get("pv_kwh"),
+                ]),
+                errors="coerce",
+            ).dropna()
+            if not value.empty:
+                pv_totals += float(value.iloc[0])
+            continue
+
+        scalar_value = pd.to_numeric(pd.Series([item]), errors="coerce").iloc[0]
+        if not pd.isna(scalar_value):
+            pv_totals += float(scalar_value)
+
+    return float(pv_totals)
 
 
 def summarize_model_diagnostics(weather_ensemble: dict) -> dict:
@@ -3005,7 +3033,7 @@ if run:
                 st.warning(charge_note)
 
             st.markdown("### Forecast summary")
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3, c4, c5 = st.columns(5)
 
             def _pick_float_value(*candidate_values: object) -> float | None:
                 for candidate in candidate_values:
@@ -3039,11 +3067,14 @@ if run:
             pv_low = pv_p50 if pv_low is None else pv_low
             pv_high = pv_p50 if pv_high is None else pv_high
 
+            pv_week_total = resolve_week_ahead_total_pv_kwh(pv_week_ahead)
+
             metric_with_help(c1, "Forecast total PV (kWh)", f"{pv_p50:.2f}")
             c1.caption(f"Low {pv_low:.2f} kWh - High {pv_high:.2f} kWh")
-            metric_with_help(c2, "Forecast total load (kWh)", f"{pv['load_kwh'].sum():.2f}")
-            metric_with_help(c3, "Estimated grid import (expensive h)", f"{grid_import:.2f}")
-            metric_with_help(c4, "Estimated export/curtailment (kWh)", f"{(grid_export + detail_df['curtailed_kwh'].sum() if not detail_df.empty else 0.0):.2f}")
+            metric_with_help(c2, "Next 7 days PV (kWh)", f"{pv_week_total:.2f}")
+            metric_with_help(c3, "Forecast total load (kWh)", f"{pv['load_kwh'].sum():.2f}")
+            metric_with_help(c4, "Estimated grid import (expensive h)", f"{grid_import:.2f}")
+            metric_with_help(c5, "Estimated export/curtailment (kWh)", f"{(grid_export + detail_df['curtailed_kwh'].sum() if not detail_df.empty else 0.0):.2f}")
             tooltip_heading("PV production vs Load (hourly)", CHART_TOOLTIPS["PV production vs Load (hourly)"])
             pv_load_fig = make_chart_pv_load(pv, soc_series, cutoff_soc, effective_cfg)
             add_tariff_and_sun_markers(pv_load_fig, tomorrow, sunrise, sunset)
