@@ -109,6 +109,63 @@ def test_parse_offpeak_windows_supports_multi_window_roundtrip() -> None:
     assert parsed[0][1] == ("13:00", "14:00")
 
 
+
+
+def _uniform_offpeak_windows(start: str, end: str) -> list[list[list[str]]]:
+    return [[[start, end]] for _ in range(7)]
+
+
+@pytest.mark.parametrize(
+    ("window_start", "window_end", "expected_hours"),
+    [
+        ("22:00", "07:00", 9),
+        ("23:00", "06:00", 7),
+        ("21:00", "05:00", 8),
+    ],
+)
+def test_offpeak_window_hours_are_consistent_across_summary_planning_and_simulation(
+    window_start: str,
+    window_end: str,
+    expected_hours: int,
+) -> None:
+    original_cfg = copy.deepcopy(core.EFFECTIVE_CFG)
+    try:
+        cfg = copy.deepcopy(core.DEFAULT_CONFIG)
+        cfg["tariff"]["offpeak_windows_by_dow"] = _uniform_offpeak_windows(window_start, window_end)
+        core.apply_config(cfg)
+
+        charge_date = dt.date(2026, 1, 12)
+        summary_hours, _ = core.overnight_charge_hours_summary(charge_date)
+        assert int(summary_hours) == expected_hours
+
+        _, charge_kw, _, _ = core.plan_charge_power(
+            soc_start=0.10,
+            soc_cutoff=core.MAX_CUTOFF_SOC,
+            charge_date=charge_date,
+            user_cap_kw=10.0,
+        )
+        assert charge_kw > 0.0
+
+        night_df = core.simulate_night_charging_series(
+            soc_at_22=0.10,
+            charge_kw=1.0,
+            cutoff_soc=core.MAX_CUTOFF_SOC,
+            tomorrow_date=charge_date + dt.timedelta(days=1),
+        )
+        charged_hours = int((night_df["grid_import_kwh"] > 1e-9).sum())
+        assert charged_hours == expected_hours
+
+        idx = pd.date_range(
+            pd.Timestamp(dt.datetime.combine(charge_date, dt.time(0, 0)), tz=core.TIMEZONE),
+            periods=48,
+            freq="h",
+        )
+        mask_hours = int(core.get_offpeak_mask(idx, charge_date).sum())
+        assert mask_hours == expected_hours
+    finally:
+        core.apply_config(original_cfg)
+
+
 def test_normalize_hourly_index_uses_location_timezone_consistently() -> None:
     tz = "Europe/Brussels"
     day = dt.date(2026, 10, 25)
