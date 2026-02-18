@@ -299,7 +299,7 @@ def _build_pv_week_ahead(
                 "p10_kwh": float(pv_totals_p10[i]) if pv_totals_p10 and i < len(pv_totals_p10) else None,
                 "p90_kwh": float(pv_totals_p90[i]) if pv_totals_p90 and i < len(pv_totals_p90) else None,
                 "weather_code": int(code) if code is not None else None,
-                "weather_best_of_day": True,
+                "weather_best_of_day": code is not None,
                 "weather_code_source_model_id": source_model_id,
                 "weather_code_source_model_label": (
                     (WEATHER_MODELS.get(source_model_id) or {}).get("label") if source_model_id else None
