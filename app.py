@@ -102,7 +102,7 @@ def _esc(s: str) -> str:
     return html.escape(str(s or ""), quote=True)
 
 
-def _safe_float(value: object, fallback: float) -> float:
+def _safe_float(value: object, fallback: float) -> float | None:
     try:
         if value is None:
             return float(fallback)
@@ -482,7 +482,7 @@ def render_weather_models(
     if (not selected_models) and (not disabled):
         st.error("Select at least one weather model.")
 
-    debug_ui = bool(os.getenv("APP_DEBUG"))
+    debug_ui = bool(os.getenv("APP_DEBUG")) and st.session_state.get("history_mode", "Simple") == "Debug"
     if debug_ui:
         dbg = st.session_state.get("last_weather_ensemble_debug") or {}
         with st.expander("Advanced: last run model debug", expanded=False):
@@ -627,11 +627,17 @@ def weather_code_to_icon(weather_code: int | float | str | None) -> str:
     Accepts int codes or string labels; returns an emoji.
     """
     if weather_code is None:
-        return "❔"
+        return "🌥️"
 
     # Support string labels (defensive)
     if isinstance(weather_code, str):
-        key = weather_code.strip().lower()
+        raw = weather_code.strip()
+        if raw.isdigit() or (raw.startswith('-') and raw[1:].isdigit()):
+            try:
+                return weather_code_to_icon(int(raw))
+            except Exception:
+                pass
+        key = raw.lower()
         label_map = {
             "clear": "☀️",
             "sunny": "☀️",
@@ -651,13 +657,13 @@ def weather_code_to_icon(weather_code: int | float | str | None) -> str:
             "sleet": "🌨️",
             "thunderstorm": "⛈️",
         }
-        return label_map.get(key, "❔")
+        return label_map.get(key, "🌥️")
 
     # Numeric WMO mapping
     try:
         code = int(weather_code)
     except Exception:
-        return "❔"
+        return "🌥️"
 
     if code == 0:
         return "☀️"      # Clear sky
@@ -689,7 +695,7 @@ def weather_code_to_icon(weather_code: int | float | str | None) -> str:
     if code in (95, 96, 99):
         return "⛈️"     # Thunderstorm (slight/heavy w hail)
 
-    return "❔"
+    return "🌥️"
 
 
 def weather_code_to_label(weather_code):
@@ -746,12 +752,12 @@ def render_pv_week_ahead_widget(items: list[dict]) -> None:
             date_label = str(date_raw or "")
 
         pv_candidates = pd.to_numeric(pd.Series([item.get("p50_kwh"), item.get("pv_p50_kwh")]), errors="coerce").dropna()
-        pv_p50 = float(pv_candidates.iloc[0]) if not pv_candidates.empty else 0.0
+        pv_p50 = float(pv_candidates.iloc[0]) if not pv_candidates.empty else None
 
         pv_p10_raw = pd.to_numeric(pd.Series([item.get("p10_kwh"), item.get("pv_p10_kwh")]), errors="coerce").dropna()
         pv_p90_raw = pd.to_numeric(pd.Series([item.get("p90_kwh"), item.get("pv_p90_kwh")]), errors="coerce").dropna()
         pv_range = ""
-        if not pv_p10_raw.empty and not pv_p90_raw.empty:
+        if pv_p50 is not None and not pv_p10_raw.empty and not pv_p90_raw.empty:
             pv_range = f"{float(pv_p10_raw.iloc[0]):.1f}–{float(pv_p90_raw.iloc[0]):.1f} kWh"
 
         code_value = item.get("weather_code")
@@ -760,7 +766,7 @@ def render_pv_week_ahead_widget(items: list[dict]) -> None:
         best_of_day = item.get("weather_best_of_day")
 
         label_txt = weather_code_to_label(code_value)
-        icon = weather_code_to_icon(code_value)
+        icon = weather_code_to_icon(code_value) or "❔"
 
         icon_tooltip = (
             f"WMO: {code_value} ({label_txt})"
@@ -778,7 +784,7 @@ def render_pv_week_ahead_widget(items: list[dict]) -> None:
                     f"<div style='font-size:0.72rem;opacity:0.8;'>{label}</div>"
                     f"<div style='font-size:0.7rem;opacity:0.75;margin-top:0.05rem;'>{date_label}</div>"
                     f"<div title=\"{icon_tooltip}\" style='font-size:1.2rem;margin-top:0.25rem;cursor:help;'>{icon}</div>"
-                    f"<div style='font-size:1rem;font-weight:700;margin-top:0.2rem;'>{pv_p50:.1f} kWh</div>"
+                    f"<div style='font-size:1rem;font-weight:700;margin-top:0.2rem;'>{(f'{pv_p50:.1f} kWh' if pv_p50 is not None else '—')}</div>"
                     f"<div style='font-size:0.68rem;opacity:0.75;margin-top:0.12rem;min-height:1.1em;'>{pv_range}</div>"
                     "</div>"
                 ),
@@ -793,7 +799,7 @@ def resolve_forecast_summary_pv_kwh(
     result: dict | None,
     metrics: dict | None,
     weather_ensemble: dict | None,
-) -> float:
+) -> float | None:
     def _pick_float_value(*candidate_values: object) -> float | None:
         for candidate in candidate_values:
             value = pd.to_numeric(pd.Series([candidate]), errors="coerce").iloc[0]
@@ -801,10 +807,19 @@ def resolve_forecast_summary_pv_kwh(
                 return float(value)
         return None
 
+    week_day1 = None
+    if isinstance(pv_week_ahead, list) and pv_week_ahead:
+        first = pv_week_ahead[0]
+        if isinstance(first, dict):
+            week_day1 = first.get("p50_kwh") or first.get("pv_p50_kwh")
+        else:
+            week_day1 = first
+
     pv_total_kwh = _pick_float_value(
         result.get("pv_totals_kwh", {}).get("p50") if isinstance(result, dict) and isinstance(result.get("pv_totals_kwh"), dict) else None,
         pv_quality_dict.get("pv_total_kwh") if isinstance(pv_quality_dict, dict) else None,
-        pv_df["pv_total_kwh"].sum() if "pv_total_kwh" in pv_df.columns else None,
+        week_day1,
+        pv_df["pv_total_kwh"].sum(min_count=1) if "pv_total_kwh" in pv_df.columns else None,
         result.get("pv_kwh_p50") if isinstance(result, dict) else None,
         result.get("pv_p50_kwh") if isinstance(result, dict) else None,
         metrics.get("pv_kwh_p50") if isinstance(metrics, dict) else None,
@@ -812,9 +827,8 @@ def resolve_forecast_summary_pv_kwh(
         weather_ensemble.get("pv_totals_kwh", {}).get("p50")
         if isinstance(weather_ensemble, dict) and isinstance(weather_ensemble.get("pv_totals_kwh"), dict)
         else None,
-        0.0,
     )
-    return float(pv_total_kwh or 0.0)
+    return float(pv_total_kwh) if pv_total_kwh is not None else None
 
 
 def resolve_tomorrow_pv_low_high_kwh(
@@ -847,7 +861,7 @@ def resolve_tomorrow_pv_low_high_kwh(
     return None, None
 
 
-def resolve_week_ahead_total_pv_kwh(pv_week_ahead: list[dict] | list[float] | None) -> float:
+def resolve_week_ahead_total_pv_kwh(pv_week_ahead: list[dict] | list[float] | None) -> float | None:
     if not isinstance(pv_week_ahead, list) or not pv_week_ahead:
         return 0.0
 
@@ -1259,7 +1273,7 @@ def windows_to_segments(windows: list[tuple[str, str]]) -> list[tuple[int, int]]
     return segments
 
 
-def clamp_pct(x: float) -> float:
+def clamp_pct(x: float) -> float | None:
     return max(0.0, min(x, 100.0))
 
 
@@ -3277,11 +3291,9 @@ if run:
             tomorrow_source_label = None
             tomorrow_source_days = None
 
-            pwa = (result or {}).get("pv_week_ahead") or []
-            if isinstance(pwa, list) and len(pwa) > 0 and isinstance(pwa[0], dict):
-                tomorrow_weather_code = pwa[0].get("weather_code")
-                tomorrow_source_label = pwa[0].get("weather_code_source_model_label")
-                tomorrow_source_days = pwa[0].get("weather_code_source_max_days")
+            tomorrow_weather_code = result.get("tomorrow_weather_code")
+            tomorrow_source_label = result.get("tomorrow_weather_code_source_model_label")
+            tomorrow_source_days = result.get("tomorrow_weather_code_source_max_days")
             pv_low, pv_high = resolve_tomorrow_pv_low_high_kwh(
                 result,
                 weather_ensemble,
@@ -3344,7 +3356,7 @@ if run:
                 metrics,
                 weather_ensemble,
             )
-            metric_with_help(c1, "Forecast total PV (kWh)", f"{pv_p50:.2f}")
+            metric_with_help(c1, "Forecast total PV (kWh)", f"{pv_p50:.2f}" if pv_p50 is not None else "—")
             if APP_DEBUG:
                 if pv_low is not None and pv_high is not None:
                     st.caption(f"DEBUG Tomorrow PV low/high from usable models: {pv_low:.2f}/{pv_high:.2f} kWh")

@@ -783,7 +783,7 @@ class BackendState:
             weather_by_model = {}
             weights_used_week = None
 
-        pv_week_ahead = _build_pv_week_ahead(
+        pv_week_ahead_all = _build_pv_week_ahead(
             target_date=target_date,
             tz=tz,
             pv_totals_p50=pv_totals_p50,
@@ -792,26 +792,28 @@ class BackendState:
             weather_by_model=weather_by_model,
             weights_used=weights_used_week,
             weather_primary_model_id=primary_id,
-        )[1:7]
+        )
+        pv_week_ahead = pv_week_ahead_all[1:7]
 
         warnings = list(dict.fromkeys(warnings))
         status = "degraded" if warnings else "ok"
 
         weather = ensemble_tomorrow.weather_primary
-        tomorrow_start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz)
-        tomorrow_end = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=1), dt.time(0, 0)), tz=tz)
-        tomorrow_index = pd.date_range(tomorrow_start, tomorrow_end, freq="h", inclusive="left")
+        tomorrow_index, tomorrow_index_dst_adjusted = core.build_local_day_hour_index(target_date, tz)
+        if len(tomorrow_index) != 24:
+            raise RuntimeError(f"INV-T4 violation: expected 24 hourly slots, got {len(tomorrow_index)}")
 
         pv = pd.DataFrame(index=tomorrow_index)
-        pv["pv_east_kwh"] = ensemble_tomorrow.pv_ensemble_east_p50.reindex(pv.index).fillna(0.0)
-        pv["pv_south_kwh"] = ensemble_tomorrow.pv_ensemble_south_p50.reindex(pv.index).fillna(0.0)
-        pv["pv_total_unclipped_kwh"] = ensemble_tomorrow.pv_ensemble_unclipped_p50.reindex(pv.index).fillna(0.0)
-        pv["pv_total_kwh"] = ensemble_tomorrow.pv_ensemble_p50.reindex(pv.index).fillna(0.0)
+        pv["pv_east_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_east_p50.reindex(pv.index), errors="coerce")
+        pv["pv_south_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_south_p50.reindex(pv.index), errors="coerce")
+        pv["pv_total_unclipped_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_unclipped_p50.reindex(pv.index), errors="coerce")
+        pv["pv_total_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p50.reindex(pv.index), errors="coerce")
         if ensemble_tomorrow.pv_ensemble_p10 is not None:
-            pv["pv_total_low_kwh"] = ensemble_tomorrow.pv_ensemble_p10.reindex(pv.index).fillna(0.0)
+            pv["pv_total_low_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p10.reindex(pv.index), errors="coerce")
         if ensemble_tomorrow.pv_ensemble_p90 is not None:
-            pv["pv_total_high_kwh"] = ensemble_tomorrow.pv_ensemble_p90.reindex(pv.index).fillna(0.0)
-        pv["pv_clipped_kwh"] = (pv["pv_total_unclipped_kwh"] - pv["pv_total_kwh"]).clip(lower=0.0)
+            pv["pv_total_high_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p90.reindex(pv.index), errors="coerce")
+        clipped_raw = (pv["pv_total_unclipped_kwh"] - pv["pv_total_kwh"]).clip(lower=0.0)
+        pv["pv_clipped_kwh"] = clipped_raw.where(pv["pv_total_unclipped_kwh"].notna() & pv["pv_total_kwh"].notna())
         pv["pv_dc_available_kwh"] = pv["pv_total_unclipped_kwh"]
         pv["pv_ac_limited_kwh"] = pv["pv_total_kwh"]
 
@@ -835,7 +837,11 @@ class BackendState:
         charge_note = f"{cutoff_reason}."
         grid_import = float(flows_df.get("grid_import_kwh", pd.Series(dtype=float)).sum())
         grid_export = float(flows_df.get("grid_export_kwh", pd.Series(dtype=float)).sum())
-        pv_forecast_kwh = float(pv.get("pv_total_kwh", pd.Series(dtype=float)).sum())
+        canonical_tomorrow_total_kwh = (float(pd.to_numeric(pv["pv_total_kwh"], errors="coerce").sum(min_count=1)) if "pv_total_kwh" in pv.columns else None)
+        if canonical_tomorrow_total_kwh is not None and pd.isna(canonical_tomorrow_total_kwh):
+            canonical_tomorrow_total_kwh = float(ensemble_tomorrow.pv_ensemble_p50.sum(min_count=1)) if ensemble_tomorrow.pv_ensemble_p50 is not None else None
+        tomorrow_coverage_hours = int(pd.to_numeric(pv.get("pv_total_kwh", pd.Series(dtype=float)), errors="coerce").notna().sum())
+        pv_forecast_kwh = canonical_tomorrow_total_kwh
         cons_forecast_kwh = float(cons.sum())
         pv_quality = scoring.compute_pv_quality_score(
             pv_df=pv,
@@ -846,12 +852,47 @@ class BackendState:
         )
 
         pv_totals_kwh = {
-            "p50": float(ensemble_tomorrow.pv_ensemble_p50.sum()) if ensemble_tomorrow.pv_ensemble_p50 is not None else None,
-            "p10": float(ensemble_tomorrow.pv_ensemble_p10.sum()) if ensemble_tomorrow.pv_ensemble_p10 is not None else None,
-            "p90": float(ensemble_tomorrow.pv_ensemble_p90.sum()) if ensemble_tomorrow.pv_ensemble_p90 is not None else None,
+            "p50": canonical_tomorrow_total_kwh,
+            "p10": (
+                float(pd.to_numeric(pv["pv_total_low_kwh"], errors="coerce").sum(min_count=1))
+                if "pv_total_low_kwh" in pv.columns and not pd.isna(pd.to_numeric(pv["pv_total_low_kwh"], errors="coerce").sum(min_count=1))
+                else (float(ensemble_tomorrow.pv_ensemble_p10.sum(min_count=1)) if ensemble_tomorrow.pv_ensemble_p10 is not None else None)
+            ),
+            "p90": (
+                float(pd.to_numeric(pv["pv_total_high_kwh"], errors="coerce").sum(min_count=1))
+                if "pv_total_high_kwh" in pv.columns and not pd.isna(pd.to_numeric(pv["pv_total_high_kwh"], errors="coerce").sum(min_count=1))
+                else (float(ensemble_tomorrow.pv_ensemble_p90.sum(min_count=1)) if ensemble_tomorrow.pv_ensemble_p90 is not None else None)
+            ),
         }
         pv_low_high = getattr(ensemble_tomorrow, "pv_tomorrow_low_high_kwh", None)
         pv_tomorrow_low_high_kwh = dict(pv_low_high) if isinstance(pv_low_high, dict) else {"low": None, "high": None, "valid_models": 0}
+
+        tomorrow_weather_code = _best_of_day_weather_code(weather.df.reindex(pv.index)[["weather_code"]]) if "weather_code" in weather.df.columns else None
+        if tomorrow_weather_code is None and "weather_code" in weather.df.columns:
+            wc_first = pd.to_numeric(weather.df.reindex(pv.index)["weather_code"], errors="coerce").dropna()
+            tomorrow_weather_code = int(wc_first.iloc[0]) if not wc_first.empty else None
+        tomorrow_source_model_id = getattr(ensemble_tomorrow, "weather_primary_model_id", None)
+        tomorrow_source_label = (WEATHER_MODELS.get(tomorrow_source_model_id) or {}).get("label") if tomorrow_source_model_id else None
+        tomorrow_source_max_days = _model_max_days(tomorrow_source_model_id) if tomorrow_source_model_id else None
+
+        inv_warnings: list[str] = []
+        hourly_sum = float(pd.to_numeric(pv["pv_total_kwh"], errors="coerce").sum(min_count=1)) if "pv_total_kwh" in pv.columns else float("nan")
+        if (canonical_tomorrow_total_kwh is not None and not pd.isna(canonical_tomorrow_total_kwh) and not pd.isna(hourly_sum) and abs(canonical_tomorrow_total_kwh - hourly_sum) > 0.01):
+            inv_warnings.append("INV-T1 failed: forecast total PV != PV Outlook hourly sum")
+        total_series = pd.to_numeric(pv["pv_total_kwh"], errors="coerce")
+        if ((total_series < 0) & total_series.notna()).any():
+            inv_warnings.append("INV-T2 failed: negative hourly PV detected")
+        east_south = pd.to_numeric(pv["pv_east_kwh"], errors="coerce") + pd.to_numeric(pv["pv_south_kwh"], errors="coerce")
+        mismatch = (total_series - east_south).abs()
+        if ((mismatch > 0.01) & total_series.notna() & east_south.notna()).any():
+            inv_warnings.append("INV-T3 failed: pv_total_kwh != pv_east_kwh + pv_south_kwh")
+        if len(pv.index) != 24 or pv.index.has_duplicates:
+            inv_warnings.append("INV-T4 failed: tomorrow index is not exactly 24 unique hourly points")
+        if tomorrow_index_dst_adjusted:
+            inv_warnings.append("INV-T4 note: DST normalization applied to preserve 24 hourly points")
+        warnings.extend(inv_warnings)
+        warnings = list(dict.fromkeys(warnings))
+        status = "degraded" if warnings else "ok"
 
         run_duration_ms = int((time.perf_counter() - run_started) * 1000)
         system_snapshot = {
@@ -888,6 +929,7 @@ class BackendState:
                 "grid_export": float(grid_export),
                 "pv_forecast_kwh": pv_forecast_kwh,
                 "cons_forecast_kwh": cons_forecast_kwh,
+                "tomorrow_coverage_hours": tomorrow_coverage_hours,
             },
             "pv_quality": pv_quality,
             "warnings": warnings,
@@ -902,6 +944,10 @@ class BackendState:
             "pv_totals_kwh": pv_totals_kwh,
             "pv_tomorrow_low_high_kwh": pv_tomorrow_low_high_kwh,
             "pv_week_ahead": pv_week_ahead,
+            "tomorrow_weather_code": int(tomorrow_weather_code) if tomorrow_weather_code is not None else None,
+            "tomorrow_weather_code_source_model_id": tomorrow_source_model_id,
+            "tomorrow_weather_code_source_model_label": tomorrow_source_label,
+            "tomorrow_weather_code_source_max_days": tomorrow_source_max_days,
             "forecast_mode_effective": mode,
             "tomorrow_models_used": list(tomorrow_models),
             "week_ahead_models_considered": list(week_models),
@@ -939,6 +985,10 @@ class BackendState:
                 "failed_model_reasons": getattr(ensemble_tomorrow, "failed_model_reasons", {}),
                 "model_live_failed_used_cached": getattr(ensemble_tomorrow, "model_live_failed_used_cached", {}),
                 "fast_mode": bool(fast_mode),
+                "tomorrow_weather_code": int(tomorrow_weather_code) if tomorrow_weather_code is not None else None,
+                "tomorrow_weather_code_source_model_id": tomorrow_source_model_id,
+                "tomorrow_weather_code_source_model_label": tomorrow_source_label,
+                "tomorrow_weather_code_source_max_days": tomorrow_source_max_days,
             },
             "provider_payloads_by_model": ((getattr(ensemble_tomorrow, "provider_payloads_by_model", {}) or {}) if store_provider_payloads else {}),
         }
