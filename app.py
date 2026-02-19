@@ -1391,7 +1391,7 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
         "PV p10",
         "PV p90",
         "PV range (p10–p90)",
-        "Load",
+        "Load (estimated)",
         "Charge",
         "Warnings",
         "Duration (ms)",
@@ -1475,7 +1475,7 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
             "PV p10": round(pv_p10, 2) if pv_p10 is not None else None,
             "PV p90": round(pv_p90, 2) if pv_p90 is not None else None,
             "PV range (p10–p90)": f"{pv_p10:.2f}–{pv_p90:.2f} kWh" if (pv_p10 is not None and pv_p90 is not None) else "—",
-            "Load": round(_safe_float(metrics.get("cons_forecast_kwh"), 0.0), 2),
+            "Load (estimated)": round(_safe_float(metrics.get("cons_forecast_kwh"), 0.0), 2),
             "Charge": round(_safe_float(metrics.get("charge_kw"), 0.0), 2),
             "Warnings": warnings_text,
             "Duration (ms)": item.get("run_duration_ms"),
@@ -1971,8 +1971,8 @@ def _render_compare_runs_block(filtered_df: pd.DataFrame) -> None:
         metrics_b = detail_b.get("metrics") if isinstance(detail_b.get("metrics"), dict) else {}
         pv_a = float(row_a.get("PV p50") or metrics_a.get("pv_forecast_kwh") or 0.0)
         pv_b = float(row_b.get("PV p50") or metrics_b.get("pv_forecast_kwh") or 0.0)
-        load_a = float(row_a.get("Load") or metrics_a.get("cons_forecast_kwh") or 0.0)
-        load_b = float(row_b.get("Load") or metrics_b.get("cons_forecast_kwh") or 0.0)
+        load_a = float(row_a.get("Load (estimated)") or metrics_a.get("cons_forecast_kwh") or 0.0)
+        load_b = float(row_b.get("Load (estimated)") or metrics_b.get("cons_forecast_kwh") or 0.0)
         charge_a = float(row_a.get("Charge") or metrics_a.get("charge_kw") or 0.0)
         charge_b = float(row_b.get("Charge") or metrics_b.get("charge_kw") or 0.0)
         warn_a = int(row_a.get("warnings_count") or 0)
@@ -2257,7 +2257,7 @@ def _render_history_log_block() -> None:
             s1.metric("Target date", latest_date_text)
             s2.metric("Status", str(latest_row.get("Status label") or "—"))
             s3.metric("PV p50", f"{float(pd.to_numeric(pd.Series([latest_row.get('PV p50')]), errors='coerce').fillna(0).iloc[0]):.2f} kWh")
-            s4.metric("Load", f"{float(pd.to_numeric(pd.Series([latest_row.get('Load')]), errors='coerce').fillna(0).iloc[0]):.2f} kWh")
+            s4.metric("Load (estimated)", f"{float(pd.to_numeric(pd.Series([latest_row.get('Load (estimated)')]), errors='coerce').fillna(0).iloc[0]):.2f} kWh")
             s5.metric("Allowed AC charge power (kW)", f"{float(pd.to_numeric(pd.Series([latest_row.get('Charge')]), errors='coerce').fillna(0).iloc[0]):.2f} kW")
             s6.metric("Cutoff SOC (%)", f"{latest_cutoff_pct:.1f}%" if latest_cutoff_pct is not None else "—")
             s7.metric("Warnings count", str(latest_warnings))
@@ -2283,7 +2283,7 @@ def _render_history_log_block() -> None:
 
             display_df = display_df.rename(columns={"Status label": "Status", "Models": "Models summary"})
 
-            simple_columns = ["Date", "Status", "PV quality", "PV p50", "Load", "Allowed AC charge power", "Warnings badge"]
+            simple_columns = ["Date", "Status", "PV quality", "PV p50", "Load (estimated)", "Allowed AC charge power", "Warnings badge"]
             debug_columns = [
                 "Date",
                 "Status",
@@ -2294,7 +2294,7 @@ def _render_history_log_block() -> None:
                 "PV p10",
                 "PV p90",
                 "PV range width",
-                "Load",
+                "Load (estimated)",
                 "Allowed AC charge power",
                 "Warnings badge",
                 "Models summary",
@@ -2336,7 +2336,7 @@ def _render_history_log_block() -> None:
                     "PV p10": st.column_config.NumberColumn(format="%.2f kWh"),
                     "PV p90": st.column_config.NumberColumn(format="%.2f kWh"),
                     "PV range width": st.column_config.NumberColumn(format="%.2f kWh"),
-                    "Load": st.column_config.NumberColumn(format="%.2f kWh"),
+                    "Load (estimated)": st.column_config.NumberColumn(format="%.2f kWh"),
                     "Allowed AC charge power": st.column_config.NumberColumn(format="%.2f kW"),
                     "Run duration": st.column_config.NumberColumn(format="%.0f ms"),
                     "Cutoff SOC": st.column_config.NumberColumn(format="%.1f%%"),

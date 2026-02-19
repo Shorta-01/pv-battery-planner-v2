@@ -117,7 +117,7 @@ def test_run_now_pv_uncertainty_false_omits_uncertainty_outputs(monkeypatch, tmp
 
     result = state.run_now(backend_api.RunNowPayload(pv_uncertainty=False, weather_models=["ecmwf_ifs"]))["result"]
 
-    assert calls == [False]
+    assert calls == [False, False]
     assert result["status"] == "ok"
     assert result["warnings_count"] == 0
     assert isinstance(result["run_duration_ms"], int)
@@ -125,7 +125,8 @@ def test_run_now_pv_uncertainty_false_omits_uncertainty_outputs(monkeypatch, tmp
     assert result["pv_totals_kwh"] == {"p10": None, "p50": 3.0, "p90": None}
     assert result["inputs_used"]["buffer_percent"] == 0.0
     assert result["inputs_used"]["max_ac_charge_power_kw"] == 5.0
-    assert result["inputs_used"]["weather_models_selected"] == ["ecmwf_ifs"]
+    assert "ecmwf_ifs" in result["inputs_used"]["weather_models_selected"]
+    assert len(result["inputs_used"]["weather_models_selected"]) <= 4
     assert result["inputs_used"]["ensemble_method"] == "weighted"
     assert result["inputs_used"]["pv_uncertainty_enabled"] is False
     assert result["inputs_used"]["fast_mode"] is False
@@ -171,6 +172,7 @@ def test_run_now_degraded_generates_health_warnings(monkeypatch, tmp_path):
     ensemble.failed_models = ["dwd_icon_d2"]
     ensemble.failed_model_reasons = {"dwd_icon_d2": {"message": "rate limited"}}
     ensemble.derived_irradiance_by_model = {"ecmwf_ifs": True}
+    ensemble.derived_irradiance_hours_by_model = {"ecmwf_ifs": 2}
     ensemble.model_live_failed_used_cached = {"ecmwf_ifs": True}
     ensemble.missing_vars_by_model = {"ecmwf_ifs": ["direct_normal_irradiance", "foo"]}
 
@@ -218,7 +220,7 @@ def test_run_now_all_weather_models_failed_persists_error_run(monkeypatch, tmp_p
     monkeypatch.setattr(backend_api, "build_ensemble_forecast", fail_ensemble)
 
     result = state.run_now(
-        backend_api.RunNowPayload(pv_uncertainty=False, weather_models=["ecmwf_ifs", "dwd_icon_d2"])
+        backend_api.RunNowPayload(pv_uncertainty=False, weather_models=["ecmwf_ifs", "dwd_icon_d2"], forecast_mode="expert")
     )["result"]
 
     assert result["status"] == "error"

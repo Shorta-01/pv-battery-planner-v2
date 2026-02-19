@@ -21,13 +21,22 @@ def test_auto_select_models_horizon_aware() -> None:
     assert len(week) <= 5
     assert "dwd_icon_d2" in tomorrow
     assert "dwd_icon_d2" not in week
+    assert "gfs" in week
 
     for model_id in tomorrow:
         assert we.get_model_caps(model_id)["max_days"] >= 1
     for model_id in week:
         caps = we.get_model_caps(model_id)
         assert caps["max_days"] >= 7
-        assert caps["tier"] in {"medium", "global", "short"}
+        assert caps["tier"] in {"medium", "global"}
+
+
+def test_get_model_caps_for_supported_model() -> None:
+    caps = we.get_model_caps("ecmwf_ifs")
+    assert caps["max_days"] >= 7
+    assert isinstance(caps["has_native_dni_dhi"], bool)
+    assert isinstance(caps["supports_15min_radiation"], bool)
+    assert caps["tier"] in {"short", "medium", "global"}
 
 
 @pytest.mark.skipif(not core.PVLIB_AVAILABLE, reason="pvlib not installed")
