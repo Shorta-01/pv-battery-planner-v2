@@ -1062,9 +1062,9 @@ def render_pv_quality_widget(
 ) -> None:
     _ = pv_df
 
-    score = int(float((pv_quality_dict or {}).get("score", 0)))
+    score = int(_safe_float((pv_quality_dict or {}).get("score"), 0.0))
     score = min(100, max(0, score))
-    ratio_percent = max(0.0, min(float(pv_quality_dict.get("ratio", 0.0)) * 100.0, 100.0))
+    ratio_percent = max(0.0, min(_safe_float((pv_quality_dict or {}).get("ratio"), 0.0) * 100.0, 100.0))
 
     pv_label = str((pv_quality_dict or {}).get("label") or "Mixed")
     pv_color = str((pv_quality_dict or {}).get("color") or "#94a3b8")
@@ -1799,7 +1799,7 @@ def _render_run_inspector(filtered_df: pd.DataFrame) -> None:
                     model_rows.append({
                         "Model": model_id,
                         "Selected": "Yes" if is_selected else "No",
-                        "Weight": float(weights_used.get(model_id, 0.0)) if isinstance(weights_used, dict) else 0.0,
+                        "Weight": _safe_float(weights_used.get(model_id) if isinstance(weights_used, dict) else None, 0.0),
                         "Status": "Failed" if is_failed else "OK",
                         "Failure reason": (failure_reason[:117] + "...") if len(failure_reason) > 120 else (failure_reason or "—"),
                         "Missing vars": int(missing_count),
