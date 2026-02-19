@@ -1038,6 +1038,39 @@ def build_hourly_load_series(index: "pd.DatetimeIndex", total_kwh: float) -> "pd
     return weighted * (total_kwh / wsum)
 
 
+def load_consumption_profile_kwh_per_hour() -> list[float]:
+    """Return a normalized 24h load profile for backward compatibility."""
+    if len(LOAD_PROFILE) != 24:
+        raise ValueError("LOAD_PROFILE must have 24 values.")
+    profile = [float(v) for v in LOAD_PROFILE]
+    total = float(sum(profile))
+    if total <= 0:
+        raise ValueError("LOAD_PROFILE sum must be > 0.")
+    return [v / total for v in profile]
+
+
+def build_consumption_forecast(
+    profile_kwh_per_hour: list[float],
+    total_kwh: float,
+    target_date: dt.date,
+    tz: str,
+) -> "pd.Series":
+    """Build a 24h consumption series for target_date using a supplied profile."""
+    if len(profile_kwh_per_hour) != 24:
+        raise ValueError("profile_kwh_per_hour must contain 24 values.")
+    profile = [float(v) for v in profile_kwh_per_hour]
+    profile_sum = float(sum(profile))
+    if profile_sum <= 0:
+        raise ValueError("profile_kwh_per_hour must have a positive sum.")
+
+    start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz)
+    end = start + dt.timedelta(days=1)
+    idx = pd.date_range(start, end, freq="h", inclusive="left")
+    normalized = [v / profile_sum for v in profile]
+    values = [float(total_kwh) * normalized[ts.hour] for ts in idx]
+    return pd.Series(values, index=idx, dtype=float)
+
+
 def parse_soc_input(raw: str) -> float:
     val = raw.strip().replace(",", ".")
     if not val:
@@ -2136,6 +2169,59 @@ def run_forecast_pipeline(
             cutoff_reason=cutoff_reason,
             charge_note=charge_note,
         )
+
+
+def run_detailed_plan(
+    target_date: dt.date,
+    weather: ForecastResult,
+    pv_df: "pd.DataFrame",
+    consumption_kwh: "pd.Series",
+    soc_at_22_percent: float,
+    buffer_percent: float,
+    max_ac_charge_power_kw: float,
+) -> tuple["pd.DataFrame", "pd.DataFrame", "pd.Series", float, float, str]:
+    """Legacy backend API entrypoint retained for compatibility."""
+    total_consumption_kwh = float(pd.to_numeric(consumption_kwh, errors="coerce").fillna(0.0).sum())
+
+    pv = pv_df.copy()
+    if "load_kwh" not in pv.columns:
+        pv = add_load_and_surplus_columns(pv, total_consumption_kwh)
+
+    tariff_cfg = EFFECTIVE_CFG.get("tariff", DEFAULT_CONFIG["tariff"]) if isinstance(EFFECTIVE_CFG, dict) else DEFAULT_CONFIG["tariff"]
+    soc_low = compute_soc_low_timing_aware(pv, total_consumption_kwh, target_date, tariff_cfg=tariff_cfg)
+    _, soc_high = compute_soc_high_headroom(
+        pv,
+        total_consumption_kwh,
+        target_date,
+        sunrise=weather.sunrise,
+        sunset=weather.sunset,
+    )
+    cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high)
+    cutoff_soc = min(max(cutoff_soc_raw + (float(buffer_percent) / 100.0), MIN_SOC), MAX_CUTOFF_SOC)
+
+    charge_date = target_date - dt.timedelta(days=1)
+    _, charge_kw, _charge_note, achieved_soc_start = plan_charge_power(
+        soc_at_22_percent / 100.0,
+        cutoff_soc,
+        charge_date,
+        user_cap_kw=max_ac_charge_power_kw,
+    )
+
+    detail_df, _, _, _, _ = simulate_expensive_hours_detailed(
+        pv,
+        total_consumption_kwh,
+        achieved_soc_start,
+        target_date,
+    )
+    soc_series, flows_df = simulate_full_day_soc(
+        pv,
+        total_consumption_kwh,
+        soc_at_22_percent / 100.0,
+        charge_kw,
+        cutoff_soc,
+        target_date,
+    )
+    return detail_df, flows_df, soc_series, float(charge_kw), float(cutoff_soc), str(cutoff_reason)
 
 def compute_soc_high_headroom(
     df: "pd.DataFrame",

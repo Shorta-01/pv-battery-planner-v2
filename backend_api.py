@@ -711,13 +711,14 @@ class BackendState:
             warnings.append(f"pv_week_ahead_ensemble_failed={type(exc).__name__}:{exc}")
 
         important_weather_vars = set(WEATHER_DISPLAY_VARS)
-        for model_id in ensemble_tomorrow.failed_models:
-            reason = ensemble_tomorrow.failed_model_reasons.get(model_id) if isinstance(ensemble_tomorrow.failed_model_reasons, dict) else None
+        for model_id in getattr(ensemble_tomorrow, "failed_models", []) or []:
+            failed_reasons = getattr(ensemble_tomorrow, "failed_model_reasons", {})
+            reason = failed_reasons.get(model_id) if isinstance(failed_reasons, dict) else None
             reason_msg = str(reason.get("message") or reason.get("category") or "unknown") if isinstance(reason, dict) else "unknown"
             warnings.append(f"model failed: {model_id} ({reason_msg})")
 
         derived_hours_by_model = getattr(ensemble_tomorrow, "derived_irradiance_hours_by_model", {})
-        for model_id, used_derived in ensemble_tomorrow.derived_irradiance_by_model.items():
+        for model_id, used_derived in (getattr(ensemble_tomorrow, "derived_irradiance_by_model", {}) or {}).items():
             derived_hours = int(derived_hours_by_model.get(model_id, 0)) if isinstance(derived_hours_by_model, dict) else 0
             if used_derived and derived_hours > 0:
                 warnings.append(f"derived irradiance used: {model_id}")
@@ -726,7 +727,7 @@ class BackendState:
             if used_cached:
                 warnings.append(f"model_live_failed_used_cached=true: {model_id}")
 
-        for model_id, missing_vars in ensemble_tomorrow.missing_vars_by_model.items():
+        for model_id, missing_vars in (getattr(ensemble_tomorrow, "missing_vars_by_model", {}) or {}).items():
             if not missing_vars:
                 continue
             missing_important = sorted(var for var in set(missing_vars) if var in important_weather_vars)
@@ -836,7 +837,8 @@ class BackendState:
             "p10": float(ensemble_tomorrow.pv_ensemble_p10.sum()) if ensemble_tomorrow.pv_ensemble_p10 is not None else None,
             "p90": float(ensemble_tomorrow.pv_ensemble_p90.sum()) if ensemble_tomorrow.pv_ensemble_p90 is not None else None,
         }
-        pv_tomorrow_low_high_kwh = dict(ensemble_tomorrow.pv_tomorrow_low_high_kwh) if isinstance(ensemble_tomorrow.pv_tomorrow_low_high_kwh, dict) else {"low": None, "high": None, "valid_models": 0}
+        pv_low_high = getattr(ensemble_tomorrow, "pv_tomorrow_low_high_kwh", None)
+        pv_tomorrow_low_high_kwh = dict(pv_low_high) if isinstance(pv_low_high, dict) else {"low": None, "high": None, "valid_models": 0}
 
         run_duration_ms = int((time.perf_counter() - run_started) * 1000)
         system_snapshot = {
@@ -855,9 +857,9 @@ class BackendState:
             "target_date": target_date.isoformat(),
             "weather": self._serialize_df(weather.df),
             "weather_primary_model_id": ensemble_tomorrow.weather_primary_model_id,
-            "weather_ensemble_table": self._serialize_df(ensemble_tomorrow.weather_ensemble_table.df),
-            "weather_by_model": {model_id: self._serialize_df(fr.df) for model_id, fr in ensemble_tomorrow.weather_by_model.items()},
-            "pv_by_model": {model_id: self._serialize_df(model_pv) for model_id, model_pv in ensemble_tomorrow.pv_by_model.items()},
+            "weather_ensemble_table": self._serialize_df(getattr(getattr(ensemble_tomorrow, "weather_ensemble_table", None), "df", pd.DataFrame(index=pv.index))),
+            "weather_by_model": {model_id: self._serialize_df(fr.df) for model_id, fr in (getattr(ensemble_tomorrow, "weather_by_model", {}) or {}).items()},
+            "pv_by_model": {model_id: self._serialize_df(model_pv) for model_id, model_pv in (getattr(ensemble_tomorrow, "pv_by_model", {}) or {}).items()},
             "pv": self._serialize_df(pv),
             "detail": self._serialize_df(detail_df),
             "flows": self._serialize_df(flows_df),
@@ -896,11 +898,11 @@ class BackendState:
             "config_json": json.dumps(
                 {
                     **cfg,
-                    "weather_models_selected": ensemble_tomorrow.selected_models,
+                    "weather_models_selected": getattr(ensemble_tomorrow, "selected_models", tomorrow_models),
                     "forecast_mode": mode,
                     "ensemble_method": normalized_ensemble_method,
                     "pv_uncertainty_enabled": bool(pv_uncertainty),
-                    "per_model_pv_totals_kwh": ensemble_tomorrow.per_model_pv_totals_kwh,
+                    "per_model_pv_totals_kwh": getattr(ensemble_tomorrow, "per_model_pv_totals_kwh", {}),
                     "pv_totals_kwh": pv_totals_kwh,
                 },
                 sort_keys=True,
@@ -908,24 +910,24 @@ class BackendState:
             "config": cfg,
             "created_at_utc": run_at_utc,
             "weather_ensemble": {
-                "selected_models": ensemble_tomorrow.selected_models,
+                "selected_models": getattr(ensemble_tomorrow, "selected_models", tomorrow_models),
                 "ensemble_method": normalized_ensemble_method,
-                "weights_used": ensemble_tomorrow.weights_used,
+                "weights_used": getattr(ensemble_tomorrow, "weights_used", None),
                 "primary_model_id": ensemble_tomorrow.weather_primary_model_id,
-                "per_model_pv_totals_kwh": ensemble_tomorrow.per_model_pv_totals_kwh,
+                "per_model_pv_totals_kwh": getattr(ensemble_tomorrow, "per_model_pv_totals_kwh", {}),
                 "pv_totals_kwh": pv_totals_kwh if pv_uncertainty else None,
                 "pv_tomorrow_low_high_kwh": pv_tomorrow_low_high_kwh,
                 "pv_week_ahead": pv_week_ahead,
-                "missing_vars_by_model": ensemble_tomorrow.missing_vars_by_model,
-                "derived_irradiance_by_model": ensemble_tomorrow.derived_irradiance_by_model,
+                "missing_vars_by_model": getattr(ensemble_tomorrow, "missing_vars_by_model", {}),
+                "derived_irradiance_by_model": getattr(ensemble_tomorrow, "derived_irradiance_by_model", {}),
                 "derived_irradiance_hours_by_model": getattr(ensemble_tomorrow, "derived_irradiance_hours_by_model", {}),
                 "fetch_meta_by_model": getattr(ensemble_tomorrow, "fetch_meta_by_model", {}),
-                "failed_models": ensemble_tomorrow.failed_models,
-                "failed_model_reasons": ensemble_tomorrow.failed_model_reasons,
+                "failed_models": getattr(ensemble_tomorrow, "failed_models", []),
+                "failed_model_reasons": getattr(ensemble_tomorrow, "failed_model_reasons", {}),
                 "model_live_failed_used_cached": getattr(ensemble_tomorrow, "model_live_failed_used_cached", {}),
                 "fast_mode": bool(fast_mode),
             },
-            "provider_payloads_by_model": (ensemble_tomorrow.provider_payloads_by_model if store_provider_payloads else {}),
+            "provider_payloads_by_model": ((getattr(ensemble_tomorrow, "provider_payloads_by_model", {}) or {}) if store_provider_payloads else {}),
         }
         insert_forecast_run(str(SQLITE_PATH), payload)
         self.latest_result = payload
