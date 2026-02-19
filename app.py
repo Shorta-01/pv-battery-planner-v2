@@ -1240,13 +1240,19 @@ def render_pv_quality_widget(
 def render_key_charging_widget(container, allowed_charge_kw: float, cutoff_soc_pct: float) -> None:
     power_pct = clamp_pct((allowed_charge_kw / 7.0) * 100.0)
     soc_pct = clamp_pct(cutoff_soc_pct)
+    tip = (
+        "These are the two FusionSolar settings for tonight. "
+        "Allowed AC charge power is the grid charging power limit. "
+        "AC charge cutoff SOC is the battery level where grid charging stops. "
+        "Example: 0.50 kW and 70%."
+    )
     container.markdown(
         (
             "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.75rem 0.85rem;"
             "background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));'>"
-            "<div style='display:flex;align-items:center;justify-content:space-between;gap:0.5rem;'>"
+            "<div style='display:flex;align-items:center;justify-content:flex-start;gap:0.5rem;'>"
             "<div style='font-size:0.72rem;opacity:0.8;text-transform:uppercase;letter-spacing:0.06em;'>Key charging targets</div>"
-            "<div style='font-size:0.95rem;'>🔋⚡</div>"
+            f"<span class='info-tooltip' title='{_esc_attr(tip)}'>ⓘ</span>"
             "</div>"
             "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.9rem;margin-top:0.55rem;'>"
             "<div style='padding:0.45rem 0.55rem;border:1px solid rgba(255,255,255,0.08);border-radius:12px;background:rgba(255,255,255,0.02);'>"
