@@ -3207,7 +3207,7 @@ if run:
                 {
                     "buffer_percent": float(buffer_percent),
                     "user_max_ac_kw": float(user_max_ac_kw),
-                    "weather_models": selected_models if forecast_mode == "expert" else [],
+                    "weather_models": selected_models if forecast_mode == "expert" else None,
                     "forecast_mode": forecast_mode,
                     "ensemble_method": ensemble_method,
                     "pv_uncertainty": True,
