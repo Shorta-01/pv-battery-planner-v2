@@ -79,6 +79,41 @@ def _float_or_default(value: object, default: float) -> float:
         return float(default)
 
 
+def _coerce_float(value, default, *, field_name: str, warnings: list[str] | None = None) -> float:
+    def _warn(reason: str) -> None:
+        if warnings is not None:
+            warnings.append(f"{field_name}: {reason} -> default {default}")
+
+    if value is None:
+        _warn("missing")
+        return float(default)
+
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped == "" or stripped.lower() in {"null", "none"}:
+            _warn("empty/null string")
+            return float(default)
+        value = stripped
+
+    if pd.isna(value):
+        _warn("NaN")
+        return float(default)
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        _warn("invalid numeric value")
+        return float(default)
+
+
+def _valid_hhmm(value: str) -> bool:
+    try:
+        dt.datetime.strptime(value, "%H:%M")
+        return True
+    except Exception:
+        return False
+
+
 def _to_history_summary(payload: dict) -> dict:
     if not isinstance(payload, dict):
         return {}
@@ -368,6 +403,10 @@ class BackendState:
         self.api_token = self._load_or_create_token()
         self.settings = self._load_settings()
         self.last_inputs = self._read_json(INPUTS_PATH, default={})
+        self.last_inputs_sanitized_warnings: list[str] = []
+        self.settings_sanitized_warnings: list[str] = []
+        self._sanitize_last_inputs()
+        self._sanitize_settings()
         self.latest_result = self._read_json(LATEST_RESULT_PATH, default={})
         self.history = self._load_history()
         self._apply_config(self.settings["config"])
@@ -480,10 +519,6 @@ class BackendState:
                 loaded.setdefault("nightly_run_time", DEFAULT_NIGHTLY_TIME)
                 loaded.setdefault("timezone", str(merged.get("location", {}).get("timezone") or "Europe/Brussels"))
                 loaded.setdefault("max_ac_charge_power_kw_default", DEFAULT_MAX_AC_CAP)
-                loaded["max_ac_charge_power_kw_default"] = _float_or_default(
-                    loaded.get("max_ac_charge_power_kw_default"),
-                    DEFAULT_MAX_AC_CAP,
-                )
                 loaded.setdefault("settings_source", SETTINGS_SOURCE_SETTINGS_JSON)
                 return loaded
 
@@ -509,6 +544,64 @@ class BackendState:
 
     def _save_inputs(self) -> None:
         self._write_json(INPUTS_PATH, self.last_inputs)
+
+    def _sanitize_last_inputs(self) -> None:
+        changed = False
+        if not isinstance(self.last_inputs, dict):
+            self.last_inputs = {}
+            changed = True
+
+        warnings: list[str] = []
+
+        raw_soc = self.last_inputs.get("soc_at_22_percent")
+        soc = _coerce_float(raw_soc, 45.0, field_name="soc_at_22_percent", warnings=warnings)
+        if soc < 0.0 or soc > 100.0:
+            clamped = min(100.0, max(0.0, soc))
+            warnings.append(f"soc_at_22_percent: clamped to {clamped}")
+            soc = clamped
+        if raw_soc != soc:
+            changed = True
+        self.last_inputs["soc_at_22_percent"] = soc
+
+        raw_ykwh = self.last_inputs.get("yesterday_consumption_kwh")
+        ykwh = _coerce_float(raw_ykwh, 18.0, field_name="yesterday_consumption_kwh", warnings=warnings)
+        if ykwh <= 0:
+            warnings.append(f"yesterday_consumption_kwh: must be > 0 -> default 18.0")
+            ykwh = 18.0
+        if raw_ykwh != ykwh:
+            changed = True
+        self.last_inputs["yesterday_consumption_kwh"] = ykwh
+
+        self.last_inputs_sanitized_warnings = warnings
+        if changed:
+            self._save_inputs()
+
+    def _sanitize_settings(self) -> None:
+        changed = False
+        if not isinstance(self.settings, dict):
+            self.settings = self._build_settings_from_repo_defaults()
+            changed = True
+
+        warnings: list[str] = []
+
+        raw_cap = self.settings.get("max_ac_charge_power_kw_default")
+        cap = _coerce_float(raw_cap, DEFAULT_MAX_AC_CAP, field_name="max_ac_charge_power_kw_default", warnings=warnings)
+        if cap <= 0:
+            warnings.append(f"max_ac_charge_power_kw_default: must be > 0 -> default {DEFAULT_MAX_AC_CAP}")
+            cap = DEFAULT_MAX_AC_CAP
+        if raw_cap != cap:
+            changed = True
+        self.settings["max_ac_charge_power_kw_default"] = cap
+
+        raw_nightly = str(self.settings.get("nightly_run_time") or "").strip()
+        if not _valid_hhmm(raw_nightly):
+            warnings.append(f"nightly_run_time: invalid -> default {DEFAULT_NIGHTLY_TIME}")
+            self.settings["nightly_run_time"] = DEFAULT_NIGHTLY_TIME
+            changed = True
+
+        self.settings_sanitized_warnings = warnings
+        if changed:
+            self._save_settings()
 
     def _save_results(self) -> None:
         self._write_json(LATEST_RESULT_PATH, self.latest_result)
@@ -1008,16 +1101,37 @@ class BackendState:
             raise HTTPException(status_code=423, detail="Run already in progress")
         try:
             source = self.last_inputs
-            soc = float(payload.soc_at_22_percent if payload.soc_at_22_percent is not None else source.get("soc_at_22_percent", 45.0))
-            ykwh = float(
-                payload.yesterday_consumption_kwh
-                if payload.yesterday_consumption_kwh is not None
-                else source.get("yesterday_consumption_kwh", 18.0)
+            warnings: list[str] = [*self.last_inputs_sanitized_warnings, *self.settings_sanitized_warnings]
+            soc = _coerce_float(
+                payload.soc_at_22_percent if payload.soc_at_22_percent is not None else source.get("soc_at_22_percent"),
+                45.0,
+                field_name="soc_at_22_percent",
+                warnings=warnings,
             )
-            cap = _float_or_default(
+            if soc < 0.0 or soc > 100.0:
+                clamped = min(100.0, max(0.0, soc))
+                warnings.append(f"soc_at_22_percent: clamped to {clamped}")
+                soc = clamped
+
+            ykwh = _coerce_float(
+                payload.yesterday_consumption_kwh if payload.yesterday_consumption_kwh is not None else source.get("yesterday_consumption_kwh"),
+                18.0,
+                field_name="yesterday_consumption_kwh",
+                warnings=warnings,
+            )
+            if ykwh <= 0:
+                warnings.append("yesterday_consumption_kwh: must be > 0 -> default 18.0")
+                ykwh = 18.0
+
+            cap = _coerce_float(
                 payload.user_max_ac_kw if payload.user_max_ac_kw is not None else self.settings.get("max_ac_charge_power_kw_default"),
                 DEFAULT_MAX_AC_CAP,
+                field_name="max_ac_charge_power_kw_default",
+                warnings=warnings,
             )
+            if cap <= 0:
+                warnings.append(f"max_ac_charge_power_kw_default: must be > 0 -> default {DEFAULT_MAX_AC_CAP}")
+                cap = DEFAULT_MAX_AC_CAP
             local_today = dt.datetime.now(self._tzinfo()).date()
             target_date = local_today + dt.timedelta(days=1)
             result = self._run(
@@ -1033,6 +1147,10 @@ class BackendState:
                 payload.fast_mode,
             )
             result["run_type"] = "manual"
+            if warnings:
+                existing = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+                result["warnings"] = [*existing, *warnings]
+                result["input_warnings"] = warnings
             self.latest_result = result
             if self.history:
                 self.history[-1]["run_type"] = "manual"
@@ -1053,9 +1171,27 @@ class BackendState:
             if not payload.force and self.settings.get("last_successful_for_target_date") == target_date.isoformat():
                 return {"ran": False, "reason": "already_ran", "target_date": target_date.isoformat()}
 
-            warnings: list[str] = []
-            soc = float(self.last_inputs.get("soc_at_22_percent", 45.0))
-            ykwh = float(self.last_inputs.get("yesterday_consumption_kwh", 18.0))
+            warnings: list[str] = [*self.last_inputs_sanitized_warnings, *self.settings_sanitized_warnings]
+            soc = _coerce_float(
+                self.last_inputs.get("soc_at_22_percent"),
+                45.0,
+                field_name="soc_at_22_percent",
+                warnings=warnings,
+            )
+            if soc < 0.0 or soc > 100.0:
+                clamped = min(100.0, max(0.0, soc))
+                warnings.append(f"soc_at_22_percent: clamped to {clamped}")
+                soc = clamped
+
+            ykwh = _coerce_float(
+                self.last_inputs.get("yesterday_consumption_kwh"),
+                18.0,
+                field_name="yesterday_consumption_kwh",
+                warnings=warnings,
+            )
+            if ykwh <= 0:
+                warnings.append("yesterday_consumption_kwh: must be > 0 -> default 18.0")
+                ykwh = 18.0
             if not self.last_inputs:
                 warnings.append("missing inputs")
             updated_at_raw = self.last_inputs.get("last_inputs_updated_at")
@@ -1064,18 +1200,31 @@ class BackendState:
                 if (local_now - updated_at) > dt.timedelta(hours=24):
                     warnings.append("stale inputs")
 
+            cap = _coerce_float(
+                self.settings.get("max_ac_charge_power_kw_default"),
+                DEFAULT_MAX_AC_CAP,
+                field_name="max_ac_charge_power_kw_default",
+                warnings=warnings,
+            )
+            if cap <= 0:
+                warnings.append(f"max_ac_charge_power_kw_default: must be > 0 -> default {DEFAULT_MAX_AC_CAP}")
+                cap = DEFAULT_MAX_AC_CAP
+
             result = self._run(
                 target_date,
                 soc,
                 ykwh,
                 0.0,
-                _float_or_default(self.settings.get("max_ac_charge_power_kw_default"), DEFAULT_MAX_AC_CAP),
+                cap,
                 DEFAULT_ACCURACY_MODELS,
                 "auto",
                 "weighted",
                 False,
             )
-            result["warnings"] = warnings
+            existing = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+            result["warnings"] = [*existing, *warnings]
+            if warnings:
+                result["input_warnings"] = warnings
             result["run_type"] = "nightly"
             self.latest_result = result
             if self.history:
