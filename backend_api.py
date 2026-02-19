@@ -109,6 +109,7 @@ class RunNowPayload(BaseModel):
     buffer_percent: float = Field(default=0.0, ge=0.0, le=10.0)
     user_max_ac_kw: float | None = Field(default=None, ge=0.0)
     weather_models: list[str] | None = None
+    forecast_mode: str | None = None
     ensemble_method: str = Field(default="weighted")
     pv_uncertainty: bool = False
     fast_mode: bool = False
@@ -196,6 +197,27 @@ def _model_max_days(model_id: str) -> int:
         return 0
 
 
+def auto_select_models_for_location(loc: object, requested_days: int) -> list[str]:
+    models_all = list(WEATHER_MODELS.keys())
+    if requested_days >= 7:
+        return models_all
+
+    preferred: list[str] = []
+    for mid in [
+        "ecmwf_ifs",
+        "dwd_icon_eu",
+        "knmi_harmonie_arome",
+        "dwd_icon_d2",
+        "meteo_france_seamless",
+        "meteofrance_seamless",
+    ]:
+        if mid in WEATHER_MODELS and mid in models_all and mid not in preferred:
+            preferred.append(mid)
+    if preferred:
+        return preferred[:4]
+    return models_all[:3] if len(models_all) >= 3 else models_all
+
+
 def _best_of_day_from_model(
     fr: object,
     day_start: pd.Timestamp,
@@ -231,36 +253,49 @@ def _pick_week_ahead_weather_code(
     Returns (best_code, source_model_id, source_model_max_days)
 
     Policy:
-      - Day 0–1: prefer short-range (max_days<=2) if available
-      - Day 2–3: prefer mid-range (max_days<=4) if available
-      - Day 4–6: prefer long-range (max_days>=7) if available
-
-    Tie-break: higher ensemble weight, then primary model.
+      - choose model with highest non-NaN weather_code coverage for the day
+      - tie-break: higher ensemble weight, then primary model
+      - representative code: 12:00 local if available, otherwise mode of day
     """
     day = target_date + dt.timedelta(days=day_offset)
     day_start = pd.Timestamp(dt.datetime.combine(day, dt.time(0, 0)), tz=tz)
     day_end = day_start + pd.Timedelta(days=1)
 
     candidates: list[tuple[int, float, int, str, int, int]] = []
-    # (pref_bucket, -weight, primary_penalty, model_id, code, max_days)
+    # (-coverage, -weight, primary_penalty, model_id, code, max_days)
 
     for model_id, fr in (weather_by_model or {}).items():
-        code = _best_of_day_from_model(fr, day_start, day_end, tz)
-        if code is None:
+        df = getattr(fr, "df", None)
+        if not isinstance(df, pd.DataFrame) or "weather_code" not in df.columns:
             continue
-
+        idx = df.index
+        if isinstance(idx, pd.DatetimeIndex):
+            if idx.tz is None:
+                df = df.copy()
+                df.index = df.index.tz_localize(tz)
+            else:
+                df = df.tz_convert(tz)
+        day_df = df.loc[(df.index >= day_start) & (df.index < day_end), ["weather_code"]].copy()
+        if day_df.empty:
+            continue
+        wc = pd.to_numeric(day_df["weather_code"], errors="coerce")
+        coverage = int(wc.notna().sum())
+        if coverage <= 0:
+            continue
+        midday = day_start + pd.Timedelta(hours=12)
+        midday_code = pd.to_numeric(pd.Series([day_df["weather_code"].get(midday)]), errors="coerce").dropna()
+        if not midday_code.empty:
+            code = int(midday_code.iloc[0])
+        else:
+            mode_vals = wc.dropna().mode()
+            if mode_vals.empty:
+                continue
+            code = int(mode_vals.iloc[0])
         max_days = _model_max_days(model_id)
         w = float((weights_used or {}).get(model_id, 0.0))
         primary_penalty = 0 if (primary_id and model_id == primary_id) else 1
 
-        if day_offset <= 1:
-            pref_bucket = 0 if max_days <= 2 else (1 if max_days <= 4 else 2)
-        elif day_offset <= 3:
-            pref_bucket = 0 if max_days <= 4 else 1
-        else:
-            pref_bucket = 0 if max_days >= 7 else 1
-
-        candidates.append((pref_bucket, -w, primary_penalty, model_id, int(code), int(max_days)))
+        candidates.append((-coverage, -w, primary_penalty, model_id, int(code), int(max_days)))
 
     if not candidates:
         return None, None, None
@@ -274,9 +309,9 @@ def _build_pv_week_ahead(
     *,
     target_date: dt.date,
     tz: str,
-    pv_totals_p50: list[float],
-    pv_totals_p10: list[float] | None,
-    pv_totals_p90: list[float] | None,
+    pv_totals_p50: list[float | None],
+    pv_totals_p10: list[float | None] | None,
+    pv_totals_p90: list[float | None] | None,
     weather_by_model: dict[str, object] | None,
     weights_used: dict[str, float] | None,
     weather_primary_model_id: str | None,
@@ -299,9 +334,9 @@ def _build_pv_week_ahead(
         out.append(
             {
                 "date": day.isoformat(),
-                "p50_kwh": float(pv_totals_p50[i]),
-                "p10_kwh": float(pv_totals_p10[i]) if pv_totals_p10 and i < len(pv_totals_p10) else None,
-                "p90_kwh": float(pv_totals_p90[i]) if pv_totals_p90 and i < len(pv_totals_p90) else None,
+                "p50_kwh": float(pv_totals_p50[i]) if pv_totals_p50[i] is not None else None,
+                "p10_kwh": float(pv_totals_p10[i]) if pv_totals_p10 and i < len(pv_totals_p10) and pv_totals_p10[i] is not None else None,
+                "p90_kwh": float(pv_totals_p90[i]) if pv_totals_p90 and i < len(pv_totals_p90) and pv_totals_p90[i] is not None else None,
                 "weather_code": int(code) if code is not None else None,
                 "weather_best_of_day": code is not None,
                 "weather_code_source_model_id": source_model_id,
@@ -309,6 +344,7 @@ def _build_pv_week_ahead(
                     (WEATHER_MODELS.get(source_model_id) or {}).get("label") if source_model_id else None
                 ),
                 "weather_code_source_max_days": int(source_max_days) if source_max_days is not None else None,
+                "icon_key": "unknown" if code is None else None,
             }
         )
 
@@ -527,6 +563,7 @@ class BackendState:
         buffer_percent: float,
         user_max_ac_kw: float,
         weather_models: list[str] | None,
+        forecast_mode: str | None,
         ensemble_method: str,
         pv_uncertainty: bool,
         fast_mode: bool = False,
@@ -541,9 +578,20 @@ class BackendState:
             longitude=float(loc_cfg["longitude"]),
         )
 
-        selected_models = weather_models if weather_models is not None else DEFAULT_ACCURACY_MODELS
-        if not selected_models:
+        mode = str(forecast_mode or "auto").lower().strip()
+        if mode not in ("auto", "expert"):
+            mode = "auto"
+
+        if mode == "expert":
+            tomorrow_models = list(weather_models or [])
+            if not tomorrow_models:
+                tomorrow_models = auto_select_models_for_location(loc, requested_days=1)
+        else:
+            tomorrow_models = auto_select_models_for_location(loc, requested_days=1)
+        week_models = auto_select_models_for_location(loc, requested_days=7)
+        if not tomorrow_models:
             raise HTTPException(status_code=400, detail="Select at least one weather model.")
+
         normalized_ensemble_method = str(ensemble_method).lower().strip()
         weather_cfg = cfg.get("weather", {}) if isinstance(cfg, dict) else {}
         store_provider_payloads = bool(weather_cfg.get("store_provider_payloads", False)) if isinstance(weather_cfg, dict) else False
@@ -556,28 +604,29 @@ class BackendState:
             "yesterday_consumption_kwh": float(yesterday_kwh),
             "buffer_percent": float(buffer_percent),
             "max_ac_charge_power_kw": float(user_max_ac_kw),
-            "weather_models_selected": selected_models,
+            "weather_models_selected": tomorrow_models,
+            "forecast_mode": mode,
             "ensemble_method": normalized_ensemble_method,
             "pv_uncertainty_enabled": bool(pv_uncertainty),
             "fast_mode": bool(fast_mode),
         }
 
         try:
-            ensemble = build_ensemble_forecast(
+            ensemble_tomorrow = build_ensemble_forecast(
                 loc=loc,
                 target_date=target_date,
                 tz=tz,
-                weather_models=selected_models,
+                weather_models=tomorrow_models,
                 ensemble_method=normalized_ensemble_method,
                 pv_uncertainty=bool(pv_uncertainty),
                 accuracy_mode=True,
                 fast_mode=bool(fast_mode),
-                requested_days=7,
+                requested_days=1,
             )
         except RuntimeError as exc:
             if "All weather model requests failed" not in str(exc):
                 raise
-            failed_models = list(getattr(exc, "failed_models", selected_models) or selected_models)
+            failed_models = list(getattr(exc, "failed_models", tomorrow_models) or tomorrow_models)
             failed_reasons = getattr(exc, "failed_model_reasons", {})
             if not isinstance(failed_reasons, dict):
                 failed_reasons = {}
@@ -608,7 +657,8 @@ class BackendState:
                 "config_json": json.dumps(
                     {
                         **cfg,
-                        "weather_models_selected": selected_models,
+                        "weather_models_selected": tomorrow_models,
+                        "forecast_mode": mode,
                         "ensemble_method": normalized_ensemble_method,
                         "pv_uncertainty_enabled": bool(pv_uncertainty),
                     },
@@ -621,7 +671,7 @@ class BackendState:
                     "cons_forecast_kwh": float(yesterday_kwh),
                 },
                 "weather_ensemble": {
-                    "selected_models": selected_models,
+                    "selected_models": tomorrow_models,
                     "ensemble_method": normalized_ensemble_method,
                     "weights_used": getattr(exc, "weights_used", None),
                     "primary_model_id": None,
@@ -631,6 +681,9 @@ class BackendState:
                     "model_live_failed_used_cached": {},
                     "fast_mode": bool(fast_mode),
                 },
+                "forecast_mode_effective": mode,
+                "tomorrow_models_used": list(tomorrow_models),
+                "week_ahead_models_considered": list(week_models),
                 "weather_by_model": {},
             }
             insert_forecast_run(str(SQLITE_PATH), error_payload)
@@ -640,54 +693,81 @@ class BackendState:
             self._save_results()
             return error_payload
 
-        important_weather_vars = set(WEATHER_DISPLAY_VARS)
         warnings: list[str] = []
-        for model_id in ensemble.failed_models:
-            reason = ensemble.failed_model_reasons.get(model_id) if isinstance(ensemble.failed_model_reasons, dict) else None
-            if isinstance(reason, dict):
-                reason_msg = str(reason.get("message") or reason.get("category") or "unknown")
-            else:
-                reason_msg = "unknown"
+        try:
+            ensemble_week = build_ensemble_forecast(
+                loc=loc,
+                target_date=target_date,
+                tz=tz,
+                weather_models=week_models,
+                ensemble_method=normalized_ensemble_method,
+                pv_uncertainty=bool(pv_uncertainty),
+                accuracy_mode=True,
+                fast_mode=False,
+                requested_days=7,
+            )
+        except Exception as exc:
+            ensemble_week = None
+            warnings.append(f"pv_week_ahead_ensemble_failed={type(exc).__name__}:{exc}")
+
+        important_weather_vars = set(WEATHER_DISPLAY_VARS)
+        for model_id in ensemble_tomorrow.failed_models:
+            reason = ensemble_tomorrow.failed_model_reasons.get(model_id) if isinstance(ensemble_tomorrow.failed_model_reasons, dict) else None
+            reason_msg = str(reason.get("message") or reason.get("category") or "unknown") if isinstance(reason, dict) else "unknown"
             warnings.append(f"model failed: {model_id} ({reason_msg})")
 
-        derived_hours_by_model = getattr(ensemble, "derived_irradiance_hours_by_model", {})
-        for model_id, used_derived in ensemble.derived_irradiance_by_model.items():
+        derived_hours_by_model = getattr(ensemble_tomorrow, "derived_irradiance_hours_by_model", {})
+        for model_id, used_derived in ensemble_tomorrow.derived_irradiance_by_model.items():
             derived_hours = int(derived_hours_by_model.get(model_id, 0)) if isinstance(derived_hours_by_model, dict) else 0
             if used_derived and derived_hours > 0:
                 warnings.append(f"derived irradiance used: {model_id}")
 
-        for model_id, used_cached in getattr(ensemble, "model_live_failed_used_cached", {}).items():
+        for model_id, used_cached in getattr(ensemble_tomorrow, "model_live_failed_used_cached", {}).items():
             if used_cached:
                 warnings.append(f"model_live_failed_used_cached=true: {model_id}")
 
-        for model_id, missing_vars in ensemble.missing_vars_by_model.items():
+        for model_id, missing_vars in ensemble_tomorrow.missing_vars_by_model.items():
             if not missing_vars:
                 continue
             missing_important = sorted(var for var in set(missing_vars) if var in important_weather_vars)
             if missing_important:
                 warnings.append(f"important vars missing: {model_id} ({', '.join(missing_important)})")
 
-        primary_id = getattr(ensemble, "weather_primary_model_id", None)
-        weather_by_model = getattr(ensemble, "weather_by_model", {}) or {}
-
-        def _daily_totals(series: pd.Series | None) -> list[float] | None:
-            if not isinstance(series, pd.Series) or series.empty:
-                return None
+        def _daily_totals_nullable(series: pd.Series | None, days: int = 7) -> list[float | None]:
+            if series is None or len(series) == 0:
+                return [None] * days
             s = pd.to_numeric(series, errors="coerce")
             if not isinstance(s.index, pd.DatetimeIndex):
-                return None
+                return [None] * days
             if s.index.tz is None:
                 s = s.copy()
                 s.index = s.index.tz_localize(tz)
             else:
                 s = s.tz_convert(tz)
-            per_day = s.resample("1D").sum(min_count=1)
-            vals = [float(v) if not pd.isna(v) else 0.0 for v in per_day.iloc[:7].tolist()]
-            return vals
+            daily = s.resample("D").sum(min_count=1)
+            out: list[float | None] = []
+            for i in range(days):
+                if i >= len(daily):
+                    out.append(None)
+                else:
+                    v = daily.iloc[i]
+                    out.append(None if pd.isna(v) else float(v))
+            return out
 
-        pv_totals_p50 = _daily_totals(ensemble.pv_ensemble_p50) or []
-        pv_totals_p10 = _daily_totals(ensemble.pv_ensemble_p10)
-        pv_totals_p90 = _daily_totals(ensemble.pv_ensemble_p90)
+        if ensemble_week is not None:
+            pv_totals_p50 = _daily_totals_nullable(ensemble_week.pv_ensemble_p50)
+            pv_totals_p10 = _daily_totals_nullable(ensemble_week.pv_ensemble_p10)
+            pv_totals_p90 = _daily_totals_nullable(ensemble_week.pv_ensemble_p90)
+            primary_id = getattr(ensemble_week, "weather_primary_model_id", None)
+            weather_by_model = getattr(ensemble_week, "weather_by_model", {}) or {}
+            weights_used_week = getattr(ensemble_week, "weights_used", None)
+        else:
+            pv_totals_p50 = [None] * 7
+            pv_totals_p10 = [None] * 7
+            pv_totals_p90 = [None] * 7
+            primary_id = None
+            weather_by_model = {}
+            weights_used_week = None
 
         pv_week_ahead = _build_pv_week_ahead(
             target_date=target_date,
@@ -696,31 +776,27 @@ class BackendState:
             pv_totals_p10=pv_totals_p10,
             pv_totals_p90=pv_totals_p90,
             weather_by_model=weather_by_model,
-            weights_used=getattr(ensemble, "weights_used", None),
+            weights_used=weights_used_week,
             weather_primary_model_id=primary_id,
-        )
-
-        for day_item in pv_week_ahead:
-            if isinstance(day_item, dict) and day_item.get("weather_code") is None:
-                warnings.append(f"weather_code_missing_for_week_ahead_icons={day_item.get('date')}")
+        )[1:7]
 
         warnings = list(dict.fromkeys(warnings))
         status = "degraded" if warnings else "ok"
 
-        weather = ensemble.weather_primary
+        weather = ensemble_tomorrow.weather_primary
         tomorrow_start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz)
         tomorrow_end = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=1), dt.time(0, 0)), tz=tz)
         tomorrow_index = pd.date_range(tomorrow_start, tomorrow_end, freq="h", inclusive="left")
 
         pv = pd.DataFrame(index=tomorrow_index)
-        pv["pv_east_kwh"] = ensemble.pv_ensemble_east_p50.reindex(pv.index).fillna(0.0)
-        pv["pv_south_kwh"] = ensemble.pv_ensemble_south_p50.reindex(pv.index).fillna(0.0)
-        pv["pv_total_unclipped_kwh"] = ensemble.pv_ensemble_unclipped_p50.reindex(pv.index).fillna(0.0)
-        pv["pv_total_kwh"] = ensemble.pv_ensemble_p50.reindex(pv.index).fillna(0.0)
-        if ensemble.pv_ensemble_p10 is not None:
-            pv["pv_total_low_kwh"] = ensemble.pv_ensemble_p10.reindex(pv.index).fillna(0.0)
-        if ensemble.pv_ensemble_p90 is not None:
-            pv["pv_total_high_kwh"] = ensemble.pv_ensemble_p90.reindex(pv.index).fillna(0.0)
+        pv["pv_east_kwh"] = ensemble_tomorrow.pv_ensemble_east_p50.reindex(pv.index).fillna(0.0)
+        pv["pv_south_kwh"] = ensemble_tomorrow.pv_ensemble_south_p50.reindex(pv.index).fillna(0.0)
+        pv["pv_total_unclipped_kwh"] = ensemble_tomorrow.pv_ensemble_unclipped_p50.reindex(pv.index).fillna(0.0)
+        pv["pv_total_kwh"] = ensemble_tomorrow.pv_ensemble_p50.reindex(pv.index).fillna(0.0)
+        if ensemble_tomorrow.pv_ensemble_p10 is not None:
+            pv["pv_total_low_kwh"] = ensemble_tomorrow.pv_ensemble_p10.reindex(pv.index).fillna(0.0)
+        if ensemble_tomorrow.pv_ensemble_p90 is not None:
+            pv["pv_total_high_kwh"] = ensemble_tomorrow.pv_ensemble_p90.reindex(pv.index).fillna(0.0)
         pv["pv_clipped_kwh"] = (pv["pv_total_unclipped_kwh"] - pv["pv_total_kwh"]).clip(lower=0.0)
         pv["pv_dc_available_kwh"] = pv["pv_total_unclipped_kwh"]
         pv["pv_ac_limited_kwh"] = pv["pv_total_kwh"]
@@ -728,152 +804,41 @@ class BackendState:
         total_e = float(pd.to_numeric(pv["pv_east_kwh"], errors="coerce").fillna(0.0).sum())
         total_s = float(pd.to_numeric(pv["pv_south_kwh"], errors="coerce").fillna(0.0).sum())
         split_total = total_e + total_s
-        ratio_e, ratio_s = (total_e / split_total, total_s / split_total) if split_total > 0 else (0.0, 1.0)
-
+        ratio_e, ratio_s = (total_e / split_total, total_s / split_total) if split_total > 0 else (0.5, 0.5)
         pv = core.ensure_pv_columns(pv, split_ratio=(ratio_e, ratio_s))
-        pv = core.apply_daylight_clamp(pv, weather.sunrise, weather.sunset).sort_index()
-        pv = core.ensure_pv_columns(pv, split_ratio=(ratio_e, ratio_s))
-        pv = core.add_sun_percent(pv, weather.sunrise, weather.sunset)
-        pv = core.add_load_and_surplus_columns(pv, yesterday_kwh)
 
-        tariff_cfg = cfg.get("tariff", core.DEFAULT_CONFIG["tariff"])
-        soc_low = core.compute_soc_low_timing_aware(pv, yesterday_kwh, target_date, tariff_cfg=tariff_cfg)
-        _, soc_high = core.compute_soc_high_headroom(
-            pv,
-            yesterday_kwh,
-            target_date,
-            sunrise=weather.sunrise,
-            sunset=weather.sunset,
-        )
-        cutoff_soc_raw, cutoff_reason = core.choose_cutoff_soc(target_date, soc_low, soc_high)
-        cutoff_soc = min(max(cutoff_soc_raw + (float(buffer_percent) / 100.0), core.MIN_SOC), core.MAX_CUTOFF_SOC)
-        charge_date = target_date - dt.timedelta(days=1)
-        _, charge_kw, charge_note, achieved_soc_start = core.plan_charge_power(
-            soc_percent / 100.0,
-            cutoff_soc,
-            charge_date,
-            user_cap_kw=user_max_ac_kw,
-        )
-        detail_df, grid_import, grid_export, _, _ = core.simulate_expensive_hours_detailed(
-            pv, yesterday_kwh, achieved_soc_start, target_date
-        )
-        soc_series, flows_df = core.simulate_full_day_soc(
-            pv,
-            yesterday_kwh,
-            soc_percent / 100.0,
-            charge_kw,
-            cutoff_soc,
-            target_date,
-        )
-
-        charge_date = target_date - dt.timedelta(days=1)
-
-        try:
-            clear_df = pd.DataFrame(index=tomorrow_index)
-            clear_df["temp_air_c"] = (
-                pd.to_numeric(weather.df.get("temp_air_c"), errors="coerce")
-                .reindex(tomorrow_index)
-                .fillna(10.0)
-            )
-            clear_df["wind_speed_ms"] = (
-                pd.to_numeric(weather.df.get("wind_speed_ms"), errors="coerce")
-                .reindex(tomorrow_index)
-                .fillna(1.0)
-                .clip(lower=0.0)
-            )
-            clear_df["cloud_cover_pct"] = 0.0
-            _, _, _, _, _, pv_ac_limited_kwh = core.estimate_pv_with_pvlib(clear_df, loc, tz=tz)
-            clear_kwh = float(pv_ac_limited_kwh.sum())
-            pv_total_kwh = float(pd.to_numeric(pv.get("pv_total_kwh", 0.0), errors="coerce").fillna(0.0).sum())
-            ratio = float(pv_total_kwh / clear_kwh) if clear_kwh > 0 else 0.0
-            ratio = min(max(ratio, 0.0), 1.0)
-            score = _clamp_score_0_100(ratio * 100.0)
-            pv_quality = {
-                "score": score,
-                "pv_total_kwh": pv_total_kwh,
-                "clear_sky_kwh": clear_kwh,
-                "ratio": ratio,
-                "is_fallback": False,
-            }
-        except Exception:
-            pv_quality = {
-                "score": 0,
-                "pv_total_kwh": float(pv["pv_total_kwh"].sum()),
-                "clear_sky_kwh": 0.0,
-                "ratio": 0.0,
-                "is_fallback": True,
-            }
-
-        pv_quality["score"] = _clamp_score_0_100(pv_quality.get("score", 0))
-        pv_quality["ratio"] = min(max(float(pv_quality.get("ratio", 0.0)), 0.0), 1.0)
-        assert 0 <= int(pv_quality["score"]) <= 100
-
-        for label, threshold in {
-            "Excellent": 75,
-            "Good": 55,
-            "Mixed": 35,
-            "Poor": 15,
-            "Very low": 0,
-        }.items():
-            if pv_quality["score"] >= threshold:
-                pv_quality["label"] = label
-                break
-
-        pv_quality["color"] = PV_QUALITY_COLORS.get(pv_quality.get("label", "Very low"), "#d62828")
-
-        if DEBUG:
-            print(
-                "[DEBUG][pv_quality] "
-                f"label={pv_quality.get('label')} "
-                f"score={pv_quality.get('score')} "
-                f"ratio_percent={pv_quality.get('ratio', 0.0) * 100.0:.1f} "
-                f"pv_total_kwh={pv_quality.get('pv_total_kwh', 0.0):.3f} "
-                f"clear_sky_kwh={pv_quality.get('clear_sky_kwh', 0.0):.3f}"
-            )
-
-        savings = core.compute_euro_savings_no_battery_vs_plan(
+        cons_profile = core.load_consumption_profile_kwh_per_hour()
+        cons = core.build_consumption_forecast(cons_profile, yesterday_kwh, target_date, tz)
+        detail_df, flows_df, soc_series, charge_kw, cutoff_soc, cutoff_reason = core.run_detailed_plan(
+            target_date=target_date,
+            weather=weather,
             pv_df=pv,
-            flows_df=flows_df,
-            soc_at_22=soc_percent / 100.0,
-            charge_kw=float(charge_kw),
-            cutoff_soc=float(cutoff_soc),
-            today_date=charge_date,
-            tomorrow_date=target_date,
-            total_consumption_kwh=yesterday_kwh,
-            tariff_cfg=tariff_cfg,
+            consumption_kwh=cons,
+            soc_at_22_percent=soc_percent,
+            buffer_percent=buffer_percent,
+            max_ac_charge_power_kw=user_max_ac_kw,
         )
-        pv_quality.update(savings)
-
-        pv_forecast_kwh = float(pv["pv_total_kwh"].fillna(0.0).sum()) if "pv_total_kwh" in pv.columns else 0.0
-        cons_forecast_kwh = (
-            float(pv["load_kwh"].fillna(0.0).sum())
-            if "load_kwh" in pv.columns
-            else float(yesterday_kwh)
+        charge_note = f"{cutoff_reason}."
+        grid_import = float(flows_df.get("grid_import_kwh", pd.Series(dtype=float)).sum())
+        grid_export = float(flows_df.get("grid_export_kwh", pd.Series(dtype=float)).sum())
+        pv_forecast_kwh = float(pv.get("pv_total_kwh", pd.Series(dtype=float)).sum())
+        cons_forecast_kwh = float(cons.sum())
+        pv_quality = scoring.compute_pv_quality_score(
+            pv_df=pv,
+            weather_df=weather.df,
+            target_date=target_date,
+            tz=tz,
+            fallback_score=55,
         )
 
-        run_at_utc = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
-        run_id = str(uuid.uuid4())
         pv_totals_kwh = {
-            "p10": float(ensemble.pv_ensemble_p10.sum()) if ensemble.pv_ensemble_p10 is not None else None,
-            "p50": float(ensemble.pv_ensemble_p50.sum()),
-            "p90": float(ensemble.pv_ensemble_p90.sum()) if ensemble.pv_ensemble_p90 is not None else None,
+            "p50": float(ensemble_tomorrow.pv_ensemble_p50.sum()) if ensemble_tomorrow.pv_ensemble_p50 is not None else None,
+            "p10": float(ensemble_tomorrow.pv_ensemble_p10.sum()) if ensemble_tomorrow.pv_ensemble_p10 is not None else None,
+            "p90": float(ensemble_tomorrow.pv_ensemble_p90.sum()) if ensemble_tomorrow.pv_ensemble_p90 is not None else None,
         }
-        pv_tomorrow_low_high_kwh = (
-            dict(ensemble.pv_tomorrow_low_high_kwh)
-            if isinstance(ensemble.pv_tomorrow_low_high_kwh, dict)
-            else {"low": None, "high": None, "valid_models": 0}
-        )
+        pv_tomorrow_low_high_kwh = dict(ensemble_tomorrow.pv_tomorrow_low_high_kwh) if isinstance(ensemble_tomorrow.pv_tomorrow_low_high_kwh, dict) else {"low": None, "high": None, "valid_models": 0}
+
         run_duration_ms = int((time.perf_counter() - run_started) * 1000)
-        inputs_used = {
-            "soc_at_22_percent": float(soc_percent),
-            "yesterday_consumption_kwh": float(yesterday_kwh),
-            "buffer_percent": float(buffer_percent),
-            "max_ac_charge_power_kw": float(user_max_ac_kw),
-            "weather_models_selected": ensemble.selected_models,
-            "ensemble_method": normalized_ensemble_method,
-            "pv_uncertainty_enabled": bool(pv_uncertainty),
-            "fast_mode": bool(fast_mode),
-        }
         system_snapshot = {
             "lat": loc_cfg.get("latitude"),
             "lon": loc_cfg.get("longitude"),
@@ -889,16 +854,10 @@ class BackendState:
             "run_id": run_id,
             "target_date": target_date.isoformat(),
             "weather": self._serialize_df(weather.df),
-            "weather_primary_model_id": ensemble.weather_primary_model_id,
-            "weather_ensemble_table": self._serialize_df(ensemble.weather_ensemble_table.df),
-            "weather_by_model": {
-                model_id: self._serialize_df(fr.df)
-                for model_id, fr in ensemble.weather_by_model.items()
-            },
-            "pv_by_model": {
-                model_id: self._serialize_df(model_pv)
-                for model_id, model_pv in ensemble.pv_by_model.items()
-            },
+            "weather_primary_model_id": ensemble_tomorrow.weather_primary_model_id,
+            "weather_ensemble_table": self._serialize_df(ensemble_tomorrow.weather_ensemble_table.df),
+            "weather_by_model": {model_id: self._serialize_df(fr.df) for model_id, fr in ensemble_tomorrow.weather_by_model.items()},
+            "pv_by_model": {model_id: self._serialize_df(model_pv) for model_id, model_pv in ensemble_tomorrow.pv_by_model.items()},
             "pv": self._serialize_df(pv),
             "detail": self._serialize_df(detail_df),
             "flows": self._serialize_df(flows_df),
@@ -928,16 +887,20 @@ class BackendState:
             "pv_totals_kwh": pv_totals_kwh,
             "pv_tomorrow_low_high_kwh": pv_tomorrow_low_high_kwh,
             "pv_week_ahead": pv_week_ahead,
+            "forecast_mode_effective": mode,
+            "tomorrow_models_used": list(tomorrow_models),
+            "week_ahead_models_considered": list(week_models),
             "system_snapshot": {k: v for k, v in system_snapshot.items() if v is not None},
             "planner_version": "v2",
             "config_hash": config_hash,
             "config_json": json.dumps(
                 {
                     **cfg,
-                    "weather_models_selected": ensemble.selected_models,
+                    "weather_models_selected": ensemble_tomorrow.selected_models,
+                    "forecast_mode": mode,
                     "ensemble_method": normalized_ensemble_method,
                     "pv_uncertainty_enabled": bool(pv_uncertainty),
-                    "per_model_pv_totals_kwh": ensemble.per_model_pv_totals_kwh,
+                    "per_model_pv_totals_kwh": ensemble_tomorrow.per_model_pv_totals_kwh,
                     "pv_totals_kwh": pv_totals_kwh,
                 },
                 sort_keys=True,
@@ -945,28 +908,24 @@ class BackendState:
             "config": cfg,
             "created_at_utc": run_at_utc,
             "weather_ensemble": {
-                "selected_models": ensemble.selected_models,
+                "selected_models": ensemble_tomorrow.selected_models,
                 "ensemble_method": normalized_ensemble_method,
-                "weights_used": ensemble.weights_used,
-                "primary_model_id": ensemble.weather_primary_model_id,
-                "per_model_pv_totals_kwh": ensemble.per_model_pv_totals_kwh,
-                "pv_totals_kwh": pv_totals_kwh
-                if pv_uncertainty
-                else None,
+                "weights_used": ensemble_tomorrow.weights_used,
+                "primary_model_id": ensemble_tomorrow.weather_primary_model_id,
+                "per_model_pv_totals_kwh": ensemble_tomorrow.per_model_pv_totals_kwh,
+                "pv_totals_kwh": pv_totals_kwh if pv_uncertainty else None,
                 "pv_tomorrow_low_high_kwh": pv_tomorrow_low_high_kwh,
                 "pv_week_ahead": pv_week_ahead,
-                "missing_vars_by_model": ensemble.missing_vars_by_model,
-                "derived_irradiance_by_model": ensemble.derived_irradiance_by_model,
-                "derived_irradiance_hours_by_model": getattr(ensemble, "derived_irradiance_hours_by_model", {}),
-                "fetch_meta_by_model": getattr(ensemble, "fetch_meta_by_model", {}),
-                "failed_models": ensemble.failed_models,
-                "failed_model_reasons": ensemble.failed_model_reasons,
-                "model_live_failed_used_cached": getattr(ensemble, "model_live_failed_used_cached", {}),
+                "missing_vars_by_model": ensemble_tomorrow.missing_vars_by_model,
+                "derived_irradiance_by_model": ensemble_tomorrow.derived_irradiance_by_model,
+                "derived_irradiance_hours_by_model": getattr(ensemble_tomorrow, "derived_irradiance_hours_by_model", {}),
+                "fetch_meta_by_model": getattr(ensemble_tomorrow, "fetch_meta_by_model", {}),
+                "failed_models": ensemble_tomorrow.failed_models,
+                "failed_model_reasons": ensemble_tomorrow.failed_model_reasons,
+                "model_live_failed_used_cached": getattr(ensemble_tomorrow, "model_live_failed_used_cached", {}),
                 "fast_mode": bool(fast_mode),
             },
-            "provider_payloads_by_model": (
-                ensemble.provider_payloads_by_model if store_provider_payloads else {}
-            ),
+            "provider_payloads_by_model": (ensemble_tomorrow.provider_payloads_by_model if store_provider_payloads else {}),
         }
         insert_forecast_run(str(SQLITE_PATH), payload)
         self.latest_result = payload
@@ -1000,6 +959,7 @@ class BackendState:
                 float(payload.buffer_percent),
                 cap,
                 payload.weather_models,
+                payload.forecast_mode,
                 payload.ensemble_method,
                 payload.pv_uncertainty,
                 payload.fast_mode,
@@ -1043,6 +1003,7 @@ class BackendState:
                 0.0,
                 float(self.settings["max_ac_charge_power_kw_default"]),
                 DEFAULT_ACCURACY_MODELS,
+                "auto",
                 "weighted",
                 False,
             )
