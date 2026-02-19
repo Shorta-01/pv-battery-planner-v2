@@ -412,91 +412,92 @@ def render_weather_models(
     widget_key_prefix: str = "wm",
     disabled: bool = False,
 ) -> list[str]:
-    with st.expander("Weather models", expanded=True):
-        model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
-        selected_models: list[str] = []
+    model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
+    selected_models: list[str] = []
 
-        st.markdown(
-            "<style>.wm-name{cursor:help}.wm-badges{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;row-gap:4px}</style>",
-            unsafe_allow_html=True,
-        )
+    st.markdown(
+        "<style>.wm-name{cursor:help}.wm-badges{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;row-gap:4px}</style>",
+        unsafe_allow_html=True,
+    )
 
-        for model_id in WEATHER_MODEL_ORDER:
-            model = model_options.get(model_id)
-            if not model:
-                continue
+    for model_id in WEATHER_MODEL_ORDER:
+        model = model_options.get(model_id)
+        if not model:
+            continue
 
-            cols = st.columns([0.35, 3.2, 1.3], vertical_alignment="center")
+        cols = st.columns([0.35, 3.2, 1.3], vertical_alignment="center")
 
-            with cols[0]:
-                checked = st.checkbox(
-                    "enabled",
-                    value=(model_id in default_selected),
-                    key=f"{widget_key_prefix}_{model_id}",
-                    label_visibility="collapsed",
-                    disabled=disabled,
+        with cols[0]:
+            checked = st.checkbox(
+                "enabled",
+                value=(model_id in default_selected),
+                key=f"{widget_key_prefix}_{model_id}",
+                label_visibility="collapsed",
+                disabled=disabled,
+            )
+
+        with cols[1]:
+            label = str(model.get("label") or model_id)
+            tip = WEATHER_MODEL_HOVERTEXT.get(model_id, "")
+            st.markdown(
+                f"<span class='wm-name' title='{_esc(tip)}'><b>{_esc(label)}</b></span>",
+                unsafe_allow_html=True,
+            )
+
+        with cols[2]:
+            static_badges = list(model.get("badges") or [])
+            status_icon, status_tip = last_run_status_badge(model_id)
+
+            badge_html: list[str] = []
+            if status_icon:
+                badge_html.append(
+                    f"<span class='pvbp-badge' title='{_esc(status_tip)}'><span class='pvbp-badge-icon'>{_esc(status_icon)}</span></span>"
                 )
 
-            with cols[1]:
-                label = str(model.get("label") or model_id)
-                tip = WEATHER_MODEL_HOVERTEXT.get(model_id, "")
-                st.markdown(
-                    f"<span class='wm-name' title='{_esc(tip)}'><b>{_esc(label)}</b></span>",
-                    unsafe_allow_html=True,
+            for badge in static_badges:
+                badge_raw = str(badge)
+                if not badge_raw.strip():
+                    continue
+                icon = _normalize_badge_icon(badge_raw)
+                meta = BADGE_META.get(icon)
+                if not meta:
+                    continue
+                badge_html.append(
+                    badge_chip(icon=icon, tip=str(meta.get("tip") or ""))
                 )
 
-            with cols[2]:
-                static_badges = list(model.get("badges") or [])
-                status_icon, status_tip = last_run_status_badge(model_id)
+            st.markdown(f"<div class='wm-badges'>{''.join(badge_html)}</div>", unsafe_allow_html=True)
 
-                badge_html: list[str] = []
-                if status_icon:
-                    badge_html.append(
-                        f"<span class='pvbp-badge' title='{_esc(status_tip)}'><span class='pvbp-badge-icon'>{_esc(status_icon)}</span></span>"
-                    )
+        if checked:
+            selected_models.append(model_id)
 
-                for badge in static_badges:
-                    badge_raw = str(badge)
-                    if not badge_raw.strip():
-                        continue
-                    icon = _normalize_badge_icon(badge_raw)
-                    meta = BADGE_META.get(icon)
-                    if not meta:
-                        continue
-                    badge_html.append(
-                        badge_chip(icon=icon, tip=str(meta.get("tip") or ""))
-                    )
+    if (not selected_models) and (not disabled):
+        st.error("Select at least one weather model.")
 
-                st.markdown(f"<div class='wm-badges'>{''.join(badge_html)}</div>", unsafe_allow_html=True)
+    debug_ui = bool(os.getenv("APP_DEBUG")) or st.session_state.get("debug_ui", False)
+    if debug_ui:
+        dbg = st.session_state.get("last_weather_ensemble_debug") or {}
+        with st.expander("Advanced: last run model debug", expanded=False):
+            st.caption("Raw per-model debug from the last Run forecast. Copy/paste this into Codex when reporting issues.")
+            if not dbg:
+                st.info("No debug data yet. Click Run forecast once to populate this.")
+            else:
+                dbg_json = json.dumps(dbg, indent=2, ensure_ascii=False)
+                st.text_area(
+                    "Weather ensemble debug JSON (copy/paste)",
+                    value=dbg_json,
+                    height=280,
+                    key=f"{widget_key_prefix}_weather_ensemble_debug_json_text_area",
+                )
+                st.download_button(
+                    "Download debug JSON",
+                    data=dbg_json,
+                    file_name="weather_ensemble_debug.json",
+                    mime="application/json",
+                    key=f"{widget_key_prefix}_weather_ensemble_debug_json_download_button",
+                )
 
-            if checked:
-                selected_models.append(model_id)
-
-        if (not selected_models) and (not disabled):
-            st.error("Select at least one weather model.")
-        else:
-            dbg = st.session_state.get("last_weather_ensemble_debug") or {}
-            with st.expander("Advanced: last run model debug", expanded=False):
-                st.caption("Raw per-model debug from the last Run forecast. Copy/paste this into Codex when reporting issues.")
-                if not dbg:
-                    st.info("No debug data yet. Click Run forecast once to populate this.")
-                else:
-                    dbg_json = json.dumps(dbg, indent=2, ensure_ascii=False)
-                    st.text_area(
-                        "Weather ensemble debug JSON (copy/paste)",
-                        value=dbg_json,
-                        height=280,
-                        key=f"{widget_key_prefix}_weather_ensemble_debug_json_text_area",
-                    )
-                    st.download_button(
-                        "Download debug JSON",
-                        data=dbg_json,
-                        file_name="weather_ensemble_debug.json",
-                        mime="application/json",
-                        key=f"{widget_key_prefix}_weather_ensemble_debug_json_download_button",
-                    )
-
-        return selected_models
+    return selected_models
 
 
 def tooltip_heading(label: str, help_text: str) -> None:
@@ -719,11 +720,11 @@ def weather_code_to_label(weather_code):
 def render_pv_week_ahead_widget(items: list[dict]) -> None:
     st.markdown("### PV Week Ahead")
     st.caption(
-        "Week-ahead PV is less certain after day 3–4. "
+        "Shows the 6 days after tomorrow. Week-ahead PV is less certain after day 3–4. "
         "Short-range models cover the first days; long-range models drive later days."
     )
 
-    cols = st.columns(7, gap="small")
+    cols = st.columns(6, gap="small")
     for idx, col in enumerate(cols):
         item = items[idx] if idx < len(items) and isinstance(items[idx], dict) else {}
         date_raw = item.get("date")
@@ -3164,24 +3165,31 @@ with left:
 
     current_mode = str(effective_cfg.get("forecast_mode", "auto")).strip().lower()
     mode_label_default = "Expert (Manual selection)" if current_mode == "expert" else "Auto (Recommended)"
-    forecast_mode_label = st.selectbox(
-        "Forecast mode",
-        options=list(FORECAST_MODE_OPTIONS.keys()),
-        index=list(FORECAST_MODE_OPTIONS.keys()).index(mode_label_default),
-        key="forecast_mode_select",
-    )
-    forecast_mode = FORECAST_MODE_OPTIONS.get(forecast_mode_label, "auto")
 
     weather_models_box = st.empty()
     with weather_models_box.container():
-        if forecast_mode == "auto":
-            st.info("Auto selects the best models for your location. Switch to Expert to choose manually.")
-        selected_models = render_weather_models(
-            weather_models_catalog,
-            initial_selected,
-            widget_key_prefix="wm",
-            disabled=(forecast_mode == "auto"),
-        )
+        with st.expander("Weather models", expanded=True):
+            c1, c2 = st.columns([1, 3], vertical_alignment="center")
+            with c1:
+                st.markdown("Forecast mode")
+            with c2:
+                forecast_mode_label = st.selectbox(
+                    "Forecast mode",
+                    options=list(FORECAST_MODE_OPTIONS.keys()),
+                    index=list(FORECAST_MODE_OPTIONS.keys()).index(mode_label_default),
+                    key="forecast_mode_select",
+                    label_visibility="collapsed",
+                )
+            forecast_mode = FORECAST_MODE_OPTIONS.get(forecast_mode_label, "auto")
+
+            if forecast_mode == "expert":
+                selected_models = render_weather_models(
+                    weather_models_catalog,
+                    initial_selected,
+                    widget_key_prefix="wm",
+                )
+            else:
+                selected_models = []
 
     ensemble_method = "weighted"
     run = st.button(
@@ -3217,10 +3225,34 @@ if run:
             dbg = result.get("weather_ensemble")
             st.session_state["last_weather_ensemble_debug"] = dbg if isinstance(dbg, dict) else {}
             st.session_state["last_weather_ensemble_debug_at"] = dt.datetime.utcnow().isoformat()
-            st.session_state["last_weather_ensemble_models_used"] = list(selected_models)
+            models_used = (
+                result.get("tomorrow_models_used")
+                or result.get("weather_ensemble", {}).get("selected_models")
+                or result.get("weather_ensemble", {}).get("models_used")
+                or []
+            )
+            st.session_state["last_weather_ensemble_models_used"] = list(models_used)
             weather_models_box.empty()
             with weather_models_box.container():
-                _ = render_weather_models(weather_models_catalog, initial_selected, widget_key_prefix="wm_last")
+                with st.expander("Weather models", expanded=True):
+                    c1, c2 = st.columns([1, 3], vertical_alignment="center")
+                    with c1:
+                        st.markdown("Forecast mode")
+                    with c2:
+                        st.selectbox(
+                            "Forecast mode",
+                            options=list(FORECAST_MODE_OPTIONS.keys()),
+                            index=list(FORECAST_MODE_OPTIONS.keys()).index(forecast_mode_label),
+                            key="forecast_mode_used_select",
+                            label_visibility="collapsed",
+                            disabled=True,
+                        )
+                    _ = render_weather_models(
+                        weather_models_catalog,
+                        set(models_used),
+                        widget_key_prefix="wm_used",
+                        disabled=True,
+                    )
             tomorrow = dt.date.fromisoformat(result["target_date"])
             weather_df = df_from_split(result["weather"])
             pv = df_from_split(result["pv"])
@@ -3294,7 +3326,8 @@ if run:
                     tomorrow_source_days=tomorrow_source_days,
                 )
 
-            render_pv_week_ahead_widget(pv_week_ahead)
+            pv_week_ahead_display = pv_week_ahead[1:7] if len(pv_week_ahead) >= 2 else []
+            render_pv_week_ahead_widget(pv_week_ahead_display)
 
             if charge_note.startswith("Warning"):
                 st.warning(charge_note)
