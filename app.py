@@ -3363,7 +3363,25 @@ if run:
                     st.caption(f"DEBUG Tomorrow PV low/high from usable models: {pv_low:.2f}/{pv_high:.2f} kWh")
                 else:
                     st.caption("DEBUG Tomorrow PV low/high unavailable (<2 usable models)")
-            metric_with_help(c2, "Forecast total load (kWh)", f"{pv['load_kwh'].sum():.2f}")
+            load_total_value = None
+            load_total_source = "missing"
+            if "load_kwh" in pv.columns:
+                load_total_value = float(pd.to_numeric(pv["load_kwh"], errors="coerce").sum(min_count=1))
+                load_total_source = "pv.load_kwh"
+            elif metrics.get("cons_forecast_kwh") is not None:
+                load_total_value = float(_safe_float(metrics.get("cons_forecast_kwh"), 0.0))
+                load_total_source = "metrics.cons_forecast_kwh"
+
+            metric_with_help(
+                c2,
+                "Forecast total load (kWh)",
+                f"{load_total_value:.2f}" if load_total_value is not None and not pd.isna(load_total_value) else "—",
+            )
+            if APP_DEBUG and load_total_source != "pv.load_kwh":
+                c2.caption(
+                    "DEBUG Forecast total load fallback: "
+                    f"source={load_total_source}; pv_has_load_kwh={'load_kwh' in pv.columns}"
+                )
             metric_with_help(c3, "Estimated grid import (expensive h)", f"{grid_import:.2f}")
             metric_with_help(c4, "Estimated export/curtailment (kWh)", f"{(grid_export + detail_df['curtailed_kwh'].sum() if not detail_df.empty else 0.0):.2f}")
             tooltip_heading("PV production vs Load (hourly)", CHART_TOOLTIPS["PV production vs Load (hourly)"])

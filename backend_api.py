@@ -936,6 +936,8 @@ class BackendState:
         tomorrow_coverage_hours = int(pd.to_numeric(pv.get("pv_total_kwh", pd.Series(dtype=float)), errors="coerce").notna().sum())
         pv_forecast_kwh = canonical_tomorrow_total_kwh
         cons_forecast_kwh = float(cons.sum())
+        if "load_kwh" not in pv.columns:
+            pv = core.add_load_and_surplus_columns(pv, cons_forecast_kwh)
         pv_quality = scoring.compute_pv_quality_score(
             pv_df=pv,
             weather_df=weather.df,
