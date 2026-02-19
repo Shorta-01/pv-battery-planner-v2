@@ -1594,6 +1594,7 @@ def estimate_pv_with_pvlib(
 
     df_local = df.copy()
     df_local.index = times
+    avail = df_local.notna().any(axis=1)
 
     solpos = pvloc.get_solarposition(times)
     dni_extra = pvlib.irradiance.get_extra_radiation(times)
@@ -1806,6 +1807,11 @@ def estimate_pv_with_pvlib(
     south_ac_kwh_clipped = (south_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
     total_ac_kwh_clipped = (east_ac_kwh_clipped + south_ac_kwh_clipped).fillna(0.0).clip(lower=0.0)
 
+    east_ac_kwh_clipped = east_ac_kwh_clipped.where(avail)
+    south_ac_kwh_clipped = south_ac_kwh_clipped.where(avail)
+    total_ac_kwh_clipped = total_ac_kwh_clipped.where(avail)
+    total_ac_kwh_unclipped = total_ac_kwh_unclipped.where(avail)
+
     return (
         east_ac_kwh_clipped.astype(float),
         south_ac_kwh_clipped.astype(float),
@@ -1827,13 +1833,13 @@ def build_pv_forecast(df: "pd.DataFrame", loc: Location, tz: str | None = None) 
     out = df.copy()
     dt_h = timestep_hours(out.index)
 
-    out["pv_east_kwh"] = east_ac_kwh_clipped.fillna(0.0).clip(lower=0.0)
-    out["pv_south_kwh"] = south_ac_kwh_clipped.fillna(0.0).clip(lower=0.0)
-    out["pv_total_unclipped_kwh"] = total_ac_kwh_unclipped.fillna(0.0).clip(lower=0.0)
-    out["pv_total_kwh"] = total_ac_kwh_clipped.fillna(0.0).clip(lower=0.0)
+    out["pv_east_kwh"] = east_ac_kwh_clipped.where(east_ac_kwh_clipped.isna() | (east_ac_kwh_clipped >= 0.0))
+    out["pv_south_kwh"] = south_ac_kwh_clipped.where(south_ac_kwh_clipped.isna() | (south_ac_kwh_clipped >= 0.0))
+    out["pv_total_unclipped_kwh"] = total_ac_kwh_unclipped.where(total_ac_kwh_unclipped.isna() | (total_ac_kwh_unclipped >= 0.0))
+    out["pv_total_kwh"] = total_ac_kwh_clipped.where(total_ac_kwh_clipped.isna() | (total_ac_kwh_clipped >= 0.0))
 
-    out["pv_total_unclipped_kw"] = (out["pv_total_unclipped_kwh"] / dt_h.replace(0.0, float("nan"))).fillna(0.0).clip(lower=0.0)
-    out["pv_total_kw"] = (out["pv_total_kwh"] / dt_h.replace(0.0, float("nan"))).fillna(0.0).clip(lower=0.0, upper=INVERTER_AC_KW_LIMIT)
+    out["pv_total_unclipped_kw"] = (out["pv_total_unclipped_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0)
+    out["pv_total_kw"] = (out["pv_total_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0, upper=INVERTER_AC_KW_LIMIT)
 
     # Legacy aliases kept for backward compatibility with existing UI/flow logic.
     out["pv_dc_available_kwh"] = out["pv_total_unclipped_kwh"]
@@ -1843,8 +1849,8 @@ def build_pv_forecast(df: "pd.DataFrame", loc: Location, tz: str | None = None) 
 
     out["pv_clipped_kwh"] = (out["pv_total_unclipped_kwh"] - out["pv_total_kwh"]).clip(lower=0.0)
 
-    out["pv_east_kw"] = (out["pv_east_kwh"] / dt_h.replace(0.0, float("nan"))).fillna(0.0).clip(lower=0.0)
-    out["pv_south_kw"] = (out["pv_south_kwh"] / dt_h.replace(0.0, float("nan"))).fillna(0.0).clip(lower=0.0)
+    out["pv_east_kw"] = (out["pv_east_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0)
+    out["pv_south_kw"] = (out["pv_south_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0)
 
     out = ensure_pv_columns(out, split_ratio=(0.5, 0.5))
     validate_pv_outputs(out)

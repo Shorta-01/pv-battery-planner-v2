@@ -42,7 +42,6 @@ METRIC_TOOLTIPS = {
     "Allowed AC charge power (kW)": "Final AC charge power used by the planner after all limits. It matters because this is the value to configure in FusionSolar. It never exceeds your safety cap, inverter limits, or battery limits.",
     "AC charge cutoff SOC (%)": "Battery SOC where FusionSolar should stop charging from the grid. Set this value as the 'AC charge cutoff SOC'.",
     "Forecast total PV (kWh)": "Estimated total PV energy produced tomorrow (after inverter AC limit).",
-    "Next 7 days PV (kWh)": "Sum of the PV Week Ahead p50 values for the next seven days.",
     "Forecast total load (kWh)": "Estimated total consumption for tomorrow. This is based on yesterday's total and a default hourly profile.",
     "Estimated grid import (expensive h)": "Estimated energy you may still buy from the grid during expensive tariff hours after using PV and the battery.",
     "Estimated export/curtailment (kWh)": "Estimated PV energy that cannot be used or stored and may be exported to the grid (or clipped/curtailed).",
@@ -69,7 +68,7 @@ WEATHER_MODEL_ORDER = [
 ]
 
 WEATHER_MODEL_DEFAULT = {"knmi_harmonie_arome", "dwd_icon_d2", "ecmwf_ifs"}
-FORECAST_MODE_OPTIONS = {"Auto (Recommended)": "auto", "Expert (Manual selection)": "expert"}
+FORECAST_MODE_OPTIONS = {"Auto (Recommended)": "auto", "Expert": "expert"}
 
 WEATHER_MODEL_HOVERTEXT = {
     "knmi_harmonie_arome": "High-resolution KNMI regional model for Benelux. Strong for short-term local cloud and wind changes.",
@@ -474,7 +473,7 @@ def render_weather_models(
     if (not selected_models) and (not disabled):
         st.error("Select at least one weather model.")
 
-    debug_ui = bool(os.getenv("APP_DEBUG")) or st.session_state.get("debug_ui", False)
+    debug_ui = bool(os.getenv("APP_DEBUG"))
     if debug_ui:
         dbg = st.session_state.get("last_weather_ensemble_debug") or {}
         with st.expander("Advanced: last run model debug", expanded=False):
@@ -793,22 +792,9 @@ def resolve_forecast_summary_pv_kwh(
                 return float(value)
         return None
 
-    day1_week_ahead = None
-    if isinstance(pv_week_ahead, list) and pv_week_ahead:
-        day1 = pv_week_ahead[0]
-        if isinstance(day1, dict):
-            day1_week_ahead = _pick_float_value(
-                day1.get("p50_kwh"),
-                day1.get("pv_p50_kwh"),
-                day1.get("pv_total_kwh"),
-                day1.get("pv_kwh"),
-            )
-        else:
-            day1_week_ahead = _pick_float_value(day1)
-
     pv_total_kwh = _pick_float_value(
+        result.get("pv_totals_kwh", {}).get("p50") if isinstance(result, dict) and isinstance(result.get("pv_totals_kwh"), dict) else None,
         pv_quality_dict.get("pv_total_kwh") if isinstance(pv_quality_dict, dict) else None,
-        day1_week_ahead,
         pv_df["pv_total_kwh"].sum() if "pv_total_kwh" in pv_df.columns else None,
         result.get("pv_kwh_p50") if isinstance(result, dict) else None,
         result.get("pv_p50_kwh") if isinstance(result, dict) else None,
@@ -3164,14 +3150,14 @@ with left:
         initial_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
 
     current_mode = str(effective_cfg.get("forecast_mode", "auto")).strip().lower()
-    mode_label_default = "Expert (Manual selection)" if current_mode == "expert" else "Auto (Recommended)"
+    mode_label_default = "Expert" if current_mode == "expert" else "Auto (Recommended)"
 
     weather_models_box = st.empty()
     with weather_models_box.container():
         with st.expander("Weather models", expanded=True):
             c1, c2 = st.columns([1, 3], vertical_alignment="center")
             with c1:
-                st.markdown("Forecast mode")
+                st.markdown("**Forecast mode**")
             with c2:
                 forecast_mode_label = st.selectbox(
                     "Forecast mode",
@@ -3237,7 +3223,7 @@ if run:
                 with st.expander("Weather models", expanded=True):
                     c1, c2 = st.columns([1, 3], vertical_alignment="center")
                     with c1:
-                        st.markdown("Forecast mode")
+                        st.markdown("**Forecast mode**")
                     with c2:
                         st.selectbox(
                             "Forecast mode",
@@ -3326,14 +3312,14 @@ if run:
                     tomorrow_source_days=tomorrow_source_days,
                 )
 
-            pv_week_ahead_display = pv_week_ahead[1:7] if len(pv_week_ahead) >= 2 else []
+            pv_week_ahead_display = (pv_week_ahead or [])[:6]
             render_pv_week_ahead_widget(pv_week_ahead_display)
 
             if charge_note.startswith("Warning"):
                 st.warning(charge_note)
 
             st.markdown("### Forecast summary")
-            c1, c2, c3, c4, c5 = st.columns(5)
+            c1, c2, c3, c4 = st.columns(4)
 
             pv_p50 = resolve_forecast_summary_pv_kwh(
                 pv_quality,
@@ -3343,18 +3329,15 @@ if run:
                 metrics,
                 weather_ensemble,
             )
-            pv_week_total = resolve_week_ahead_total_pv_kwh(pv_week_ahead)
-
             metric_with_help(c1, "Forecast total PV (kWh)", f"{pv_p50:.2f}")
             if APP_DEBUG:
                 if pv_low is not None and pv_high is not None:
                     st.caption(f"DEBUG Tomorrow PV low/high from usable models: {pv_low:.2f}/{pv_high:.2f} kWh")
                 else:
                     st.caption("DEBUG Tomorrow PV low/high unavailable (<2 usable models)")
-            metric_with_help(c2, "Next 7 days PV (kWh)", f"{pv_week_total:.2f}")
-            metric_with_help(c3, "Forecast total load (kWh)", f"{pv['load_kwh'].sum():.2f}")
-            metric_with_help(c4, "Estimated grid import (expensive h)", f"{grid_import:.2f}")
-            metric_with_help(c5, "Estimated export/curtailment (kWh)", f"{(grid_export + detail_df['curtailed_kwh'].sum() if not detail_df.empty else 0.0):.2f}")
+            metric_with_help(c2, "Forecast total load (kWh)", f"{pv['load_kwh'].sum():.2f}")
+            metric_with_help(c3, "Estimated grid import (expensive h)", f"{grid_import:.2f}")
+            metric_with_help(c4, "Estimated export/curtailment (kWh)", f"{(grid_export + detail_df['curtailed_kwh'].sum() if not detail_df.empty else 0.0):.2f}")
             tooltip_heading("PV production vs Load (hourly)", CHART_TOOLTIPS["PV production vs Load (hourly)"])
             pv_load_fig = make_chart_pv_load(pv, soc_series, cutoff_soc, effective_cfg)
             add_tariff_and_sun_markers(pv_load_fig, tomorrow, sunrise, sunset)

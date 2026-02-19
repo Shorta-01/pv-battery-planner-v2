@@ -1594,12 +1594,9 @@ def build_ensemble_forecast(
     ensemble_south_p50 = (ensemble_south_p50 * rebalance).fillna(0.0).clip(lower=0.0)
     ensemble_clipped_p50 = (ensemble_unclipped_p50 - ensemble_ac_p50).clip(lower=0.0)
 
-    p10 = None
-    p90 = None
-    if pv_uncertainty:
-        matrix = pd.DataFrame(per_model_pv_columns["pv_total_kwh"]).reindex(canonical_index)
-        p10 = matrix.quantile(0.10, axis=1)
-        p90 = matrix.quantile(0.90, axis=1)
+    matrix = pd.DataFrame(per_model_pv_columns["pv_total_kwh"]).reindex(canonical_index)
+    p10 = matrix.quantile(0.10, axis=1)
+    p90 = matrix.quantile(0.90, axis=1)
 
     primary_model = next((m for m in selected if m in weather_ok), next(iter(weather_ok.keys())))
     weather_index = canonical_index
