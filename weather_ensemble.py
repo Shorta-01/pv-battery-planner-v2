@@ -172,28 +172,54 @@ def auto_select_models_for_location(lat: float | object, lon: float | None = Non
     del _lat, _lon
     horizon = max(1, int(requested_days or 1))
 
-    def _eligible(model_id: str) -> bool:
-        return int(get_model_caps(model_id).get("max_days", 0)) >= horizon
+    eligible = [
+        model_id
+        for model_id, spec in WEATHER_MODELS.items()
+        if int(spec.get("max_days", 0) or 0) >= horizon
+    ]
+
+    stable_priority = [
+        "ecmwf_ifs",
+        "dwd_icon_eu",
+        "meteofrance_seamless",
+        "gfs",
+        "knmi_harmonie_arome",
+        "dwd_icon_d2",
+    ]
+
+    def _pick_preferred(preferred_order: list[str], *, max_models: int = 4) -> list[str]:
+        selected = [m for m in preferred_order if m in eligible]
+        if len(selected) < 2:
+            for model_id in stable_priority:
+                if model_id in eligible and model_id not in selected:
+                    selected.append(model_id)
+                    if len(selected) >= max(2, max_models):
+                        break
+        return selected[:max_models]
 
     if horizon <= 2:
-        preferred = ["dwd_icon_d2", "knmi_harmonie_arome", "ecmwf_ifs", "dwd_icon_eu", "gfs"]
-        selected = [model_id for model_id in preferred if model_id in WEATHER_MODELS and _eligible(model_id)]
-        return selected[:4]
+        return _pick_preferred(
+            [
+                "dwd_icon_d2",
+                "knmi_harmonie_arome",
+                "ecmwf_ifs",
+                "dwd_icon_eu",
+                "meteofrance_seamless",
+                "gfs",
+            ]
+        )
 
     if horizon >= 7:
-        preferred = ["ecmwf_ifs", "dwd_icon_eu", "gfs", "meteofrance_seamless", "knmi_harmonie_arome", "dwd_icon_d2"]
-        selected: list[str] = []
-        for model_id in preferred:
-            if model_id not in WEATHER_MODELS or not _eligible(model_id):
-                continue
-            if model_id not in selected:
-                selected.append(model_id)
-        curated = [m for m in selected if get_model_caps(m).get("tier") in {"medium", "global"}]
-        return curated[:5]
+        return _pick_preferred(
+            [
+                "ecmwf_ifs",
+                "dwd_icon_eu",
+                "meteofrance_seamless",
+                "gfs",
+            ]
+        )
 
-    preferred_mid = ["ecmwf_ifs", "dwd_icon_eu", "gfs", "knmi_harmonie_arome", "meteofrance_seamless", "dwd_icon_d2"]
-    selected_mid = [m for m in preferred_mid if m in WEATHER_MODELS and _eligible(m)]
-    return selected_mid[:4]
+    return _pick_preferred(["ecmwf_ifs", "dwd_icon_eu", "meteofrance_seamless", "gfs", "knmi_harmonie_arome"])
 
 WEATHER_MODEL_ALIASES: dict[str, str] = {
     "icon_d2": "dwd_icon_d2",
@@ -223,6 +249,8 @@ IRRADIANCE_HOURLY_VARIABLES = [
     "diffuse_radiation",
     "direct_radiation",
 ]
+
+IRR_CRITICAL = {"shortwave_radiation", "direct_normal_irradiance", "diffuse_radiation", "direct_radiation"}
 
 WEATHER_DISPLAY_VARS = [
     "temperature_2m",
@@ -273,7 +301,9 @@ class EnsembleWeatherResult:
     per_model_pv_totals_kwh: dict[str, float]
     missing_vars_by_model: dict[str, list[str]]
     derived_irradiance_by_model: dict[str, bool]
+    derived_weather_code_by_model: dict[str, bool]
     derived_irradiance_hours_by_model: dict[str, int]
+    quality_weight_factors_by_model: dict[str, float]
     failed_models: list[str]
     failed_model_reasons: dict[str, dict[str, Any]]
     model_live_failed_used_cached: dict[str, bool]
@@ -285,6 +315,10 @@ class EnsembleWeatherResult:
     weather_ensemble_table: core.ForecastResult
     provider_payloads_by_model: dict[str, dict[str, Any]]
     fetch_meta_by_model: dict[str, dict[str, Any]]
+    satellite_nowcast_used: bool = False
+    satellite_nowcast_hours: int = 0
+    satellite_nowcast_weight_factor: float | None = None
+    satellite_nowcast_reason: str | None = None
     pv_tomorrow_low_high_kwh: dict[str, float | int | None] | None = None
     pv_models_used_count_per_hour: pd.Series | None = None
 
@@ -1288,7 +1322,21 @@ def fetch_open_meteo_weather(
         df.loc[~availability[col], col] = np.nan
 
     weather_code_series = pd.to_numeric(weather_code_series, errors="coerce").reindex(df.index)
+    derived_weather_code = False
+    if weather_code_series.isna().all():
+        cloud_cover_series = pd.to_numeric(df.get("cloud_cover_pct"), errors="coerce") if "cloud_cover_pct" in df.columns else pd.Series(np.nan, index=df.index)
+        if cloud_cover_series.notna().any():
+            # UI continuity fallback only: this is intentionally simple and does not attempt full WMO weather code logic.
+            weather_code_series = pd.Series(3.0, index=df.index, dtype=float)
+            weather_code_series.loc[cloud_cover_series <= 20.0] = 0.0
+            weather_code_series.loc[(cloud_cover_series > 20.0) & (cloud_cover_series <= 50.0)] = 2.0
+            weather_code_series.loc[(cloud_cover_series > 50.0) & (cloud_cover_series <= 80.0)] = 3.0
+            weather_code_series.loc[cloud_cover_series > 80.0] = 3.0
+        else:
+            weather_code_series = pd.Series(3.0, index=df.index, dtype=float)
+        derived_weather_code = True
     df["weather_code"] = weather_code_series
+    fetch_meta["derived_weather_code"] = bool(derived_weather_code)
 
     def _alias(dst: str, src: str) -> None:
         if src in df.columns:
@@ -1400,24 +1448,72 @@ def _weighted_ensemble(
     series_map: dict[str, pd.Series],
     selected_models: list[str],
     dynamic_weights: dict[str, float] | None = None,
-) -> tuple[pd.Series, dict[str, float] | None]:
+    missing_vars_by_model: dict[str, list[str]] | None = None,
+    derived_irradiance_by_model: dict[str, bool] | None = None,
+) -> tuple[pd.Series, dict[str, float] | None, dict[str, float]]:
     weighted_subset = dict(dynamic_weights or {})
     if not weighted_subset:
         weighted_subset = {m: DEFAULT_WEIGHTED_BELGIUM[m] for m in selected_models if m in DEFAULT_WEIGHTED_BELGIUM}
     if not weighted_subset:
-        return pd.concat(series_map.values(), axis=1).mean(axis=1), None
-    total = sum(weighted_subset.values())
+        return pd.concat(series_map.values(), axis=1).mean(axis=1), None, {}
+
+    min_weight_factor = 0.20
+    quality_factors: dict[str, float] = {}
+    adjusted_weights: dict[str, float] = {}
+    for model_id, base_w in weighted_subset.items():
+        missing = set((missing_vars_by_model or {}).get(model_id, []))
+        derived = bool((derived_irradiance_by_model or {}).get(model_id))
+        has_irr_missing = bool(missing.intersection(IRR_CRITICAL))
+        factor = 1.0
+        if has_irr_missing and derived:
+            factor = 0.50
+        elif has_irr_missing:
+            factor = 0.60
+        elif derived:
+            factor = 0.80
+        factor = max(min_weight_factor, float(factor))
+        quality_factors[model_id] = factor
+        adjusted_weights[model_id] = float(base_w) * factor
+
+    total = sum(adjusted_weights.values())
     if total <= 0:
-        return pd.concat(series_map.values(), axis=1).mean(axis=1), None
-    normalized = {m: w / total for m, w in weighted_subset.items()}
+        return pd.concat(series_map.values(), axis=1).mean(axis=1), None, quality_factors
+    normalized = {m: w / total for m, w in adjusted_weights.items()}
     matrix = pd.DataFrame({m: series_map[m] for m in normalized if m in series_map})
     if matrix.empty:
-        return pd.concat(series_map.values(), axis=1).mean(axis=1), None
-    weighted_values = matrix.mul(pd.Series(normalized), axis=1)
+        return pd.concat(series_map.values(), axis=1).mean(axis=1), None, quality_factors
+    weight_series = pd.Series(normalized)
+    weighted_values = matrix.mul(weight_series, axis=1)
     numerator = weighted_values.sum(axis=1, skipna=True)
-    denominator = matrix.notna().mul(pd.Series(normalized), axis=1).sum(axis=1)
+    denominator = matrix.notna().mul(weight_series, axis=1).sum(axis=1)
     out = numerator.div(denominator.where(denominator > 0))
-    return out.astype(float), {m: normalized[m] for m in matrix.columns}
+    return out.astype(float), {m: normalized[m] for m in matrix.columns}, {m: quality_factors[m] for m in matrix.columns}
+
+
+def fetch_satellite_radiation_nowcast(lat: float, lon: float, tz: str, forecast_hours: int = 6) -> pd.DataFrame:
+    endpoint = "https://satellite-api.open-meteo.com/v1/satellite-radiation"
+    params = {
+        "latitude": float(lat),
+        "longitude": float(lon),
+        "timezone": str(tz),
+        "hourly": "shortwave_radiation,direct_normal_irradiance,diffuse_radiation",
+        "forecast_hours": int(max(1, forecast_hours)),
+        "past_hours": 0,
+    }
+    data, _ = _request_open_meteo(endpoint, params=params, timeout=20)
+    hourly = data.get("hourly") if isinstance(data.get("hourly"), dict) else {}
+    times = pd.to_datetime(hourly.get("time", []), errors="coerce")
+    if len(times) == 0:
+        return pd.DataFrame()
+    if getattr(times, "tz", None) is None:
+        times = times.tz_localize(tz)
+    else:
+        times = times.tz_convert(tz)
+    df = pd.DataFrame(index=times)
+    df["shortwave_radiation"] = pd.to_numeric(pd.Series(hourly.get("shortwave_radiation", []), index=times), errors="coerce")
+    df["direct_normal_irradiance"] = pd.to_numeric(pd.Series(hourly.get("direct_normal_irradiance", []), index=times), errors="coerce")
+    df["diffuse_radiation"] = pd.to_numeric(pd.Series(hourly.get("diffuse_radiation", []), index=times), errors="coerce")
+    return df.sort_index()
 
 
 def build_weather_ensemble_table(
@@ -1478,6 +1574,7 @@ def build_ensemble_forecast(
     accuracy_mode: bool = True,
     fast_mode: bool = False,
     requested_days: int = 1,
+    use_satellite_nowcast_0_6h: bool = False,
 ) -> EnsembleWeatherResult:
     selected = weather_models[:] if weather_models else DEFAULT_ACCURACY_MODELS[:]
     selected = [m for m in selected if m in WEATHER_MODELS]
@@ -1499,7 +1596,9 @@ def build_ensemble_forecast(
     per_model_pv_totals: dict[str, float] = {}
     missing_vars_by_model: dict[str, list[str]] = {}
     derived_irradiance_by_model: dict[str, bool] = {}
+    derived_weather_code_by_model: dict[str, bool] = {}
     derived_irradiance_hours_by_model: dict[str, int] = {}
+    quality_weight_factors_by_model: dict[str, float] = {}
     failed_models: list[str] = []
     failed_model_reasons: dict[str, dict[str, Any]] = {}
     model_live_failed_used_cached: dict[str, bool] = {}
@@ -1627,6 +1726,7 @@ def build_ensemble_forecast(
                 per_model_pv_totals[model_id] = pv_total_sum
                 missing_vars_by_model[model_id] = missing_vars
                 derived_irradiance_by_model[model_id] = bool(derived_irradiance)
+                derived_weather_code_by_model[model_id] = bool(fetch_meta.get("derived_weather_code", False)) if isinstance(fetch_meta, dict) else False
                 derived_irradiance_hours_by_model[model_id] = int(derived_irradiance_hours)
                 fetch_meta_by_model[model_id] = dict(fetch_meta) if isinstance(fetch_meta, dict) else {}
                 weather_ok[model_id] = weather
@@ -1684,6 +1784,11 @@ def build_ensemble_forecast(
                     exc,
                 )
 
+    satellite_nowcast_used = False
+    satellite_nowcast_hours = 0
+    satellite_nowcast_weight_factor = 2.0
+    satellite_nowcast_reason = None
+
     if not per_model_pv_columns["pv_total_kwh"]:
         err = RuntimeError("All weather model requests failed.")
         setattr(err, "failed_models", list(failed_models))
@@ -1691,21 +1796,77 @@ def build_ensemble_forecast(
         setattr(err, "weights_used", None)
         raise err
 
-    def _ensemble_column(column_name: str) -> tuple[pd.Series, dict[str, float] | None]:
+    if use_satellite_nowcast_0_6h and requested_days <= 1 and weather_ok:
+        now_local = pd.Timestamp.now(tz=tz).floor("h")
+        sat_hours = min(6, len(canonical_index))
+        sat_index = canonical_index[:sat_hours]
+        if len(sat_index) == 0:
+            satellite_nowcast_reason = "skipped (no overlap)"
+        else:
+            primary_weather = weather_ok[next(iter(weather_ok.keys()))].df.reindex(sat_index)
+            ghi_probe = pd.to_numeric(primary_weather.get("ghi_wm2"), errors="coerce") if "ghi_wm2" in primary_weather.columns else pd.Series(np.nan, index=sat_index)
+            if ghi_probe.fillna(0.0).max() <= 5.0:
+                satellite_nowcast_reason = "skipped (night)"
+            else:
+                try:
+                    sat_df = fetch_satellite_radiation_nowcast(loc.latitude, loc.longitude, tz, forecast_hours=6)
+                    sat_df = sat_df.reindex(sat_index)
+                    if not sat_df.empty and sat_df[["shortwave_radiation", "direct_normal_irradiance", "diffuse_radiation"]].notna().any().any():
+                        pseudo = pd.DataFrame(index=sat_index)
+                        pseudo["temp_air_c"] = pd.to_numeric(primary_weather.get("temp_air_c"), errors="coerce") if "temp_air_c" in primary_weather.columns else np.nan
+                        pseudo["wind_speed_ms"] = pd.to_numeric(primary_weather.get("wind_speed_ms"), errors="coerce") if "wind_speed_ms" in primary_weather.columns else np.nan
+                        pseudo["cloud_cover_pct"] = pd.to_numeric(primary_weather.get("cloud_cover_pct"), errors="coerce") if "cloud_cover_pct" in primary_weather.columns else np.nan
+                        pseudo["ghi_wm2"] = pd.to_numeric(sat_df["shortwave_radiation"], errors="coerce")
+                        pseudo["dni_wm2"] = pd.to_numeric(sat_df["direct_normal_irradiance"], errors="coerce")
+                        pseudo["dhi_wm2"] = pd.to_numeric(sat_df["diffuse_radiation"], errors="coerce")
+                        sat_pv = core.build_pv_forecast(pseudo, loc, tz=tz).reindex(canonical_index)
+                        for req in ["pv_total_kwh", "pv_total_unclipped_kwh", "pv_east_kwh", "pv_south_kwh", "pv_clipped_kwh"]:
+                            if req not in sat_pv.columns:
+                                sat_pv[req] = np.nan
+                        model_id = "sat_nowcast"
+                        for col_name in per_model_pv_columns:
+                            series = pd.Series(np.nan, index=canonical_index, dtype=float)
+                            series.loc[sat_index] = pd.to_numeric(sat_pv[col_name].reindex(sat_index), errors="coerce")
+                            per_model_pv_columns[col_name][model_id] = series
+                        pv_by_model[model_id] = sat_pv
+                        per_model_pv_totals[model_id] = float(pd.to_numeric(sat_pv["pv_total_kwh"], errors="coerce").sum(min_count=1))
+                        missing_vars_by_model[model_id] = []
+                        derived_irradiance_by_model[model_id] = False
+                        derived_weather_code_by_model[model_id] = False
+                        quality_weight_factors_by_model[model_id] = 1.0
+                        satellite_nowcast_used = True
+                        satellite_nowcast_hours = int(len(sat_index))
+                        satellite_nowcast_reason = "used"
+                    else:
+                        satellite_nowcast_reason = "skipped (no satellite data)"
+                except Exception as exc:
+                    satellite_nowcast_reason = f"skipped ({type(exc).__name__})"
+    elif use_satellite_nowcast_0_6h and requested_days > 1:
+        satellite_nowcast_reason = "skipped (week-ahead horizon)"
+
+    def _ensemble_column(column_name: str) -> tuple[pd.Series, dict[str, float] | None, dict[str, float]]:
         model_series = per_model_pv_columns[column_name]
         matrix = pd.concat(model_series.values(), axis=1)
         if ensemble_method == "median":
-            return matrix.median(axis=1, skipna=True), None
+            return matrix.median(axis=1, skipna=True), None, {}
         if ensemble_method == "mean":
-            return matrix.mean(axis=1, skipna=True), None
+            return matrix.mean(axis=1, skipna=True), None, {}
         model_keys = list(model_series.keys())
-        dynamic_weights = _load_dynamic_weights(model_keys)
-        return _weighted_ensemble(model_series, model_keys, dynamic_weights=dynamic_weights)
+        dynamic_weights = _load_dynamic_weights(model_keys) or {}
+        if satellite_nowcast_used and "sat_nowcast" in model_series:
+            dynamic_weights["sat_nowcast"] = max(float(dynamic_weights.get("sat_nowcast", 1.0)), float(satellite_nowcast_weight_factor))
+        return _weighted_ensemble(
+            model_series,
+            model_keys,
+            dynamic_weights=dynamic_weights,
+            missing_vars_by_model=missing_vars_by_model,
+            derived_irradiance_by_model=derived_irradiance_by_model,
+        )
 
-    ensemble_ac_p50, weights_used = _ensemble_column("pv_total_kwh")
-    ensemble_unclipped_p50, _ = _ensemble_column("pv_total_unclipped_kwh")
-    ensemble_east_p50, _ = _ensemble_column("pv_east_kwh")
-    ensemble_south_p50, _ = _ensemble_column("pv_south_kwh")
+    ensemble_ac_p50, weights_used, quality_weight_factors_by_model = _ensemble_column("pv_total_kwh")
+    ensemble_unclipped_p50, _, _ = _ensemble_column("pv_total_unclipped_kwh")
+    ensemble_east_p50, _, _ = _ensemble_column("pv_east_kwh")
+    ensemble_south_p50, _, _ = _ensemble_column("pv_south_kwh")
 
     pv_matrix = pd.DataFrame(per_model_pv_columns["pv_total_kwh"]).reindex(canonical_index)
     if ensemble_method == "weighted":
@@ -1778,7 +1939,9 @@ def build_ensemble_forecast(
         per_model_pv_totals_kwh=per_model_pv_totals,
         missing_vars_by_model=missing_vars_by_model,
         derived_irradiance_by_model=derived_irradiance_by_model,
+        derived_weather_code_by_model=derived_weather_code_by_model,
         derived_irradiance_hours_by_model=derived_irradiance_hours_by_model,
+        quality_weight_factors_by_model=quality_weight_factors_by_model,
         failed_models=failed_models,
         failed_model_reasons=failed_model_reasons,
         model_live_failed_used_cached=model_live_failed_used_cached,
@@ -1792,4 +1955,8 @@ def build_ensemble_forecast(
         fetch_meta_by_model=fetch_meta_by_model,
         pv_tomorrow_low_high_kwh=pv_tomorrow_low_high_kwh,
         pv_models_used_count_per_hour=pv_models_used_count,
+        satellite_nowcast_used=bool(satellite_nowcast_used),
+        satellite_nowcast_hours=int(satellite_nowcast_hours),
+        satellite_nowcast_weight_factor=float(satellite_nowcast_weight_factor) if satellite_nowcast_used else None,
+        satellite_nowcast_reason=satellite_nowcast_reason,
     )

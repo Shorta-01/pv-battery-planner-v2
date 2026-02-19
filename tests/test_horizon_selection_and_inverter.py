@@ -17,8 +17,8 @@ def test_auto_select_models_horizon_aware() -> None:
     week = we.auto_select_models_for_location(50.8, 4.3, requested_days=7)
 
     assert len(tomorrow) <= 4
-    assert len(week) >= 3
-    assert len(week) <= 5
+    assert len(week) >= 2
+    assert len(week) <= 4
     assert "dwd_icon_d2" in tomorrow
     assert "dwd_icon_d2" not in week
     assert "gfs" in week

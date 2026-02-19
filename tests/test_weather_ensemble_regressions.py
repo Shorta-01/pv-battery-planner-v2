@@ -30,11 +30,16 @@ def test_weighted_ensemble_renormalizes_per_timestamp(hourly_index: pd.DatetimeI
     b = pd.Series([3.0, 4.0], index=hourly_index[:2])
     c = pd.Series([5.0, float("nan")], index=hourly_index[:2])
 
-    out, weights = we._weighted_ensemble(
+    out, weights, quality = we._weighted_ensemble(
         {"knmi_harmonie_arome": a, "dwd_icon_d2": b, "ecmwf_ifs": c},
         ["knmi_harmonie_arome", "dwd_icon_d2", "ecmwf_ifs"],
     )
 
+    assert quality == {
+        "knmi_harmonie_arome": pytest.approx(1.0),
+        "dwd_icon_d2": pytest.approx(1.0),
+        "ecmwf_ifs": pytest.approx(1.0),
+    }
     assert weights == {
         "knmi_harmonie_arome": pytest.approx(0.45),
         "dwd_icon_d2": pytest.approx(0.35),
@@ -1009,3 +1014,21 @@ def test_build_ensemble_classifies_overlap_and_tail_missing_hours(monkeypatch: p
     assert seamless_meta["missing_hours_overlap"] == 0
     assert seamless_meta["missing_hours_tail"] == 72
     assert seamless_meta["expected_tail_hours"] == 72
+
+
+def test_weighted_ensemble_applies_quality_penalties(hourly_index: pd.DatetimeIndex) -> None:
+    a = pd.Series([10.0, 10.0], index=hourly_index[:2])
+    b = pd.Series([10.0, 10.0], index=hourly_index[:2])
+    c = pd.Series([10.0, 10.0], index=hourly_index[:2])
+    out, weights, quality = we._weighted_ensemble(
+        {"knmi_harmonie_arome": a, "dwd_icon_d2": b, "ecmwf_ifs": c},
+        ["knmi_harmonie_arome", "dwd_icon_d2", "ecmwf_ifs"],
+        dynamic_weights={"knmi_harmonie_arome": 1.0, "dwd_icon_d2": 1.0, "ecmwf_ifs": 1.0},
+        missing_vars_by_model={"dwd_icon_d2": ["shortwave_radiation"]},
+        derived_irradiance_by_model={"ecmwf_ifs": True},
+    )
+    assert out.iloc[0] == pytest.approx(10.0)
+    assert quality["knmi_harmonie_arome"] == pytest.approx(1.0)
+    assert quality["dwd_icon_d2"] == pytest.approx(0.60)
+    assert quality["ecmwf_ifs"] == pytest.approx(0.80)
+    assert weights["knmi_harmonie_arome"] > weights["ecmwf_ifs"] > weights["dwd_icon_d2"]

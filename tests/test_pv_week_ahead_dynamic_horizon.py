@@ -18,7 +18,7 @@ def test_weighted_ensemble_dynamic_horizon_renormalizes_per_timestamp() -> None:
         "ecmwf_ifs": pd.Series(20.0, index=idx_4d),
     }
 
-    out, _ = _weighted_ensemble(series_map, list(series_map.keys()))
+    out, _, _ = _weighted_ensemble(series_map, list(series_map.keys()))
 
     # day 1 uses A+B+C with default weights 0.45, 0.35, 0.20
     assert abs(float(out.loc[start + dt.timedelta(hours=12)]) - 19.0) < 1e-9
