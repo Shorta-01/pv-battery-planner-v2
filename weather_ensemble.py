@@ -151,7 +151,7 @@ FORECAST_FALLBACK_MODELS: dict[str, str] = {
     "ecmwf_ifs": "ifs",
 }
 
-_WEATHER_CACHE: dict[tuple, tuple[float, core.ForecastResult, list[str], bool, int]] = {}
+_WEATHER_CACHE: dict[tuple, tuple[float, core.ForecastResult, list[str], bool, Any]] = {}
 _WEATHER_CACHE_TTL_S = 600
 _SESSION: requests.Session | None = None
 _LOGGER = logging.getLogger(__name__)
@@ -883,6 +883,11 @@ def fetch_open_meteo_weather(
     if model_id not in WEATHER_MODELS:
         raise RuntimeError(f"Unsupported weather model: {model_id}")
 
+    spec = WEATHER_MODELS[model_id]
+    model_max_days = max(1, int(spec.get("max_days", 1)))
+    requested_days_int = int(max(1, requested_days))
+    horizon_days = max(1, min(requested_days_int, model_max_days))
+
     cache_extra_key = json.dumps(extra_params, sort_keys=True, default=str) if extra_params else ""
     key = (
         _cache_key(model_id, loc.latitude, loc.longitude, tz, target_date),
@@ -890,20 +895,26 @@ def fetch_open_meteo_weather(
         bool(fast_mode),
         str(endpoint_override or ""),
         cache_extra_key,
-        int(max(1, requested_days)),
+        int(requested_days_int),
     )
     now = time.time()
     cached = _WEATHER_CACHE.get(key)
     if cached and now - cached[0] < _WEATHER_CACHE_TTL_S:
-        cached_derived_hours = int(cached[4]) if len(cached) >= 5 else (1 if bool(cached[3]) else 0)
+        cached_meta = cached[4] if len(cached) >= 5 else None
+        cached_derived_hours = 1 if bool(cached[3]) else 0
+        if isinstance(cached_meta, dict):
+            cached_derived_hours = int(cached_meta.get("derived_irradiance_hours", cached_derived_hours))
+        elif cached_meta is not None:
+            cached_derived_hours = int(cached_meta)
         return cached[1], list(cached[2]), bool(cached[3]), {
             "source": "in_memory_cache",
+            "cache_hit": True,
+            "requested_days": int(requested_days_int),
+            "horizon_days": int(horizon_days),
+            "model_max_days": int(model_max_days),
             "derived_irradiance_hours": int(cached_derived_hours),
         }
 
-    spec = WEATHER_MODELS[model_id]
-    model_max_days = max(1, int(spec.get("max_days", 1)))
-    horizon_days = max(1, min(int(requested_days), model_max_days))
     hourly_variables = BASE_HOURLY_VARIABLES[:] + IRRADIANCE_HOURLY_VARIABLES
 
     params = {
@@ -944,8 +955,9 @@ def fetch_open_meteo_weather(
         "run_hour": int(run_hour),
         "circuit_breaker_open": bool(circuit_open),
         "circuit_breaker_open_for_seconds": int(open_for_seconds),
-        "requested_days": int(requested_days),
+        "requested_days": int(requested_days_int),
         "horizon_days": int(horizon_days),
+        "model_max_days": int(model_max_days),
     }
     request_params = dict(params)
     request_endpoint = str(endpoint_override or spec["endpoint"])
@@ -1234,7 +1246,12 @@ def fetch_open_meteo_weather(
         forecast,
         list(set(missing_vars)),
         bool(derived_irradiance),
-        int(derived_irradiance_hours),
+        {
+            "derived_irradiance_hours": int(derived_irradiance_hours),
+            "requested_days": int(requested_days_int),
+            "horizon_days": int(horizon_days),
+            "model_max_days": int(model_max_days),
+        },
     )
     return forecast, list(set(missing_vars)), bool(derived_irradiance), fetch_meta
 
@@ -1421,15 +1438,45 @@ def build_ensemble_forecast(
             fast_mode=fast_mode,
             requested_days=horizon_days,
         )
-        model_horizon_days = int(fetch_meta.get("horizon_days", horizon_days))
-        requested_days_int = int(horizon_days)
-        overlap_hours = int(max(0, model_horizon_days) * 24)
+        requested_days_int = int(max(1, fetch_meta.get("requested_days", horizon_days)))
+        model_horizon_days = int(max(1, fetch_meta.get("horizon_days", requested_days_int)))
+        overlap_hours = int(min(requested_days_int, model_horizon_days) * 24)
+        tail_hours_expected = int(max(0, (requested_days_int - model_horizon_days) * 24))
         overlap_index = canonical_index[:overlap_hours] if overlap_hours > 0 else canonical_index[:0]
+        tail_index = canonical_index[overlap_hours: overlap_hours + tail_hours_expected] if tail_hours_expected > 0 else canonical_index[:0]
         missing_overlap = int(weather.df.reindex(overlap_index).isna().all(axis=1).sum()) if len(overlap_index) else 0
+        missing_tail = int(weather.df.reindex(tail_index).isna().all(axis=1).sum()) if len(tail_index) else 0
         missing_total = int(weather.df.reindex(canonical_index).isna().all(axis=1).sum())
         fetch_meta["missing_hours_overlap"] = int(missing_overlap)
+        fetch_meta["missing_hours_tail"] = int(missing_tail)
         fetch_meta["missing_hours_total"] = int(missing_total)
-        fetch_meta["expected_tail_hours"] = int(max(0, (requested_days_int - model_horizon_days) * 24))
+        fetch_meta["expected_tail_hours"] = int(tail_hours_expected)
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "[weather_ensemble] model=%s requested_days=%s spec_max_days=%s fetch_meta_keys=%s model_horizon_days=%s",
+                model_id,
+                requested_days_int,
+                int(WEATHER_MODELS.get(model_id, {}).get("max_days", requested_days_int)),
+                sorted(fetch_meta.keys()) if isinstance(fetch_meta, dict) else [],
+                model_horizon_days,
+            )
+        if len(overlap_index) and missing_overlap > 0 and _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "[weather_ensemble] model=%s index_alignment weather_first=%s weather_last=%s canonical_first=%s canonical_last=%s overlap_first=%s overlap_last=%s weather_tz=%s canonical_tz=%s overlap_tz=%s weather_dupes=%s canonical_dupes=%s overlap_dupes=%s",
+                model_id,
+                weather.df.index[0] if len(weather.df.index) else None,
+                weather.df.index[-1] if len(weather.df.index) else None,
+                canonical_index[0] if len(canonical_index) else None,
+                canonical_index[-1] if len(canonical_index) else None,
+                overlap_index[0] if len(overlap_index) else None,
+                overlap_index[-1] if len(overlap_index) else None,
+                str(weather.df.index.tz),
+                str(canonical_index.tz),
+                str(overlap_index.tz),
+                int(weather.df.index.duplicated().sum()),
+                int(canonical_index.duplicated().sum()),
+                int(overlap_index.duplicated().sum()),
+            )
         if len(overlap_index) and missing_overlap == len(overlap_index):
             exc = WeatherProviderError(
                 category="invalid_payload",
@@ -1499,13 +1546,27 @@ def build_ensemble_forecast(
                 provider_payload = fetch_meta.get("provider_payload") if isinstance(fetch_meta, dict) else None
                 if isinstance(provider_payload, dict):
                     provider_payloads_by_model[model_id] = provider_payload
-                if int(fetch_meta.get("missing_hours_overlap", 0)) > 2:
+                missing_overlap = int(fetch_meta.get("missing_hours_overlap", 0))
+                missing_tail = int(fetch_meta.get("missing_hours_tail", 0))
+                expected_tail = int(fetch_meta.get("expected_tail_hours", 0))
+                missing_total = int(fetch_meta.get("missing_hours_total", 0))
+                if missing_overlap > 2:
                     _LOGGER.warning(
-                        "[weather_ensemble] model=%s missing_hours_overlap=%s missing_hours_total=%s expected_tail_hours=%s",
+                        "[weather_ensemble] model=%s missing_hours_overlap=%s missing_hours_tail=%s missing_hours_total=%s expected_tail_hours=%s",
                         model_id,
-                        int(fetch_meta.get("missing_hours_overlap", 0)),
-                        int(fetch_meta.get("missing_hours_total", 0)),
-                        int(fetch_meta.get("expected_tail_hours", 0)),
+                        missing_overlap,
+                        missing_tail,
+                        missing_total,
+                        expected_tail,
+                    )
+                elif missing_tail > 0 and expected_tail > 0:
+                    tail_log = _LOGGER.debug if missing_tail == expected_tail else _LOGGER.info
+                    tail_log(
+                        "[weather_ensemble] model=%s missing_hours_tail=%s expected_tail_hours=%s missing_hours_overlap=%s",
+                        model_id,
+                        missing_tail,
+                        expected_tail,
+                        missing_overlap,
                     )
             except WeatherProviderError as exc:
                 failed_models.append(model_id)

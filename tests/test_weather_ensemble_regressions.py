@@ -878,3 +878,134 @@ def test_circuit_breaker_opens_and_skips_live_calls(monkeypatch: pytest.MonkeyPa
     assert meta["source"] == "provider_cache"
     assert meta["circuit_breaker_open"] is True
     assert calls["count"] == expected_live_calls
+
+
+def test_fetch_open_meteo_in_memory_cache_meta_keeps_horizon_days(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex) -> None:
+    payload = {
+        "hourly": {
+            "time": [ts.isoformat() for ts in hourly_index],
+            "temperature_2m": [11.0] * 24,
+            "wind_speed_10m": [1.0] * 24,
+            "shortwave_radiation": [101.0] * 24,
+            "direct_normal_irradiance": [50.0] * 24,
+            "diffuse_radiation": [20.0] * 24,
+            "cloud_cover": [25.0] * 24,
+        },
+        "daily": {"sunrise": [hourly_index[7].isoformat()], "sunset": [hourly_index[17].isoformat()]},
+    }
+
+    monkeypatch.setattr(we, "_request_open_meteo", lambda *_args, **_kwargs: payload)
+
+    _, _, _, first_meta = we.fetch_open_meteo_weather(
+        model_id="dwd_icon_d2",
+        loc=core.Location(name="x", latitude=50.8, longitude=4.3),
+        tz="Europe/Brussels",
+        target_date=dt.date(2026, 1, 10),
+        requested_days=7,
+    )
+    assert first_meta["source"] == "live"
+    assert first_meta["horizon_days"] == 2
+
+    _, _, _, second_meta = we.fetch_open_meteo_weather(
+        model_id="dwd_icon_d2",
+        loc=core.Location(name="x", latitude=50.8, longitude=4.3),
+        tz="Europe/Brussels",
+        target_date=dt.date(2026, 1, 10),
+        requested_days=7,
+    )
+    assert second_meta["source"] == "in_memory_cache"
+    assert second_meta["cache_hit"] is True
+    assert second_meta["requested_days"] == 7
+    assert second_meta["horizon_days"] == 2
+    assert second_meta["model_max_days"] == 2
+
+
+def test_build_ensemble_classifies_overlap_and_tail_missing_hours(monkeypatch: pytest.MonkeyPatch) -> None:
+    loc = core.Location(name="x", latitude=50.8, longitude=4.3)
+    tz = "Europe/Brussels"
+    target_date = dt.date(2026, 1, 10)
+    canonical_index = pd.date_range(
+        pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz),
+        pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=7), dt.time(0, 0)), tz=tz),
+        freq="h",
+        inclusive="left",
+    )
+
+    icon_df = pd.DataFrame(
+        {
+            "temp_air_c": [10.0] * (2 * 24),
+            "ghi_wm2": [20.0] * (2 * 24),
+            "dni_wm2": [10.0] * (2 * 24),
+            "dhi_wm2": [8.0] * (2 * 24),
+            "cloud_cover_pct": [30.0] * (2 * 24),
+            "wind_speed_ms": [1.0] * (2 * 24),
+        },
+        index=canonical_index[: 2 * 24],
+    )
+    seamless_df = pd.DataFrame(
+        {
+            "temp_air_c": [11.0] * (4 * 24),
+            "ghi_wm2": [25.0] * (4 * 24),
+            "dni_wm2": [12.0] * (4 * 24),
+            "dhi_wm2": [9.0] * (4 * 24),
+            "cloud_cover_pct": [35.0] * (4 * 24),
+            "wind_speed_ms": [2.0] * (4 * 24),
+        },
+        index=canonical_index[: 4 * 24],
+    )
+
+    def fake_weather(model_id, *_args, **_kwargs):
+        if model_id == "dwd_icon_d2":
+            return core.ForecastResult(df=icon_df, sunrise=canonical_index[7].to_pydatetime(), sunset=canonical_index[17].to_pydatetime()), [], False, {
+                "source": "in_memory_cache",
+                "requested_days": 7,
+                "horizon_days": 2,
+                "model_max_days": 2,
+                "cache_hit": True,
+            }
+        return core.ForecastResult(df=seamless_df, sunrise=canonical_index[7].to_pydatetime(), sunset=canonical_index[17].to_pydatetime()), [], False, {
+            "source": "in_memory_cache",
+            "requested_days": 7,
+            "horizon_days": 4,
+            "model_max_days": 4,
+            "cache_hit": True,
+        }
+
+    def fake_build_pv(df, _loc, tz=None):
+        s = pd.Series([1.0] * len(df.index), index=df.index)
+        return pd.DataFrame(
+            {
+                "pv_total_kwh": s,
+                "pv_total_unclipped_kwh": s,
+                "pv_east_kwh": s / 2,
+                "pv_south_kwh": s / 2,
+                "pv_clipped_kwh": [0.0] * len(df.index),
+            },
+            index=df.index,
+        )
+
+    monkeypatch.setattr(we, "fetch_open_meteo_weather", fake_weather)
+    monkeypatch.setattr(core, "build_pv_forecast", fake_build_pv)
+
+    out = we.build_ensemble_forecast(
+        loc=loc,
+        target_date=target_date,
+        tz=tz,
+        weather_models=["dwd_icon_d2", "meteofrance_seamless"],
+        ensemble_method="mean",
+        pv_uncertainty=False,
+        accuracy_mode=True,
+        fast_mode=False,
+        requested_days=7,
+    )
+
+    icon_meta = out.fetch_meta_by_model["dwd_icon_d2"]
+    seamless_meta = out.fetch_meta_by_model["meteofrance_seamless"]
+
+    assert icon_meta["missing_hours_overlap"] == 0
+    assert icon_meta["missing_hours_tail"] == 120
+    assert icon_meta["expected_tail_hours"] == 120
+
+    assert seamless_meta["missing_hours_overlap"] == 0
+    assert seamless_meta["missing_hours_tail"] == 72
+    assert seamless_meta["expected_tail_hours"] == 72
