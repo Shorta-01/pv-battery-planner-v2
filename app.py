@@ -3197,6 +3197,11 @@ with left:
                     label_visibility="collapsed",
                 )
             forecast_mode = FORECAST_MODE_OPTIONS.get(forecast_mode_label, "auto")
+            models_used_last = st.session_state.get("last_weather_ensemble_models_used", [])
+
+            last_run_mode = st.session_state.get("last_forecast_mode")
+            if isinstance(last_run_mode, str) and last_run_mode in {"auto", "expert"} and forecast_mode != last_run_mode:
+                st.info("Mode change will apply on the next Run forecast.")
 
             if forecast_mode == "expert":
                 selected_models = render_weather_models(
@@ -3205,6 +3210,14 @@ with left:
                     widget_key_prefix="wm",
                 )
             else:
+                if isinstance(models_used_last, list) and models_used_last:
+                    st.caption("Models used in last run (read-only)")
+                    _ = render_weather_models(
+                        weather_models_catalog,
+                        set(str(x) for x in models_used_last if isinstance(x, str)),
+                        widget_key_prefix="wm_used",
+                        disabled=True,
+                    )
                 selected_models = []
 
     ensemble_method = "weighted"
@@ -3247,28 +3260,8 @@ if run:
                 or result.get("weather_ensemble", {}).get("models_used")
                 or []
             )
+            st.session_state["last_forecast_mode"] = forecast_mode
             st.session_state["last_weather_ensemble_models_used"] = list(models_used)
-            weather_models_box.empty()
-            with weather_models_box.container():
-                with st.expander("Weather models", expanded=True):
-                    c1, c2 = st.columns([1, 3], vertical_alignment="center")
-                    with c1:
-                        st.markdown("**Forecast mode**")
-                    with c2:
-                        st.selectbox(
-                            "Forecast mode",
-                            options=list(FORECAST_MODE_OPTIONS.keys()),
-                            index=list(FORECAST_MODE_OPTIONS.keys()).index(forecast_mode_label),
-                            key="forecast_mode_used_select",
-                            label_visibility="collapsed",
-                            disabled=True,
-                        )
-                    _ = render_weather_models(
-                        weather_models_catalog,
-                        set(models_used),
-                        widget_key_prefix="wm_used",
-                        disabled=True,
-                    )
             tomorrow = dt.date.fromisoformat(result["target_date"])
             weather_df = df_from_split(result["weather"])
             pv = df_from_split(result["pv"])
