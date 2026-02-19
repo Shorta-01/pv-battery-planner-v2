@@ -36,7 +36,9 @@ from weather_ensemble import (
     DEFAULT_ACCURACY_MODELS,
     WEATHER_DISPLAY_VARS,
     WEATHER_MODELS,
+    auto_select_models_for_location,
     build_ensemble_forecast,
+    get_model_caps,
     weather_models_payload,
 )
 
@@ -234,32 +236,10 @@ def _best_of_day_weather_code(day_df: pd.DataFrame) -> int | None:
     return candidates[0]
 
 
+
+
 def _model_max_days(model_id: str) -> int:
-    try:
-        return int((WEATHER_MODELS.get(model_id) or {}).get("max_days") or 0)
-    except Exception:
-        return 0
-
-
-def auto_select_models_for_location(loc: object, requested_days: int) -> list[str]:
-    models_all = list(WEATHER_MODELS.keys())
-    if requested_days >= 7:
-        return models_all
-
-    preferred: list[str] = []
-    for mid in [
-        "ecmwf_ifs",
-        "dwd_icon_eu",
-        "knmi_harmonie_arome",
-        "dwd_icon_d2",
-        "meteo_france_seamless",
-        "meteofrance_seamless",
-    ]:
-        if mid in WEATHER_MODELS and mid in models_all and mid not in preferred:
-            preferred.append(mid)
-    if preferred:
-        return preferred[:4]
-    return models_all[:3] if len(models_all) >= 3 else models_all
+    return int(get_model_caps(model_id).get("max_days", 0) or 0)
 
 
 def _best_of_day_from_model(
@@ -699,6 +679,8 @@ class BackendState:
             raise HTTPException(status_code=400, detail="Select at least one weather model.")
 
         normalized_ensemble_method = str(ensemble_method).lower().strip()
+        ensemble_method_tomorrow = "weighted"
+        ensemble_method_week = "median"
         weather_cfg = cfg.get("weather", {}) if isinstance(cfg, dict) else {}
         store_provider_payloads = bool(weather_cfg.get("store_provider_payloads", False)) if isinstance(weather_cfg, dict) else False
 
@@ -712,7 +694,7 @@ class BackendState:
             "max_ac_charge_power_kw": float(user_max_ac_kw),
             "weather_models_selected": tomorrow_models,
             "forecast_mode": mode,
-            "ensemble_method": normalized_ensemble_method,
+            "ensemble_method": ensemble_method_tomorrow,
             "pv_uncertainty_enabled": bool(pv_uncertainty),
             "fast_mode": bool(fast_mode),
         }
@@ -723,7 +705,7 @@ class BackendState:
                 target_date=target_date,
                 tz=tz,
                 weather_models=tomorrow_models,
-                ensemble_method=normalized_ensemble_method,
+                ensemble_method=ensemble_method_tomorrow,
                 pv_uncertainty=bool(pv_uncertainty),
                 accuracy_mode=True,
                 fast_mode=bool(fast_mode),
@@ -765,7 +747,7 @@ class BackendState:
                         **cfg,
                         "weather_models_selected": tomorrow_models,
                         "forecast_mode": mode,
-                        "ensemble_method": normalized_ensemble_method,
+                        "ensemble_method": ensemble_method_tomorrow,
                         "pv_uncertainty_enabled": bool(pv_uncertainty),
                     },
                     sort_keys=True,
@@ -778,7 +760,7 @@ class BackendState:
                 },
                 "weather_ensemble": {
                     "selected_models": tomorrow_models,
-                    "ensemble_method": normalized_ensemble_method,
+                    "ensemble_method": ensemble_method_tomorrow,
                     "weights_used": getattr(exc, "weights_used", None),
                     "primary_model_id": None,
                     "failed_models": failed_models,
@@ -806,7 +788,7 @@ class BackendState:
                 target_date=target_date,
                 tz=tz,
                 weather_models=week_models,
-                ensemble_method=normalized_ensemble_method,
+                ensemble_method=ensemble_method_week,
                 pv_uncertainty=bool(pv_uncertainty),
                 accuracy_mode=True,
                 fast_mode=False,
@@ -1011,6 +993,7 @@ class BackendState:
             "weather_ensemble_table": self._serialize_df(getattr(getattr(ensemble_tomorrow, "weather_ensemble_table", None), "df", pd.DataFrame(index=pv.index))),
             "weather_by_model": {model_id: self._serialize_df(fr.df) for model_id, fr in (getattr(ensemble_tomorrow, "weather_by_model", {}) or {}).items()},
             "pv_by_model": {model_id: self._serialize_df(model_pv) for model_id, model_pv in (getattr(ensemble_tomorrow, "pv_by_model", {}) or {}).items()},
+            "derived_irradiance_by_model": getattr(ensemble_tomorrow, "derived_irradiance_by_model", {}),
             "pv": self._serialize_df(pv),
             "detail": self._serialize_df(detail_df),
             "flows": self._serialize_df(flows_df),
@@ -1056,7 +1039,7 @@ class BackendState:
                     **cfg,
                     "weather_models_selected": getattr(ensemble_tomorrow, "selected_models", tomorrow_models),
                     "forecast_mode": mode,
-                    "ensemble_method": normalized_ensemble_method,
+                    "ensemble_method": ensemble_method_tomorrow,
                     "pv_uncertainty_enabled": bool(pv_uncertainty),
                     "per_model_pv_totals_kwh": getattr(ensemble_tomorrow, "per_model_pv_totals_kwh", {}),
                     "pv_totals_kwh": pv_totals_kwh,
@@ -1067,13 +1050,14 @@ class BackendState:
             "created_at_utc": run_at_utc,
             "weather_ensemble": {
                 "selected_models": getattr(ensemble_tomorrow, "selected_models", tomorrow_models),
-                "ensemble_method": normalized_ensemble_method,
+                "ensemble_method": ensemble_method_tomorrow,
                 "weights_used": getattr(ensemble_tomorrow, "weights_used", None),
                 "primary_model_id": ensemble_tomorrow.weather_primary_model_id,
                 "per_model_pv_totals_kwh": getattr(ensemble_tomorrow, "per_model_pv_totals_kwh", {}),
                 "pv_totals_kwh": pv_totals_kwh if pv_uncertainty else None,
                 "pv_tomorrow_low_high_kwh": pv_tomorrow_low_high_kwh,
                 "pv_week_ahead": pv_week_ahead,
+                "ensemble_method_week_ahead": ensemble_method_week,
                 "missing_vars_by_model": getattr(ensemble_tomorrow, "missing_vars_by_model", {}),
                 "derived_irradiance_by_model": getattr(ensemble_tomorrow, "derived_irradiance_by_model", {}),
                 "derived_irradiance_hours_by_model": getattr(ensemble_tomorrow, "derived_irradiance_hours_by_model", {}),

@@ -49,7 +49,7 @@ METRIC_TOOLTIPS = {
 }
 
 CHART_TOOLTIPS = {
-    "PV production vs Load (hourly)": "This chart shows hourly energy from your PV and your home load, plus battery SOC on a secondary axis. It helps you see when solar covers usage and how battery charge evolves through the day.",
+    "PV production vs Load (estimated) (hourly)": "This chart shows hourly energy from your PV and your estimated home load, plus battery SOC on a secondary axis. Load is estimated from yesterday total plus a profile and can differ from real usage (EV charging, heat pump cycles, weekends).",
     "Surplus vs Deficit (hourly)": "This chart compares PV surplus and load deficit each hour. It matters because surplus can charge the battery, while deficit means battery discharge or grid import is needed.",
     "Grid import/export + curtailment": "These bars show hourly grid import, grid export, and curtailed PV energy. Positive bars are import from grid. Negative bars are energy sent out or lost due to limits.",
 }
@@ -2450,7 +2450,7 @@ def make_chart_pv_load(df: pd.DataFrame, soc: pd.Series, cutoff_soc: float, effe
         "PV East kWh (hour): %{customdata[0]:.2f}<br>"
         "PV South kWh (hour): %{customdata[1]:.2f}<br>"
         "PV total kWh (hour): %{customdata[2]:.2f}<br>"
-        "Load kWh (hour): %{customdata[3]:.2f}<br>"
+        "Load (estimated) kWh (hour): %{customdata[3]:.2f}<br>"
         "Surplus/Deficit (hour): +%{customdata[4]:.2f} / -%{customdata[5]:.2f}<br>"
         "PV potential (unclipped): %{customdata[6]:.2f} kWh<br>"
         "PV delivered (after AC limit): %{customdata[2]:.2f} kWh<br>"
@@ -2520,7 +2520,7 @@ def make_chart_pv_load(df: pd.DataFrame, soc: pd.Series, cutoff_soc: float, effe
             x=working.index,
             y=working["load_kwh"],
             mode="lines",
-            name="Estimated load",
+            name="Load (estimated)",
             line=dict(width=3, color="#e63946"),
             customdata=custom_data,
             hovertemplate=hover,
@@ -3385,7 +3385,7 @@ if run:
                 )
             metric_with_help(c3, "Estimated grid import (expensive h)", f"{grid_import:.2f}")
             metric_with_help(c4, "Estimated export/curtailment (kWh)", f"{(grid_export + detail_df['curtailed_kwh'].sum() if not detail_df.empty else 0.0):.2f}")
-            tooltip_heading("PV production vs Load (hourly)", CHART_TOOLTIPS["PV production vs Load (hourly)"])
+            tooltip_heading("PV production vs Load (estimated) (hourly)", CHART_TOOLTIPS["PV production vs Load (estimated) (hourly)"])
             pv_load_fig = make_chart_pv_load(pv, soc_series, cutoff_soc, effective_cfg)
             add_tariff_and_sun_markers(pv_load_fig, tomorrow, sunrise, sunset)
             st.plotly_chart(pv_load_fig, use_container_width=True)
@@ -3495,7 +3495,7 @@ if run:
                         "residual_kwh": {"label": "Energy balance residual (kWh)", "help": "(PV + import + batt discharge) - (load + batt charge + export + curtailed).", "format": "%.3f"},
                         "charge_kw": {"label": "Charge (kW)", "help": "Charge power setting used for planning.", "format": "%.2f"},
                         "cutoff_soc_pct": {"label": "Cutoff SOC (%)", "help": "Configured AC charge cutoff SOC.", "format": "%.1f"},
-                        "load_kwh": {"label": "Load (kWh)", "help": "Forecast household demand.", "format": "%.2f"},
+                        "load_kwh": {"label": "Load (estimated) (kWh)", "help": "Estimated household demand based on yesterday total + profile; real usage can differ (EV, heat pump, weekend effects).", "format": "%.2f"},
                     }
                     max_res = float(pd.to_numeric(combined_display.get("residual_kwh"), errors="coerce").abs().max()) if "residual_kwh" in combined_display.columns else 0.0
                     st.metric("Max |residual| (kWh)", f"{max_res:.3f}")
