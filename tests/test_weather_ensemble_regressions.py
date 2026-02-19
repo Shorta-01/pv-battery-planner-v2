@@ -688,6 +688,82 @@ def test_irradiance_anomaly_excludes_model_and_keeps_ensemble_running(
     assert out.pv_ensemble_p50.sum() > 0
 
 
+def test_build_ensemble_marks_model_failed_when_no_hourly_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+    hourly_index: pd.DatetimeIndex,
+) -> None:
+    loc = core.Location(name="x", latitude=50.8, longitude=4.3)
+    empty_df = pd.DataFrame(
+        {
+            "temp_air_c": [10.0] * len(hourly_index),
+            "ghi_wm2": [20.0] * len(hourly_index),
+            "dni_wm2": [10.0] * len(hourly_index),
+            "dhi_wm2": [8.0] * len(hourly_index),
+            "cloud_cover_pct": [30.0] * len(hourly_index),
+            "wind_speed_ms": [1.0] * len(hourly_index),
+        },
+        index=hourly_index + dt.timedelta(days=5),
+    )
+
+    def fake_weather(model_id, *_args, **_kwargs):
+        if model_id == "dwd_icon_d2":
+            return (
+                core.ForecastResult(df=empty_df.copy(), sunrise=hourly_index[7].to_pydatetime(), sunset=hourly_index[17].to_pydatetime()),
+                [],
+                False,
+                {"source": "live", "live_failed_used_cached": False, "horizon_days": 1},
+            )
+        out = pd.DataFrame(
+            {
+                "temp_air_c": [10.0] * len(hourly_index),
+                "ghi_wm2": [20.0] * len(hourly_index),
+                "dni_wm2": [10.0] * len(hourly_index),
+                "dhi_wm2": [8.0] * len(hourly_index),
+                "cloud_cover_pct": [30.0] * len(hourly_index),
+                "wind_speed_ms": [1.0] * len(hourly_index),
+            },
+            index=hourly_index,
+        )
+        return (
+            core.ForecastResult(df=out, sunrise=hourly_index[7].to_pydatetime(), sunset=hourly_index[17].to_pydatetime()),
+            [],
+            False,
+            {"source": "live", "live_failed_used_cached": False, "horizon_days": 1},
+        )
+
+    def fake_build_pv(df, _loc, tz=None):
+        s = pd.Series([1.0] * len(df.index), index=df.index)
+        return pd.DataFrame(
+            {
+                "pv_total_kwh": s,
+                "pv_total_unclipped_kwh": s,
+                "pv_east_kwh": s / 2,
+                "pv_south_kwh": s / 2,
+                "pv_clipped_kwh": [0.0] * len(df.index),
+            },
+            index=df.index,
+        )
+
+    monkeypatch.setattr(we, "fetch_open_meteo_weather", fake_weather)
+    monkeypatch.setattr(core, "build_pv_forecast", fake_build_pv)
+
+    out = we.build_ensemble_forecast(
+        loc=loc,
+        target_date=dt.date(2026, 1, 10),
+        tz="Europe/Brussels",
+        weather_models=["knmi_harmonie_arome", "dwd_icon_d2"],
+        ensemble_method="mean",
+        pv_uncertainty=False,
+        accuracy_mode=True,
+        fast_mode=False,
+    )
+
+    assert "dwd_icon_d2" in out.failed_models
+    assert out.failed_model_reasons["dwd_icon_d2"]["category"] == "invalid_payload"
+    assert "no overlapping hourly coverage" in out.failed_model_reasons["dwd_icon_d2"]["message"]
+    assert out.selected_models == ["knmi_harmonie_arome"]
+
+
 def test_fetch_open_meteo_uses_last_good_cache_when_live_fetch_fails(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex, tmp_path) -> None:
     payload = {
         "hourly": {

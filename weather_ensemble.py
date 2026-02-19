@@ -1430,6 +1430,17 @@ def build_ensemble_forecast(
         fetch_meta["missing_hours_overlap"] = int(missing_overlap)
         fetch_meta["missing_hours_total"] = int(missing_total)
         fetch_meta["expected_tail_hours"] = int(max(0, (requested_days_int - model_horizon_days) * 24))
+        if len(overlap_index) and missing_overlap == len(overlap_index):
+            exc = WeatherProviderError(
+                category="invalid_payload",
+                status=None,
+                message=(
+                    f"Weather payload for {model_id} has no overlapping hourly coverage "
+                    f"for requested horizon ({len(overlap_index)}h missing)."
+                ),
+            )
+            setattr(exc, "fetch_meta", dict(fetch_meta))
+            raise exc
         model_weather_df = weather.df.reindex(canonical_index).copy()
         sanity_warnings = check_irradiance_sanity(model_weather_df, model_id, loc=loc, tz=tz)
         if sanity_warnings:
