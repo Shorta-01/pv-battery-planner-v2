@@ -91,3 +91,17 @@ def test_simulate_expensive_hours_detailed_outputs_gui_columns() -> None:
         "pv_deficit_kwh",
     }
     assert required_cols.issubset(set(detail_df.columns))
+
+
+def test_normalize_detail_df_for_ui_handles_missing_load_column() -> None:
+    normalize_detail_df_for_ui = _load_normalizer()
+    idx = pd.date_range("2026-06-01 00:00:00", periods=3, freq="h", tz="Europe/Brussels")
+    raw = pd.DataFrame({"pv_total_kwh": [0.0, 1.2, 2.0]}, index=idx)
+
+    cfg = {"pv": {"array_east_panels": 7, "array_south_panels": 11}}
+    normalized = normalize_detail_df_for_ui(raw, cfg)
+
+    assert "pv_surplus_kwh" in normalized.columns
+    assert "pv_deficit_kwh" in normalized.columns
+    assert normalized["pv_surplus_kwh"].iloc[2] == 2.0
+    assert normalized["pv_deficit_kwh"].sum() == 0.0
