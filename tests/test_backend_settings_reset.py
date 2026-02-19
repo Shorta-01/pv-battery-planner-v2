@@ -70,3 +70,27 @@ def test_reset_to_repo_defaults_replaces_settings_file(monkeypatch, tmp_path):
 
     reloaded = _new_state(monkeypatch, tmp_path)
     assert reloaded.settings == reset_payload
+
+
+def test_run_now_uses_default_cap_when_persisted_setting_is_none(monkeypatch, tmp_path):
+    state = _new_state(monkeypatch, tmp_path)
+    state.settings["max_ac_charge_power_kw_default"] = None
+
+    called = {}
+
+    def fake_run(target_date, soc, ykwh, buffer_percent, user_max_ac_kw, *_args, **_kwargs):
+        called["user_max_ac_kw"] = user_max_ac_kw
+        return {
+            "target_date": target_date.isoformat(),
+            "warnings": [],
+            "warnings_count": 0,
+            "status": "ok",
+            "run_type": "manual",
+        }
+
+    state._run = fake_run
+
+    out = state.run_now(backend_api.RunNowPayload())
+
+    assert out["ran"] is True
+    assert called["user_max_ac_kw"] == backend_api.DEFAULT_MAX_AC_CAP

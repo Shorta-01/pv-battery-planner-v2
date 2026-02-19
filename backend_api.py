@@ -70,6 +70,15 @@ def _clamp_score_0_100(value: float) -> int:
     return int(min(100, max(0, round(float(value)))))
 
 
+def _float_or_default(value: object, default: float) -> float:
+    try:
+        if value is None:
+            return float(default)
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
 def _to_history_summary(payload: dict) -> dict:
     if not isinstance(payload, dict):
         return {}
@@ -471,6 +480,10 @@ class BackendState:
                 loaded.setdefault("nightly_run_time", DEFAULT_NIGHTLY_TIME)
                 loaded.setdefault("timezone", str(merged.get("location", {}).get("timezone") or "Europe/Brussels"))
                 loaded.setdefault("max_ac_charge_power_kw_default", DEFAULT_MAX_AC_CAP)
+                loaded["max_ac_charge_power_kw_default"] = _float_or_default(
+                    loaded.get("max_ac_charge_power_kw_default"),
+                    DEFAULT_MAX_AC_CAP,
+                )
                 loaded.setdefault("settings_source", SETTINGS_SOURCE_SETTINGS_JSON)
                 return loaded
 
@@ -951,7 +964,10 @@ class BackendState:
                 if payload.yesterday_consumption_kwh is not None
                 else source.get("yesterday_consumption_kwh", 18.0)
             )
-            cap = float(payload.user_max_ac_kw if payload.user_max_ac_kw is not None else self.settings["max_ac_charge_power_kw_default"])
+            cap = _float_or_default(
+                payload.user_max_ac_kw if payload.user_max_ac_kw is not None else self.settings.get("max_ac_charge_power_kw_default"),
+                DEFAULT_MAX_AC_CAP,
+            )
             local_today = dt.datetime.now(self._tzinfo()).date()
             target_date = local_today + dt.timedelta(days=1)
             result = self._run(
@@ -1003,7 +1019,7 @@ class BackendState:
                 soc,
                 ykwh,
                 0.0,
-                float(self.settings["max_ac_charge_power_kw_default"]),
+                _float_or_default(self.settings.get("max_ac_charge_power_kw_default"), DEFAULT_MAX_AC_CAP),
                 DEFAULT_ACCURACY_MODELS,
                 "auto",
                 "weighted",
