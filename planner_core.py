@@ -345,7 +345,8 @@ def validate_config(cfg: dict) -> None:
     iam_model = str(pv.get("iam_model", "none")).strip().lower()
     if iam_model not in {"none", "ashrae"}:
         raise ValueError("pv.iam_model must be either 'none' or 'ashrae'.")
-    iam_ashrae_b = float(pv.get("iam_ashrae_b", 0.05))
+    iam_ashrae_b_raw = pv.get("iam_ashrae_b", 0.05)
+    iam_ashrae_b = 0.05 if iam_ashrae_b_raw is None else float(iam_ashrae_b_raw)
     if not (0.0 <= iam_ashrae_b <= 0.5):
         raise ValueError("pv.iam_ashrae_b must be in [0.0, 0.5].")
     if "albedo" in pv and pv.get("albedo") is not None:
@@ -358,8 +359,10 @@ def validate_config(cfg: dict) -> None:
     pv_calibration_factor = float(pv.get("pv_calibration_factor", 1.0))
     if not (0.7 <= pv_calibration_factor <= 1.3):
         raise ValueError("pv.pv_calibration_factor must be in [0.7, 1.3].")
-    pv_calibration_factor_east = float(pv.get("pv_calibration_factor_east", 1.0))
-    pv_calibration_factor_south = float(pv.get("pv_calibration_factor_south", 1.0))
+    pv_calibration_factor_east_raw = pv.get("pv_calibration_factor_east", 1.0)
+    pv_calibration_factor_south_raw = pv.get("pv_calibration_factor_south", 1.0)
+    pv_calibration_factor_east = 1.0 if pv_calibration_factor_east_raw is None else float(pv_calibration_factor_east_raw)
+    pv_calibration_factor_south = 1.0 if pv_calibration_factor_south_raw is None else float(pv_calibration_factor_south_raw)
     if not (0.7 <= pv_calibration_factor_east <= 1.3):
         raise ValueError("pv.pv_calibration_factor_east must be in [0.7, 1.3].")
     if not (0.7 <= pv_calibration_factor_south <= 1.3):
@@ -479,12 +482,15 @@ def apply_config(cfg: dict) -> None:
     INVERTER_EFF = float(pv["inverter_eff"])
     PV_LOSS_MODEL = str(pv.get("loss_model", pv.get("pv_loss_model", "split"))).strip().lower()
     PV_IAM_MODEL = str(pv.get("iam_model", "none")).strip().lower()
-    PV_IAM_ASHRAE_B = float(pv.get("iam_ashrae_b", 0.05))
+    iam_ashrae_b_raw = pv.get("iam_ashrae_b", 0.05)
+    PV_IAM_ASHRAE_B = 0.05 if iam_ashrae_b_raw is None else float(iam_ashrae_b_raw)
     PV_ALBEDO = None if pv.get("albedo") is None else float(pv.get("albedo"))
     INVERTER_AC_MODEL = str(pv.get("inverter_ac_model", "linear")).strip().lower()
     PV_CALIBRATION_FACTOR = float(pv.get("pv_calibration_factor", 1.0))
-    base_calibration_factor_east = float(pv.get("pv_calibration_factor_east", 1.0))
-    base_calibration_factor_south = float(pv.get("pv_calibration_factor_south", 1.0))
+    base_calibration_factor_east_raw = pv.get("pv_calibration_factor_east", 1.0)
+    base_calibration_factor_south_raw = pv.get("pv_calibration_factor_south", 1.0)
+    base_calibration_factor_east = 1.0 if base_calibration_factor_east_raw is None else float(base_calibration_factor_east_raw)
+    base_calibration_factor_south = 1.0 if base_calibration_factor_south_raw is None else float(base_calibration_factor_south_raw)
     PV_CALIBRATION_FACTOR_EAST = PV_CALIBRATION_FACTOR * base_calibration_factor_east
     PV_CALIBRATION_FACTOR_SOUTH = PV_CALIBRATION_FACTOR * base_calibration_factor_south
     INVERTER_AC_KW_LIMIT = float(pv["inverter_ac_kw_limit"])
