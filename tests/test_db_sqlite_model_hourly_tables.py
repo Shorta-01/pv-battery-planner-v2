@@ -31,11 +31,11 @@ def test_insert_forecast_run_persists_model_hourly_weather_and_pv(tmp_path):
     for offset, model_id in enumerate(models):
         weather_by_model[model_id] = _frame_payload(
             index,
-            ["ghi_wm2", "dni_wm2", "dhi_wm2", "temp_air_c", "wind_speed_ms", "cloud_cover_pct"],
+            ["ghi_wm2", "dni_wm2", "dhi_wm2", "temp_air_c", "wind_speed_ms", "cloud_cover_pct", "weather_code"],
             [
-                [100.0 + offset, 60.0 + offset, 40.0 + offset, 8.0 + offset, 1.0 + offset, 25.0 + offset],
-                [120.0 + offset, 70.0 + offset, 50.0 + offset, 9.0 + offset, 1.2 + offset, 30.0 + offset],
-                [90.0 + offset, 50.0 + offset, 35.0 + offset, 7.5 + offset, 0.8 + offset, 35.0 + offset],
+                [100.0 + offset, 60.0 + offset, 40.0 + offset, 8.0 + offset, 1.0 + offset, 25.0 + offset, 3],
+                [120.0 + offset, 70.0 + offset, 50.0 + offset, 9.0 + offset, 1.2 + offset, 30.0 + offset, 2],
+                [90.0 + offset, 50.0 + offset, 35.0 + offset, 7.5 + offset, 0.8 + offset, 35.0 + offset, 1],
             ],
         )
         pv_by_model[model_id] = _frame_payload(
@@ -55,6 +55,11 @@ def test_insert_forecast_run_persists_model_hourly_weather_and_pv(tmp_path):
         "metrics": {"pv_forecast_kwh": 3.0, "cons_forecast_kwh": 10.0},
         "weather_by_model": weather_by_model,
         "pv_by_model": pv_by_model,
+        "derived_irradiance_by_model": {"ecmwf_ifs": False, "dwd_icon_d2": True, "knmi_harmonie_arome": True},
+        "forecast_mode_effective": "auto",
+        "tomorrow_models_used": models,
+        "weather_ensemble": {"ensemble_method": "weighted", "weights_used": {"ecmwf_ifs": 0.4, "dwd_icon_d2": 0.35, "knmi_harmonie_arome": 0.25}},
+        "pv": _frame_payload(index, ["pv_total_kwh", "pv_total_low_kwh", "pv_total_high_kwh", "weather_code"], [[0.5, 0.4, 0.6, 3], [1.0, 0.8, 1.2, 2], [0.3, 0.2, 0.4, 1]]),
     }
 
     insert_forecast_run(str(db_path), payload)
@@ -76,12 +81,26 @@ def test_insert_forecast_run_persists_model_hourly_weather_and_pv(tmp_path):
             "SELECT COUNT(DISTINCT model_id || '|' || ts_local) FROM pv_hourly_by_model WHERE run_id = ?",
             ("run-model-hourly-1",),
         ).fetchone()[0]
+        ensemble_count = conn.execute(
+            "SELECT COUNT(*) FROM run_ensemble_hourly WHERE run_id = ?",
+            ("run-model-hourly-1",),
+        ).fetchone()[0]
+        run_row = conn.execute(
+            "SELECT mode, requested_days, models_used_json, ensemble_method, weights_used_json, config_snapshot_json, input_snapshot_json FROM forecast_runs WHERE run_id = ?",
+            ("run-model-hourly-1",),
+        ).fetchone()
 
     expected = len(models) * len(index)
     assert weather_count == expected
     assert pv_count == expected
     assert weather_distinct_pk == expected
     assert pv_distinct_pk == expected
+    assert ensemble_count == len(index)
+    assert run_row[0] == "auto"
+    assert run_row[1] == 1
+    assert "ecmwf_ifs" in run_row[2]
+    assert run_row[3] == "weighted"
+    assert "dwd_icon_d2" in run_row[4]
 
 
 def test_insert_forecast_run_persists_provider_payload_rows(tmp_path):

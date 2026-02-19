@@ -62,7 +62,14 @@ def init_db(db_path: str) -> None:
                 config_json TEXT,
                 warnings_json TEXT,
                 pv_quality TEXT,
-                created_at_utc TEXT
+                created_at_utc TEXT,
+                mode TEXT,
+                requested_days INTEGER,
+                models_used_json TEXT,
+                ensemble_method TEXT,
+                weights_used_json TEXT,
+                config_snapshot_json TEXT,
+                input_snapshot_json TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_forecast_runs_target_date ON forecast_runs (target_date);
             CREATE INDEX IF NOT EXISTS idx_forecast_runs_run_at ON forecast_runs (run_at_utc);
@@ -92,9 +99,12 @@ def init_db(db_path: str) -> None:
                 ghi REAL,
                 dni REAL,
                 dhi REAL,
+                dni_source TEXT,
+                dhi_source TEXT,
                 temp_c REAL,
                 wind_ms REAL,
                 cloud_pct REAL,
+                weather_code INTEGER,
                 PRIMARY KEY (run_id, model_id, ts_local)
             );
             CREATE INDEX IF NOT EXISTS idx_weather_hourly_model_ts ON weather_hourly_by_model (model_id, ts_local);
@@ -109,10 +119,24 @@ def init_db(db_path: str) -> None:
                 pv_total_kwh REAL,
                 pv_unclipped_kwh REAL,
                 pv_clipped_kwh REAL,
+                dc_kw REAL,
+                ac_kw REAL,
                 PRIMARY KEY (run_id, model_id, ts_local)
             );
             CREATE INDEX IF NOT EXISTS idx_pv_hourly_model_ts ON pv_hourly_by_model (model_id, ts_local);
             CREATE INDEX IF NOT EXISTS idx_pv_hourly_run_model ON pv_hourly_by_model (run_id, model_id);
+
+            CREATE TABLE IF NOT EXISTS run_ensemble_hourly (
+                run_id TEXT NOT NULL,
+                ts_local TEXT NOT NULL,
+                pv_kwh_p50 REAL,
+                pv_kwh_p10 REAL,
+                pv_kwh_p90 REAL,
+                weather_code_model_id TEXT,
+                weather_code INTEGER,
+                PRIMARY KEY (run_id, ts_local)
+            );
+            CREATE INDEX IF NOT EXISTS idx_run_ensemble_hourly_run_ts ON run_ensemble_hourly (run_id, ts_local);
 
             CREATE TABLE IF NOT EXISTS provider_payloads (
                 run_id TEXT NOT NULL,
@@ -199,6 +223,13 @@ def init_db(db_path: str) -> None:
             ("pv_p90_kwh", "REAL"),
             ("run_duration_ms", "INTEGER"),
             ("config_schema_version", "INTEGER"),
+            ("mode", "TEXT"),
+            ("requested_days", "INTEGER"),
+            ("models_used_json", "TEXT"),
+            ("ensemble_method", "TEXT"),
+            ("weights_used_json", "TEXT"),
+            ("config_snapshot_json", "TEXT"),
+            ("input_snapshot_json", "TEXT"),
         ]:
             if col_name not in forecast_runs_existing_cols:
                 conn.execute(f"ALTER TABLE forecast_runs ADD COLUMN {col_name} {col_type}")
@@ -220,6 +251,24 @@ def init_db(db_path: str) -> None:
             if col_name not in daily_scores_existing_cols:
                 conn.execute(f"ALTER TABLE daily_scores ADD COLUMN {col_name} {col_type}")
 
+
+
+        weather_existing_cols = {str(row["name"]) for row in conn.execute("PRAGMA table_info(weather_hourly_by_model)").fetchall()}
+        for col_name, col_type in [
+            ("dni_source", "TEXT"),
+            ("dhi_source", "TEXT"),
+            ("weather_code", "INTEGER"),
+        ]:
+            if col_name not in weather_existing_cols:
+                conn.execute(f"ALTER TABLE weather_hourly_by_model ADD COLUMN {col_name} {col_type}")
+
+        pv_model_existing_cols = {str(row["name"]) for row in conn.execute("PRAGMA table_info(pv_hourly_by_model)").fetchall()}
+        for col_name, col_type in [
+            ("dc_kw", "REAL"),
+            ("ac_kw", "REAL"),
+        ]:
+            if col_name not in pv_model_existing_cols:
+                conn.execute(f"ALTER TABLE pv_hourly_by_model ADD COLUMN {col_name} {col_type}")
         conn.execute(
             """
             UPDATE forecast_hourly
@@ -483,15 +532,18 @@ def _normalize_hourly(payload: dict) -> list[dict]:
     return rows
 
 
-def _normalize_weather_by_model(payload: dict) -> list[tuple[str, str, str, float | None, float | None, float | None, float | None, float | None, float | None]]:
+def _normalize_weather_by_model(payload: dict) -> list[tuple[str, str, float | None, float | None, float | None, str, str, float | None, float | None, float | None, int | None]]:
     weather_by_model = payload.get("weather_by_model") if isinstance(payload.get("weather_by_model"), dict) else {}
-    rows: list[tuple[str, str, str, float | None, float | None, float | None, float | None, float | None, float | None]] = []
+    derived_by_model = payload.get("derived_irradiance_by_model") if isinstance(payload.get("derived_irradiance_by_model"), dict) else {}
+    rows: list[tuple[str, str, float | None, float | None, float | None, str, str, float | None, float | None, float | None, int | None]] = []
     for model_id, frame_payload in weather_by_model.items():
         if not isinstance(model_id, str):
             continue
         model_df = _parse_df({"frame": frame_payload}, "frame")
         if model_df.empty:
             continue
+        derived = bool(derived_by_model.get(model_id, False))
+        source_label = "derived" if derived else "native"
         for ts in model_df.index:
             ts_local = _to_local_hour_str(ts)
             if not ts_local:
@@ -503,17 +555,20 @@ def _normalize_weather_by_model(payload: dict) -> list[tuple[str, str, str, floa
                     _safe_float(model_df.at[ts, "ghi_wm2"]) if "ghi_wm2" in model_df.columns else None,
                     _safe_float(model_df.at[ts, "dni_wm2"]) if "dni_wm2" in model_df.columns else None,
                     _safe_float(model_df.at[ts, "dhi_wm2"]) if "dhi_wm2" in model_df.columns else None,
+                    source_label,
+                    source_label,
                     _safe_float(model_df.at[ts, "temp_air_c"]) if "temp_air_c" in model_df.columns else None,
                     _safe_float(model_df.at[ts, "wind_speed_ms"]) if "wind_speed_ms" in model_df.columns else None,
                     _safe_float(model_df.at[ts, "cloud_cover_pct"]) if "cloud_cover_pct" in model_df.columns else None,
+                    int(model_df.at[ts, "weather_code"]) if "weather_code" in model_df.columns and _safe_float(model_df.at[ts, "weather_code"]) is not None else None,
                 )
             )
     return rows
 
 
-def _normalize_pv_by_model(payload: dict) -> list[tuple[str, str, float | None, float | None, float | None, float | None, float | None]]:
+def _normalize_pv_by_model(payload: dict) -> list[tuple[str, str, float | None, float | None, float | None, float | None, float | None, float | None, float | None]]:
     pv_by_model = payload.get("pv_by_model") if isinstance(payload.get("pv_by_model"), dict) else {}
-    rows: list[tuple[str, str, float | None, float | None, float | None, float | None, float | None]] = []
+    rows: list[tuple[str, str, float | None, float | None, float | None, float | None, float | None, float | None, float | None]] = []
     for model_id, frame_payload in pv_by_model.items():
         if not isinstance(model_id, str):
             continue
@@ -533,10 +588,36 @@ def _normalize_pv_by_model(payload: dict) -> list[tuple[str, str, float | None, 
                     _safe_float(model_df.at[ts, "pv_total_kwh"]) if "pv_total_kwh" in model_df.columns else None,
                     _safe_float(model_df.at[ts, "pv_total_unclipped_kwh"]) if "pv_total_unclipped_kwh" in model_df.columns else None,
                     _safe_float(model_df.at[ts, "pv_clipped_kwh"]) if "pv_clipped_kwh" in model_df.columns else None,
+                    _safe_float(model_df.at[ts, "pv_dc_available_kw"]) if "pv_dc_available_kw" in model_df.columns else None,
+                    _safe_float(model_df.at[ts, "pv_total_kwh"]) if "pv_total_kwh" in model_df.columns else None,
                 )
             )
     return rows
 
+
+def _normalize_ensemble_hourly(payload: dict) -> list[tuple[str, float | None, float | None, float | None, str | None, int | None]]:
+    pv_df = _parse_df(payload, "pv")
+    if pv_df.empty:
+        return []
+    source_model = payload.get("tomorrow_weather_code_source_model_id")
+    rows: list[tuple[str, float | None, float | None, float | None, str | None, int | None]] = []
+    for ts in pv_df.index:
+        ts_local = _to_local_hour_str(ts)
+        if not ts_local:
+            continue
+        code = None
+        if "weather_code" in pv_df.columns:
+            wc = _safe_float(pv_df.at[ts, "weather_code"])
+            code = int(wc) if wc is not None else None
+        rows.append((
+            ts_local,
+            _safe_float(pv_df.at[ts, "pv_total_kwh"]) if "pv_total_kwh" in pv_df.columns else None,
+            _safe_float(pv_df.at[ts, "pv_total_low_kwh"]) if "pv_total_low_kwh" in pv_df.columns else None,
+            _safe_float(pv_df.at[ts, "pv_total_high_kwh"]) if "pv_total_high_kwh" in pv_df.columns else None,
+            str(source_model) if source_model else None,
+            code,
+        ))
+    return rows
 
 def insert_forecast_run(db_path: str, payload: dict) -> None:
     if not isinstance(payload, dict):
@@ -562,6 +643,7 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
     hourly_rows = _normalize_hourly(payload)
     weather_rows = _normalize_weather_by_model(payload)
     pv_model_rows = _normalize_pv_by_model(payload)
+    ensemble_rows = _normalize_ensemble_hourly(payload)
     provider_payload_rows = _normalize_provider_payload_rows(run_id, payload)
 
     pv_forecast_kwh = _safe_float(metrics.get("pv_forecast_kwh"))
@@ -587,6 +669,8 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
     pv_week_ahead = payload.get("pv_week_ahead") if isinstance(payload.get("pv_week_ahead"), list) else []
     pv_week_ahead_json = json.dumps(_replace_nan_with_none(pv_week_ahead), sort_keys=True, allow_nan=False)
     pv_quality = payload.get("pv_quality")
+    models_used = payload.get("tomorrow_models_used") if isinstance(payload.get("tomorrow_models_used"), list) else []
+    weights_used = (weather_ensemble.get("weights_used") if isinstance(weather_ensemble, dict) else None)
     pv_quality_text = json.dumps(_replace_nan_with_none(pv_quality), allow_nan=False) if isinstance(pv_quality, dict) else None
     config_schema_version_raw = payload.get("config_schema_version")
     try:
@@ -595,6 +679,13 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
         config_schema_version = CURRENT_CONFIG_SCHEMA_VERSION
 
     row_data = {
+        "mode": payload.get("forecast_mode_effective"),
+        "requested_days": 1,
+        "models_used_json": json.dumps(_replace_nan_with_none(models_used), sort_keys=True, allow_nan=False),
+        "ensemble_method": weather_ensemble.get("ensemble_method") if isinstance(weather_ensemble, dict) else None,
+        "weights_used_json": json.dumps(_replace_nan_with_none(weights_used), sort_keys=True, allow_nan=False),
+        "config_snapshot_json": json.dumps(_replace_nan_with_none(config_obj), sort_keys=True, allow_nan=False),
+        "input_snapshot_json": json.dumps(_replace_nan_with_none(inputs_used), sort_keys=True, allow_nan=False),
         "run_id": run_id,
         "target_date": target_date,
         "run_at_utc": run_at_utc,
@@ -634,14 +725,18 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
                 inputs_used_json, weather_ensemble_json, pv_week_ahead_json, pv_p10_kwh, pv_p50_kwh, pv_p90_kwh,
                 run_duration_ms, config_schema_version,
                 soc_at_22_used, yesterday_kwh_used, planner_version,
-                config_hash, config_json, warnings_json, pv_quality, created_at_utc
+                config_hash, config_json, warnings_json, pv_quality, created_at_utc,
+                mode, requested_days, models_used_json, ensemble_method, weights_used_json,
+                config_snapshot_json, input_snapshot_json
             ) VALUES (
                 :run_id, :target_date, :run_at_utc, :run_type, :status, :timezone,
                 :charge_kw, :cutoff_soc, :pv_forecast_kwh, :cons_forecast_kwh, :warnings_count,
                 :inputs_used_json, :weather_ensemble_json, :pv_week_ahead_json, :pv_p10_kwh, :pv_p50_kwh, :pv_p90_kwh,
                 :run_duration_ms, :config_schema_version,
                 :soc_at_22_used, :yesterday_kwh_used, :planner_version,
-                :config_hash, :config_json, :warnings_json, :pv_quality, :created_at_utc
+                :config_hash, :config_json, :warnings_json, :pv_quality, :created_at_utc,
+                :mode, :requested_days, :models_used_json, :ensemble_method, :weights_used_json,
+                :config_snapshot_json, :input_snapshot_json
             )
             """,
             row_data,
@@ -681,8 +776,8 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
             conn.executemany(
                 """
                 INSERT OR REPLACE INTO weather_hourly_by_model (
-                    run_id, model_id, ts_local, ghi, dni, dhi, temp_c, wind_ms, cloud_pct
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    run_id, model_id, ts_local, ghi, dni, dhi, dni_source, dhi_source, temp_c, wind_ms, cloud_pct, weather_code
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -692,11 +787,14 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
                         ghi,
                         dni,
                         dhi,
+                        dni_source,
+                        dhi_source,
                         temp_c,
                         wind_ms,
                         cloud_pct,
+                        weather_code,
                     )
-                    for model_id, ts_local, ghi, dni, dhi, temp_c, wind_ms, cloud_pct in weather_rows
+                    for model_id, ts_local, ghi, dni, dhi, dni_source, dhi_source, temp_c, wind_ms, cloud_pct, weather_code in weather_rows
                 ],
             )
 
@@ -705,8 +803,8 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
             conn.executemany(
                 """
                 INSERT OR REPLACE INTO pv_hourly_by_model (
-                    run_id, model_id, ts_local, pv_east_kwh, pv_south_kwh, pv_total_kwh, pv_unclipped_kwh, pv_clipped_kwh
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    run_id, model_id, ts_local, pv_east_kwh, pv_south_kwh, pv_total_kwh, pv_unclipped_kwh, pv_clipped_kwh, dc_kw, ac_kw
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -718,8 +816,24 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
                         pv_total_kwh,
                         pv_unclipped_kwh,
                         pv_clipped_kwh,
+                        dc_kw,
+                        ac_kw,
                     )
-                    for model_id, ts_local, pv_east_kwh, pv_south_kwh, pv_total_kwh, pv_unclipped_kwh, pv_clipped_kwh in pv_model_rows
+                    for model_id, ts_local, pv_east_kwh, pv_south_kwh, pv_total_kwh, pv_unclipped_kwh, pv_clipped_kwh, dc_kw, ac_kw in pv_model_rows
+                ],
+            )
+
+        conn.execute("DELETE FROM run_ensemble_hourly WHERE run_id = ?", (run_id,))
+        if ensemble_rows:
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO run_ensemble_hourly (
+                    run_id, ts_local, pv_kwh_p50, pv_kwh_p10, pv_kwh_p90, weather_code_model_id, weather_code
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (run_id, ts_local, pv_kwh_p50, pv_kwh_p10, pv_kwh_p90, weather_code_model_id, weather_code)
+                    for ts_local, pv_kwh_p50, pv_kwh_p10, pv_kwh_p90, weather_code_model_id, weather_code in ensemble_rows
                 ],
             )
 

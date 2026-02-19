@@ -1833,47 +1833,35 @@ def estimate_pv_with_pvlib(
 
     total_dc_kw = (east_dc_kw + south_dc_kw).fillna(0).clip(lower=0)
     if INVERTER_AC_MODEL == "pvwatts":
-        total_kwp = max(dc_kwp(ARRAY_EAST_PANELS) + dc_kwp(ARRAY_SOUTH_PANELS), 1e-9)
-        east_pdc0 = INVERTER_AC_KW_LIMIT * (dc_kwp(ARRAY_EAST_PANELS) / total_kwp)
-        south_pdc0 = INVERTER_AC_KW_LIMIT * (dc_kwp(ARRAY_SOUTH_PANELS) / total_kwp)
-
-        east_ac_kw_unclipped = pd.Series(
+        total_pdc0_w = (INVERTER_AC_KW_LIMIT * 1000.0) / max(ac_inv_eff_multiplier, 1e-6)
+        total_ac_kw_unclipped = pd.Series(
             pvlib.inverter.pvwatts(
-                pdc=east_dc_kw * 1000.0,
-                pdc0=(east_pdc0 * 1000.0) / max(ac_inv_eff_multiplier, 1e-6),
+                pdc=total_dc_kw * 1000.0,
+                pdc0=total_pdc0_w,
                 eta_inv_nom=ac_inv_eff_multiplier,
             ),
-            index=east_dc_kw.index,
+            index=total_dc_kw.index,
             dtype=float,
         ) / 1000.0
-        south_ac_kw_unclipped = pd.Series(
-            pvlib.inverter.pvwatts(
-                pdc=south_dc_kw * 1000.0,
-                pdc0=(south_pdc0 * 1000.0) / max(ac_inv_eff_multiplier, 1e-6),
-                eta_inv_nom=ac_inv_eff_multiplier,
-            ),
-            index=south_dc_kw.index,
-            dtype=float,
-        ) / 1000.0
-        east_ac_kw_unclipped = east_ac_kw_unclipped.fillna(0.0).clip(lower=0.0)
-        south_ac_kw_unclipped = south_ac_kw_unclipped.fillna(0.0).clip(lower=0.0)
+        total_ac_kw_unclipped = total_ac_kw_unclipped.fillna(0.0).clip(lower=0.0)
     else:
-        east_ac_kw_unclipped = (east_dc_kw * ac_inv_eff_multiplier).fillna(0).clip(lower=0)
-        south_ac_kw_unclipped = (south_dc_kw * ac_inv_eff_multiplier).fillna(0).clip(lower=0)
+        total_ac_kw_unclipped = (total_dc_kw * ac_inv_eff_multiplier).fillna(0).clip(lower=0)
 
-    east_ac_kwh_unclipped = (east_ac_kw_unclipped * dt_h).fillna(0.0).clip(lower=0.0)
-    south_ac_kwh_unclipped = (south_ac_kw_unclipped * dt_h).fillna(0.0).clip(lower=0.0)
-    total_ac_kw_unclipped = (east_ac_kw_unclipped + south_ac_kw_unclipped).fillna(0.0).clip(lower=0.0)
-    total_ac_kwh_unclipped = (east_ac_kwh_unclipped + south_ac_kwh_unclipped).fillna(0.0).clip(lower=0.0)
+    total_ac_kwh_unclipped = (total_ac_kw_unclipped * dt_h).fillna(0.0).clip(lower=0.0)
+    total_ac_kw_clipped = total_ac_kw_unclipped.clip(lower=0.0, upper=INVERTER_AC_KW_LIMIT)
+    total_ac_kwh_clipped = (total_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
 
-    clip_scale = (INVERTER_AC_KW_LIMIT / total_ac_kw_unclipped.replace(0.0, float("nan"))).fillna(1.0).clip(upper=1.0)
-    east_ac_kw_clipped = (east_ac_kw_unclipped * clip_scale).fillna(0.0).clip(lower=0.0)
-    south_ac_kw_clipped = (south_ac_kw_unclipped * clip_scale).fillna(0.0).clip(lower=0.0)
-    total_ac_kw_clipped = (east_ac_kw_clipped + south_ac_kw_clipped).fillna(0.0).clip(lower=0.0, upper=INVERTER_AC_KW_LIMIT)
+    dc_eps = 1e-9
+    east_share = (east_dc_kw / total_dc_kw.clip(lower=dc_eps)).fillna(0.0).clip(lower=0.0, upper=1.0)
+    south_share = (south_dc_kw / total_dc_kw.clip(lower=dc_eps)).fillna(0.0).clip(lower=0.0, upper=1.0)
+    share_sum = (east_share + south_share).replace(0.0, float("nan"))
+    east_share = (east_share / share_sum).fillna(0.0)
+    south_share = (south_share / share_sum).fillna(0.0)
 
+    east_ac_kw_clipped = (total_ac_kw_clipped * east_share).fillna(0.0).clip(lower=0.0)
+    south_ac_kw_clipped = (total_ac_kw_clipped * south_share).fillna(0.0).clip(lower=0.0)
     east_ac_kwh_clipped = (east_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
     south_ac_kwh_clipped = (south_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
-    total_ac_kwh_clipped = (east_ac_kwh_clipped + south_ac_kwh_clipped).fillna(0.0).clip(lower=0.0)
 
     east_ac_kwh_clipped = east_ac_kwh_clipped.where(avail)
     south_ac_kwh_clipped = south_ac_kwh_clipped.where(avail)

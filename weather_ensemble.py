@@ -38,6 +38,8 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "badges": ["🏅", "📡", "∑"],
         "recommended_for_be": True,
         "max_days": 7,
+        "tier": "short",
+        "supports_15min_radiation": False,
         "capability": {
             "ghi_native": True,
             "direct_native": False,
@@ -53,6 +55,8 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "badges": ["🏅", "📡", "☀️", "⏱️"],
         "recommended_for_be": True,
         "max_days": 2,
+        "tier": "short",
+        "supports_15min_radiation": False,
         "capability": {
             "ghi_native": True,
             "direct_native": True,
@@ -68,6 +72,8 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "badges": ["🏅", "🌐", "☀️"],
         "recommended_for_be": True,
         "max_days": 7,
+        "tier": "global",
+        "supports_15min_radiation": False,
         "capability": {
             "ghi_native": True,
             "direct_native": True,
@@ -83,6 +89,8 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "badges": ["🇪🇺", "☀️"],
         "recommended_for_be": True,
         "max_days": 7,
+        "tier": "medium",
+        "supports_15min_radiation": False,
         "capability": {
             "ghi_native": True,
             "direct_native": True,
@@ -98,6 +106,8 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "badges": ["🇪🇺", "∑"],
         "recommended_for_be": True,
         "max_days": 4,
+        "tier": "medium",
+        "supports_15min_radiation": False,
         "capability": {
             "ghi_native": True,
             "direct_native": False,
@@ -107,6 +117,65 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         },
     },
 }
+
+MODEL_CAPS: dict[str, dict[str, Any]] = {
+    model_id: {
+        "max_days": int(spec.get("max_days", 0) or 0),
+        "has_native_dni_dhi": bool(
+            (spec.get("capability", {}) or {}).get("direct_native")
+            and (spec.get("capability", {}) or {}).get("diffuse_native")
+        ),
+        "supports_15min_radiation": bool(spec.get("supports_15min_radiation", False)),
+        "tier": str(spec.get("tier") or "global"),
+    }
+    for model_id, spec in WEATHER_MODELS.items()
+}
+
+
+def get_model_caps(model_id: str) -> dict[str, Any]:
+    caps = MODEL_CAPS.get(model_id)
+    if caps is None:
+        return {
+            "max_days": 0,
+            "has_native_dni_dhi": False,
+            "supports_15min_radiation": False,
+            "tier": "global",
+        }
+    return dict(caps)
+
+
+def auto_select_models_for_location(lat: float | object, lon: float | None = None, requested_days: int = 1) -> list[str]:
+    if lon is None and hasattr(lat, "latitude") and hasattr(lat, "longitude"):
+        _lat = float(getattr(lat, "latitude"))
+        _lon = float(getattr(lat, "longitude"))
+    else:
+        _lat = float(lat)
+        _lon = float(lon if lon is not None else 0.0)
+    del _lat, _lon
+    horizon = max(1, int(requested_days or 1))
+
+    def _eligible(model_id: str) -> bool:
+        return int(get_model_caps(model_id).get("max_days", 0)) >= horizon
+
+    if horizon <= 2:
+        preferred = ["dwd_icon_d2", "knmi_harmonie_arome", "ecmwf_ifs", "dwd_icon_eu", "meteofrance_seamless"]
+        selected = [model_id for model_id in preferred if model_id in WEATHER_MODELS and _eligible(model_id)]
+        return selected[:4]
+
+    if horizon >= 7:
+        preferred = ["ecmwf_ifs", "dwd_icon_eu", "knmi_harmonie_arome", "meteofrance_seamless", "dwd_icon_d2"]
+        selected: list[str] = []
+        for model_id in preferred:
+            if model_id not in WEATHER_MODELS or not _eligible(model_id):
+                continue
+            if model_id not in selected:
+                selected.append(model_id)
+        curated = [m for m in selected if get_model_caps(m).get("tier") in {"medium", "global"}]
+        return curated[:5] if len(curated) >= 3 else selected[:5]
+
+    preferred_mid = ["ecmwf_ifs", "dwd_icon_eu", "knmi_harmonie_arome", "meteofrance_seamless", "dwd_icon_d2"]
+    selected_mid = [m for m in preferred_mid if m in WEATHER_MODELS and _eligible(m)]
+    return selected_mid[:4]
 
 WEATHER_MODEL_ALIASES: dict[str, str] = {
     "icon_d2": "dwd_icon_d2",
