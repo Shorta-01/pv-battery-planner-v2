@@ -69,6 +69,7 @@ WEATHER_MODEL_ORDER = [
 ]
 
 WEATHER_MODEL_DEFAULT = {"knmi_harmonie_arome", "dwd_icon_d2", "ecmwf_ifs"}
+FORECAST_MODE_OPTIONS = {"Auto (Recommended)": "auto", "Expert (Manual selection)": "expert"}
 
 WEATHER_MODEL_HOVERTEXT = {
     "knmi_harmonie_arome": "High-resolution KNMI regional model for Benelux. Strong for short-term local cloud and wind changes.",
@@ -409,6 +410,7 @@ def render_weather_models(
     default_selected: set[str],
     *,
     widget_key_prefix: str = "wm",
+    disabled: bool = False,
 ) -> list[str]:
     with st.expander("Weather models", expanded=True):
         model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
@@ -432,6 +434,7 @@ def render_weather_models(
                     value=(model_id in default_selected),
                     key=f"{widget_key_prefix}_{model_id}",
                     label_visibility="collapsed",
+                    disabled=disabled,
                 )
 
             with cols[1]:
@@ -469,7 +472,7 @@ def render_weather_models(
             if checked:
                 selected_models.append(model_id)
 
-        if not selected_models:
+        if (not selected_models) and (not disabled):
             st.error("Select at least one weather model.")
         else:
             dbg = st.session_state.get("last_weather_ensemble_debug") or {}
@@ -2985,6 +2988,8 @@ with left:
                 st.error(tariff_error)
             else:
                 selected_to_save = get_selected_weather_models(valid_model_ids)
+                forecast_mode_value = str(st.session_state.get("forecast_mode_select", "Auto (Recommended)"))
+                forecast_mode_to_save = FORECAST_MODE_OPTIONS.get(forecast_mode_value, "auto")
                 if not selected_to_save:
                     selected_to_save = sorted(list(WEATHER_MODEL_DEFAULT & valid_model_ids)) or sorted(list(valid_model_ids))
 
@@ -3044,6 +3049,7 @@ with left:
                         "load_profile_24h": [float(v) for v in cfg_load_profile],
                     },
                     "weather_models_selected": selected_to_save,
+                    "forecast_mode": forecast_mode_to_save,
                 }
                 try:
                     updated = api_put(
@@ -3156,15 +3162,32 @@ with left:
     if not initial_selected:
         initial_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
 
+    current_mode = str(effective_cfg.get("forecast_mode", "auto")).strip().lower()
+    mode_label_default = "Expert (Manual selection)" if current_mode == "expert" else "Auto (Recommended)"
+    forecast_mode_label = st.selectbox(
+        "Forecast mode",
+        options=list(FORECAST_MODE_OPTIONS.keys()),
+        index=list(FORECAST_MODE_OPTIONS.keys()).index(mode_label_default),
+        key="forecast_mode_select",
+    )
+    forecast_mode = FORECAST_MODE_OPTIONS.get(forecast_mode_label, "auto")
+
     weather_models_box = st.empty()
     with weather_models_box.container():
-        selected_models = render_weather_models(weather_models_catalog, initial_selected, widget_key_prefix="wm")
+        if forecast_mode == "auto":
+            st.info("Auto selects the best models for your location. Switch to Expert to choose manually.")
+        selected_models = render_weather_models(
+            weather_models_catalog,
+            initial_selected,
+            widget_key_prefix="wm",
+            disabled=(forecast_mode == "auto"),
+        )
 
     ensemble_method = "weighted"
     run = st.button(
         "Run forecast",
         type="primary",
-        disabled=not bool(selected_models),
+        disabled=(forecast_mode == "expert" and not bool(selected_models)),
     )
 
 if run:
@@ -3184,7 +3207,8 @@ if run:
                 {
                     "buffer_percent": float(buffer_percent),
                     "user_max_ac_kw": float(user_max_ac_kw),
-                    "weather_models": selected_models,
+                    "weather_models": selected_models if forecast_mode == "expert" else [],
+                    "forecast_mode": forecast_mode,
                     "ensemble_method": ensemble_method,
                     "pv_uncertainty": True,
                 },

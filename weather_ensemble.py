@@ -198,6 +198,7 @@ class EnsembleWeatherResult:
     provider_payloads_by_model: dict[str, dict[str, Any]]
     fetch_meta_by_model: dict[str, dict[str, Any]]
     pv_tomorrow_low_high_kwh: dict[str, float | int | None] | None = None
+    pv_models_used_count_per_hour: pd.Series | None = None
 
 
 def _local_day_window(target_date: dt.date, tz: str) -> tuple[pd.Timestamp, pd.Timestamp]:
@@ -1439,23 +1440,26 @@ def build_ensemble_forecast(
             )
         for irr_col in ["ghi_wm2", "dni_wm2", "dhi_wm2", "cloud_cover_pct"]:
             if irr_col in model_weather_df.columns:
-                model_weather_df[irr_col] = pd.to_numeric(model_weather_df[irr_col], errors="coerce").fillna(0.0).clip(lower=0.0)
+                model_weather_df[irr_col] = pd.to_numeric(model_weather_df[irr_col], errors="coerce").clip(lower=0.0)
         if "temp_air_c" in model_weather_df.columns:
-            model_weather_df["temp_air_c"] = pd.to_numeric(model_weather_df["temp_air_c"], errors="coerce").ffill().bfill().fillna(10.0)
+            model_weather_df["temp_air_c"] = pd.to_numeric(model_weather_df["temp_air_c"], errors="coerce")
         if "wind_speed_ms" in model_weather_df.columns:
-            model_weather_df["wind_speed_ms"] = pd.to_numeric(model_weather_df["wind_speed_ms"], errors="coerce").fillna(1.0).clip(lower=0.0)
+            model_weather_df["wind_speed_ms"] = pd.to_numeric(model_weather_df["wind_speed_ms"], errors="coerce").clip(lower=0.0)
         weather = core.ForecastResult(df=model_weather_df, sunrise=weather.sunrise, sunset=weather.sunset)
 
-        model_pv = core.build_pv_forecast(weather.df, loc, tz=tz).reindex(canonical_index)
+        overlap_hours = int(min(requested_days_int, model_horizon_days) * 24)
+        overlap_index = canonical_index[:max(overlap_hours, 0)]
+        pv_input_df = model_weather_df.loc[overlap_index].copy() if len(overlap_index) else model_weather_df.iloc[:0].copy()
+        model_pv = core.build_pv_forecast(pv_input_df, loc, tz=tz).reindex(canonical_index)
         for req in ["pv_total_kwh", "pv_total_unclipped_kwh", "pv_east_kwh", "pv_south_kwh", "pv_clipped_kwh"]:
             if req not in model_pv.columns:
                 model_pv[req] = np.nan
-        pv_total = pd.to_numeric(model_pv["pv_total_kwh"], errors="coerce").clip(lower=0.0)
-        pv_unclipped = pd.to_numeric(model_pv["pv_total_unclipped_kwh"], errors="coerce").clip(lower=0.0)
+        pv_total = pd.to_numeric(model_pv["pv_total_kwh"], errors="coerce").where(lambda x: x >= 0)
+        pv_unclipped = pd.to_numeric(model_pv["pv_total_unclipped_kwh"], errors="coerce").where(lambda x: x >= 0)
         pv_unclipped = pd.Series(np.maximum(pv_unclipped, pv_total), index=pv_total.index)
-        pv_east = pd.to_numeric(model_pv["pv_east_kwh"], errors="coerce").clip(lower=0.0)
-        pv_south = pd.to_numeric(model_pv["pv_south_kwh"], errors="coerce").clip(lower=0.0)
-        pv_clipped = pd.to_numeric(model_pv["pv_clipped_kwh"], errors="coerce").clip(lower=0.0)
+        pv_east = pd.to_numeric(model_pv["pv_east_kwh"], errors="coerce").where(lambda x: x >= 0)
+        pv_south = pd.to_numeric(model_pv["pv_south_kwh"], errors="coerce").where(lambda x: x >= 0)
+        pv_clipped = pd.to_numeric(model_pv["pv_clipped_kwh"], errors="coerce").where(lambda x: x >= 0)
         return model_id, weather, {
             "pv_total_kwh": pv_total,
             "pv_total_unclipped_kwh": pv_unclipped,
@@ -1543,6 +1547,16 @@ def build_ensemble_forecast(
     ensemble_east_p50, _ = _ensemble_column("pv_east_kwh")
     ensemble_south_p50, _ = _ensemble_column("pv_south_kwh")
 
+    pv_matrix = pd.DataFrame(per_model_pv_columns["pv_total_kwh"]).reindex(canonical_index)
+    if ensemble_method == "weighted":
+        base_w = dict(weights_used or {})
+        if base_w:
+            w = pd.Series(base_w, dtype=float)
+            num = pv_matrix.mul(w, axis=1).sum(axis=1, skipna=True)
+            den = pv_matrix.notna().mul(w, axis=1).sum(axis=1)
+            ensemble_ac_p50 = (num / den).where(den > 0)
+    pv_models_used_count = pv_matrix.notna().sum(axis=1).astype(int)
+
     if len(per_model_pv_columns["pv_total_kwh"]) >= 3 and ensemble_method != "median":
         matrix = pd.concat(per_model_pv_columns["pv_total_kwh"].values(), axis=1)
         spread = (matrix.max(axis=1) - matrix.min(axis=1)).fillna(0.0)
@@ -1572,7 +1586,7 @@ def build_ensemble_forecast(
     p10 = None
     p90 = None
     if pv_uncertainty:
-        matrix = pd.concat(per_model_pv_columns["pv_total_kwh"].values(), axis=1)
+        matrix = pd.DataFrame(per_model_pv_columns["pv_total_kwh"]).reindex(canonical_index)
         p10 = matrix.quantile(0.10, axis=1)
         p90 = matrix.quantile(0.90, axis=1)
 
@@ -1620,4 +1634,5 @@ def build_ensemble_forecast(
         provider_payloads_by_model=provider_payloads_by_model,
         fetch_meta_by_model=fetch_meta_by_model,
         pv_tomorrow_low_high_kwh=pv_tomorrow_low_high_kwh,
+        pv_models_used_count_per_hour=pv_models_used_count,
     )
