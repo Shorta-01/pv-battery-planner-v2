@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import math
 import sqlite3
 import uuid
 from io import StringIO
@@ -266,7 +267,8 @@ def _safe_float(value: Any) -> float | None:
     try:
         if value is None:
             return None
-        return float(value)
+        out = float(value)
+        return None if math.isnan(out) else out
     except (TypeError, ValueError):
         return None
 
@@ -281,12 +283,23 @@ def _trim_text(raw: str, max_chars: int) -> str:
     return raw[:keep] + suffix
 
 
+
+
+def _replace_nan_with_none(payload: Any) -> Any:
+    if isinstance(payload, dict):
+        return {k: _replace_nan_with_none(v) for k, v in payload.items()}
+    if isinstance(payload, list):
+        return [_replace_nan_with_none(v) for v in payload]
+    if isinstance(payload, float) and math.isnan(payload):
+        return None
+    return payload
+
 def _safe_json_dumps(payload: Any, *, max_chars: int | None = None) -> str | None:
     if isinstance(payload, str):
         serialized = payload
     else:
         try:
-            serialized = json.dumps(payload, sort_keys=True, default=str)
+            serialized = json.dumps(_replace_nan_with_none(payload), sort_keys=True, default=str, allow_nan=False)
         except Exception:
             return None
     if max_chars is None or len(serialized) <= max_chars:
@@ -554,7 +567,7 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
     pv_forecast_kwh = _safe_float(metrics.get("pv_forecast_kwh"))
     cons_forecast_kwh = _safe_float(metrics.get("cons_forecast_kwh"))
     if pv_forecast_kwh is None:
-        pv_forecast_kwh = float(sum((row.get("pv_kwh") or 0.0) for row in hourly_rows))
+        pv_forecast_kwh = _safe_float(pd.Series([row.get("pv_kwh") for row in hourly_rows], dtype=float).sum(min_count=1))
     if cons_forecast_kwh is None:
         cons_forecast_kwh = float(sum((row.get("load_kwh") or 0.0) for row in hourly_rows))
 
@@ -568,13 +581,13 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
     if config_json is None:
         config_json = json.dumps(config_obj, sort_keys=True)
 
-    warnings_json = json.dumps(payload.get("warnings", []))
-    inputs_used_json = json.dumps(inputs_used, sort_keys=True)
-    weather_ensemble_json = json.dumps(weather_ensemble, sort_keys=True)
+    warnings_json = json.dumps(_replace_nan_with_none(payload.get("warnings", [])), allow_nan=False)
+    inputs_used_json = json.dumps(_replace_nan_with_none(inputs_used), sort_keys=True, allow_nan=False)
+    weather_ensemble_json = json.dumps(_replace_nan_with_none(weather_ensemble), sort_keys=True, allow_nan=False)
     pv_week_ahead = payload.get("pv_week_ahead") if isinstance(payload.get("pv_week_ahead"), list) else []
-    pv_week_ahead_json = json.dumps(pv_week_ahead, sort_keys=True)
+    pv_week_ahead_json = json.dumps(_replace_nan_with_none(pv_week_ahead), sort_keys=True, allow_nan=False)
     pv_quality = payload.get("pv_quality")
-    pv_quality_text = json.dumps(pv_quality) if isinstance(pv_quality, dict) else None
+    pv_quality_text = json.dumps(_replace_nan_with_none(pv_quality), allow_nan=False) if isinstance(pv_quality, dict) else None
     config_schema_version_raw = payload.get("config_schema_version")
     try:
         config_schema_version = int(config_schema_version_raw)
@@ -749,8 +762,8 @@ def fetch_recent_run_summaries(db_path: str, limit: int = 30) -> list[dict]:
                 "metrics": {
                     "charge_kw": float(row["charge_kw"] or 0.0),
                     "cutoff_soc": float(row["cutoff_soc"] or 0.0) / 100.0,
-                    "pv_forecast_kwh": float(row["pv_forecast_kwh"] or 0.0),
-                    "cons_forecast_kwh": float(row["cons_forecast_kwh"] or 0.0),
+                    "pv_forecast_kwh": _safe_float(row["pv_forecast_kwh"]),
+                    "cons_forecast_kwh": _safe_float(row["cons_forecast_kwh"]),
                 },
                 "run_at": row["run_at_utc"],
                 "run_type": row["run_type"] or "manual",
@@ -808,8 +821,8 @@ def _summary_from_row(row: sqlite3.Row) -> dict:
         "metrics": {
             "charge_kw": float(row["charge_kw"] or 0.0),
             "cutoff_soc": float(row["cutoff_soc"] or 0.0) / 100.0,
-            "pv_forecast_kwh": float(row["pv_forecast_kwh"] or 0.0),
-            "cons_forecast_kwh": float(row["cons_forecast_kwh"] or 0.0),
+            "pv_forecast_kwh": _safe_float(row["pv_forecast_kwh"]),
+            "cons_forecast_kwh": _safe_float(row["cons_forecast_kwh"]),
         },
         "status": row["status"],
         "warnings_count": int(row["warnings_count"] or 0),
@@ -969,19 +982,19 @@ def _build_full_run_payload(row: sqlite3.Row, hourly_rows: list[sqlite3.Row]) ->
             "metrics": {
                 "charge_kw": float(row["charge_kw"] or 0.0),
                 "cutoff_soc": float(row["cutoff_soc"] or 0.0) / 100.0,
-                "pv_forecast_kwh": float(row["pv_forecast_kwh"] or 0.0),
-                "cons_forecast_kwh": float(row["cons_forecast_kwh"] or 0.0),
+                "pv_forecast_kwh": _safe_float(row["pv_forecast_kwh"]),
+                "cons_forecast_kwh": _safe_float(row["cons_forecast_kwh"]),
             },
             "run_at": row["run_at_utc"],
         }
 
     idx = pd.to_datetime(hourly["ts_local"], errors="coerce")
     pv_df = pd.DataFrame(index=idx)
-    pv_df["pv_total_kwh"] = pd.to_numeric(hourly["pv_kwh"], errors="coerce").fillna(0.0)
+    pv_df["pv_total_kwh"] = pd.to_numeric(hourly["pv_kwh"], errors="coerce")
     pv_df["pv_total_unclipped_kwh"] = pd.to_numeric(hourly.get("pv_total_unclipped_kwh"), errors="coerce").fillna(pv_df["pv_total_kwh"])
-    pv_df["pv_east_kwh"] = pd.to_numeric(hourly.get("pv_east_kwh"), errors="coerce").fillna(0.0)
+    pv_df["pv_east_kwh"] = pd.to_numeric(hourly.get("pv_east_kwh"), errors="coerce")
     pv_df["pv_south_kwh"] = pd.to_numeric(hourly.get("pv_south_kwh"), errors="coerce").fillna(pv_df["pv_total_kwh"])
-    pv_df["pv_clipped_kwh"] = pd.to_numeric(hourly.get("pv_clipped_kwh"), errors="coerce").fillna(0.0)
+    pv_df["pv_clipped_kwh"] = pd.to_numeric(hourly.get("pv_clipped_kwh"), errors="coerce")
     pv_df["load_kwh"] = pd.to_numeric(hourly["load_kwh"], errors="coerce").fillna(0.0)
 
     flows_df = pd.DataFrame(index=idx)
@@ -1013,8 +1026,8 @@ def _build_full_run_payload(row: sqlite3.Row, hourly_rows: list[sqlite3.Row]) ->
         "metrics": {
             "charge_kw": float(row["charge_kw"] or 0.0),
             "cutoff_soc": float(row["cutoff_soc"] or 0.0) / 100.0,
-            "pv_forecast_kwh": float(row["pv_forecast_kwh"] or 0.0),
-            "cons_forecast_kwh": float(row["cons_forecast_kwh"] or 0.0),
+            "pv_forecast_kwh": _safe_float(row["pv_forecast_kwh"]),
+            "cons_forecast_kwh": _safe_float(row["cons_forecast_kwh"]),
         },
         "run_at": row["run_at_utc"],
     }

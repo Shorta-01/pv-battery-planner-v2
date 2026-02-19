@@ -1535,6 +1535,35 @@ def fetch_tomorrow_weather(loc: Location, tz: str | None = None) -> ForecastResu
     return fetch_weather_for_date(loc, tomorrow, tz=tz_use)
 
 
+def build_local_day_hour_index(day: dt.date, tz: str) -> tuple[pd.DatetimeIndex, bool]:
+    """Return exactly 24 monotonic tz-aware hourly slots for a local day.
+
+    On DST transition days we preserve 24 slots by smoothing missing/duplicate local
+    hours into a monotonic hourly sequence and return ``dst_adjusted=True``.
+    """
+    naive_hours = pd.DatetimeIndex([pd.Timestamp(dt.datetime.combine(day, dt.time(hour=h))) for h in range(24)])
+    localized = naive_hours.tz_localize(tz, ambiguous=False, nonexistent="NaT")
+
+    adjusted = False
+    out: list[pd.Timestamp] = []
+    prev: pd.Timestamp | None = None
+    for ts in localized:
+        current = ts
+        if pd.isna(current):
+            adjusted = True
+            current = prev + pd.Timedelta(hours=1) if prev is not None else pd.Timestamp(dt.datetime.combine(day, dt.time(0, 0)), tz=tz)
+        if prev is not None and current <= prev:
+            adjusted = True
+            current = prev + pd.Timedelta(hours=1)
+        out.append(current)
+        prev = current
+
+    idx = pd.DatetimeIndex(out)
+    if len(idx) != 24 or idx.has_duplicates:
+        raise RuntimeError(f"Failed to build 24 unique hourly slots for {day.isoformat()} in {tz}")
+    return idx, adjusted
+
+
 def normalize_hourly_forecast_index(df: "pd.DataFrame", date: dt.date, tz: str) -> "pd.DataFrame":
     if df.empty:
         raise RuntimeError("Open-Meteo hourly forecast is empty.")
