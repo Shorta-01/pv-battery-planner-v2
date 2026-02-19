@@ -159,6 +159,7 @@ class RunNowPayload(BaseModel):
     ensemble_method: str = Field(default="weighted")
     pv_uncertainty: bool = False
     fast_mode: bool = False
+    use_satellite_nowcast_0_6h: bool | None = None
 
 
 class NightlyTickPayload(BaseModel):
@@ -712,6 +713,7 @@ class BackendState:
         ensemble_method: str,
         pv_uncertainty: bool,
         fast_mode: bool = False,
+        use_satellite_nowcast_0_6h_override: bool | None = None,
     ) -> dict:
         run_started = time.perf_counter()
         cfg = self.settings["config"]
@@ -742,7 +744,13 @@ class BackendState:
         ensemble_method_week = "median"
         weather_cfg = cfg.get("weather", {}) if isinstance(cfg, dict) else {}
         store_provider_payloads = bool(weather_cfg.get("store_provider_payloads", False)) if isinstance(weather_cfg, dict) else False
-        use_satellite_nowcast_0_6h = bool(weather_cfg.get("use_satellite_nowcast_0_6h", False)) if isinstance(weather_cfg, dict) else False
+        requested_use_sat = bool(weather_cfg.get("use_satellite_nowcast_0_6h", False)) if isinstance(weather_cfg, dict) else False
+        if mode == "auto":
+            effective_use_sat = True
+        elif use_satellite_nowcast_0_6h_override is not None:
+            effective_use_sat = bool(use_satellite_nowcast_0_6h_override)
+        else:
+            effective_use_sat = requested_use_sat
 
         run_at_utc = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
         run_id = str(uuid.uuid4())
@@ -757,6 +765,7 @@ class BackendState:
             "ensemble_method": ensemble_method_tomorrow,
             "pv_uncertainty_enabled": bool(pv_uncertainty),
             "fast_mode": bool(fast_mode),
+            "use_satellite_nowcast_0_6h": bool(effective_use_sat),
         }
 
         try:
@@ -770,7 +779,7 @@ class BackendState:
                 accuracy_mode=True,
                 fast_mode=bool(fast_mode),
                 requested_days=1,
-                use_satellite_nowcast_0_6h=use_satellite_nowcast_0_6h,
+                use_satellite_nowcast_0_6h=effective_use_sat,
             )
         except RuntimeError as exc:
             if "All weather model requests failed" not in str(exc):
@@ -1206,6 +1215,7 @@ class BackendState:
                 payload.ensemble_method,
                 payload.pv_uncertainty,
                 payload.fast_mode,
+                use_satellite_nowcast_0_6h_override=payload.use_satellite_nowcast_0_6h,
             )
             result["run_type"] = "manual"
             if warnings:

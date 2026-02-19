@@ -2962,21 +2962,6 @@ with left:
                 cfg_battery_max_discharge_kw = st.number_input("Battery max discharge (kW)", min_value=0.1, value=float(effective_cfg["battery"]["battery_max_discharge_kw"]), step=0.1)
                 cfg_max_ac_charge_kw_hard_limit = st.number_input("Max AC charge kW hard limit", min_value=0.1, value=float(effective_cfg["battery"]["max_ac_charge_kw_hard_limit"]), step=0.1)
 
-            st.markdown("#### Weather advanced")
-            weather_cfg = effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}
-            use_sat_nowcast = st.checkbox(
-                "Use satellite nowcast radiation (0–6h)",
-                value=bool(weather_cfg.get("use_satellite_nowcast_0_6h", False)),
-                help=(
-                    "Uses near-real-time satellite irradiance for the next 0–6 hours when you run during daylight. "
-                    "It does not improve tomorrow’s forecast when you run at night."
-                ),
-            )
-            st.caption(
-                "Satellite Radiation API provides observed/near-real-time irradiance, not a true tomorrow forecast. "
-                "Use this only as a short-horizon daytime correction."
-            )
-
             st.markdown("#### Load profile")
             edit_load_profile = st.checkbox("Edit load profile", value=False)
             cfg_load_profile = [float(v) for v in effective_cfg["load_profile"]["load_profile_24h"]]
@@ -3039,6 +3024,8 @@ with left:
                 if not selected_to_save:
                     selected_to_save = sorted(list(WEATHER_MODEL_DEFAULT & valid_model_ids)) or sorted(list(valid_model_ids))
 
+                user_sat_setting = bool(st.session_state.get("use_sat_nowcast_expert", saved_sat))
+
                 new_cfg = {
                     "location": {
                         "use_geocoding": False,
@@ -3096,7 +3083,7 @@ with left:
                     },
                     "weather": {
                         **((effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {})),
-                        "use_satellite_nowcast_0_6h": bool(use_sat_nowcast),
+                        "use_satellite_nowcast_0_6h": user_sat_setting,
                     },
                     "weather_models_selected": selected_to_save,
                     "forecast_mode": forecast_mode_to_save,
@@ -3230,6 +3217,24 @@ with left:
                     label_visibility="collapsed",
                 )
             forecast_mode = FORECAST_MODE_OPTIONS.get(forecast_mode_label, "auto")
+            weather_cfg = effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}
+            saved_sat = bool(weather_cfg.get("use_satellite_nowcast_0_6h", False))
+
+            if forecast_mode == "auto":
+                sat_nowcast_ui = st.checkbox(
+                    "Use satellite nowcast radiation (0-6)",
+                    value=True,
+                    disabled=True,
+                    key="use_sat_nowcast_auto",
+                )
+                sat_nowcast_for_run = True
+            else:
+                sat_nowcast_ui = st.checkbox(
+                    "Use satellite nowcast radiation (0-6)",
+                    value=saved_sat,
+                    key="use_sat_nowcast_expert",
+                )
+                sat_nowcast_for_run = bool(sat_nowcast_ui)
 
             last_run_mode = st.session_state.get("last_forecast_mode")
             if isinstance(last_run_mode, str) and last_run_mode in {"auto", "expert"} and forecast_mode != last_run_mode:
@@ -3280,6 +3285,7 @@ if run:
                     "user_max_ac_kw": float(user_max_ac_kw),
                     "weather_models": selected_models if forecast_mode == "expert" else None,
                     "forecast_mode": forecast_mode,
+                    "use_satellite_nowcast_0_6h": bool(sat_nowcast_for_run),
                     "ensemble_method": ensemble_method,
                     "pv_uncertainty": True,
                 },
