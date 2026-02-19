@@ -2954,6 +2954,21 @@ with left:
                 cfg_battery_max_discharge_kw = st.number_input("Battery max discharge (kW)", min_value=0.1, value=float(effective_cfg["battery"]["battery_max_discharge_kw"]), step=0.1)
                 cfg_max_ac_charge_kw_hard_limit = st.number_input("Max AC charge kW hard limit", min_value=0.1, value=float(effective_cfg["battery"]["max_ac_charge_kw_hard_limit"]), step=0.1)
 
+            st.markdown("#### Weather advanced")
+            weather_cfg = effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}
+            use_sat_nowcast = st.checkbox(
+                "Use satellite nowcast radiation (0–6h)",
+                value=bool(weather_cfg.get("use_satellite_nowcast_0_6h", False)),
+                help=(
+                    "Uses near-real-time satellite irradiance for the next 0–6 hours when you run during daylight. "
+                    "It does not improve tomorrow’s forecast when you run at night."
+                ),
+            )
+            st.caption(
+                "Satellite Radiation API provides observed/near-real-time irradiance, not a true tomorrow forecast. "
+                "Use this only as a short-horizon daytime correction."
+            )
+
             st.markdown("#### Load profile")
             edit_load_profile = st.checkbox("Edit load profile", value=False)
             cfg_load_profile = [float(v) for v in effective_cfg["load_profile"]["load_profile_24h"]]
@@ -3070,6 +3085,10 @@ with left:
                     },
                     "load_profile": {
                         "load_profile_24h": [float(v) for v in cfg_load_profile],
+                    },
+                    "weather": {
+                        **((effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {})),
+                        "use_satellite_nowcast_0_6h": bool(use_sat_nowcast),
                     },
                     "weather_models_selected": selected_to_save,
                     "forecast_mode": forecast_mode_to_save,
@@ -3430,6 +3449,21 @@ if run:
                         "Missing important vars: "
                         + (f"Yes ({'; '.join(model_diag['missing_important'])})" if model_diag["missing_important"] else "No")
                     )
+                    quality_factors = weather_ensemble.get("quality_weight_factors_by_model", {}) if isinstance(weather_ensemble.get("quality_weight_factors_by_model"), dict) else {}
+                    if quality_factors:
+                        st.caption("Quality weight factors by model (weighted ensemble)")
+                        st.json(quality_factors, expanded=False)
+                    derived_wc = weather_ensemble.get("derived_weather_code_by_model", {}) if isinstance(weather_ensemble.get("derived_weather_code_by_model"), dict) else {}
+                    if derived_wc:
+                        st.caption("Derived weather_code fallback by model")
+                        st.json(derived_wc, expanded=False)
+                    sat_used = weather_ensemble.get("satellite_nowcast_used")
+                    if sat_used is not None:
+                        st.caption(
+                            "Satellite nowcast 0–6h: "
+                            f"used={bool(sat_used)} · hours={int(weather_ensemble.get('satellite_nowcast_hours') or 0)} · "
+                            f"reason={weather_ensemble.get('satellite_nowcast_reason')}"
+                        )
 
                     weather_units_help_map = {
                         "temperature_2m": {"label": "Temp (°C)", "help": "Air temperature at 2m above ground.", "format": "%.1f"},
@@ -3497,8 +3531,22 @@ if run:
                         "cutoff_soc_pct": {"label": "Cutoff SOC (%)", "help": "Configured AC charge cutoff SOC.", "format": "%.1f"},
                         "load_kwh": {"label": "Load (estimated) (kWh)", "help": "Estimated household demand based on yesterday total + profile; real usage can differ (EV, heat pump, weekend effects).", "format": "%.2f"},
                     }
-                    max_res = float(pd.to_numeric(combined_display.get("residual_kwh"), errors="coerce").abs().max()) if "residual_kwh" in combined_display.columns else 0.0
+                    residual_series = pd.to_numeric(combined_display.get("residual_kwh"), errors="coerce") if "residual_kwh" in combined_display.columns else pd.Series(dtype=float)
+                    residual_abs = residual_series.abs()
+                    max_res = float(residual_abs.max()) if not residual_abs.empty else 0.0
+                    mean_res = float(residual_abs.mean()) if not residual_abs.empty else 0.0
                     st.metric("Max |residual| (kWh)", f"{max_res:.3f}")
+                    st.caption(f"Mean |residual| (kWh): {mean_res:.3f}")
+                    if max_res > 0.05:
+                        st.warning("Energy balance residual is higher than expected; check inputs or rounding.")
+                    if not residual_series.empty:
+                        worst = residual_series.reindex(combined.index).dropna().abs().sort_values(ascending=False).head(3)
+                        if not worst.empty:
+                            worst_rows = []
+                            for ts in worst.index:
+                                worst_rows.append({"timestamp": str(ts), "residual_kwh": float(residual_series.loc[ts])})
+                            st.caption("Top 3 residual hours")
+                            st.dataframe(pd.DataFrame(worst_rows), use_container_width=True, hide_index=True)
                     render_modern_table(planning_visible, make_column_config(planning_visible, planning_units_help_map))
                     planning_csv = planning_visible.to_csv(index=False)
                     planning_json = json.dumps({

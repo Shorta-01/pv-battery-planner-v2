@@ -201,6 +201,7 @@ DEFAULT_CONFIG = {
     },
     "weather": {
         "store_provider_payloads": False,
+        "use_satellite_nowcast_0_6h": False,
         "dynamic_weights": {
             "enabled": False,
             "lookback_days": 30,

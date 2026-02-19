@@ -272,6 +272,7 @@ def _pick_week_ahead_weather_code(
     weather_by_model: dict[str, object],
     weights_used: dict[str, float] | None,
     primary_id: str | None,
+    derived_weather_code_by_model: dict[str, bool] | None = None,
 ) -> tuple[int | None, str | None, int | None]:
     """
     Returns (best_code, source_model_id, source_model_max_days)
@@ -318,14 +319,15 @@ def _pick_week_ahead_weather_code(
         max_days = _model_max_days(model_id)
         w = float((weights_used or {}).get(model_id, 0.0))
         primary_penalty = 0 if (primary_id and model_id == primary_id) else 1
+        derived_penalty = 1 if bool((derived_weather_code_by_model or {}).get(model_id, False)) else 0
 
-        candidates.append((-coverage, -w, primary_penalty, model_id, int(code), int(max_days)))
+        candidates.append((-coverage, derived_penalty, -w, primary_penalty, model_id, int(code), int(max_days)))
 
     if not candidates:
         return None, None, None
 
     candidates.sort()
-    _, _, _, best_model_id, best_code, best_max_days = candidates[0]
+    _, _, _, _, best_model_id, best_code, best_max_days = candidates[0]
     return best_code, best_model_id, best_max_days
 
 
@@ -333,42 +335,99 @@ def _build_pv_week_ahead(
     *,
     target_date: dt.date,
     tz: str,
-    pv_totals_p50: list[float | None],
-    pv_totals_p10: list[float | None] | None,
-    pv_totals_p90: list[float | None] | None,
-    weather_by_model: dict[str, object] | None,
-    weights_used: dict[str, float] | None,
-    weather_primary_model_id: str | None,
+    pv_totals_p50: list[float | None] | None = None,
+    pv_totals_p10: list[float | None] | None = None,
+    pv_totals_p90: list[float | None] | None = None,
+    weather_by_model: dict[str, object] | None = None,
+    weights_used: dict[str, float] | None = None,
+    weather_primary_model_id: str | None = None,
+    derived_weather_code_by_model: dict[str, bool] | None = None,
+    # Backward-compatible args used by isolated function tests.
+    hourly_pv_p50: pd.Series | None = None,
+    hourly_pv_p10: pd.Series | None = None,
+    hourly_pv_p90: pd.Series | None = None,
+    weather_code_series: pd.Series | None = None,
 ) -> list[dict[str, object]]:
+    if pv_totals_p50 is None:
+        def _daily_totals(series: pd.Series | None) -> list[float | None]:
+            if series is None or len(series) == 0:
+                return [None] * 7
+            s = pd.to_numeric(series, errors="coerce")
+            if isinstance(s.index, pd.DatetimeIndex):
+                if s.index.tz is None:
+                    s.index = s.index.tz_localize(tz)
+                else:
+                    s = s.tz_convert(tz)
+            daily = s.resample("D").sum(min_count=1)
+            out_vals: list[float | None] = []
+            for i in range(7):
+                v = daily.iloc[i] if i < len(daily) else None
+                out_vals.append(None if v is None or pd.isna(v) else float(v))
+            return out_vals
+        pv_totals_p50 = _daily_totals(hourly_pv_p50)
+        pv_totals_p10 = _daily_totals(hourly_pv_p10)
+        pv_totals_p90 = _daily_totals(hourly_pv_p90)
+
     days = min(7, len(pv_totals_p50))
     out: list[dict[str, object]] = []
 
     for i in range(days):
         day = target_date + dt.timedelta(days=i)
+        code: int | None = None
+        source_model_id: str | None = None
+        source_max_days: int | None = None
 
-        code, source_model_id, source_max_days = _pick_week_ahead_weather_code(
-            i,
-            target_date=target_date,
-            tz=tz,
-            weather_by_model=weather_by_model or {},
-            weights_used=weights_used,
-            primary_id=weather_primary_model_id,
-        )
+        picker = globals().get("_pick_week_ahead_weather_code")
+        if callable(picker):
+            code, source_model_id, source_max_days = picker(
+                i,
+                target_date=target_date,
+                tz=tz,
+                weather_by_model=weather_by_model or {},
+                weights_used=weights_used,
+                primary_id=weather_primary_model_id,
+                derived_weather_code_by_model=derived_weather_code_by_model,
+            )
 
+        if code is None and isinstance(weather_code_series, pd.Series):
+            s = pd.to_numeric(weather_code_series, errors="coerce")
+            if isinstance(s.index, pd.DatetimeIndex):
+                if s.index.tz is None:
+                    s.index = s.index.tz_localize(tz)
+                else:
+                    s = s.tz_convert(tz)
+                day_start = pd.Timestamp(dt.datetime.combine(day, dt.time(0, 0)), tz=tz)
+                day_end = day_start + pd.Timedelta(days=1)
+                day_series = s[(s.index >= day_start) & (s.index < day_end)]
+                noon = day_start + pd.Timedelta(hours=12)
+                noon_val = pd.to_numeric(pd.Series([day_series.get(noon)]), errors="coerce").dropna()
+                if not noon_val.empty:
+                    code = int(noon_val.iloc[0])
+                else:
+                    mode_vals = day_series.dropna().mode()
+                    if not mode_vals.empty:
+                        code = int(mode_vals.iloc[0])
+
+        fallback_used = code is None
+        if fallback_used:
+            code = 3
+            source_model_id = None
+            source_max_days = None
+
+        model_labels = globals().get("WEATHER_MODELS", {}) if isinstance(globals().get("WEATHER_MODELS", {}), dict) else {}
         out.append(
             {
                 "date": day.isoformat(),
                 "p50_kwh": float(pv_totals_p50[i]) if pv_totals_p50[i] is not None else None,
                 "p10_kwh": float(pv_totals_p10[i]) if pv_totals_p10 and i < len(pv_totals_p10) and pv_totals_p10[i] is not None else None,
                 "p90_kwh": float(pv_totals_p90[i]) if pv_totals_p90 and i < len(pv_totals_p90) and pv_totals_p90[i] is not None else None,
-                "weather_code": int(code) if code is not None else None,
-                "weather_best_of_day": code is not None,
+                "weather_code": int(code),
+                "weather_best_of_day": not fallback_used,
                 "weather_code_source_model_id": source_model_id,
-                "weather_code_source_model_label": (
-                    (WEATHER_MODELS.get(source_model_id) or {}).get("label") if source_model_id else None
-                ),
+                "weather_code_source_model_label": ((model_labels.get(source_model_id) or {}).get("label") if source_model_id else None),
                 "weather_code_source_max_days": int(source_max_days) if source_max_days is not None else None,
-                "icon_key": "unknown" if code is None else None,
+                "icon_key": None,
+                "weather_code_fallback_used": bool(fallback_used),
             }
         )
 
@@ -683,6 +742,7 @@ class BackendState:
         ensemble_method_week = "median"
         weather_cfg = cfg.get("weather", {}) if isinstance(cfg, dict) else {}
         store_provider_payloads = bool(weather_cfg.get("store_provider_payloads", False)) if isinstance(weather_cfg, dict) else False
+        use_satellite_nowcast_0_6h = bool(weather_cfg.get("use_satellite_nowcast_0_6h", False)) if isinstance(weather_cfg, dict) else False
 
         run_at_utc = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
         run_id = str(uuid.uuid4())
@@ -710,6 +770,7 @@ class BackendState:
                 accuracy_mode=True,
                 fast_mode=bool(fast_mode),
                 requested_days=1,
+                use_satellite_nowcast_0_6h=use_satellite_nowcast_0_6h,
             )
         except RuntimeError as exc:
             if "All weather model requests failed" not in str(exc):
@@ -793,6 +854,7 @@ class BackendState:
                 accuracy_mode=True,
                 fast_mode=False,
                 requested_days=7,
+                use_satellite_nowcast_0_6h=False,
             )
         except Exception as exc:
             ensemble_week = None
@@ -850,6 +912,7 @@ class BackendState:
             primary_id = getattr(ensemble_week, "weather_primary_model_id", None)
             weather_by_model = getattr(ensemble_week, "weather_by_model", {}) or {}
             weights_used_week = getattr(ensemble_week, "weights_used", None)
+            derived_weather_code_by_model_week = getattr(ensemble_week, "derived_weather_code_by_model", {}) or {}
         else:
             pv_totals_p50 = [None] * 7
             pv_totals_p10 = [None] * 7
@@ -857,6 +920,7 @@ class BackendState:
             primary_id = None
             weather_by_model = {}
             weights_used_week = None
+            derived_weather_code_by_model_week = {}
 
         pv_week_ahead_all = _build_pv_week_ahead(
             target_date=target_date,
@@ -867,6 +931,7 @@ class BackendState:
             weather_by_model=weather_by_model,
             weights_used=weights_used_week,
             weather_primary_model_id=primary_id,
+            derived_weather_code_by_model=derived_weather_code_by_model_week,
         )
         pv_week_ahead = pv_week_ahead_all[1:7]
 
@@ -994,6 +1059,8 @@ class BackendState:
             "weather_by_model": {model_id: self._serialize_df(fr.df) for model_id, fr in (getattr(ensemble_tomorrow, "weather_by_model", {}) or {}).items()},
             "pv_by_model": {model_id: self._serialize_df(model_pv) for model_id, model_pv in (getattr(ensemble_tomorrow, "pv_by_model", {}) or {}).items()},
             "derived_irradiance_by_model": getattr(ensemble_tomorrow, "derived_irradiance_by_model", {}),
+            "derived_weather_code_by_model": getattr(ensemble_tomorrow, "derived_weather_code_by_model", {}),
+            "quality_weight_factors_by_model": getattr(ensemble_tomorrow, "quality_weight_factors_by_model", {}),
             "pv": self._serialize_df(pv),
             "detail": self._serialize_df(detail_df),
             "flows": self._serialize_df(flows_df),
@@ -1060,7 +1127,9 @@ class BackendState:
                 "ensemble_method_week_ahead": ensemble_method_week,
                 "missing_vars_by_model": getattr(ensemble_tomorrow, "missing_vars_by_model", {}),
                 "derived_irradiance_by_model": getattr(ensemble_tomorrow, "derived_irradiance_by_model", {}),
+                "derived_weather_code_by_model": getattr(ensemble_tomorrow, "derived_weather_code_by_model", {}),
                 "derived_irradiance_hours_by_model": getattr(ensemble_tomorrow, "derived_irradiance_hours_by_model", {}),
+                "quality_weight_factors_by_model": getattr(ensemble_tomorrow, "quality_weight_factors_by_model", {}),
                 "fetch_meta_by_model": getattr(ensemble_tomorrow, "fetch_meta_by_model", {}),
                 "failed_models": getattr(ensemble_tomorrow, "failed_models", []),
                 "failed_model_reasons": getattr(ensemble_tomorrow, "failed_model_reasons", {}),
@@ -1070,6 +1139,10 @@ class BackendState:
                 "tomorrow_weather_code_source_model_id": tomorrow_source_model_id,
                 "tomorrow_weather_code_source_model_label": tomorrow_source_label,
                 "tomorrow_weather_code_source_max_days": tomorrow_source_max_days,
+                "satellite_nowcast_used": bool(getattr(ensemble_tomorrow, "satellite_nowcast_used", False)),
+                "satellite_nowcast_hours": int(getattr(ensemble_tomorrow, "satellite_nowcast_hours", 0) or 0),
+                "satellite_nowcast_weight_factor": getattr(ensemble_tomorrow, "satellite_nowcast_weight_factor", None),
+                "satellite_nowcast_reason": getattr(ensemble_tomorrow, "satellite_nowcast_reason", None),
             },
             "provider_payloads_by_model": ((getattr(ensemble_tomorrow, "provider_payloads_by_model", {}) or {}) if store_provider_payloads else {}),
         }
