@@ -6,6 +6,7 @@ import inspect
 import json
 import os
 import time
+import traceback
 from io import StringIO
 from pathlib import Path
 
@@ -1408,7 +1409,7 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
 
     rows = []
     for item in items:
-        metrics = item.get("metrics", {})
+        metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
         status_raw = str(item.get("status") or "").strip().lower()
         warnings_count = int(item.get("warnings_count") or 0)
         if status_raw == "error":
@@ -1435,7 +1436,7 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
 
         pv_p10_raw = item.get("pv_p10_kwh")
         pv_p10 = float(pv_p10_raw) if pv_p10_raw is not None else None
-        pv_p50 = float(item.get("pv_p50_kwh") or metrics.get("pv_forecast_kwh") or 0.0)
+        pv_p50 = _safe_float(item.get("pv_p50_kwh") or metrics.get("pv_forecast_kwh"), 0.0)
         pv_p90_raw = item.get("pv_p90_kwh")
         pv_p90 = float(pv_p90_raw) if pv_p90_raw is not None else None
         warnings_raw = item.get("warnings") if isinstance(item.get("warnings"), list) else []
@@ -1468,8 +1469,8 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
             "PV p10": round(pv_p10, 2) if pv_p10 is not None else None,
             "PV p90": round(pv_p90, 2) if pv_p90 is not None else None,
             "PV range (p10–p90)": f"{pv_p10:.2f}–{pv_p90:.2f} kWh" if (pv_p10 is not None and pv_p90 is not None) else "—",
-            "Load": round(float(metrics.get("cons_forecast_kwh", 0.0)), 2),
-            "Charge": round(float(metrics.get("charge_kw", 0.0)), 2),
+            "Load": round(_safe_float(metrics.get("cons_forecast_kwh"), 0.0), 2),
+            "Charge": round(_safe_float(metrics.get("charge_kw"), 0.0), 2),
             "Warnings": warnings_text,
             "Duration (ms)": item.get("run_duration_ms"),
             "Models OK/Failed": f"{models_ok_count}/{models_failed_count}",
@@ -3278,13 +3279,13 @@ if run:
             soc_series = series_from_split(result["soc"])
             sunrise = pd.Timestamp(result["sunrise"])
             sunset = pd.Timestamp(result["sunset"])
-            metrics = result.get("metrics", {})
+            metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
             pv_quality = result.get("pv_quality", {})
-            cutoff_soc = float(metrics.get("cutoff_soc", 0.0))
-            charge_kw = float(metrics.get("charge_kw", 0.0))
+            cutoff_soc = _safe_float(metrics.get("cutoff_soc"), 0.0)
+            charge_kw = _safe_float(metrics.get("charge_kw"), 0.0)
             charge_note = str(metrics.get("charge_note", ""))
-            grid_import = float(metrics.get("grid_import", 0.0))
-            grid_export = float(metrics.get("grid_export", 0.0))
+            grid_import = _safe_float(metrics.get("grid_import"), 0.0)
+            grid_export = _safe_float(metrics.get("grid_export"), 0.0)
             weather_ensemble = result.get("weather_ensemble", {}) if isinstance(result.get("weather_ensemble"), dict) else {}
             pv_week_ahead = result.get("pv_week_ahead") if isinstance(result.get("pv_week_ahead"), list) else []
             tomorrow_weather_code = None
@@ -3510,3 +3511,6 @@ if run:
         st.info(exc.hint)
     except Exception as exc:
         st.error(f"Could not fetch weather or compute forecast. Please retry in a minute. Details: {exc}")
+        if APP_DEBUG:
+            with st.expander("Debug traceback", expanded=False):
+                st.code(traceback.format_exc())
