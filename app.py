@@ -420,6 +420,7 @@ def render_weather_models(
     *,
     widget_key_prefix: str = "wm",
     disabled: bool = False,
+    used_models: set[str] | None = None,
 ) -> list[str]:
     model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
     selected_models: list[str] = []
@@ -461,6 +462,11 @@ def render_weather_models(
             if status_icon:
                 badge_html.append(
                     f"<span class='pvbp-badge' title='{_esc(status_tip)}'><span class='pvbp-badge-icon'>{_esc(status_icon)}</span></span>"
+                )
+
+            if used_models and model_id in used_models and status_icon != "❌":
+                badge_html.append(
+                    badge_chip("✅", "Used for tomorrow PV forecast in the last Auto run.")
                 )
 
             for badge in static_badges:
@@ -3197,7 +3203,6 @@ with left:
                     label_visibility="collapsed",
                 )
             forecast_mode = FORECAST_MODE_OPTIONS.get(forecast_mode_label, "auto")
-            models_used_last = st.session_state.get("last_weather_ensemble_models_used", [])
 
             last_run_mode = st.session_state.get("last_forecast_mode")
             if isinstance(last_run_mode, str) and last_run_mode in {"auto", "expert"} and forecast_mode != last_run_mode:
@@ -3210,14 +3215,16 @@ with left:
                     widget_key_prefix="wm",
                 )
             else:
-                if isinstance(models_used_last, list) and models_used_last:
-                    st.caption("Models used in last run (read-only)")
-                    _ = render_weather_models(
-                        weather_models_catalog,
-                        set(str(x) for x in models_used_last if isinstance(x, str)),
-                        widget_key_prefix="wm_used",
-                        disabled=True,
-                    )
+                st.caption("Auto mode uses the core models by default. Switch to Expert mode to choose models manually.")
+                auto_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
+                used_auto = set(st.session_state.get("last_weather_ensemble_models_used", []) or [])
+                _ = render_weather_models(
+                    weather_models_catalog,
+                    auto_selected,
+                    widget_key_prefix="wm_auto",
+                    disabled=True,
+                    used_models=used_auto,
+                )
                 selected_models = []
 
     ensemble_method = "weighted"
@@ -3261,7 +3268,8 @@ if run:
                 or []
             )
             st.session_state["last_forecast_mode"] = forecast_mode
-            st.session_state["last_weather_ensemble_models_used"] = list(models_used)
+            if forecast_mode == "auto":
+                st.session_state["last_weather_ensemble_models_used"] = list(models_used)
             tomorrow = dt.date.fromisoformat(result["target_date"])
             weather_df = df_from_split(result["weather"])
             pv = df_from_split(result["pv"])

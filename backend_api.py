@@ -788,7 +788,7 @@ class BackendState:
                     "fast_mode": bool(fast_mode),
                 },
                 "forecast_mode_effective": mode,
-                "tomorrow_models_used": list(tomorrow_models),
+                "tomorrow_models_used": [],
                 "week_ahead_models_considered": list(week_models),
                 "weather_by_model": {},
             }
@@ -1001,6 +1001,8 @@ class BackendState:
             "inverter_ac_limit_kw": cfg.get("inverter", {}).get("ac_limit_kw"),
             "loss_factor": cfg.get("system", {}).get("loss_factor"),
         }
+        tomorrow_models_used = list(getattr(ensemble_tomorrow, "selected_models", []) or [])
+
         payload = {
             "run_id": run_id,
             "target_date": target_date.isoformat(),
@@ -1044,7 +1046,7 @@ class BackendState:
             "tomorrow_weather_code_source_model_label": tomorrow_source_label,
             "tomorrow_weather_code_source_max_days": tomorrow_source_max_days,
             "forecast_mode_effective": mode,
-            "tomorrow_models_used": list(tomorrow_models),
+            "tomorrow_models_used": tomorrow_models_used,
             "week_ahead_models_considered": list(week_models),
             "system_snapshot": {k: v for k, v in system_snapshot.items() if v is not None},
             "planner_version": "v2",
