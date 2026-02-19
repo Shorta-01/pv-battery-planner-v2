@@ -7,6 +7,44 @@ from typing import Any
 import db_sqlite
 
 
+def compute_pv_quality_score(
+    pv_df,
+    weather_df,
+    target_date,
+    tz: str,
+    fallback_score: int = 55,
+) -> dict[str, Any]:
+    """Compatibility helper for backend_api run payload quality metadata."""
+    pv_total = 0.0
+    if hasattr(pv_df, "get"):
+        try:
+            pv_total = float(pv_df.get("pv_total_kwh", 0.0).sum())
+        except Exception:
+            pv_total = 0.0
+
+    score = int(max(0, min(100, fallback_score)))
+    if pv_total > 0:
+        score = int(max(score, min(100, round(40 + min(pv_total, 15.0) * 4))))
+
+    if score >= 75:
+        label, color = "high", "green"
+    elif score >= 55:
+        label, color = "medium", "amber"
+    else:
+        label, color = "low", "red"
+
+    return {
+        "score": score,
+        "label": label,
+        "ratio": None,
+        "color": color,
+        "is_fallback": True,
+        "pv_total_kwh": pv_total,
+        "target_date": str(target_date),
+        "timezone": tz,
+    }
+
+
 def _series_from_rows(rows: list[dict[str, Any]]) -> dict[str, float]:
     series: dict[str, float] = {}
     for row in rows:
