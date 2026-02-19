@@ -102,6 +102,15 @@ def _esc(s: str) -> str:
     return html.escape(str(s or ""), quote=True)
 
 
+def _safe_float(value: object, fallback: float) -> float:
+    try:
+        if value is None:
+            return float(fallback)
+        return float(value)
+    except (TypeError, ValueError):
+        return float(fallback)
+
+
 def get_selected_weather_models(valid_model_ids: set[str]) -> list[str]:
     selected: list[str] = []
     for mid in WEATHER_MODEL_ORDER:
@@ -124,8 +133,8 @@ def apply_pending_location_state() -> None:
         return
     structured = pending.get("address_structured", {}) if isinstance(pending.get("address_structured"), dict) else {}
     st.session_state["loc_address_query_display"] = str(pending.get("address_query", ""))
-    st.session_state["loc_latitude"] = float(pending.get("latitude", core.LATITUDE))
-    st.session_state["loc_longitude"] = float(pending.get("longitude", core.LONGITUDE))
+    st.session_state["loc_latitude"] = _safe_float(pending.get("latitude"), core.LATITUDE)
+    st.session_state["loc_longitude"] = _safe_float(pending.get("longitude"), core.LONGITUDE)
     st.session_state["loc_timezone"] = str(pending.get("timezone", core.TIMEZONE))
     st.session_state["loc_street"] = str(structured.get("street", ""))
     st.session_state["loc_house_number"] = str(structured.get("house_number", ""))
@@ -144,14 +153,14 @@ def apply_location_lookup_result(cfg: dict) -> None:
 
     cfg.setdefault("location", {})
     cfg["location"]["address_query"] = str(res.get("address_query", ""))
-    cfg["location"]["latitude"] = float(res.get("latitude", core.LATITUDE))
-    cfg["location"]["longitude"] = float(res.get("longitude", core.LONGITUDE))
+    cfg["location"]["latitude"] = _safe_float(res.get("latitude"), core.LATITUDE)
+    cfg["location"]["longitude"] = _safe_float(res.get("longitude"), core.LONGITUDE)
     cfg["location"]["timezone"] = str(res.get("timezone", core.TIMEZONE))
     cfg["location"]["address_structured"] = res.get("address_structured", {})
 
     st.session_state["loc_address_query_display"] = str(res.get("address_query", ""))
-    st.session_state["loc_latitude"] = float(res.get("latitude", core.LATITUDE))
-    st.session_state["loc_longitude"] = float(res.get("longitude", core.LONGITUDE))
+    st.session_state["loc_latitude"] = _safe_float(res.get("latitude"), core.LATITUDE)
+    st.session_state["loc_longitude"] = _safe_float(res.get("longitude"), core.LONGITUDE)
     st.session_state["loc_timezone"] = str(res.get("timezone", core.TIMEZONE))
 
     structured = res.get("address_structured", {}) if isinstance(res.get("address_structured"), dict) else {}
@@ -202,8 +211,8 @@ def open_lookup(loc_cfg: dict) -> None:
     }
     st.session_state["_pending_location_state"] = {
         "address_query": str(st.session_state.get("loc_address_query_display", "")),
-        "latitude": float(st.session_state.get("loc_latitude", loc_cfg.get("latitude", core.LATITUDE))),
-        "longitude": float(st.session_state.get("loc_longitude", loc_cfg.get("longitude", core.LONGITUDE))),
+        "latitude": _safe_float(st.session_state.get("loc_latitude"), _safe_float(loc_cfg.get("latitude"), core.LATITUDE)),
+        "longitude": _safe_float(st.session_state.get("loc_longitude"), _safe_float(loc_cfg.get("longitude"), core.LONGITUDE)),
         "timezone": str(st.session_state.get("loc_timezone", loc_cfg.get("timezone", core.TIMEZONE))),
         "address_structured": pending_structured,
     }
@@ -2631,9 +2640,9 @@ with left:
     if "loc_address_query_display" not in st.session_state:
         st.session_state["loc_address_query_display"] = str(loc_cfg.get("address_query", ""))
     if "loc_latitude" not in st.session_state:
-        st.session_state["loc_latitude"] = float(loc_cfg.get("latitude", core.LATITUDE))
+        st.session_state["loc_latitude"] = _safe_float(loc_cfg.get("latitude"), core.LATITUDE)
     if "loc_longitude" not in st.session_state:
-        st.session_state["loc_longitude"] = float(loc_cfg.get("longitude", core.LONGITUDE))
+        st.session_state["loc_longitude"] = _safe_float(loc_cfg.get("longitude"), core.LONGITUDE)
     if "loc_timezone" not in st.session_state:
         st.session_state["loc_timezone"] = str(loc_cfg.get("timezone", core.TIMEZONE))
     if "loc_street" not in st.session_state:
