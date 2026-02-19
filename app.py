@@ -98,6 +98,8 @@ BADGE_ALIASES = {
     "🧩": "∑",
 }
 
+UI_PROGRESS_BAR_HEIGHT_PX = 8
+
 
 def _esc(s: str) -> str:
     return html.escape(str(s or ""), quote=True)
@@ -1205,14 +1207,14 @@ def render_pv_quality_widget(
             f"{pv_label} day · {pv_quality_dict['pv_total_kwh']:.1f} kWh"
             "</div>"
             + pv_range_html
-            + "<div style='margin-top:0.45rem;height:8px;border-radius:999px;overflow:hidden;background:rgba(255,255,255,0.12);'>"
+            + f"<div style='margin-top:0.45rem;height:{UI_PROGRESS_BAR_HEIGHT_PX}px;border-radius:999px;overflow:hidden;background:rgba(255,255,255,0.12);'>"
             f"<div style='height:100%;width:{ratio_percent:.1f}%;background:linear-gradient(90deg,#d62828 0%,#f4a261 45%,#52b788 70%,#2a9d8f 100%);'></div>"
             "</div>"
             "<div style='margin-top:0.32rem;font-size:0.72rem;opacity:0.8;'>"
             f"{ratio_percent:.0f}% of clear-sky potential"
             "</div>"
             "<div style='margin-top:0.55rem;'>"
-            f"<div title='Green = off-peak, Red = peak' style='height:8px;width:100%;position:relative;{timeline_base}"
+            f"<div title='Green = off-peak, Red = peak' style='height:{UI_PROGRESS_BAR_HEIGHT_PX}px;width:100%;position:relative;{timeline_base}"
             "border-radius:999px;overflow:hidden;'>"
             + "".join(overlays)
             + "</div>"
@@ -1250,7 +1252,7 @@ def render_key_charging_widget(container, allowed_charge_kw: float, cutoff_soc_p
             "<div style='padding:0.45rem 0.55rem;border:1px solid rgba(255,255,255,0.08);border-radius:12px;background:rgba(255,255,255,0.02);'>"
             "<div style='font-size:0.72rem;opacity:0.84;'>Allowed AC charge power (kW)</div>"
             f"<div style='margin-top:0.22rem;font-size:1.45rem;font-weight:700;'>{allowed_charge_kw:.2f}</div>"
-            "<div style='margin-top:0.32rem;height:10px;border-radius:999px;background:rgba(255,255,255,0.12);overflow:hidden;'>"
+            f"<div style='margin-top:0.32rem;height:{UI_PROGRESS_BAR_HEIGHT_PX}px;border-radius:999px;background:rgba(255,255,255,0.12);overflow:hidden;'>"
             f"<div style='height:100%;width:{power_pct:.1f}%;background:linear-gradient(90deg,#4cc9f0,#4895ef,#4361ee);'></div>"
             "</div>"
             "<div style='margin-top:0.22rem;font-size:0.68rem;opacity:0.78;'>Range: 0 to 7 kW</div>"
@@ -1258,7 +1260,7 @@ def render_key_charging_widget(container, allowed_charge_kw: float, cutoff_soc_p
             "<div style='padding:0.45rem 0.55rem;border:1px solid rgba(255,255,255,0.08);border-radius:12px;background:rgba(255,255,255,0.02);'>"
             "<div style='font-size:0.72rem;opacity:0.84;'>AC charge cutoff SOC (%)</div>"
             f"<div style='margin-top:0.22rem;font-size:1.45rem;font-weight:700;'>{cutoff_soc_pct:.1f}%</div>"
-            "<div style='margin-top:0.32rem;height:10px;border-radius:999px;background:rgba(255,255,255,0.12);overflow:hidden;'>"
+            f"<div style='margin-top:0.32rem;height:{UI_PROGRESS_BAR_HEIGHT_PX}px;border-radius:999px;background:rgba(255,255,255,0.12);overflow:hidden;'>"
             f"<div style='height:100%;width:{soc_pct:.1f}%;background:linear-gradient(90deg,#f4a261,#e9c46a,#52b788);'></div>"
             "</div>"
             "<div style='margin-top:0.22rem;font-size:0.68rem;opacity:0.78;'>Range: 0 to 100%</div>"
