@@ -28,6 +28,7 @@ DEFAULT_WEIGHTED_BELGIUM = {
     "ecmwf_ifs": 0.20,
     "dwd_icon_eu": 0.10,
     "meteofrance_seamless": 0.10,
+    "gfs": 0.05,
 }
 
 WEATHER_MODELS: dict[str, dict[str, Any]] = {
@@ -116,6 +117,23 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
             "notes": "Seamless provider blend; direct/diffuse/DNI may be derived depending on Open-Meteo feed.",
         },
     },
+    "gfs": {
+        "label": "NOAA GFS",
+        "endpoint": "https://api.open-meteo.com/v1/forecast",
+        "params": {"models": "gfs"},
+        "badges": ["🌐", "🧭"],
+        "recommended_for_be": True,
+        "max_days": 16,
+        "tier": "global",
+        "supports_15min_radiation": False,
+        "capability": {
+            "ghi_native": True,
+            "direct_native": True,
+            "diffuse_native": True,
+            "dni_native": True,
+            "notes": "Global fallback with long horizon coverage.",
+        },
+    },
 }
 
 MODEL_CAPS: dict[str, dict[str, Any]] = {
@@ -158,12 +176,12 @@ def auto_select_models_for_location(lat: float | object, lon: float | None = Non
         return int(get_model_caps(model_id).get("max_days", 0)) >= horizon
 
     if horizon <= 2:
-        preferred = ["dwd_icon_d2", "knmi_harmonie_arome", "ecmwf_ifs", "dwd_icon_eu", "meteofrance_seamless"]
+        preferred = ["dwd_icon_d2", "knmi_harmonie_arome", "ecmwf_ifs", "dwd_icon_eu", "gfs"]
         selected = [model_id for model_id in preferred if model_id in WEATHER_MODELS and _eligible(model_id)]
         return selected[:4]
 
     if horizon >= 7:
-        preferred = ["ecmwf_ifs", "dwd_icon_eu", "knmi_harmonie_arome", "meteofrance_seamless", "dwd_icon_d2"]
+        preferred = ["ecmwf_ifs", "dwd_icon_eu", "gfs", "meteofrance_seamless", "knmi_harmonie_arome", "dwd_icon_d2"]
         selected: list[str] = []
         for model_id in preferred:
             if model_id not in WEATHER_MODELS or not _eligible(model_id):
@@ -171,9 +189,9 @@ def auto_select_models_for_location(lat: float | object, lon: float | None = Non
             if model_id not in selected:
                 selected.append(model_id)
         curated = [m for m in selected if get_model_caps(m).get("tier") in {"medium", "global"}]
-        return curated[:5] if len(curated) >= 3 else selected[:5]
+        return curated[:5]
 
-    preferred_mid = ["ecmwf_ifs", "dwd_icon_eu", "knmi_harmonie_arome", "meteofrance_seamless", "dwd_icon_d2"]
+    preferred_mid = ["ecmwf_ifs", "dwd_icon_eu", "gfs", "knmi_harmonie_arome", "meteofrance_seamless", "dwd_icon_d2"]
     selected_mid = [m for m in preferred_mid if m in WEATHER_MODELS and _eligible(m)]
     return selected_mid[:4]
 
@@ -189,6 +207,7 @@ HISTORICAL_FORECAST_MODEL_PARAMS: dict[str, str] = {
     "ecmwf_ifs": "ecmwf_ifs",
     "dwd_icon_eu": "icon_eu",
     "meteofrance_seamless": "meteofrance_seamless",
+    "gfs": "gfs",
 }
 
 BASE_HOURLY_VARIABLES = [

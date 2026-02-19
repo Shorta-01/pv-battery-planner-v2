@@ -670,7 +670,18 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
     pv_week_ahead_json = json.dumps(_replace_nan_with_none(pv_week_ahead), sort_keys=True, allow_nan=False)
     pv_quality = payload.get("pv_quality")
     models_used = payload.get("tomorrow_models_used") if isinstance(payload.get("tomorrow_models_used"), list) else []
+    if not models_used and isinstance(weather_ensemble, dict):
+        maybe_selected = weather_ensemble.get("selected_models")
+        if isinstance(maybe_selected, list):
+            models_used = [str(model_id) for model_id in maybe_selected]
     weights_used = (weather_ensemble.get("weights_used") if isinstance(weather_ensemble, dict) else None)
+    requested_days_raw = payload.get("requested_days")
+    if requested_days_raw is None and isinstance(weather_ensemble, dict):
+        requested_days_raw = weather_ensemble.get("requested_days")
+    try:
+        requested_days = max(1, int(requested_days_raw))
+    except (TypeError, ValueError):
+        requested_days = 1
     pv_quality_text = json.dumps(_replace_nan_with_none(pv_quality), allow_nan=False) if isinstance(pv_quality, dict) else None
     config_schema_version_raw = payload.get("config_schema_version")
     try:
@@ -680,7 +691,7 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
 
     row_data = {
         "mode": payload.get("forecast_mode_effective"),
-        "requested_days": 1,
+        "requested_days": requested_days,
         "models_used_json": json.dumps(_replace_nan_with_none(models_used), sort_keys=True, allow_nan=False),
         "ensemble_method": weather_ensemble.get("ensemble_method") if isinstance(weather_ensemble, dict) else None,
         "weights_used_json": json.dumps(_replace_nan_with_none(weights_used), sort_keys=True, allow_nan=False),
