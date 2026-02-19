@@ -2379,10 +2379,16 @@ def normalize_detail_df_for_ui(df: pd.DataFrame, effective_cfg: dict) -> pd.Data
     if "pv_deficit_kwh" not in out.columns and "deficit_kwh" in out.columns:
         out["pv_deficit_kwh"] = pd.to_numeric(out["deficit_kwh"], errors="coerce").fillna(0.0)
     if "pv_surplus_kwh" not in out.columns:
-        load = pd.to_numeric(out.get("load_kwh", 0.0), errors="coerce").fillna(0.0)
+        load_series = out.get("load_kwh")
+        if load_series is None:
+            load_series = pd.Series(0.0, index=out.index)
+        load = pd.to_numeric(load_series, errors="coerce").fillna(0.0)
         out["pv_surplus_kwh"] = (out["pv_total_kwh"] - load).clip(lower=0.0)
     if "pv_deficit_kwh" not in out.columns:
-        load = pd.to_numeric(out.get("load_kwh", 0.0), errors="coerce").fillna(0.0)
+        load_series = out.get("load_kwh")
+        if load_series is None:
+            load_series = pd.Series(0.0, index=out.index)
+        load = pd.to_numeric(load_series, errors="coerce").fillna(0.0)
         out["pv_deficit_kwh"] = (load - out["pv_total_kwh"]).clip(lower=0.0)
 
     return out
@@ -3210,7 +3216,7 @@ if run:
             result = run_response["result"]
             dbg = result.get("weather_ensemble")
             st.session_state["last_weather_ensemble_debug"] = dbg if isinstance(dbg, dict) else {}
-            st.session_state["last_weather_ensemble_debug_at"] = dt.datetime.utcnow().isoformat()
+            st.session_state["last_weather_ensemble_debug_at"] = dt.datetime.now(dt.UTC).isoformat()
             models_used = (
                 result.get("tomorrow_models_used")
                 or result.get("weather_ensemble", {}).get("selected_models")

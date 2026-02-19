@@ -2449,8 +2449,15 @@ def simulate_expensive_hours_detailed(
     if "pv_total_kwh" not in detail_df.columns and "pv_ac_limited_kwh" in detail_df.columns:
         detail_df["pv_total_kwh"] = detail_df["pv_ac_limited_kwh"]
 
-    detail_df["pv_total_unclipped_kwh"] = pd.to_numeric(detail_df.get("pv_total_unclipped_kwh", 0.0), errors="coerce").fillna(0.0)
-    detail_df["pv_total_kwh"] = pd.to_numeric(detail_df.get("pv_total_kwh", 0.0), errors="coerce").fillna(0.0)
+    pv_total_unclipped = detail_df.get("pv_total_unclipped_kwh")
+    if pv_total_unclipped is None:
+        pv_total_unclipped = pd.Series(0.0, index=detail_df.index)
+    detail_df["pv_total_unclipped_kwh"] = pd.to_numeric(pv_total_unclipped, errors="coerce").fillna(0.0)
+
+    pv_total = detail_df.get("pv_total_kwh")
+    if pv_total is None:
+        pv_total = pd.Series(0.0, index=detail_df.index)
+    detail_df["pv_total_kwh"] = pd.to_numeric(pv_total, errors="coerce").fillna(0.0)
     detail_df["pv_clipped_kwh"] = (detail_df["pv_total_unclipped_kwh"] - detail_df["pv_total_kwh"]).clip(lower=0.0)
 
     if "pv_surplus_kwh" not in detail_df.columns and "surplus_kwh" in detail_df.columns:
