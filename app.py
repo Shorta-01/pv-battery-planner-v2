@@ -9,6 +9,7 @@ import time
 import traceback
 from io import StringIO
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -19,6 +20,7 @@ from urllib3.util.retry import Retry
 
 import planner_core as core
 from tariff_time import compute_offpeak_segments, make_summary_lines, parse_hhmm
+from weather_ensemble import auto_select_models_for_location, should_use_satellite_nowcast_auto
 
 PLOTLY_DARK = "plotly_dark"
 
@@ -39,6 +41,38 @@ INPUT_TOOLTIPS = {
     "pv_calibration_factor_south": "South relative tuning multiplied by global. Start at 1.00. Example: global 0.95 and south 0.98 → effective south 0.931.",
     "max_ac_user_cap": "The app computes a recommended AC charge power from required energy and off-peak window hours. This field is your safety cap: final used value is min(recommended, your cap, inverter/battery limits).",
 }
+
+
+INPUT_TOOLTIPS.update({
+    "latitude": "Your home latitude. It matters for sun angle and PV timing. Example: 50.85 for Brussels.",
+    "longitude": "Your home longitude. It matters for local solar time. Example: 4.35 for Brussels.",
+    "timezone": "IANA timezone used for all hourly planning. It matters for tariff windows. Example: Europe/Brussels.",
+    "tariff_from": "Start of cheap window in 24h HH:MM. It matters for charging hours. Example: 22:00.",
+    "tariff_to": "End of cheap window in 24h HH:MM. It matters for charging hours. Example: 06:00.",
+    "peak_price": "Grid import price during expensive hours. It affects charge strategy. Example: 0.34 €/kWh.",
+    "offpeak_price": "Grid import price during cheap hours. It drives night charging. Example: 0.22 €/kWh.",
+    "injection_price": "Price you get for export. It affects export value. Example: 0.05 €/kWh.",
+    "panel_wp": "Rated power per panel. It scales PV forecast. Example: 420 Wp.",
+    "array_panels": "Number of panels on this roof face. It scales energy for that face. Example: 8 panels.",
+    "tilt": "Roof tilt angle from horizontal. It changes seasonal yield. Example: 35°.",
+    "azimuth": "Panel compass direction (N=0, E=90, S=180). It shifts production timing. Example: 180° for south.",
+    "inverter_ac_kw_limit": "Maximum AC output your inverter can deliver. It caps PV power. Example: 5.0 kW.",
+    "battery_kwh": "Usable battery energy capacity. It sets storage size. Example: 10.0 kWh.",
+    "min_soc": "Minimum SOC reserve to protect battery. It limits discharge depth. Example: 15%.",
+    "cutoff_soc": "Target stop SOC for grid charging. It controls overnight charge level. Example: 75%.",
+    "battery_max_charge_kw": "Maximum battery charging power. It caps charging speed. Example: 3.0 kW.",
+    "battery_max_discharge_kw": "Maximum battery discharge power. It caps support to load. Example: 3.0 kW.",
+    "max_ac_charge_kw_hard_limit": "Hard AC charging cap. It protects wiring/inverter. Example: 2.5 kW.",
+    "forecast_mode": "Auto lets the system pick models and nowcast behavior. Expert lets you choose models and nowcast yourself. Example: use Auto for normal operation.",
+    "sat_nowcast": "Adds satellite radiation for near-term (0–6h). It can improve short-term cloud timing. Example: ON during daytime, OFF for week-ahead.",
+    "address_query": "Search text for location lookup. It helps fill coordinates/timezone. Example: Main Street 10, Brussels.",
+})
+
+def get_help(key: str, fallback: str = "") -> str:
+    tip = INPUT_TOOLTIPS.get(key)
+    if isinstance(tip, str) and tip.strip():
+        return tip
+    return fallback
 
 METRIC_TOOLTIPS = {
     "Allowed AC charge power (kW)": "Final AC charge power used by the planner after all limits. It matters because this is the value to configure in FusionSolar. It never exceeds your safety cap, inverter limits, or battery limits.",
@@ -70,7 +104,7 @@ WEATHER_MODEL_ORDER = [
 ]
 
 WEATHER_MODEL_DEFAULT = {"knmi_harmonie_arome", "dwd_icon_d2", "ecmwf_ifs"}
-FORECAST_MODE_OPTIONS = {"Auto (Recommended)": "auto", "Expert": "expert"}
+FORECAST_MODE_OPTIONS = {"Auto (System picks the best models)": "auto", "Auto (Recommended)": "auto", "Expert": "expert"}
 
 WEATHER_MODEL_HOVERTEXT = {
     "knmi_harmonie_arome": "High-resolution KNMI regional model for Benelux. Strong for short-term local cloud and wind changes.",
@@ -97,7 +131,10 @@ BADGE_ALIASES = {
     "🌍": "🌐",
     "🟩": "☀",
     "🧩": "∑",
+    "☀️": "☀",
+    "⏱️": "⏱",
 }
+
 
 UI_PROGRESS_BAR_HEIGHT_PX = 8
 
@@ -211,7 +248,7 @@ def build_settings_payload(effective_cfg: dict, valid_model_ids: set[str]) -> tu
     if not selected_to_save:
         selected_to_save = sorted(list(WEATHER_MODEL_DEFAULT & valid_model_ids)) or sorted(list(valid_model_ids))
 
-    forecast_mode_value = str(st.session_state.get("forecast_mode_select", "Auto (Recommended)"))
+    forecast_mode_value = str(st.session_state.get("forecast_mode_select", "Auto (System picks the best models)"))
     forecast_mode_to_save = FORECAST_MODE_OPTIONS.get(forecast_mode_value, "auto")
     user_sat_setting = bool(st.session_state.get("use_sat_nowcast_expert", ui.get("saved_sat", False)))
 
@@ -278,6 +315,71 @@ def build_settings_payload(effective_cfg: dict, valid_model_ids: set[str]) -> tu
         "forecast_mode": forecast_mode_to_save,
     }
     return new_cfg, None
+
+
+def validate_sidebar_readiness(ui: dict, *, yesterday_kwh: float, forecast_mode: str, selected_models: list[str]) -> dict[str, list[str]]:
+    issues: dict[str, list[str]] = {
+        "Inputs": [],
+        "Location": [],
+        "Tariffs": [],
+        "PV": [],
+        "Battery": [],
+        "Weather": [],
+    }
+
+    if yesterday_kwh < 2.0 or yesterday_kwh > 60.0:
+        issues["Inputs"].append("Yesterday usage must be between 2.0 and 60.0 kWh.")
+
+    lat = float(ui["cfg_latitude"])
+    lon = float(ui["cfg_longitude"])
+    tz_name = str(st.session_state.get("loc_timezone", core.TIMEZONE)).strip()
+    if not (-90.0 <= lat <= 90.0):
+        issues["Location"].append("Latitude must be between -90 and 90.")
+    if not (-180.0 <= lon <= 180.0):
+        issues["Location"].append("Longitude must be between -180 and 180.")
+    try:
+        ZoneInfo(tz_name)
+    except Exception:
+        issues["Location"].append("Timezone must be a valid IANA name (example: Europe/Brussels).")
+
+    day_names = ui.get("day_names", [])
+    for day_idx, (from_value, to_value) in enumerate(ui.get("tariff_inputs", [])):
+        try:
+            start_min = parse_hhmm(from_value, allow_24_end=False)
+            end_min = parse_hhmm(to_value, allow_24_end=True)
+            compute_offpeak_segments(start_min, end_min)
+        except ValueError as exc:
+            day = day_names[day_idx] if day_idx < len(day_names) else f"Day {day_idx + 1}"
+            issues["Tariffs"].append(f"{day}: {exc}")
+
+    if float(ui["cfg_panel_wp"]) <= 0:
+        issues["PV"].append("Panel power must be > 0.")
+    if int(ui["cfg_array_south_panels"]) + int(ui["cfg_array_east_panels"]) <= 0:
+        issues["PV"].append("Total east + south panels must be > 0.")
+    if float(ui["cfg_inverter_ac_kw_limit"]) <= 0:
+        issues["PV"].append("Inverter AC limit must be > 0.")
+
+    if float(ui["cfg_battery_kwh"]) <= 0:
+        issues["Battery"].append("Battery capacity must be > 0.")
+    min_soc = float(ui["cfg_min_soc_percent"])
+    cutoff_soc = float(ui["cfg_max_cutoff_soc_percent"])
+    if not (0 <= min_soc <= 100):
+        issues["Battery"].append("Min SOC must be between 0 and 100.")
+    if not (0 <= cutoff_soc <= 100):
+        issues["Battery"].append("Cutoff SOC must be between 0 and 100.")
+    if cutoff_soc < min_soc:
+        issues["Battery"].append("Cutoff SOC must be greater than or equal to Min SOC.")
+    if float(ui["cfg_battery_max_charge_kw"]) <= 0:
+        issues["Battery"].append("Max charge power must be > 0.")
+    if float(ui["cfg_battery_max_discharge_kw"]) <= 0:
+        issues["Battery"].append("Max discharge power must be > 0.")
+    if float(ui["cfg_max_ac_charge_kw_hard_limit"]) <= 0:
+        issues["Battery"].append("AC charge hard limit must be > 0.")
+
+    if forecast_mode == "expert" and not selected_models:
+        issues["Weather"].append("Select at least one weather model in Expert mode.")
+
+    return issues
 
 
 def save_settings_payload(new_cfg: dict, *, rerun: bool = True) -> bool:
@@ -606,12 +708,14 @@ def render_weather_models(
     widget_key_prefix: str = "wm",
     disabled: bool = False,
     used_models: set[str] | None = None,
+    auto_locked_models: set[str] | None = None,
+    show_capability_badges: bool = True,
 ) -> list[str]:
     model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
     selected_models: list[str] = []
 
     st.markdown(
-        "<style>.wm-name{cursor:help}.wm-badges{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;row-gap:4px}</style>",
+        "<style>.wm-name{cursor:help}.wm-badges{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;row-gap:4px}.wm-lock{font-size:1rem;line-height:1.6rem;opacity:0.85}</style>",
         unsafe_allow_html=True,
     )
 
@@ -623,13 +727,18 @@ def render_weather_models(
         cols = st.columns([0.35, 3.2, 1.3], vertical_alignment="center")
 
         with cols[0]:
-            checked = st.checkbox(
-                "enabled",
-                value=(model_id in default_selected),
-                key=f"{widget_key_prefix}_{model_id}",
-                label_visibility="collapsed",
-                disabled=disabled,
-            )
+            if disabled:
+                lock_icon = "🔒" if (auto_locked_models and model_id in auto_locked_models) else ""
+                st.markdown(f"<div class='wm-lock'>{_esc(lock_icon)}</div>", unsafe_allow_html=True)
+                checked = bool(auto_locked_models and model_id in auto_locked_models)
+            else:
+                checked = st.checkbox(
+                    "enabled",
+                    value=(model_id in default_selected),
+                    key=f"{widget_key_prefix}_{model_id}",
+                    label_visibility="collapsed",
+                    disabled=False,
+                )
 
         with cols[1]:
             label = str(model.get("label") or model_id)
@@ -650,21 +759,15 @@ def render_weather_models(
                 )
 
             if used_models and model_id in used_models and status_icon != "❌":
-                badge_html.append(
-                    badge_chip("✅", "Used for tomorrow PV forecast in the last Auto run.")
-                )
+                badge_html.append(badge_chip("✅", "Used in the last run."))
 
-            for badge in static_badges:
-                badge_raw = str(badge)
-                if not badge_raw.strip():
-                    continue
-                icon = _normalize_badge_icon(badge_raw)
-                meta = BADGE_META.get(icon)
-                if not meta:
-                    continue
-                badge_html.append(
-                    badge_chip(icon=icon, tip=str(meta.get("tip") or ""))
-                )
+            if show_capability_badges:
+                for badge in static_badges:
+                    icon = _normalize_badge_icon(str(badge))
+                    meta = BADGE_META.get(icon)
+                    if not meta:
+                        continue
+                    badge_html.append(badge_chip(icon=icon, tip=str(meta.get("tip") or "")))
 
             st.markdown(f"<div class='wm-badges'>{''.join(badge_html)}</div>", unsafe_allow_html=True)
 
@@ -2872,22 +2975,26 @@ with left:
             min_value=0.0,
             max_value=100.0,
             value=float(st.session_state.last_soc),
-            step=0.5,
-            help=INPUT_TOOLTIPS["soc_percent"],
+            step=1.0,
+            format="%.0f",
+            help=get_help("soc_percent"),
         )
         yesterday_kwh = st.number_input(
             "Yesterday total consumption (kWh)",
             min_value=0.1,
             value=float(st.session_state.last_kwh),
             step=0.1,
-            help=INPUT_TOOLTIPS["yesterday_kwh"],
+            format="%.1f",
+            help=get_help("yesterday_kwh"),
         )
+        if yesterday_kwh < 2.0 or yesterday_kwh > 60.0:
+            st.error("Run forecast is blocked: Yesterday total consumption must be between 2.0 and 60.0 kWh. If yesterday was unusual, enter a typical day such as 12.0 kWh.")
 
-    with st.expander("Saved settings"):
+    with st.expander("Settings", expanded=False):
         st.markdown("#### Location")
         addr_col, status_col, btn_col = st.columns([6, 1, 2], vertical_alignment="center")
         with addr_col:
-            st.text_input("Address query", key="loc_address_query_display", disabled=True)
+            st.text_input("Address query", key="loc_address_query_display", disabled=True, help=get_help("address_query"))
         with status_col:
             has_lookup_details = isinstance(st.session_state.get("loc_latitude"), (float, int)) and isinstance(
                 st.session_state.get("loc_longitude"), (float, int)
@@ -2919,6 +3026,7 @@ with left:
                 step=0.00001,
                 format="%.5f",
                 key="loc_latitude",
+                help=get_help("latitude"),
             )
         with loc_col2:
             cfg_longitude = st.number_input(
@@ -2928,8 +3036,9 @@ with left:
                 step=0.00001,
                 format="%.5f",
                 key="loc_longitude",
+                help=get_help("longitude"),
             )
-        cfg_timezone = st.text_input("Timezone", key="loc_timezone", disabled=True)
+        cfg_timezone = st.text_input("Timezone", key="loc_timezone", help=get_help("timezone"))
 
         st.markdown("#### Tariff settings")
         day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -2950,7 +3059,7 @@ with left:
                 format="%.4f",
                 value=cfg_peak_price,
                 key="tariff_peak_price",
-                help="All-in import price (€/kWh). Enter your full import price.",
+                help=get_help("peak_price"),
             )
         with c2:
             cfg_offpeak_price_input = st.number_input(
@@ -2960,7 +3069,7 @@ with left:
                 format="%.4f",
                 value=cfg_offpeak_price,
                 key="tariff_offpeak_price",
-                help="All-in import price (€/kWh). Enter your full import price.",
+                help=get_help("peak_price"),
             )
         with c3:
             cfg_injection_price_input = st.number_input(
@@ -3004,7 +3113,7 @@ with left:
 
         row1_col1, row1_col2 = st.columns(2)
         with row1_col1:
-            cfg_panel_wp = st.number_input("Panel power (Wp)", min_value=1, value=int(cfg_pv["panel_wp"]), step=1)
+            cfg_panel_wp = st.number_input("Panel power (Wp)", min_value=1, value=int(cfg_pv["panel_wp"]), step=1, help=get_help("panel_wp"))
         with row1_col2:
             cfg_performance_ratio = st.number_input(
                 "Performance ratio",
@@ -3018,7 +3127,7 @@ with left:
 
         row2_col1, row2_col2, row2_col3 = st.columns(3)
         with row2_col1:
-            cfg_array_east_panels = st.number_input("East array panels", min_value=1, value=int(cfg_pv["array_east_panels"]), step=1)
+            cfg_array_east_panels = st.number_input("East array panels", min_value=0, value=int(cfg_pv["array_east_panels"]), step=1, help=get_help("array_panels"))
         with row2_col2:
             cfg_tilt_east_deg = st.number_input(
                 "Tilt East (deg)",
@@ -3040,7 +3149,7 @@ with left:
 
         row3_col1, row3_col2, row3_col3 = st.columns(3)
         with row3_col1:
-            cfg_array_south_panels = st.number_input("South array panels", min_value=1, value=int(cfg_pv["array_south_panels"]), step=1)
+            cfg_array_south_panels = st.number_input("South array panels", min_value=0, value=int(cfg_pv["array_south_panels"]), step=1, help=get_help("array_panels"))
         with row3_col2:
             cfg_tilt_south_deg = st.number_input(
                 "Tilt South (deg)",
@@ -3069,7 +3178,7 @@ with left:
                 help=INPUT_TOOLTIPS["pv_loss_model"],
             )
         with row4_col2:
-            cfg_inverter_ac_kw_limit = st.number_input("Inverter AC limit (kW)", min_value=0.1, value=float(cfg_pv["inverter_ac_kw_limit"]), step=0.1)
+            cfg_inverter_ac_kw_limit = st.number_input("Inverter AC limit (kW)", min_value=0.1, value=float(cfg_pv["inverter_ac_kw_limit"]), step=0.1, help=get_help("inverter_ac_kw_limit"))
 
         apply_pv_reco = st.button(
             "Use recommended PV defaults",
@@ -3183,13 +3292,13 @@ with left:
         st.markdown("#### Battery")
         bat_col1, bat_col2 = st.columns(2)
         with bat_col1:
-            cfg_battery_kwh = st.number_input("Battery capacity (kWh)", min_value=0.1, value=float(effective_cfg["battery"]["battery_kwh"]), step=0.1)
-            cfg_min_soc_percent = st.number_input("Min SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["min_soc_percent"]), step=0.5)
-            cfg_max_cutoff_soc_percent = st.number_input("Max cutoff SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["max_cutoff_soc_percent"]), step=0.5)
+            cfg_battery_kwh = st.number_input("Battery capacity (kWh)", min_value=0.0, value=float(effective_cfg["battery"]["battery_kwh"]), step=0.1, help=get_help("battery_kwh"))
+            cfg_min_soc_percent = st.number_input("Min SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["min_soc_percent"]), step=0.5, help=get_help("min_soc"))
+            cfg_max_cutoff_soc_percent = st.number_input("Max cutoff SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["max_cutoff_soc_percent"]), step=0.5, help=get_help("cutoff_soc"))
         with bat_col2:
-            cfg_battery_max_charge_kw = st.number_input("Battery max charge (kW)", min_value=0.1, value=float(effective_cfg["battery"]["battery_max_charge_kw"]), step=0.1)
-            cfg_battery_max_discharge_kw = st.number_input("Battery max discharge (kW)", min_value=0.1, value=float(effective_cfg["battery"]["battery_max_discharge_kw"]), step=0.1)
-            cfg_max_ac_charge_kw_hard_limit = st.number_input("Max AC charge kW hard limit", min_value=0.1, value=float(effective_cfg["battery"]["max_ac_charge_kw_hard_limit"]), step=0.1)
+            cfg_battery_max_charge_kw = st.number_input("Battery max charge (kW)", min_value=0.0, value=float(effective_cfg["battery"]["battery_max_charge_kw"]), step=0.1, help=get_help("battery_max_charge_kw"))
+            cfg_battery_max_discharge_kw = st.number_input("Battery max discharge (kW)", min_value=0.0, value=float(effective_cfg["battery"]["battery_max_discharge_kw"]), step=0.1, help=get_help("battery_max_discharge_kw"))
+            cfg_max_ac_charge_kw_hard_limit = st.number_input("Max AC charge kW hard limit", min_value=0.0, value=float(effective_cfg["battery"]["max_ac_charge_kw_hard_limit"]), step=0.1, help=get_help("max_ac_charge_kw_hard_limit"))
 
         cfg_load_profile = [float(v) for v in effective_cfg["load_profile"]["load_profile_24h"]]
 
@@ -3258,15 +3367,16 @@ with left:
         else:
             settings_dirty = True
 
-    with st.expander("Advanced"):
-        buffer_percent = st.slider("Forecast safety buffer SOC (%)", 0.0, 10.0, 0.0, 0.5, help=INPUT_TOOLTIPS["buffer_percent"])
+    with st.container(border=True):
+        st.markdown("#### Advanced")
+        buffer_percent = st.slider("Forecast safety buffer SOC (%)", 0.0, 10.0, 0.0, 0.5, help=get_help("buffer_percent"))
         user_max_ac_kw = st.number_input(
             "Max allowed AC charge power (kW)",
             min_value=0.0,
             max_value=10.0,
             value=float(backend_settings.get("max_ac_charge_power_kw_default", 5.0)),
             step=0.1,
-            help=INPUT_TOOLTIPS["max_ac_user_cap"],
+            help=get_help("max_ac_user_cap"),
         )
         nightly_time_str = str(backend_settings.get("nightly_run_time", "22:00"))
         try:
@@ -3282,7 +3392,7 @@ with left:
             "Nightly run time (HH:MM)",
             value=nightly_time_value,
             step=dt.timedelta(minutes=5),
-            help="Pick the nightly scheduler trigger time.",
+            help="Pick scheduler time. It controls automatic run timing. Example: 22:00.",
         ).strftime("%H:%M")
         if st.button("Save nightly schedule settings"):
             try:
@@ -3313,70 +3423,93 @@ with left:
         initial_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
 
     current_mode = str(effective_cfg.get("forecast_mode", "auto")).strip().lower()
-    mode_label_default = "Expert" if current_mode == "expert" else "Auto (Recommended)"
+    mode_label_default = "Expert" if current_mode == "expert" else "Auto (System picks the best models)"
 
     weather_models_box = st.empty()
     with weather_models_box.container():
         with st.expander("Weather models", expanded=True):
-            c1, c2 = st.columns([1, 3], vertical_alignment="center")
-            with c1:
-                st.markdown("**Forecast mode**")
-            with c2:
-                forecast_mode_label = st.selectbox(
-                    "Forecast mode",
-                    options=list(FORECAST_MODE_OPTIONS.keys()),
-                    index=list(FORECAST_MODE_OPTIONS.keys()).index(mode_label_default),
-                    key="forecast_mode_select",
-                    label_visibility="collapsed",
-                )
+            forecast_mode_label = st.selectbox(
+                "Forecast mode",
+                options=["Auto (System picks the best models)", "Expert"],
+                index=0 if mode_label_default != "Expert" else 1,
+                key="forecast_mode_select",
+                help=get_help("forecast_mode"),
+            )
             forecast_mode = FORECAST_MODE_OPTIONS.get(forecast_mode_label, "auto")
             weather_cfg = effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}
             saved_sat = bool(weather_cfg.get("use_satellite_nowcast_0_6h", False))
 
-            if forecast_mode == "auto":
-                sat_nowcast_ui = st.checkbox(
-                    "Use satellite nowcast radiation (0-6)",
-                    value=True,
-                    disabled=True,
-                    key="use_sat_nowcast_auto",
-                )
-                sat_nowcast_for_run = True
-            else:
-                sat_nowcast_ui = st.checkbox(
-                    "Use satellite nowcast radiation (0-6)",
-                    value=saved_sat,
-                    key="use_sat_nowcast_expert",
-                )
-                sat_nowcast_for_run = bool(sat_nowcast_ui)
-
-            last_run_mode = st.session_state.get("last_forecast_mode")
-            if isinstance(last_run_mode, str) and last_run_mode in {"auto", "expert"} and forecast_mode != last_run_mode:
-                st.info("Mode change will apply on the next Run forecast.")
-
-            if forecast_mode == "expert":
-                selected_models = render_weather_models(
-                    weather_models_catalog,
-                    initial_selected,
-                    widget_key_prefix="wm",
-                )
-            else:
-                st.caption("Auto mode uses the core models by default. Switch to Expert mode to choose models manually.")
+            auto_selected = set(auto_select_models_for_location(float(cfg_latitude), float(cfg_longitude), requested_days=1)) & available_ids
+            if not auto_selected:
                 auto_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
-                used_auto = set(st.session_state.get("last_weather_ensemble_models_used", []) or [])
+            used_auto = set(st.session_state.get("last_weather_ensemble_models_used", []) or [])
+
+            if forecast_mode == "auto":
+                st.markdown("**System will try:** " + " ".join([f"`{(model_options.get(mid, {}).get('label', mid)).split()[0]}`" for mid in WEATHER_MODEL_ORDER if mid in auto_selected]))
+                used_line = " ".join([f"`{mid}`" for mid in used_auto]) if used_auto else "(no previous run yet)"
+                st.markdown(f"**Used in last run:** {used_line}")
                 _ = render_weather_models(
                     weather_models_catalog,
                     auto_selected,
                     widget_key_prefix="wm_auto",
                     disabled=True,
                     used_models=used_auto,
+                    auto_locked_models=auto_selected,
+                    show_capability_badges=False,
                 )
                 selected_models = []
+                sat_nowcast_for_run = should_use_satellite_nowcast_auto(
+                    latitude=float(cfg_latitude),
+                    longitude=float(cfg_longitude),
+                    timezone_name=str(st.session_state.get("loc_timezone", core.TIMEZONE)),
+                    requested_days=1,
+                )
+                st.checkbox(
+                    "Use satellite nowcast radiation (0-6)",
+                    value=bool(sat_nowcast_for_run),
+                    disabled=True,
+                    key="use_sat_nowcast_auto",
+                    help=get_help("sat_nowcast"),
+                )
+            else:
+                selected_models = render_weather_models(
+                    weather_models_catalog,
+                    initial_selected,
+                    widget_key_prefix="wm",
+                    show_capability_badges=True,
+                )
+                sat_nowcast_ui = st.checkbox(
+                    "Use satellite nowcast radiation (0-6)",
+                    value=saved_sat,
+                    key="use_sat_nowcast_expert",
+                    help=get_help("sat_nowcast"),
+                )
+                sat_nowcast_for_run = bool(sat_nowcast_ui)
+
+    readiness_issues = validate_sidebar_readiness(
+        st.session_state.get("_cfg_ui_snapshot", {}),
+        yesterday_kwh=float(yesterday_kwh),
+        forecast_mode=forecast_mode,
+        selected_models=selected_models,
+    )
+    settings_valid = not any(readiness_issues[k] for k in ["Location", "Tariffs", "PV", "Battery"])
+    inputs_valid = not readiness_issues["Inputs"]
+    weather_valid = not readiness_issues["Weather"]
+    run_allowed = settings_valid and inputs_valid and weather_valid
+
+    summary_parts = []
+    for key in ["Inputs", "Location", "Tariffs", "PV", "Battery", "Weather"]:
+        if readiness_issues[key]:
+            summary_parts.append(f"⚠ {key}: {readiness_issues[key][0]}")
+        else:
+            summary_parts.append(f"✅ {key}")
+    st.caption(" | ".join(summary_parts))
 
     ensemble_method = "weighted"
-    spacer, col_reset, col_save, col_run = st.columns([5.0, 2.2, 2.2, 2.2])
+    spacer, col_reset, col_save, col_run = st.columns([4.2, 2.6, 2.2, 2.2])
     with col_reset:
         reset_clicked = st.button(
-            "Reset to defaults",
+            "Reset all settings",
             type="secondary",
             key="btn_reset_defaults",
             width="stretch",
@@ -3393,7 +3526,7 @@ with left:
         run_clicked = st.button(
             "Run forecast",
             type="primary",
-            disabled=(forecast_mode == "expert" and not bool(selected_models)),
+            disabled=(not run_allowed),
             key="btn_run_forecast",
             width="stretch",
         )

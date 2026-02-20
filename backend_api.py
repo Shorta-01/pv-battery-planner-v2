@@ -38,6 +38,7 @@ from weather_ensemble import (
     WEATHER_MODELS,
     auto_select_models_for_location,
     build_ensemble_forecast,
+    should_use_satellite_nowcast_auto,
     get_model_caps,
     weather_models_payload,
 )
@@ -734,8 +735,8 @@ class BackendState:
             if not tomorrow_models:
                 tomorrow_models = auto_select_models_for_location(loc, requested_days=1)
         else:
-            tomorrow_models = auto_select_models_for_location(loc, requested_days=1)
-        week_models = auto_select_models_for_location(loc, requested_days=7)
+            tomorrow_models = auto_select_models_for_location(loc.latitude, loc.longitude, requested_days=1)
+        week_models = auto_select_models_for_location(loc.latitude, loc.longitude, requested_days=7)
         if not tomorrow_models:
             raise HTTPException(status_code=400, detail="Select at least one weather model.")
 
@@ -746,7 +747,12 @@ class BackendState:
         store_provider_payloads = bool(weather_cfg.get("store_provider_payloads", False)) if isinstance(weather_cfg, dict) else False
         requested_use_sat = bool(weather_cfg.get("use_satellite_nowcast_0_6h", False)) if isinstance(weather_cfg, dict) else False
         if mode == "auto":
-            effective_use_sat = True
+            effective_use_sat = should_use_satellite_nowcast_auto(
+                latitude=loc.latitude,
+                longitude=loc.longitude,
+                timezone_name=tz,
+                requested_days=1,
+            )
         elif use_satellite_nowcast_0_6h_override is not None:
             effective_use_sat = bool(use_satellite_nowcast_0_6h_override)
         else:
