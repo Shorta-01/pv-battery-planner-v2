@@ -132,6 +132,174 @@ def get_selected_weather_models(valid_model_ids: set[str]) -> list[str]:
             selected.append(mid)
     return selected
 
+
+def normalize_effective_cfg_to_payload(effective_cfg: dict, valid_model_ids: set[str]) -> dict:
+    saved_selected = effective_cfg.get("weather_models_selected")
+    if isinstance(saved_selected, list):
+        selected_models = [mid for mid in saved_selected if isinstance(mid, str) and mid in valid_model_ids]
+    else:
+        selected_models = []
+    if not selected_models:
+        selected_models = sorted(list(WEATHER_MODEL_DEFAULT & valid_model_ids)) or sorted(list(valid_model_ids))
+
+    forecast_mode_value = str(effective_cfg.get("forecast_mode", "auto")).strip().lower()
+    forecast_mode_to_save = forecast_mode_value if forecast_mode_value in {"auto", "expert"} else "auto"
+
+    location_cfg = effective_cfg.get("location", {}) if isinstance(effective_cfg, dict) else {}
+    tariff_cfg = effective_cfg.get("tariff", {}) if isinstance(effective_cfg, dict) else {}
+    pv_cfg = effective_cfg.get("pv", {}) if isinstance(effective_cfg, dict) else {}
+    battery_cfg = effective_cfg.get("battery", {}) if isinstance(effective_cfg, dict) else {}
+    weather_cfg = effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}
+    load_profile_cfg = effective_cfg.get("load_profile", {}) if isinstance(effective_cfg, dict) else {}
+
+    return {
+        "location": {
+            "use_geocoding": False,
+            "address_query": str(location_cfg.get("address_query", "")),
+            "address_structured": {
+                "street": str((location_cfg.get("address_structured", {}) or {}).get("street", "")),
+                "house_number": str((location_cfg.get("address_structured", {}) or {}).get("house_number", "")),
+                "postal_code": str((location_cfg.get("address_structured", {}) or {}).get("postal_code", "")),
+                "city": str((location_cfg.get("address_structured", {}) or {}).get("city", "")),
+                "country": str((location_cfg.get("address_structured", {}) or {}).get("country", "")),
+            },
+            "latitude": float(location_cfg.get("latitude", core.LATITUDE)),
+            "longitude": float(location_cfg.get("longitude", core.LONGITUDE)),
+            "timezone": str(location_cfg.get("timezone", core.TIMEZONE)),
+        },
+        "tariff": {
+            "peak_grid_price_eur_per_kwh": float(tariff_cfg.get("peak_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["peak_grid_price_eur_per_kwh"])),
+            "offpeak_grid_price_eur_per_kwh": float(tariff_cfg.get("offpeak_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["offpeak_grid_price_eur_per_kwh"])),
+            "injection_grid_price_eur_per_kwh": float(tariff_cfg.get("injection_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["injection_grid_price_eur_per_kwh"])),
+            "offpeak_windows_by_dow": tariff_cfg.get("offpeak_windows_by_dow", core.DEFAULT_CONFIG["tariff"]["offpeak_windows_by_dow"]),
+        },
+        "pv": dict(pv_cfg),
+        "battery": dict(battery_cfg),
+        "load_profile": {
+            "load_profile_24h": [float(v) for v in load_profile_cfg.get("load_profile_24h", core.DEFAULT_CONFIG["load_profile"]["load_profile_24h"])],
+        },
+        "weather": {
+            **weather_cfg,
+            "use_satellite_nowcast_0_6h": bool(weather_cfg.get("use_satellite_nowcast_0_6h", False)),
+        },
+        "weather_models_selected": selected_models,
+        "forecast_mode": forecast_mode_to_save,
+    }
+
+
+def build_settings_payload(effective_cfg: dict, valid_model_ids: set[str]) -> tuple[dict | None, str | None]:
+    ui = st.session_state.get("_cfg_ui_snapshot")
+    if not isinstance(ui, dict):
+        return normalize_effective_cfg_to_payload(effective_cfg, valid_model_ids), None
+
+    for day_idx, (from_value, to_value) in enumerate(ui.get("tariff_inputs", [])):
+        try:
+            start_min = parse_hhmm(from_value, allow_24_end=False)
+            end_min = parse_hhmm(to_value, allow_24_end=True)
+            compute_offpeak_segments(start_min, end_min)
+        except ValueError as exc:
+            day_names = ui.get("day_names", [])
+            day_label = day_names[day_idx] if day_idx < len(day_names) else f"Day {day_idx + 1}"
+            return None, f"Tariff settings error for {day_label}: {exc}"
+
+    existing_wm_keys = any(f"wm_{mid}" in st.session_state for mid in valid_model_ids)
+    if existing_wm_keys:
+        selected_to_save = get_selected_weather_models(valid_model_ids)
+    else:
+        saved_selected = effective_cfg.get("weather_models_selected")
+        selected_to_save = [mid for mid in saved_selected if isinstance(mid, str) and mid in valid_model_ids] if isinstance(saved_selected, list) else []
+    if not selected_to_save:
+        selected_to_save = sorted(list(WEATHER_MODEL_DEFAULT & valid_model_ids)) or sorted(list(valid_model_ids))
+
+    forecast_mode_value = str(st.session_state.get("forecast_mode_select", "Auto (Recommended)"))
+    forecast_mode_to_save = FORECAST_MODE_OPTIONS.get(forecast_mode_value, "auto")
+    user_sat_setting = bool(st.session_state.get("use_sat_nowcast_expert", ui.get("saved_sat", False)))
+
+    new_cfg = {
+        "location": {
+            "use_geocoding": False,
+            "address_query": str(st.session_state.get("loc_address_query_display", "")),
+            "address_structured": {
+                "street": str(st.session_state.get("loc_street", "")),
+                "house_number": str(st.session_state.get("loc_house_number", "")),
+                "postal_code": str(st.session_state.get("loc_postal_code", "")),
+                "city": str(st.session_state.get("loc_city", "")),
+                "country": str(st.session_state.get("loc_country", "")),
+            },
+            "latitude": float(ui["cfg_latitude"]),
+            "longitude": float(ui["cfg_longitude"]),
+            "timezone": str(st.session_state.get("loc_timezone", core.TIMEZONE)),
+        },
+        "tariff": {
+            "peak_grid_price_eur_per_kwh": float(ui["cfg_peak_price_input"]),
+            "offpeak_grid_price_eur_per_kwh": float(ui["cfg_offpeak_price_input"]),
+            "injection_grid_price_eur_per_kwh": float(ui["cfg_injection_price_input"]),
+            "offpeak_windows_by_dow": [
+                [[from_value, to_value], *[[w_start, w_end] for (w_start, w_end) in ui["tariff_by_day"].get(day_idx, [])[1:]]] if ui["tariff_by_day"].get(day_idx) else [[from_value, to_value]]
+                for day_idx, (from_value, to_value) in enumerate(ui["tariff_inputs"])
+            ],
+        },
+        "pv": {
+            "panel_wp": int(ui["cfg_panel_wp"]),
+            "array_south_panels": int(ui["cfg_array_south_panels"]),
+            "array_east_panels": int(ui["cfg_array_east_panels"]),
+            "tilt_east_deg": float(ui["cfg_tilt_east_deg"]),
+            "tilt_south_deg": float(ui["cfg_tilt_south_deg"]),
+            "azimuth_east_deg": float(ui["cfg_azimuth_east_deg"]),
+            "azimuth_south_deg": float(ui["cfg_azimuth_south_deg"]),
+            "performance_ratio": float(ui["cfg_performance_ratio"]),
+            "inverter_eff": float(ui["cfg_inverter_eff"]),
+            "pv_loss_model": str(ui["cfg_pv_loss_model"]),
+            "iam_model": str(ui["cfg_iam_model"]),
+            "iam_ashrae_b": float(ui["cfg_iam_ashrae_b"]),
+            "albedo": (float(ui["cfg_albedo"]) if ui["cfg_albedo_enabled"] else None),
+            "inverter_ac_model": str(ui["cfg_inverter_ac_model"]),
+            "pv_calibration_factor": float(ui["cfg_pv_calibration_factor"]),
+            "pv_calibration_factor_east": float(ui["cfg_pv_calibration_factor_east"]),
+            "pv_calibration_factor_south": float(ui["cfg_pv_calibration_factor_south"]),
+            "inverter_ac_kw_limit": float(ui["cfg_inverter_ac_kw_limit"]),
+        },
+        "battery": {
+            "battery_kwh": float(ui["cfg_battery_kwh"]),
+            "min_soc_percent": float(ui["cfg_min_soc_percent"]),
+            "max_cutoff_soc_percent": float(ui["cfg_max_cutoff_soc_percent"]),
+            "battery_max_charge_kw": float(ui["cfg_battery_max_charge_kw"]),
+            "battery_max_discharge_kw": float(ui["cfg_battery_max_discharge_kw"]),
+            "max_ac_charge_kw_hard_limit": float(ui["cfg_max_ac_charge_kw_hard_limit"]),
+        },
+        "load_profile": {
+            "load_profile_24h": [float(v) for v in ui["cfg_load_profile"]],
+        },
+        "weather": {
+            **((effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {})),
+            "use_satellite_nowcast_0_6h": user_sat_setting,
+        },
+        "weather_models_selected": selected_to_save,
+        "forecast_mode": forecast_mode_to_save,
+    }
+    return new_cfg, None
+
+
+def save_settings_payload(new_cfg: dict) -> bool:
+    try:
+        updated = api_put(
+            "/v1/settings",
+            {
+                "config": new_cfg,
+                "nightly_run_time": backend_settings.get("nightly_run_time", "22:00"),
+                "timezone": str(new_cfg["location"].get("timezone", backend_settings.get("timezone", "Europe/Brussels"))),
+                "max_ac_charge_power_kw_default": backend_settings.get("max_ac_charge_power_kw_default", 5.0),
+            },
+        )
+        st.cache_data.clear()
+        st.session_state["_pending_location_state"] = updated["config"]["location"]
+        st.session_state["_settings_flash"] = "Saved settings to backend"
+        st.rerun()
+    except Exception as exc:
+        st.error(f"Could not save settings: {exc}")
+        return False
+    return True
+
 LOCAL_STATE_DIR = Path("local_state")
 API_BASE_URL = os.getenv("PVBP_BACKEND_URL", "http://127.0.0.1:8787")
 API_TOKEN_FILE = LOCAL_STATE_DIR / "api_token.txt"
@@ -2653,7 +2821,6 @@ st.title("PV Battery Planner")
 try:
     health_payload = api_get("/v1/health")
     backend_settings = api_get("/v1/settings")
-    settings_source = str(backend_settings.get("settings_source") or "settings.json")
     weather_models_catalog = api_get("/v1/weather/models").get("items", [])
     valid_model_ids = {m.get("id") for m in weather_models_catalog if isinstance(m.get("id"), str)}
 except Exception as exc:
@@ -2739,318 +2906,295 @@ with left:
         if st.session_state.get("loc_lookup_open"):
             lookup_location_dialog()
 
-        with st.form("settings_form"):
-            loc_col1, loc_col2 = st.columns(2)
-            with loc_col1:
-                cfg_latitude = st.number_input(
-                    "Latitude",
-                    min_value=-90.0,
-                    max_value=90.0,
-                    step=0.00001,
-                    format="%.5f",
-                    key="loc_latitude",
-                )
-            with loc_col2:
-                cfg_longitude = st.number_input(
-                    "Longitude",
-                    min_value=-180.0,
-                    max_value=180.0,
-                    step=0.00001,
-                    format="%.5f",
-                    key="loc_longitude",
-                )
-            cfg_timezone = st.text_input("Timezone", key="loc_timezone", disabled=True)
+        loc_col1, loc_col2 = st.columns(2)
+        with loc_col1:
+            cfg_latitude = st.number_input(
+                "Latitude",
+                min_value=-90.0,
+                max_value=90.0,
+                step=0.00001,
+                format="%.5f",
+                key="loc_latitude",
+            )
+        with loc_col2:
+            cfg_longitude = st.number_input(
+                "Longitude",
+                min_value=-180.0,
+                max_value=180.0,
+                step=0.00001,
+                format="%.5f",
+                key="loc_longitude",
+            )
+        cfg_timezone = st.text_input("Timezone", key="loc_timezone", disabled=True)
 
-            st.markdown("#### Tariff settings")
-            day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-            tariff_cfg = effective_cfg.get("tariff", core.DEFAULT_CONFIG["tariff"])
-            cfg_peak_price = float(tariff_cfg.get("peak_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["peak_grid_price_eur_per_kwh"]))
-            cfg_offpeak_price = float(tariff_cfg.get("offpeak_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["offpeak_grid_price_eur_per_kwh"]))
-            cfg_injection_price = float(tariff_cfg.get("injection_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["injection_grid_price_eur_per_kwh"]))
-            def render_tariff_section_title(title: str) -> None:
-                st.markdown(f"##### {title}")
+        st.markdown("#### Tariff settings")
+        day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        tariff_cfg = effective_cfg.get("tariff", core.DEFAULT_CONFIG["tariff"])
+        cfg_peak_price = float(tariff_cfg.get("peak_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["peak_grid_price_eur_per_kwh"]))
+        cfg_offpeak_price = float(tariff_cfg.get("offpeak_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["offpeak_grid_price_eur_per_kwh"]))
+        cfg_injection_price = float(tariff_cfg.get("injection_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["injection_grid_price_eur_per_kwh"]))
+        def render_tariff_section_title(title: str) -> None:
+            st.markdown(f"##### {title}")
 
-            render_tariff_section_title("Energy prices")
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                cfg_peak_price_input = st.number_input(
-                    "Peak grid price",
-                    min_value=0.0,
-                    step=0.001,
-                    format="%.4f",
-                    value=cfg_peak_price,
-                    key="tariff_peak_price",
-                    help="All-in import price (€/kWh). Enter your full import price.",
-                )
-            with c2:
-                cfg_offpeak_price_input = st.number_input(
-                    "Off-peak grid price",
-                    min_value=0.0,
-                    step=0.001,
-                    format="%.4f",
-                    value=cfg_offpeak_price,
-                    key="tariff_offpeak_price",
-                    help="All-in import price (€/kWh). Enter your full import price.",
-                )
-            with c3:
-                cfg_injection_price_input = st.number_input(
-                    "Export (injection) price",
-                    min_value=-1.0,
-                    step=0.001,
-                    format="%.4f",
-                    value=cfg_injection_price,
-                    key="tariff_injection_price",
-                    help="All-in export price (€/kWh). Enter your full export (injection) price. Use a negative value if export costs money.",
-                )
-
-            st.markdown("")
-            render_tariff_section_title("Off-peak hours")
-
-            tariff_source = tariff_cfg.get("offpeak_windows_by_dow", core.DEFAULT_CONFIG["tariff"]["offpeak_windows_by_dow"])
-            tariff_by_day = core.parse_offpeak_windows_by_dow(tariff_source)
-            default_tariff_by_day = core.parse_offpeak_windows_by_dow(core.DEFAULT_CONFIG["tariff"]["offpeak_windows_by_dow"])
-            tariff_inputs: list[tuple[str, str]] = []
-            for day_idx, day_name in enumerate(day_names):
-                day_windows = tariff_by_day.get(day_idx) or default_tariff_by_day.get(day_idx, [("00:00", "24:00")])
-                day_from, day_to = day_windows[0]
-                cols = st.columns([1.0, 1.2, 1.2])
-                cols[0].markdown(f"**{day_name[:3]}**")
-                from_value = cols[1].text_input(
-                    f"From {day_name}",
-                    value=day_from,
-                    key=f"tariff_from_{day_idx}",
-                    label_visibility="collapsed",
-                ).strip()
-                to_value = cols[2].text_input(
-                    f"To {day_name}",
-                    value=day_to,
-                    key=f"tariff_to_{day_idx}",
-                    label_visibility="collapsed",
-                ).strip()
-                tariff_inputs.append((from_value, to_value))
-
-            st.markdown("#### PV")
-            cfg_pv = effective_cfg["pv"]
-
-            row1_col1, row1_col2 = st.columns(2)
-            with row1_col1:
-                cfg_panel_wp = st.number_input("Panel power (Wp)", min_value=1, value=int(cfg_pv["panel_wp"]), step=1)
-            with row1_col2:
-                cfg_performance_ratio = st.number_input(
-                    "Performance ratio",
-                    min_value=0.50,
-                    max_value=1.00,
-                    step=0.01,
-                    value=float(cfg_pv["performance_ratio"]),
-                    help=INPUT_TOOLTIPS["performance_ratio"],
-                    key="pv_pr",
-                )
-
-            row2_col1, row2_col2, row2_col3 = st.columns(3)
-            with row2_col1:
-                cfg_array_east_panels = st.number_input("East array panels", min_value=1, value=int(cfg_pv["array_east_panels"]), step=1)
-            with row2_col2:
-                cfg_tilt_east_deg = st.number_input(
-                    "Tilt East (deg)",
-                    min_value=0.0,
-                    max_value=90.0,
-                    value=float(cfg_pv["tilt_east_deg"]),
-                    step=1.0,
-                    format="%.0f",
-                )
-            with row2_col3:
-                cfg_azimuth_east_deg = st.number_input(
-                    "Azimuth East (deg)",
-                    min_value=0.0,
-                    max_value=360.0,
-                    value=float(cfg_pv["azimuth_east_deg"]),
-                    step=1.0,
-                    format="%.0f",
-                )
-
-            row3_col1, row3_col2, row3_col3 = st.columns(3)
-            with row3_col1:
-                cfg_array_south_panels = st.number_input("South array panels", min_value=1, value=int(cfg_pv["array_south_panels"]), step=1)
-            with row3_col2:
-                cfg_tilt_south_deg = st.number_input(
-                    "Tilt South (deg)",
-                    min_value=0.0,
-                    max_value=90.0,
-                    value=float(cfg_pv["tilt_south_deg"]),
-                    step=1.0,
-                    format="%.0f",
-                )
-            with row3_col3:
-                cfg_azimuth_south_deg = st.number_input(
-                    "Azimuth South (deg)",
-                    min_value=0.0,
-                    max_value=360.0,
-                    value=float(cfg_pv["azimuth_south_deg"]),
-                    step=1.0,
-                    format="%.0f",
-                )
-
-            row4_col1, row4_col2 = st.columns(2)
-            with row4_col1:
-                cfg_pv_loss_model = st.selectbox(
-                    "PV loss model",
-                    options=["split", "combined"],
-                    index=["split", "combined"].index(str(cfg_pv.get("pv_loss_model", "split")).strip().lower() if str(cfg_pv.get("pv_loss_model", "split")).strip().lower() in {"split", "combined"} else "split"),
-                    help=INPUT_TOOLTIPS["pv_loss_model"],
-                )
-            with row4_col2:
-                cfg_inverter_ac_kw_limit = st.number_input("Inverter AC limit (kW)", min_value=0.1, value=float(cfg_pv["inverter_ac_kw_limit"]), step=0.1)
-
-            apply_pv_reco = st.form_submit_button(
-                "Use recommended PV defaults",
-                type="secondary",
-                width="content",
-                key="btn_pv_reco",
+        render_tariff_section_title("Energy prices")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            cfg_peak_price_input = st.number_input(
+                "Peak grid price",
+                min_value=0.0,
+                step=0.001,
+                format="%.4f",
+                value=cfg_peak_price,
+                key="tariff_peak_price",
+                help="All-in import price (€/kWh). Enter your full import price.",
+            )
+        with c2:
+            cfg_offpeak_price_input = st.number_input(
+                "Off-peak grid price",
+                min_value=0.0,
+                step=0.001,
+                format="%.4f",
+                value=cfg_offpeak_price,
+                key="tariff_offpeak_price",
+                help="All-in import price (€/kWh). Enter your full import price.",
+            )
+        with c3:
+            cfg_injection_price_input = st.number_input(
+                "Export (injection) price",
+                min_value=-1.0,
+                step=0.001,
+                format="%.4f",
+                value=cfg_injection_price,
+                key="tariff_injection_price",
+                help="All-in export price (€/kWh). Enter your full export (injection) price. Use a negative value if export costs money.",
             )
 
-            row5_col1, row5_col2 = st.columns(2)
-            with row5_col1:
-                cfg_inverter_eff = st.number_input(
-                    "Inverter efficiency",
-                    min_value=0.50,
-                    max_value=1.00,
-                    value=float(cfg_pv["inverter_eff"]),
-                    step=0.01,
-                    disabled=(cfg_pv_loss_model == "combined"),
-                    help=INPUT_TOOLTIPS["inverter_eff"],
-                    key="pv_inverter_eff",
-                )
-            with row5_col2:
-                if cfg_pv_loss_model == "combined":
-                    st.caption("Inverter efficiency is not used in combined loss mode.")
+        st.markdown("")
+        render_tariff_section_title("Off-peak hours")
 
-            row5b_col1, row5b_col2 = st.columns(2)
-            with row5b_col1:
-                inverter_ac_model_value = str(cfg_pv.get("inverter_ac_model", "linear")).strip().lower()
-                cfg_inverter_ac_model = st.selectbox(
-                    "Inverter AC model",
-                    options=["linear", "pvwatts"],
-                    index=["linear", "pvwatts"].index(inverter_ac_model_value if inverter_ac_model_value in {"linear", "pvwatts"} else "linear"),
-                    help=INPUT_TOOLTIPS["inverter_ac_model"],
-                    key="pv_inverter_ac_model",
-                )
-            with row5b_col2:
-                iam_model_value = str(cfg_pv.get("iam_model", "none")).strip().lower()
-                cfg_iam_model = st.selectbox(
-                    "IAM model",
-                    options=["none", "ashrae"],
-                    index=["none", "ashrae"].index(iam_model_value if iam_model_value in {"none", "ashrae"} else "none"),
-                    help=INPUT_TOOLTIPS["iam_model"],
-                    key="pv_iam_model",
-                )
+        tariff_source = tariff_cfg.get("offpeak_windows_by_dow", core.DEFAULT_CONFIG["tariff"]["offpeak_windows_by_dow"])
+        tariff_by_day = core.parse_offpeak_windows_by_dow(tariff_source)
+        default_tariff_by_day = core.parse_offpeak_windows_by_dow(core.DEFAULT_CONFIG["tariff"]["offpeak_windows_by_dow"])
+        tariff_inputs: list[tuple[str, str]] = []
+        for day_idx, day_name in enumerate(day_names):
+            day_windows = tariff_by_day.get(day_idx) or default_tariff_by_day.get(day_idx, [("00:00", "24:00")])
+            day_from, day_to = day_windows[0]
+            cols = st.columns([1.0, 1.2, 1.2])
+            cols[0].markdown(f"**{day_name[:3]}**")
+            from_value = cols[1].text_input(
+                f"From {day_name}",
+                value=day_from,
+                key=f"tariff_from_{day_idx}",
+                label_visibility="collapsed",
+            ).strip()
+            to_value = cols[2].text_input(
+                f"To {day_name}",
+                value=day_to,
+                key=f"tariff_to_{day_idx}",
+                label_visibility="collapsed",
+            ).strip()
+            tariff_inputs.append((from_value, to_value))
 
-            row5c_col1, row5c_col2 = st.columns(2)
-            with row5c_col1:
-                cfg_iam_ashrae_b = st.number_input(
-                    "IAM ASHRAE b",
-                    min_value=0.00,
-                    max_value=0.50,
-                    value=float(cfg_pv.get("iam_ashrae_b", 0.05)),
-                    step=0.01,
-                    disabled=(cfg_iam_model != "ashrae"),
-                    help=INPUT_TOOLTIPS["iam_ashrae_b"],
-                    key="pv_iam_b",
-                )
-            with row5c_col2:
-                albedo_default = cfg_pv.get("albedo", None)
-                cfg_albedo_enabled = st.checkbox(
-                    "Set custom albedo",
-                    value=albedo_default is not None,
-                    help=INPUT_TOOLTIPS["albedo_enabled"],
-                    key="pv_albedo_enabled",
-                )
-                cfg_albedo = st.number_input(
-                    "Albedo",
-                    min_value=0.00,
-                    max_value=1.00,
-                    value=float(albedo_default if albedo_default is not None else 0.20),
-                    step=0.01,
-                    disabled=(not cfg_albedo_enabled),
-                    help=INPUT_TOOLTIPS["albedo"],
-                    key="pv_albedo",
-                )
+        st.markdown("#### PV")
+        cfg_pv = effective_cfg["pv"]
 
-            row6_col1, row6_col2, row6_col3 = st.columns(3)
-            with row6_col1:
-                cfg_pv_calibration_factor = st.number_input(
-                    "PV calibration factor (global)",
-                    min_value=0.70,
-                    max_value=1.30,
-                    value=float(cfg_pv.get("pv_calibration_factor", 1.0)),
-                    step=0.01,
-                    format="%.2f",
-                    help=INPUT_TOOLTIPS["pv_calibration_factor"],
-                    key="pv_cal_global",
-                )
-            with row6_col2:
-                cfg_pv_calibration_factor_east = st.number_input(
-                    "PV calibration factor east (relative)",
-                    min_value=0.70,
-                    max_value=1.30,
-                    value=float(cfg_pv.get("pv_calibration_factor_east", 1.0)),
-                    step=0.01,
-                    format="%.2f",
-                    help=INPUT_TOOLTIPS["pv_calibration_factor_east"],
-                    key="pv_cal_east",
-                )
-            with row6_col3:
-                cfg_pv_calibration_factor_south = st.number_input(
-                    "PV calibration factor south (relative)",
-                    min_value=0.70,
-                    max_value=1.30,
-                    value=float(cfg_pv.get("pv_calibration_factor_south", 1.0)),
-                    step=0.01,
-                    format="%.2f",
-                    help=INPUT_TOOLTIPS["pv_calibration_factor_south"],
-                    key="pv_cal_south",
-                )
+        row1_col1, row1_col2 = st.columns(2)
+        with row1_col1:
+            cfg_panel_wp = st.number_input("Panel power (Wp)", min_value=1, value=int(cfg_pv["panel_wp"]), step=1)
+        with row1_col2:
+            cfg_performance_ratio = st.number_input(
+                "Performance ratio",
+                min_value=0.50,
+                max_value=1.00,
+                step=0.01,
+                value=float(cfg_pv["performance_ratio"]),
+                help=INPUT_TOOLTIPS["performance_ratio"],
+                key="pv_pr",
+            )
 
-            st.markdown("#### Battery")
-            bat_col1, bat_col2 = st.columns(2)
-            with bat_col1:
-                cfg_battery_kwh = st.number_input("Battery capacity (kWh)", min_value=0.1, value=float(effective_cfg["battery"]["battery_kwh"]), step=0.1)
-                cfg_min_soc_percent = st.number_input("Min SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["min_soc_percent"]), step=0.5)
-                cfg_max_cutoff_soc_percent = st.number_input("Max cutoff SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["max_cutoff_soc_percent"]), step=0.5)
-            with bat_col2:
-                cfg_battery_max_charge_kw = st.number_input("Battery max charge (kW)", min_value=0.1, value=float(effective_cfg["battery"]["battery_max_charge_kw"]), step=0.1)
-                cfg_battery_max_discharge_kw = st.number_input("Battery max discharge (kW)", min_value=0.1, value=float(effective_cfg["battery"]["battery_max_discharge_kw"]), step=0.1)
-                cfg_max_ac_charge_kw_hard_limit = st.number_input("Max AC charge kW hard limit", min_value=0.1, value=float(effective_cfg["battery"]["max_ac_charge_kw_hard_limit"]), step=0.1)
+        row2_col1, row2_col2, row2_col3 = st.columns(3)
+        with row2_col1:
+            cfg_array_east_panels = st.number_input("East array panels", min_value=1, value=int(cfg_pv["array_east_panels"]), step=1)
+        with row2_col2:
+            cfg_tilt_east_deg = st.number_input(
+                "Tilt East (deg)",
+                min_value=0.0,
+                max_value=90.0,
+                value=float(cfg_pv["tilt_east_deg"]),
+                step=1.0,
+                format="%.0f",
+            )
+        with row2_col3:
+            cfg_azimuth_east_deg = st.number_input(
+                "Azimuth East (deg)",
+                min_value=0.0,
+                max_value=360.0,
+                value=float(cfg_pv["azimuth_east_deg"]),
+                step=1.0,
+                format="%.0f",
+            )
 
-            st.markdown("#### Load profile")
-            edit_load_profile = st.checkbox("Edit load profile", value=False)
-            cfg_load_profile = [float(v) for v in effective_cfg["load_profile"]["load_profile_24h"]]
-            if edit_load_profile:
-                lp_cols = st.columns(4)
-                for hour in range(24):
-                    with lp_cols[hour % 4]:
-                        cfg_load_profile[hour] = st.number_input(
-                            f"Hour {hour:02d}",
-                            value=float(cfg_load_profile[hour]),
-                            step=0.001,
-                            format="%.3f",
-                            key=f"load_profile_{hour}",
-                        )
+        row3_col1, row3_col2, row3_col3 = st.columns(3)
+        with row3_col1:
+            cfg_array_south_panels = st.number_input("South array panels", min_value=1, value=int(cfg_pv["array_south_panels"]), step=1)
+        with row3_col2:
+            cfg_tilt_south_deg = st.number_input(
+                "Tilt South (deg)",
+                min_value=0.0,
+                max_value=90.0,
+                value=float(cfg_pv["tilt_south_deg"]),
+                step=1.0,
+                format="%.0f",
+            )
+        with row3_col3:
+            cfg_azimuth_south_deg = st.number_input(
+                "Azimuth South (deg)",
+                min_value=0.0,
+                max_value=360.0,
+                value=float(cfg_pv["azimuth_south_deg"]),
+                step=1.0,
+                format="%.0f",
+            )
 
-            btn_left, btn_right = st.columns([3, 2])
-            with btn_left:
-                save_settings = st.form_submit_button(
-                    "Save settings",
-                    type="primary",
-                    width="content",
-                    key="btn_save_settings",
-                )
-            with btn_right:
-                reset_defaults = st.form_submit_button(
-                    "Reset settings to repo defaults",
-                    type="secondary",
-                    width="stretch",
-                    key="btn_reset_defaults",
-                )
+        row4_col1, row4_col2 = st.columns(2)
+        with row4_col1:
+            cfg_pv_loss_model = st.selectbox(
+                "PV loss model",
+                options=["split", "combined"],
+                index=["split", "combined"].index(str(cfg_pv.get("pv_loss_model", "split")).strip().lower() if str(cfg_pv.get("pv_loss_model", "split")).strip().lower() in {"split", "combined"} else "split"),
+                help=INPUT_TOOLTIPS["pv_loss_model"],
+            )
+        with row4_col2:
+            cfg_inverter_ac_kw_limit = st.number_input("Inverter AC limit (kW)", min_value=0.1, value=float(cfg_pv["inverter_ac_kw_limit"]), step=0.1)
+
+        apply_pv_reco = st.button(
+            "Use recommended PV defaults",
+            type="secondary",
+            width="content",
+            key="btn_pv_reco",
+        )
+
+        row5_col1, row5_col2 = st.columns(2)
+        with row5_col1:
+            cfg_inverter_eff = st.number_input(
+                "Inverter efficiency",
+                min_value=0.50,
+                max_value=1.00,
+                value=float(cfg_pv["inverter_eff"]),
+                step=0.01,
+                disabled=(cfg_pv_loss_model == "combined"),
+                help=INPUT_TOOLTIPS["inverter_eff"],
+                key="pv_inverter_eff",
+            )
+        with row5_col2:
+            if cfg_pv_loss_model == "combined":
+                st.caption("Inverter efficiency is not used in combined loss mode.")
+
+        row5b_col1, row5b_col2 = st.columns(2)
+        with row5b_col1:
+            inverter_ac_model_value = str(cfg_pv.get("inverter_ac_model", "linear")).strip().lower()
+            cfg_inverter_ac_model = st.selectbox(
+                "Inverter AC model",
+                options=["linear", "pvwatts"],
+                index=["linear", "pvwatts"].index(inverter_ac_model_value if inverter_ac_model_value in {"linear", "pvwatts"} else "linear"),
+                help=INPUT_TOOLTIPS["inverter_ac_model"],
+                key="pv_inverter_ac_model",
+            )
+        with row5b_col2:
+            iam_model_value = str(cfg_pv.get("iam_model", "none")).strip().lower()
+            cfg_iam_model = st.selectbox(
+                "IAM model",
+                options=["none", "ashrae"],
+                index=["none", "ashrae"].index(iam_model_value if iam_model_value in {"none", "ashrae"} else "none"),
+                help=INPUT_TOOLTIPS["iam_model"],
+                key="pv_iam_model",
+            )
+
+        row5c_col1, row5c_col2 = st.columns(2)
+        with row5c_col1:
+            cfg_iam_ashrae_b = st.number_input(
+                "IAM ASHRAE b",
+                min_value=0.00,
+                max_value=0.50,
+                value=float(cfg_pv.get("iam_ashrae_b", 0.05)),
+                step=0.01,
+                disabled=(cfg_iam_model != "ashrae"),
+                help=INPUT_TOOLTIPS["iam_ashrae_b"],
+                key="pv_iam_b",
+            )
+        with row5c_col2:
+            albedo_default = cfg_pv.get("albedo", None)
+            cfg_albedo_enabled = st.checkbox(
+                "Set custom albedo",
+                value=albedo_default is not None,
+                help=INPUT_TOOLTIPS["albedo_enabled"],
+                key="pv_albedo_enabled",
+            )
+            cfg_albedo = st.number_input(
+                "Albedo",
+                min_value=0.00,
+                max_value=1.00,
+                value=float(albedo_default if albedo_default is not None else 0.20),
+                step=0.01,
+                disabled=(not cfg_albedo_enabled),
+                help=INPUT_TOOLTIPS["albedo"],
+                key="pv_albedo",
+            )
+
+        row6_col1, row6_col2, row6_col3 = st.columns(3)
+        with row6_col1:
+            cfg_pv_calibration_factor = st.number_input(
+                "PV calibration factor (global)",
+                min_value=0.70,
+                max_value=1.30,
+                value=float(cfg_pv.get("pv_calibration_factor", 1.0)),
+                step=0.01,
+                format="%.2f",
+                help=INPUT_TOOLTIPS["pv_calibration_factor"],
+                key="pv_cal_global",
+            )
+        with row6_col2:
+            cfg_pv_calibration_factor_east = st.number_input(
+                "PV calibration factor east (relative)",
+                min_value=0.70,
+                max_value=1.30,
+                value=float(cfg_pv.get("pv_calibration_factor_east", 1.0)),
+                step=0.01,
+                format="%.2f",
+                help=INPUT_TOOLTIPS["pv_calibration_factor_east"],
+                key="pv_cal_east",
+            )
+        with row6_col3:
+            cfg_pv_calibration_factor_south = st.number_input(
+                "PV calibration factor south (relative)",
+                min_value=0.70,
+                max_value=1.30,
+                value=float(cfg_pv.get("pv_calibration_factor_south", 1.0)),
+                step=0.01,
+                format="%.2f",
+                help=INPUT_TOOLTIPS["pv_calibration_factor_south"],
+                key="pv_cal_south",
+            )
+
+        st.markdown("#### Battery")
+        bat_col1, bat_col2 = st.columns(2)
+        with bat_col1:
+            cfg_battery_kwh = st.number_input("Battery capacity (kWh)", min_value=0.1, value=float(effective_cfg["battery"]["battery_kwh"]), step=0.1)
+            cfg_min_soc_percent = st.number_input("Min SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["min_soc_percent"]), step=0.5)
+            cfg_max_cutoff_soc_percent = st.number_input("Max cutoff SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["max_cutoff_soc_percent"]), step=0.5)
+        with bat_col2:
+            cfg_battery_max_charge_kw = st.number_input("Battery max charge (kW)", min_value=0.1, value=float(effective_cfg["battery"]["battery_max_charge_kw"]), step=0.1)
+            cfg_battery_max_discharge_kw = st.number_input("Battery max discharge (kW)", min_value=0.1, value=float(effective_cfg["battery"]["battery_max_discharge_kw"]), step=0.1)
+            cfg_max_ac_charge_kw_hard_limit = st.number_input("Max AC charge kW hard limit", min_value=0.1, value=float(effective_cfg["battery"]["max_ac_charge_kw_hard_limit"]), step=0.1)
+
+        cfg_load_profile = [float(v) for v in effective_cfg["load_profile"]["load_profile_24h"]]
+
+        reset_defaults = st.button(
+            "Reset to defaults",
+            type="secondary",
+            width="stretch",
+            key="btn_reset_defaults",
+        )
 
         if st.session_state.get("_geo_success"):
             st.success(st.session_state["_geo_success"])
@@ -3059,9 +3203,6 @@ with left:
         flash = st.session_state.pop("_settings_flash", None)
         if flash:
             st.success(flash)
-
-        source_label = "local_state/settings.json" if settings_source == "settings.json" else "repo config.json defaults"
-        st.caption(f"Settings source: **{source_label}**")
 
         if apply_pv_reco:
             st.session_state["pv_pr"] = PV_RECO_PR
@@ -3077,115 +3218,59 @@ with left:
             st.session_state["_settings_flash"] = "Applied recommended PV defaults (not saved yet). Click Save settings to persist."
             st.rerun()
 
-        if save_settings:
-            tariff_error = None
-            for day_idx, (from_value, to_value) in enumerate(tariff_inputs):
-                try:
-                    start_min = parse_hhmm(from_value, allow_24_end=False)
-                    end_min = parse_hhmm(to_value, allow_24_end=True)
-                    compute_offpeak_segments(start_min, end_min)
-                except ValueError as exc:
-                    tariff_error = f"Tariff settings error for {day_names[day_idx]}: {exc}"
-                    break
-
-            if tariff_error:
-                st.error(tariff_error)
-            else:
-                selected_to_save = get_selected_weather_models(valid_model_ids)
-                forecast_mode_value = str(st.session_state.get("forecast_mode_select", "Auto (Recommended)"))
-                forecast_mode_to_save = FORECAST_MODE_OPTIONS.get(forecast_mode_value, "auto")
-                if not selected_to_save:
-                    selected_to_save = sorted(list(WEATHER_MODEL_DEFAULT & valid_model_ids)) or sorted(list(valid_model_ids))
-
-                user_sat_setting = bool(st.session_state.get("use_sat_nowcast_expert", saved_sat))
-
-                new_cfg = {
-                    "location": {
-                        "use_geocoding": False,
-                        "address_query": str(st.session_state.get("loc_address_query_display", "")),
-                        "address_structured": {
-                            "street": str(st.session_state.get("loc_street", "")),
-                            "house_number": str(st.session_state.get("loc_house_number", "")),
-                            "postal_code": str(st.session_state.get("loc_postal_code", "")),
-                            "city": str(st.session_state.get("loc_city", "")),
-                            "country": str(st.session_state.get("loc_country", "")),
-                        },
-                        "latitude": float(cfg_latitude),
-                        "longitude": float(cfg_longitude),
-                        "timezone": str(st.session_state["loc_timezone"]),
-                    },
-                    "tariff": {
-                        "peak_grid_price_eur_per_kwh": float(cfg_peak_price_input),
-                        "offpeak_grid_price_eur_per_kwh": float(cfg_offpeak_price_input),
-                        "injection_grid_price_eur_per_kwh": float(cfg_injection_price_input),
-                        "offpeak_windows_by_dow": [
-                            [[from_value, to_value], *[[w_start, w_end] for (w_start, w_end) in tariff_by_day.get(day_idx, [])[1:]]] if tariff_by_day.get(day_idx) else [[from_value, to_value]]
-                            for day_idx, (from_value, to_value) in enumerate(tariff_inputs)
-                        ],
-                    },
-                    "pv": {
-                        "panel_wp": int(cfg_panel_wp),
-                        "array_south_panels": int(cfg_array_south_panels),
-                        "array_east_panels": int(cfg_array_east_panels),
-                        "tilt_east_deg": float(cfg_tilt_east_deg),
-                        "tilt_south_deg": float(cfg_tilt_south_deg),
-                        "azimuth_east_deg": float(cfg_azimuth_east_deg),
-                        "azimuth_south_deg": float(cfg_azimuth_south_deg),
-                        "performance_ratio": float(cfg_performance_ratio),
-                        "inverter_eff": float(cfg_inverter_eff),
-                        "pv_loss_model": str(cfg_pv_loss_model),
-                        "iam_model": str(cfg_iam_model),
-                        "iam_ashrae_b": float(cfg_iam_ashrae_b),
-                        "albedo": (float(cfg_albedo) if cfg_albedo_enabled else None),
-                        "inverter_ac_model": str(cfg_inverter_ac_model),
-                        "pv_calibration_factor": float(cfg_pv_calibration_factor),
-                        "pv_calibration_factor_east": float(cfg_pv_calibration_factor_east),
-                        "pv_calibration_factor_south": float(cfg_pv_calibration_factor_south),
-                        "inverter_ac_kw_limit": float(cfg_inverter_ac_kw_limit),
-                    },
-                    "battery": {
-                        "battery_kwh": float(cfg_battery_kwh),
-                        "min_soc_percent": float(cfg_min_soc_percent),
-                        "max_cutoff_soc_percent": float(cfg_max_cutoff_soc_percent),
-                        "battery_max_charge_kw": float(cfg_battery_max_charge_kw),
-                        "battery_max_discharge_kw": float(cfg_battery_max_discharge_kw),
-                        "max_ac_charge_kw_hard_limit": float(cfg_max_ac_charge_kw_hard_limit),
-                    },
-                    "load_profile": {
-                        "load_profile_24h": [float(v) for v in cfg_load_profile],
-                    },
-                    "weather": {
-                        **((effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {})),
-                        "use_satellite_nowcast_0_6h": user_sat_setting,
-                    },
-                    "weather_models_selected": selected_to_save,
-                    "forecast_mode": forecast_mode_to_save,
-                }
-                try:
-                    updated = api_put(
-                        "/v1/settings",
-                        {
-                            "config": new_cfg,
-                            "nightly_run_time": backend_settings.get("nightly_run_time", "22:00"),
-                            "timezone": str(new_cfg["location"].get("timezone", backend_settings.get("timezone", "Europe/Brussels"))),
-                            "max_ac_charge_power_kw_default": backend_settings.get("max_ac_charge_power_kw_default", 5.0),
-                        },
-                    )
-                    st.cache_data.clear()
-                    st.session_state["_pending_location_state"] = updated["config"]["location"]
-                    st.session_state["_settings_flash"] = "Saved settings to backend"
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Could not save settings: {exc}")
+        st.session_state["_cfg_ui_snapshot"] = {
+            "day_names": day_names,
+            "tariff_inputs": tariff_inputs,
+            "tariff_by_day": tariff_by_day,
+            "cfg_latitude": cfg_latitude,
+            "cfg_longitude": cfg_longitude,
+            "cfg_peak_price_input": cfg_peak_price_input,
+            "cfg_offpeak_price_input": cfg_offpeak_price_input,
+            "cfg_injection_price_input": cfg_injection_price_input,
+            "cfg_panel_wp": cfg_panel_wp,
+            "cfg_array_south_panels": cfg_array_south_panels,
+            "cfg_array_east_panels": cfg_array_east_panels,
+            "cfg_tilt_east_deg": cfg_tilt_east_deg,
+            "cfg_tilt_south_deg": cfg_tilt_south_deg,
+            "cfg_azimuth_east_deg": cfg_azimuth_east_deg,
+            "cfg_azimuth_south_deg": cfg_azimuth_south_deg,
+            "cfg_performance_ratio": cfg_performance_ratio,
+            "cfg_inverter_eff": cfg_inverter_eff,
+            "cfg_pv_loss_model": cfg_pv_loss_model,
+            "cfg_iam_model": cfg_iam_model,
+            "cfg_iam_ashrae_b": cfg_iam_ashrae_b,
+            "cfg_albedo_enabled": cfg_albedo_enabled,
+            "cfg_albedo": cfg_albedo,
+            "cfg_inverter_ac_model": cfg_inverter_ac_model,
+            "cfg_pv_calibration_factor": cfg_pv_calibration_factor,
+            "cfg_pv_calibration_factor_east": cfg_pv_calibration_factor_east,
+            "cfg_pv_calibration_factor_south": cfg_pv_calibration_factor_south,
+            "cfg_inverter_ac_kw_limit": cfg_inverter_ac_kw_limit,
+            "cfg_battery_kwh": cfg_battery_kwh,
+            "cfg_min_soc_percent": cfg_min_soc_percent,
+            "cfg_max_cutoff_soc_percent": cfg_max_cutoff_soc_percent,
+            "cfg_battery_max_charge_kw": cfg_battery_max_charge_kw,
+            "cfg_battery_max_discharge_kw": cfg_battery_max_discharge_kw,
+            "cfg_max_ac_charge_kw_hard_limit": cfg_max_ac_charge_kw_hard_limit,
+            "cfg_load_profile": cfg_load_profile,
+            "saved_sat": bool((effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}).get("use_satellite_nowcast_0_6h", False)),
+        }
+        current_settings_payload, settings_error = build_settings_payload(effective_cfg, valid_model_ids)
+        saved_settings_payload = normalize_effective_cfg_to_payload(effective_cfg, valid_model_ids)
+        settings_valid = settings_error is None and current_settings_payload is not None
+        if settings_valid:
+            current_payload_hash = json.dumps(current_settings_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            saved_payload_hash = json.dumps(saved_settings_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            settings_dirty = current_payload_hash != saved_payload_hash
+        else:
+            settings_dirty = True
 
         if reset_defaults:
             st.session_state["confirm_reset_repo_defaults_open"] = True
 
         if st.session_state.get("confirm_reset_repo_defaults_open"):
             with st.container(border=True):
-                st.warning(
-                    "Resetting will overwrite local_state/settings.json with config.json defaults (plus required migrations)."
-                )
+                st.warning("Resetting will restore all settings to their default values.")
                 st.caption("This action cannot be undone.")
                 confirm_col, cancel_col = st.columns(2)
                 with confirm_col:
@@ -3207,7 +3292,7 @@ with left:
                         updated = api_post("/v1/settings/reset_to_repo_defaults", {})
                         st.cache_data.clear()
                         st.session_state["_pending_location_state"] = updated["config"]["location"]
-                        st.session_state["_settings_flash"] = "Reset settings to repo defaults."
+                        st.session_state["_settings_flash"] = "Reset to defaults."
                         st.session_state["confirm_reset_repo_defaults_open"] = False
                         for mid in WEATHER_MODEL_ORDER:
                             st.session_state.pop(f"wm_{mid}", None)
@@ -3346,13 +3431,35 @@ with left:
                 selected_models = []
 
     ensemble_method = "weighted"
-    run = st.button(
-        "Run forecast",
-        type="primary",
-        disabled=(forecast_mode == "expert" and not bool(selected_models)),
-    )
+    spacer, col_save, col_run = st.columns([6, 1.4, 1.4])
+    with col_save:
+        save_clicked = st.button(
+            "Save settings",
+            type="secondary",
+            disabled=(not settings_valid) or (not settings_dirty),
+            key="btn_save_settings_top",
+        )
+    with col_run:
+        run_clicked = st.button(
+            "Run forecast",
+            type="primary",
+            disabled=(forecast_mode == "expert" and not bool(selected_models)),
+            key="btn_run_forecast",
+        )
 
-if run:
+    if save_clicked:
+        if not settings_valid:
+            st.error(settings_error or "Could not save settings.")
+        else:
+            save_settings_payload(current_settings_payload)
+
+if run_clicked:
+    if settings_dirty:
+        if not settings_valid:
+            st.error(settings_error or "Could not save settings.")
+            st.stop()
+        save_settings_payload(current_settings_payload)
+        st.stop()
     st.session_state.last_soc = soc_percent
     st.session_state.last_kwh = yesterday_kwh
     try:
