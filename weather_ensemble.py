@@ -11,6 +11,7 @@ from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -163,13 +164,22 @@ def get_model_caps(model_id: str) -> dict[str, Any]:
 
 
 def auto_select_models_for_location(lat: float | object, lon: float | None = None, requested_days: int = 1) -> list[str]:
+    lat_valid = True
     if lon is None and hasattr(lat, "latitude") and hasattr(lat, "longitude"):
         _lat = float(getattr(lat, "latitude"))
         _lon = float(getattr(lat, "longitude"))
     else:
-        _lat = float(lat)
-        _lon = float(lon if lon is not None else 0.0)
-    del _lat, _lon
+        try:
+            _lat = float(lat)
+            _lon = float(lon if lon is not None else 0.0)
+        except (TypeError, ValueError):
+            _lat = 0.0
+            _lon = 0.0
+            lat_valid = False
+
+    if not (-90.0 <= _lat <= 90.0 and -180.0 <= _lon <= 180.0):
+        lat_valid = False
+
     horizon = max(1, int(requested_days or 1))
 
     eligible = [
@@ -197,29 +207,61 @@ def auto_select_models_for_location(lat: float | object, lon: float | None = Non
                         break
         return selected[:max_models]
 
-    if horizon <= 2:
-        return _pick_preferred(
-            [
-                "dwd_icon_d2",
-                "knmi_harmonie_arome",
-                "ecmwf_ifs",
-                "dwd_icon_eu",
-                "meteofrance_seamless",
-                "gfs",
-            ]
-        )
+    if not lat_valid:
+        chosen = _pick_preferred(stable_priority)
+        return chosen or eligible[:1]
 
-    if horizon >= 7:
-        return _pick_preferred(
-            [
-                "ecmwf_ifs",
-                "dwd_icon_eu",
-                "meteofrance_seamless",
-                "gfs",
-            ]
-        )
+    in_benelux = 49.0 <= _lat <= 54.0 and 2.0 <= _lon <= 8.0
+    in_europe = 35.0 <= _lat <= 72.0 and -15.0 <= _lon <= 35.0
 
-    return _pick_preferred(["ecmwf_ifs", "dwd_icon_eu", "meteofrance_seamless", "gfs", "knmi_harmonie_arome"])
+    if in_benelux:
+        preferred = (
+            ["knmi_harmonie_arome", "dwd_icon_d2", "dwd_icon_eu", "ecmwf_ifs"]
+            if horizon <= 2
+            else ["knmi_harmonie_arome", "dwd_icon_eu", "ecmwf_ifs", "gfs"]
+        )
+        chosen = _pick_preferred(preferred)
+    elif in_europe:
+        chosen = _pick_preferred(["dwd_icon_eu", "meteofrance_seamless", "ecmwf_ifs", "gfs"])
+    else:
+        chosen = _pick_preferred(["ecmwf_ifs", "gfs"])
+
+    if chosen:
+        return chosen
+    if eligible:
+        return eligible[:1]
+    fallback_any = [m for m in stable_priority if m in WEATHER_MODELS]
+    return fallback_any[:1]
+
+
+def should_use_satellite_nowcast_auto(
+    *,
+    latitude: float,
+    longitude: float,
+    timezone_name: str,
+    requested_days: int,
+    now_utc: dt.datetime | None = None,
+) -> bool:
+    if int(requested_days or 1) > 1:
+        return False
+
+    tz = ZoneInfo(str(timezone_name or "Europe/Brussels"))
+    now_utc = now_utc or dt.datetime.now(dt.timezone.utc)
+    now_local = now_utc.astimezone(tz)
+    horizon_end = now_local + dt.timedelta(hours=6)
+    sample_times = pd.date_range(start=now_local, end=horizon_end, freq="30min", tz=tz)
+    if sample_times.empty:
+        return False
+
+    try:
+        import pvlib  # type: ignore
+
+        pvloc = pvlib.location.Location(latitude=float(latitude), longitude=float(longitude), tz=str(tz.key))
+        solpos = pvloc.get_solarposition(sample_times)
+        elevations = pd.to_numeric(solpos.get("apparent_elevation"), errors="coerce")
+        return bool((elevations > 0).fillna(False).any())
+    except Exception:
+        return False
 
 WEATHER_MODEL_ALIASES: dict[str, str] = {
     "icon_d2": "dwd_icon_d2",
