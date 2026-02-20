@@ -26,16 +26,17 @@ INPUT_TOOLTIPS = {
     "soc_percent": "This is your battery level at 22:00. It matters because charging need is based on how full the battery already is. Example: 35 means the battery starts at 35%.",
     "yesterday_kwh": "This is your total home usage yesterday. It matters because the app uses it to estimate tomorrow's hourly load. Example: if yesterday was 18 kWh, tomorrow's hourly load profile scales to 18 kWh.",
     "buffer_percent": "This adds a safety margin to the target SOC. It matters when forecasts are uncertain. Example: 3% means the target cutoff SOC is increased by 3 percentage points.",
-    "performance_ratio": "This is overall PV system efficiency after real-world losses. It matters because lower efficiency means lower expected production. Example: 0.85 means around 85% of ideal output.",
-    "inverter_eff": "This is inverter conversion efficiency from DC to AC. It matters when PV loss model is split; in combined mode it is ignored in PV calculations.",
+    "performance_ratio": "Overall PV real-world efficiency after losses. Recommended starting point: 0.82. Typical working range: 0.70–0.85. Example: 0.82 means you expect about 82% of ideal output.",
+    "inverter_eff": "DC→AC inverter efficiency (only used in split loss mode). Recommended: 0.97. Typical range: 0.95–0.98 for modern inverters.",
     "pv_loss_model": "Choose how PV losses are applied before inverter modeling: split = performance ratio then inverter efficiency/model, combined = performance ratio only.",
-    "iam_model": "Incidence-angle modifier model for reflection losses at high sun angles. none keeps legacy behavior; ashrae applies AOI-based optical losses.",
-    "iam_ashrae_b": "ASHRAE IAM coefficient b (only used when IAM model = ashrae). Typical range 0.02-0.12; higher means stronger angular losses.",
-    "albedo": "Ground reflectance used in transposition (None keeps pvlib default). Typical values: 0.2 grass, 0.6+ bright snow.",
-    "inverter_ac_model": "AC conversion model: linear reproduces legacy constant multiplier, pvwatts enables part-load inverter efficiency behavior.",
-    "pv_calibration_factor": "Global PV tuning factor applied to both arrays. Effective east = global × east, effective south = global × south. 1.00 = unchanged.",
-    "pv_calibration_factor_east": "East-array relative tuning factor multiplied by the global PV calibration factor. 1.00 keeps east at the global factor.",
-    "pv_calibration_factor_south": "South-array relative tuning factor multiplied by the global PV calibration factor. 1.00 keeps south at the global factor.",
+    "iam_model": "IAM (Incidence Angle Modifier) models reflection losses when sunlight hits at steep angles (morning/evening, especially east/west). none: ignore angle losses. ashrae: apply AOI losses using IAM ASHRAE b.",
+    "iam_ashrae_b": "ASHRAE IAM coefficient b (only used when IAM model = ashrae). Recommended: 0.05. Typical range: 0.03–0.08. Higher b reduces early/late power more.",
+    "albedo": "Ground reflectance. Recommended default: 0.20 (grass). Asphalt ~0.10–0.15. Snow can be 0.60+. Only change if your ground conditions are unusual.",
+    "albedo_enabled": "Enable only if you want to override albedo manually. Leave OFF for normal use. Turn ON for unusual ground reflectance (snow, very bright surfaces).",
+    "inverter_ac_model": "How DC power becomes AC power. linear: AC = DC × inverter efficiency, then clip at the inverter AC limit (simple). pvwatts: part-load inverter behavior (more realistic at low power). Example: 2.0 kW DC with 0.97 → ~1.94 kW AC in linear mode before clipping.",
+    "pv_calibration_factor": "Global PV tuning factor. Start at 1.00. Effective east = global × east(relative). Effective south = global × south(relative). Use only after comparing forecast vs actual.",
+    "pv_calibration_factor_east": "East relative tuning multiplied by global. Start at 1.00. Example: global 0.95 and east 1.02 → effective east 0.969.",
+    "pv_calibration_factor_south": "South relative tuning multiplied by global. Start at 1.00. Example: global 0.95 and south 0.98 → effective south 0.931.",
     "max_ac_user_cap": "The app computes a recommended AC charge power from required energy and off-peak window hours. This field is your safety cap: final used value is min(recommended, your cap, inverter/battery limits).",
 }
 
@@ -99,6 +100,16 @@ BADGE_ALIASES = {
 }
 
 UI_PROGRESS_BAR_HEIGHT_PX = 8
+
+PV_RECO_PR = 0.82
+PV_RECO_INVERTER_EFF = 0.97
+PV_RECO_INVERTER_AC_MODEL = "pvwatts"
+PV_RECO_IAM_MODEL = "ashrae"
+PV_RECO_IAM_B = 0.05
+PV_RECO_ALBEDO = 0.20
+PV_RECO_CAL_GLOBAL = 1.00
+PV_RECO_CAL_EAST = 1.00
+PV_RECO_CAL_SOUTH = 1.00
 
 
 def _esc(s: str) -> str:
@@ -2831,23 +2842,53 @@ with left:
                     max_value=1.00,
                     step=0.01,
                     value=float(cfg_pv["performance_ratio"]),
+                    help=INPUT_TOOLTIPS["performance_ratio"],
+                    key="pv_pr",
                 )
 
             row2_col1, row2_col2, row2_col3 = st.columns(3)
             with row2_col1:
                 cfg_array_east_panels = st.number_input("East array panels", min_value=1, value=int(cfg_pv["array_east_panels"]), step=1)
             with row2_col2:
-                cfg_tilt_east_deg = st.number_input("Tilt East (deg)", value=float(cfg_pv["tilt_east_deg"]), step=0.1)
+                cfg_tilt_east_deg = st.number_input(
+                    "Tilt East (deg)",
+                    min_value=0.0,
+                    max_value=90.0,
+                    value=float(cfg_pv["tilt_east_deg"]),
+                    step=1.0,
+                    format="%.0f",
+                )
             with row2_col3:
-                cfg_azimuth_east_deg = st.number_input("Azimuth East (deg)", value=float(cfg_pv["azimuth_east_deg"]), step=0.1)
+                cfg_azimuth_east_deg = st.number_input(
+                    "Azimuth East (deg)",
+                    min_value=0.0,
+                    max_value=360.0,
+                    value=float(cfg_pv["azimuth_east_deg"]),
+                    step=1.0,
+                    format="%.0f",
+                )
 
             row3_col1, row3_col2, row3_col3 = st.columns(3)
             with row3_col1:
                 cfg_array_south_panels = st.number_input("South array panels", min_value=1, value=int(cfg_pv["array_south_panels"]), step=1)
             with row3_col2:
-                cfg_tilt_south_deg = st.number_input("Tilt South (deg)", value=float(cfg_pv["tilt_south_deg"]), step=0.1)
+                cfg_tilt_south_deg = st.number_input(
+                    "Tilt South (deg)",
+                    min_value=0.0,
+                    max_value=90.0,
+                    value=float(cfg_pv["tilt_south_deg"]),
+                    step=1.0,
+                    format="%.0f",
+                )
             with row3_col3:
-                cfg_azimuth_south_deg = st.number_input("Azimuth South (deg)", value=float(cfg_pv["azimuth_south_deg"]), step=0.1)
+                cfg_azimuth_south_deg = st.number_input(
+                    "Azimuth South (deg)",
+                    min_value=0.0,
+                    max_value=360.0,
+                    value=float(cfg_pv["azimuth_south_deg"]),
+                    step=1.0,
+                    format="%.0f",
+                )
 
             row4_col1, row4_col2 = st.columns(2)
             with row4_col1:
@@ -2860,6 +2901,13 @@ with left:
             with row4_col2:
                 cfg_inverter_ac_kw_limit = st.number_input("Inverter AC limit (kW)", min_value=0.1, value=float(cfg_pv["inverter_ac_kw_limit"]), step=0.1)
 
+            apply_pv_reco = st.form_submit_button(
+                "Use recommended PV defaults",
+                type="secondary",
+                width="content",
+                key="btn_pv_reco",
+            )
+
             row5_col1, row5_col2 = st.columns(2)
             with row5_col1:
                 cfg_inverter_eff = st.number_input(
@@ -2870,12 +2918,11 @@ with left:
                     step=0.01,
                     disabled=(cfg_pv_loss_model == "combined"),
                     help=INPUT_TOOLTIPS["inverter_eff"],
+                    key="pv_inverter_eff",
                 )
             with row5_col2:
                 if cfg_pv_loss_model == "combined":
-                    st.caption("Inverter efficiency is ignored for linear mode in combined losses and treated as nominal eta for pvwatts.")
-                else:
-                    st.caption("In split mode, inverter efficiency feeds the selected AC model.")
+                    st.caption("Inverter efficiency is not used in combined loss mode.")
 
             row5b_col1, row5b_col2 = st.columns(2)
             with row5b_col1:
@@ -2885,6 +2932,7 @@ with left:
                     options=["linear", "pvwatts"],
                     index=["linear", "pvwatts"].index(inverter_ac_model_value if inverter_ac_model_value in {"linear", "pvwatts"} else "linear"),
                     help=INPUT_TOOLTIPS["inverter_ac_model"],
+                    key="pv_inverter_ac_model",
                 )
             with row5b_col2:
                 iam_model_value = str(cfg_pv.get("iam_model", "none")).strip().lower()
@@ -2893,6 +2941,7 @@ with left:
                     options=["none", "ashrae"],
                     index=["none", "ashrae"].index(iam_model_value if iam_model_value in {"none", "ashrae"} else "none"),
                     help=INPUT_TOOLTIPS["iam_model"],
+                    key="pv_iam_model",
                 )
 
             row5c_col1, row5c_col2 = st.columns(2)
@@ -2905,10 +2954,16 @@ with left:
                     step=0.01,
                     disabled=(cfg_iam_model != "ashrae"),
                     help=INPUT_TOOLTIPS["iam_ashrae_b"],
+                    key="pv_iam_b",
                 )
             with row5c_col2:
                 albedo_default = cfg_pv.get("albedo", None)
-                cfg_albedo_enabled = st.checkbox("Set custom albedo", value=albedo_default is not None)
+                cfg_albedo_enabled = st.checkbox(
+                    "Set custom albedo",
+                    value=albedo_default is not None,
+                    help=INPUT_TOOLTIPS["albedo_enabled"],
+                    key="pv_albedo_enabled",
+                )
                 cfg_albedo = st.number_input(
                     "Albedo",
                     min_value=0.00,
@@ -2917,6 +2972,7 @@ with left:
                     step=0.01,
                     disabled=(not cfg_albedo_enabled),
                     help=INPUT_TOOLTIPS["albedo"],
+                    key="pv_albedo",
                 )
 
             row6_col1, row6_col2, row6_col3 = st.columns(3)
@@ -2929,6 +2985,7 @@ with left:
                     step=0.01,
                     format="%.2f",
                     help=INPUT_TOOLTIPS["pv_calibration_factor"],
+                    key="pv_cal_global",
                 )
             with row6_col2:
                 cfg_pv_calibration_factor_east = st.number_input(
@@ -2939,6 +2996,7 @@ with left:
                     step=0.01,
                     format="%.2f",
                     help=INPUT_TOOLTIPS["pv_calibration_factor_east"],
+                    key="pv_cal_east",
                 )
             with row6_col3:
                 cfg_pv_calibration_factor_south = st.number_input(
@@ -2949,6 +3007,7 @@ with left:
                     step=0.01,
                     format="%.2f",
                     help=INPUT_TOOLTIPS["pv_calibration_factor_south"],
+                    key="pv_cal_south",
                 )
 
             st.markdown("#### Battery")
@@ -3003,6 +3062,20 @@ with left:
 
         source_label = "local_state/settings.json" if settings_source == "settings.json" else "repo config.json defaults"
         st.caption(f"Settings source: **{source_label}**")
+
+        if apply_pv_reco:
+            st.session_state["pv_pr"] = PV_RECO_PR
+            st.session_state["pv_inverter_eff"] = PV_RECO_INVERTER_EFF
+            st.session_state["pv_inverter_ac_model"] = PV_RECO_INVERTER_AC_MODEL
+            st.session_state["pv_iam_model"] = PV_RECO_IAM_MODEL
+            st.session_state["pv_iam_b"] = PV_RECO_IAM_B
+            st.session_state["pv_albedo_enabled"] = False
+            st.session_state["pv_albedo"] = PV_RECO_ALBEDO
+            st.session_state["pv_cal_global"] = PV_RECO_CAL_GLOBAL
+            st.session_state["pv_cal_east"] = PV_RECO_CAL_EAST
+            st.session_state["pv_cal_south"] = PV_RECO_CAL_SOUTH
+            st.session_state["_settings_flash"] = "Applied recommended PV defaults (not saved yet). Click Save settings to persist."
+            st.rerun()
 
         if save_settings:
             tariff_error = None
@@ -3138,6 +3211,19 @@ with left:
                         st.session_state["confirm_reset_repo_defaults_open"] = False
                         for mid in WEATHER_MODEL_ORDER:
                             st.session_state.pop(f"wm_{mid}", None)
+                        for k in [
+                            "pv_pr",
+                            "pv_inverter_eff",
+                            "pv_inverter_ac_model",
+                            "pv_iam_model",
+                            "pv_iam_b",
+                            "pv_albedo_enabled",
+                            "pv_albedo",
+                            "pv_cal_global",
+                            "pv_cal_east",
+                            "pv_cal_south",
+                        ]:
+                            st.session_state.pop(k, None)
                         st.rerun()
                     except Exception as exc:
                         st.error(f"Could not reset settings: {exc}")
