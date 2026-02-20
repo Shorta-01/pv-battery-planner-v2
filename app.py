@@ -280,7 +280,7 @@ def build_settings_payload(effective_cfg: dict, valid_model_ids: set[str]) -> tu
     return new_cfg, None
 
 
-def save_settings_payload(new_cfg: dict) -> bool:
+def save_settings_payload(new_cfg: dict, *, rerun: bool = True) -> bool:
     try:
         updated = api_put(
             "/v1/settings",
@@ -294,7 +294,8 @@ def save_settings_payload(new_cfg: dict) -> bool:
         st.cache_data.clear()
         st.session_state["_pending_location_state"] = updated["config"]["location"]
         st.session_state["_settings_flash"] = "Saved settings to backend"
-        st.rerun()
+        if rerun:
+            st.rerun()
     except Exception as exc:
         st.error(f"Could not save settings: {exc}")
         return False
@@ -515,6 +516,9 @@ def inject_tooltip_css() -> None:
         .pvbp-badge-icon {
             font-size: 14px;
             line-height: 1;
+        }
+        .stButton>button {
+            white-space: nowrap;
         }
         </style>
         """,
@@ -3189,21 +3193,10 @@ with left:
 
         cfg_load_profile = [float(v) for v in effective_cfg["load_profile"]["load_profile_24h"]]
 
-        reset_defaults = st.button(
-            "Reset to defaults",
-            type="secondary",
-            width="stretch",
-            key="btn_reset_defaults",
-        )
-
         if st.session_state.get("_geo_success"):
             st.success(st.session_state["_geo_success"])
         if st.session_state.get("_geo_error"):
             st.error(st.session_state["_geo_error"])
-        flash = st.session_state.pop("_settings_flash", None)
-        if flash:
-            st.success(flash)
-
         if apply_pv_reco:
             st.session_state["pv_pr"] = PV_RECO_PR
             st.session_state["pv_inverter_eff"] = PV_RECO_INVERTER_EFF
@@ -3264,57 +3257,6 @@ with left:
             settings_dirty = current_payload_hash != saved_payload_hash
         else:
             settings_dirty = True
-
-        if reset_defaults:
-            st.session_state["confirm_reset_repo_defaults_open"] = True
-
-        if st.session_state.get("confirm_reset_repo_defaults_open"):
-            with st.container(border=True):
-                st.warning("Resetting will restore all settings to their default values.")
-                st.caption("This action cannot be undone.")
-                confirm_col, cancel_col = st.columns(2)
-                with confirm_col:
-                    confirm_reset = st.button(
-                        "Yes, reset now",
-                        type="primary",
-                        key="btn_confirm_reset_repo_defaults",
-                        width="stretch",
-                    )
-                with cancel_col:
-                    cancel_reset = st.button(
-                        "Cancel",
-                        key="btn_cancel_reset_repo_defaults",
-                        width="stretch",
-                    )
-
-                if confirm_reset:
-                    try:
-                        updated = api_post("/v1/settings/reset_to_repo_defaults", {})
-                        st.cache_data.clear()
-                        st.session_state["_pending_location_state"] = updated["config"]["location"]
-                        st.session_state["_settings_flash"] = "Reset to defaults."
-                        st.session_state["confirm_reset_repo_defaults_open"] = False
-                        for mid in WEATHER_MODEL_ORDER:
-                            st.session_state.pop(f"wm_{mid}", None)
-                        for k in [
-                            "pv_pr",
-                            "pv_inverter_eff",
-                            "pv_inverter_ac_model",
-                            "pv_iam_model",
-                            "pv_iam_b",
-                            "pv_albedo_enabled",
-                            "pv_albedo",
-                            "pv_cal_global",
-                            "pv_cal_east",
-                            "pv_cal_south",
-                        ]:
-                            st.session_state.pop(k, None)
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Could not reset settings: {exc}")
-                if cancel_reset:
-                    st.session_state["confirm_reset_repo_defaults_open"] = False
-                    st.rerun()
 
     with st.expander("Advanced"):
         buffer_percent = st.slider("Forecast safety buffer SOC (%)", 0.0, 10.0, 0.0, 0.5, help=INPUT_TOOLTIPS["buffer_percent"])
@@ -3431,13 +3373,21 @@ with left:
                 selected_models = []
 
     ensemble_method = "weighted"
-    spacer, col_save, col_run = st.columns([6, 1.4, 1.4])
+    spacer, col_reset, col_save, col_run = st.columns([5.0, 2.2, 2.2, 2.2])
+    with col_reset:
+        reset_clicked = st.button(
+            "Reset to defaults",
+            type="secondary",
+            key="btn_reset_defaults",
+            width="stretch",
+        )
     with col_save:
         save_clicked = st.button(
             "Save settings",
             type="secondary",
             disabled=(not settings_valid) or (not settings_dirty),
             key="btn_save_settings_top",
+            width="stretch",
         )
     with col_run:
         run_clicked = st.button(
@@ -3445,7 +3395,63 @@ with left:
             type="primary",
             disabled=(forecast_mode == "expert" and not bool(selected_models)),
             key="btn_run_forecast",
+            width="stretch",
         )
+
+    if reset_clicked:
+        st.session_state["confirm_reset_repo_defaults_open"] = True
+
+    if st.session_state.get("confirm_reset_repo_defaults_open"):
+        with st.container(border=True):
+            st.warning("Resetting will restore all settings to their default values.")
+            st.caption("This action cannot be undone.")
+            confirm_col, cancel_col = st.columns(2)
+            with confirm_col:
+                confirm_reset = st.button(
+                    "Yes, reset now",
+                    type="primary",
+                    key="btn_confirm_reset_repo_defaults",
+                    width="stretch",
+                )
+            with cancel_col:
+                cancel_reset = st.button(
+                    "Cancel",
+                    key="btn_cancel_reset_repo_defaults",
+                    width="stretch",
+                )
+
+            if confirm_reset:
+                try:
+                    updated = api_post("/v1/settings/reset_to_repo_defaults", {})
+                    st.cache_data.clear()
+                    st.session_state["_pending_location_state"] = updated["config"]["location"]
+                    st.session_state["_settings_flash"] = "Reset to defaults."
+                    st.session_state["confirm_reset_repo_defaults_open"] = False
+                    for mid in WEATHER_MODEL_ORDER:
+                        st.session_state.pop(f"wm_{mid}", None)
+                    for k in [
+                        "pv_pr",
+                        "pv_inverter_eff",
+                        "pv_inverter_ac_model",
+                        "pv_iam_model",
+                        "pv_iam_b",
+                        "pv_albedo_enabled",
+                        "pv_albedo",
+                        "pv_cal_global",
+                        "pv_cal_east",
+                        "pv_cal_south",
+                    ]:
+                        st.session_state.pop(k, None)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not reset settings: {exc}")
+            if cancel_reset:
+                st.session_state["confirm_reset_repo_defaults_open"] = False
+                st.rerun()
+
+    flash = st.session_state.pop("_settings_flash", None)
+    if flash:
+        st.success(flash)
 
     if save_clicked:
         if not settings_valid:
@@ -3458,8 +3464,9 @@ if run_clicked:
         if not settings_valid:
             st.error(settings_error or "Could not save settings.")
             st.stop()
-        save_settings_payload(current_settings_payload)
-        st.stop()
+        ok = save_settings_payload(current_settings_payload, rerun=False)
+        if not ok:
+            st.stop()
     st.session_state.last_soc = soc_percent
     st.session_state.last_kwh = yesterday_kwh
     try:
