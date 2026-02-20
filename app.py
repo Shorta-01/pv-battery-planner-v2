@@ -715,7 +715,7 @@ def render_weather_models(
     selected_models: list[str] = []
 
     st.markdown(
-        "<style>.wm-name{cursor:help}.wm-badges{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;row-gap:4px}.wm-lock{font-size:1rem;line-height:1.6rem;opacity:0.85}</style>",
+        "<style>.wm-name{cursor:help}.wm-badges{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;row-gap:4px}.wm-lock{font-size:1rem;opacity:0.85;display:flex;align-items:center;justify-content:center;height:100%;line-height:1}</style>",
         unsafe_allow_html=True,
     )
 
@@ -2990,6 +2990,8 @@ with left:
         if yesterday_kwh < 2.0 or yesterday_kwh > 60.0:
             st.error("Run forecast is blocked: Yesterday total consumption must be between 2.0 and 60.0 kWh. If yesterday was unusual, enter a typical day such as 12.0 kWh.")
 
+    weather_models_box = st.container()
+
     with st.expander("Settings", expanded=False):
         st.markdown("#### Location")
         addr_col, status_col, btn_col = st.columns([6, 1, 2], vertical_alignment="center")
@@ -3169,16 +3171,7 @@ with left:
                 format="%.0f",
             )
 
-        row4_col1, row4_col2 = st.columns(2)
-        with row4_col1:
-            cfg_pv_loss_model = st.selectbox(
-                "PV loss model",
-                options=["split", "combined"],
-                index=["split", "combined"].index(str(cfg_pv.get("pv_loss_model", "split")).strip().lower() if str(cfg_pv.get("pv_loss_model", "split")).strip().lower() in {"split", "combined"} else "split"),
-                help=INPUT_TOOLTIPS["pv_loss_model"],
-            )
-        with row4_col2:
-            cfg_inverter_ac_kw_limit = st.number_input("Inverter AC limit (kW)", min_value=0.1, value=float(cfg_pv["inverter_ac_kw_limit"]), step=0.1, help=get_help("inverter_ac_kw_limit"))
+        cfg_inverter_ac_kw_limit = st.number_input("Inverter AC limit (kW)", min_value=0.1, value=float(cfg_pv["inverter_ac_kw_limit"]), step=0.1, help=get_help("inverter_ac_kw_limit"))
 
         apply_pv_reco = st.button(
             "Use recommended PV defaults",
@@ -3187,107 +3180,155 @@ with left:
             key="btn_pv_reco",
         )
 
-        row5_col1, row5_col2 = st.columns(2)
-        with row5_col1:
-            cfg_inverter_eff = st.number_input(
-                "Inverter efficiency",
-                min_value=0.50,
-                max_value=1.00,
-                value=float(cfg_pv["inverter_eff"]),
-                step=0.01,
-                disabled=(cfg_pv_loss_model == "combined"),
-                help=INPUT_TOOLTIPS["inverter_eff"],
-                key="pv_inverter_eff",
-            )
-        with row5_col2:
-            if cfg_pv_loss_model == "combined":
-                st.caption("Inverter efficiency is not used in combined loss mode.")
+        with st.expander("Advanced", expanded=False):
+            with st.expander("Advanced PV modelling", expanded=False):
+                row4_col1, row4_col2 = st.columns(2)
+                with row4_col1:
+                    cfg_pv_loss_model = st.selectbox(
+                        "PV loss model",
+                        options=["split", "combined"],
+                        index=["split", "combined"].index(str(cfg_pv.get("pv_loss_model", "split")).strip().lower() if str(cfg_pv.get("pv_loss_model", "split")).strip().lower() in {"split", "combined"} else "split"),
+                        help=INPUT_TOOLTIPS["pv_loss_model"],
+                    )
+                with row4_col2:
+                    cfg_inverter_eff = st.number_input(
+                        "Inverter efficiency",
+                        min_value=0.50,
+                        max_value=1.00,
+                        value=float(cfg_pv["inverter_eff"]),
+                        step=0.01,
+                        disabled=(cfg_pv_loss_model == "combined"),
+                        help=INPUT_TOOLTIPS["inverter_eff"],
+                        key="pv_inverter_eff",
+                    )
+                if cfg_pv_loss_model == "combined":
+                    st.caption("Inverter efficiency is not used in combined loss mode.")
 
-        row5b_col1, row5b_col2 = st.columns(2)
-        with row5b_col1:
-            inverter_ac_model_value = str(cfg_pv.get("inverter_ac_model", "linear")).strip().lower()
-            cfg_inverter_ac_model = st.selectbox(
-                "Inverter AC model",
-                options=["linear", "pvwatts"],
-                index=["linear", "pvwatts"].index(inverter_ac_model_value if inverter_ac_model_value in {"linear", "pvwatts"} else "linear"),
-                help=INPUT_TOOLTIPS["inverter_ac_model"],
-                key="pv_inverter_ac_model",
-            )
-        with row5b_col2:
-            iam_model_value = str(cfg_pv.get("iam_model", "none")).strip().lower()
-            cfg_iam_model = st.selectbox(
-                "IAM model",
-                options=["none", "ashrae"],
-                index=["none", "ashrae"].index(iam_model_value if iam_model_value in {"none", "ashrae"} else "none"),
-                help=INPUT_TOOLTIPS["iam_model"],
-                key="pv_iam_model",
-            )
+                row5b_col1, row5b_col2 = st.columns(2)
+                with row5b_col1:
+                    inverter_ac_model_value = str(cfg_pv.get("inverter_ac_model", "linear")).strip().lower()
+                    cfg_inverter_ac_model = st.selectbox(
+                        "Inverter AC model",
+                        options=["linear", "pvwatts"],
+                        index=["linear", "pvwatts"].index(inverter_ac_model_value if inverter_ac_model_value in {"linear", "pvwatts"} else "linear"),
+                        help=INPUT_TOOLTIPS["inverter_ac_model"],
+                        key="pv_inverter_ac_model",
+                    )
+                with row5b_col2:
+                    iam_model_value = str(cfg_pv.get("iam_model", "none")).strip().lower()
+                    cfg_iam_model = st.selectbox(
+                        "IAM model",
+                        options=["none", "ashrae"],
+                        index=["none", "ashrae"].index(iam_model_value if iam_model_value in {"none", "ashrae"} else "none"),
+                        help=INPUT_TOOLTIPS["iam_model"],
+                        key="pv_iam_model",
+                    )
 
-        row5c_col1, row5c_col2 = st.columns(2)
-        with row5c_col1:
-            cfg_iam_ashrae_b = st.number_input(
-                "IAM ASHRAE b",
-                min_value=0.00,
-                max_value=0.50,
-                value=float(cfg_pv.get("iam_ashrae_b", 0.05)),
-                step=0.01,
-                disabled=(cfg_iam_model != "ashrae"),
-                help=INPUT_TOOLTIPS["iam_ashrae_b"],
-                key="pv_iam_b",
-            )
-        with row5c_col2:
-            albedo_default = cfg_pv.get("albedo", None)
-            cfg_albedo_enabled = st.checkbox(
-                "Set custom albedo",
-                value=albedo_default is not None,
-                help=INPUT_TOOLTIPS["albedo_enabled"],
-                key="pv_albedo_enabled",
-            )
-            cfg_albedo = st.number_input(
-                "Albedo",
-                min_value=0.00,
-                max_value=1.00,
-                value=float(albedo_default if albedo_default is not None else 0.20),
-                step=0.01,
-                disabled=(not cfg_albedo_enabled),
-                help=INPUT_TOOLTIPS["albedo"],
-                key="pv_albedo",
-            )
+                row5c_col1, row5c_col2 = st.columns(2)
+                with row5c_col1:
+                    cfg_iam_ashrae_b = st.number_input(
+                        "IAM ASHRAE b",
+                        min_value=0.00,
+                        max_value=0.50,
+                        value=float(cfg_pv.get("iam_ashrae_b", 0.05)),
+                        step=0.01,
+                        disabled=(cfg_iam_model != "ashrae"),
+                        help=INPUT_TOOLTIPS["iam_ashrae_b"],
+                        key="pv_iam_b",
+                    )
+                with row5c_col2:
+                    albedo_default = cfg_pv.get("albedo", None)
+                    cfg_albedo_enabled = st.checkbox(
+                        "Set custom albedo",
+                        value=albedo_default is not None,
+                        help=INPUT_TOOLTIPS["albedo_enabled"],
+                        key="pv_albedo_enabled",
+                    )
+                    cfg_albedo = st.number_input(
+                        "Albedo",
+                        min_value=0.00,
+                        max_value=1.00,
+                        value=float(albedo_default if albedo_default is not None else 0.20),
+                        step=0.01,
+                        disabled=(not cfg_albedo_enabled),
+                        help=INPUT_TOOLTIPS["albedo"],
+                        key="pv_albedo",
+                    )
 
-        row6_col1, row6_col2, row6_col3 = st.columns(3)
-        with row6_col1:
-            cfg_pv_calibration_factor = st.number_input(
-                "PV calibration factor (global)",
-                min_value=0.70,
-                max_value=1.30,
-                value=float(cfg_pv.get("pv_calibration_factor", 1.0)),
-                step=0.01,
-                format="%.2f",
-                help=INPUT_TOOLTIPS["pv_calibration_factor"],
-                key="pv_cal_global",
+                row6_col1, row6_col2, row6_col3 = st.columns(3)
+                with row6_col1:
+                    cfg_pv_calibration_factor = st.number_input(
+                        "PV calibration factor (global)",
+                        min_value=0.70,
+                        max_value=1.30,
+                        value=float(cfg_pv.get("pv_calibration_factor", 1.0)),
+                        step=0.01,
+                        format="%.2f",
+                        help=INPUT_TOOLTIPS["pv_calibration_factor"],
+                        key="pv_cal_global",
+                    )
+                with row6_col2:
+                    cfg_pv_calibration_factor_east = st.number_input(
+                        "PV calibration factor east (relative)",
+                        min_value=0.70,
+                        max_value=1.30,
+                        value=float(cfg_pv.get("pv_calibration_factor_east", 1.0)),
+                        step=0.01,
+                        format="%.2f",
+                        help=INPUT_TOOLTIPS["pv_calibration_factor_east"],
+                        key="pv_cal_east",
+                    )
+                with row6_col3:
+                    cfg_pv_calibration_factor_south = st.number_input(
+                        "PV calibration factor south (relative)",
+                        min_value=0.70,
+                        max_value=1.30,
+                        value=float(cfg_pv.get("pv_calibration_factor_south", 1.0)),
+                        step=0.01,
+                        format="%.2f",
+                        help=INPUT_TOOLTIPS["pv_calibration_factor_south"],
+                        key="pv_cal_south",
+                    )
+
+            buffer_percent = st.slider("Forecast safety buffer SOC (%)", 0.0, 10.0, 0.0, 0.5, help=get_help("buffer_percent"))
+            user_max_ac_kw = st.number_input(
+                "Max allowed AC charge power (kW)",
+                min_value=0.0,
+                max_value=10.0,
+                value=float(backend_settings.get("max_ac_charge_power_kw_default", 5.0)),
+                step=0.1,
+                help=get_help("max_ac_user_cap"),
             )
-        with row6_col2:
-            cfg_pv_calibration_factor_east = st.number_input(
-                "PV calibration factor east (relative)",
-                min_value=0.70,
-                max_value=1.30,
-                value=float(cfg_pv.get("pv_calibration_factor_east", 1.0)),
-                step=0.01,
-                format="%.2f",
-                help=INPUT_TOOLTIPS["pv_calibration_factor_east"],
-                key="pv_cal_east",
-            )
-        with row6_col3:
-            cfg_pv_calibration_factor_south = st.number_input(
-                "PV calibration factor south (relative)",
-                min_value=0.70,
-                max_value=1.30,
-                value=float(cfg_pv.get("pv_calibration_factor_south", 1.0)),
-                step=0.01,
-                format="%.2f",
-                help=INPUT_TOOLTIPS["pv_calibration_factor_south"],
-                key="pv_cal_south",
-            )
+            nightly_time_str = str(backend_settings.get("nightly_run_time", "22:00"))
+            try:
+                nightly_minutes = parse_hhmm(nightly_time_str)
+            except ValueError:
+                nightly_minutes = parse_hhmm("22:00")
+                st.warning("Stored nightly run time was invalid, so 22:00 is shown instead.")
+
+            nightly_hour, nightly_minute = divmod(nightly_minutes, 60)
+            nightly_time_value = dt.time(hour=nightly_hour, minute=nightly_minute)
+
+            nightly_run_time = st.time_input(
+                "Nightly run time (HH:MM)",
+                value=nightly_time_value,
+                step=dt.timedelta(minutes=5),
+                help="Pick scheduler time. It controls automatic run timing. Example: 22:00.",
+            ).strftime("%H:%M")
+            if st.button("Save nightly schedule settings"):
+                try:
+                    api_put(
+                        "/v1/settings",
+                        {
+                            "config": effective_cfg,
+                            "nightly_run_time": nightly_run_time,
+                            "timezone": str(effective_cfg.get("location", {}).get("timezone", backend_settings.get("timezone", "Europe/Brussels"))),
+                            "max_ac_charge_power_kw_default": float(user_max_ac_kw),
+                        },
+                    )
+                    st.success("Saved nightly schedule settings.")
+                except Exception as exc:
+                    st.error(f"Could not save nightly settings: {exc}")
 
         st.markdown("#### Battery")
         bat_col1, bat_col2 = st.columns(2)
@@ -3367,47 +3408,9 @@ with left:
         else:
             settings_dirty = True
 
-    with st.container(border=True):
-        st.markdown("#### Advanced")
-        buffer_percent = st.slider("Forecast safety buffer SOC (%)", 0.0, 10.0, 0.0, 0.5, help=get_help("buffer_percent"))
-        user_max_ac_kw = st.number_input(
-            "Max allowed AC charge power (kW)",
-            min_value=0.0,
-            max_value=10.0,
-            value=float(backend_settings.get("max_ac_charge_power_kw_default", 5.0)),
-            step=0.1,
-            help=get_help("max_ac_user_cap"),
-        )
-        nightly_time_str = str(backend_settings.get("nightly_run_time", "22:00"))
-        try:
-            nightly_minutes = parse_hhmm(nightly_time_str)
-        except ValueError:
-            nightly_minutes = parse_hhmm("22:00")
-            st.warning("Stored nightly run time was invalid, so 22:00 is shown instead.")
-
-        nightly_hour, nightly_minute = divmod(nightly_minutes, 60)
-        nightly_time_value = dt.time(hour=nightly_hour, minute=nightly_minute)
-
-        nightly_run_time = st.time_input(
-            "Nightly run time (HH:MM)",
-            value=nightly_time_value,
-            step=dt.timedelta(minutes=5),
-            help="Pick scheduler time. It controls automatic run timing. Example: 22:00.",
-        ).strftime("%H:%M")
-        if st.button("Save nightly schedule settings"):
-            try:
-                api_put(
-                    "/v1/settings",
-                    {
-                        "config": effective_cfg,
-                        "nightly_run_time": nightly_run_time,
-                        "timezone": str(effective_cfg.get("location", {}).get("timezone", backend_settings.get("timezone", "Europe/Brussels"))),
-                        "max_ac_charge_power_kw_default": float(user_max_ac_kw),
-                    },
-                )
-                st.success("Saved nightly schedule settings.")
-            except Exception as exc:
-                st.error(f"Could not save nightly settings: {exc}")
+    wm_latitude = float(st.session_state.get("loc_latitude", core.LATITUDE))
+    wm_longitude = float(st.session_state.get("loc_longitude", core.LONGITUDE))
+    wm_timezone = str(st.session_state.get("loc_timezone", core.TIMEZONE))
 
     model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
     available_ids = set(model_options.keys())
@@ -3425,21 +3428,24 @@ with left:
     current_mode = str(effective_cfg.get("forecast_mode", "auto")).strip().lower()
     mode_label_default = "Expert" if current_mode == "expert" else "Auto (System picks the best models)"
 
-    weather_models_box = st.empty()
-    with weather_models_box.container():
+    with weather_models_box:
         with st.expander("Weather models", expanded=True):
-            forecast_mode_label = st.selectbox(
-                "Forecast mode",
-                options=["Auto (System picks the best models)", "Expert"],
-                index=0 if mode_label_default != "Expert" else 1,
-                key="forecast_mode_select",
-                help=get_help("forecast_mode"),
-            )
+            mode_col_left, mode_col_right = st.columns([2.8, 2.2], vertical_alignment="center")
+            with mode_col_left:
+                st.markdown(f"Forecast mode <span class='info-tooltip' title='{_esc(get_help('forecast_mode'))}'>ⓘ</span>", unsafe_allow_html=True)
+            with mode_col_right:
+                forecast_mode_label = st.selectbox(
+                    "Forecast mode",
+                    options=["Auto (System picks the best models)", "Expert"],
+                    index=0 if mode_label_default != "Expert" else 1,
+                    key="forecast_mode_select",
+                    label_visibility="collapsed",
+                )
             forecast_mode = FORECAST_MODE_OPTIONS.get(forecast_mode_label, "auto")
             weather_cfg = effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}
             saved_sat = bool(weather_cfg.get("use_satellite_nowcast_0_6h", False))
 
-            auto_selected = set(auto_select_models_for_location(float(cfg_latitude), float(cfg_longitude), requested_days=1)) & available_ids
+            auto_selected = set(auto_select_models_for_location(wm_latitude, wm_longitude, requested_days=1)) & available_ids
             if not auto_selected:
                 auto_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
             used_auto = set(st.session_state.get("last_weather_ensemble_models_used", []) or [])
@@ -3455,13 +3461,13 @@ with left:
                     disabled=True,
                     used_models=used_auto,
                     auto_locked_models=auto_selected,
-                    show_capability_badges=False,
+                    show_capability_badges=True,
                 )
                 selected_models = []
                 sat_nowcast_for_run = should_use_satellite_nowcast_auto(
-                    latitude=float(cfg_latitude),
-                    longitude=float(cfg_longitude),
-                    timezone_name=str(st.session_state.get("loc_timezone", core.TIMEZONE)),
+                    latitude=wm_latitude,
+                    longitude=wm_longitude,
+                    timezone_name=wm_timezone,
                     requested_days=1,
                 )
                 st.checkbox(
