@@ -104,7 +104,12 @@ WEATHER_MODEL_ORDER = [
 ]
 
 WEATHER_MODEL_DEFAULT = {"knmi_harmonie_arome", "dwd_icon_d2", "ecmwf_ifs"}
-FORECAST_MODE_OPTIONS = {"Auto (System picks the best models)": "auto", "Auto (Recommended)": "auto", "Expert": "expert"}
+FORECAST_MODE_OPTIONS = {
+    "Auto": "auto",
+    "Auto (Recommended)": "auto",
+    "Auto (System picks the best models)": "auto",
+    "Expert": "expert",
+}
 
 WEATHER_MODEL_HOVERTEXT = {
     "knmi_harmonie_arome": "High-resolution KNMI regional model for Benelux. Strong for short-term local cloud and wind changes.",
@@ -248,7 +253,7 @@ def build_settings_payload(effective_cfg: dict, valid_model_ids: set[str]) -> tu
     if not selected_to_save:
         selected_to_save = sorted(list(WEATHER_MODEL_DEFAULT & valid_model_ids)) or sorted(list(valid_model_ids))
 
-    forecast_mode_value = str(st.session_state.get("forecast_mode_select", "Auto (System picks the best models)"))
+    forecast_mode_value = str(st.session_state.get("forecast_mode_select", "Auto"))
     forecast_mode_to_save = FORECAST_MODE_OPTIONS.get(forecast_mode_value, "auto")
     user_sat_setting = bool(st.session_state.get("use_sat_nowcast_expert", ui.get("saved_sat", False)))
 
@@ -641,6 +646,15 @@ def badge_chip(icon: str, tip: str) -> str:
     )
 
 
+def text_chip(text: str, tip: str, *, kind: str = "neutral") -> str:
+    title_attr = f' title="{html.escape(tip)}"' if tip else ""
+    return (
+        f'<span class="pvbp-text-chip pvbp-text-chip-{_esc(kind)}"{title_attr}>'
+        f"{html.escape(text)}"
+        "</span>"
+    )
+
+
 def weather_model_option_help(model: dict) -> str:
     badges_raw = list(model.get("badges", []) or [])
     normalized_badges: list[str] = []
@@ -708,14 +722,16 @@ def render_weather_models(
     widget_key_prefix: str = "wm",
     disabled: bool = False,
     used_models: set[str] | None = None,
-    auto_locked_models: set[str] | None = None,
+    auto_selected_models: set[str] | None = None,
+    show_auto_chips: bool = False,
+    show_checkboxes: bool = True,
     show_capability_badges: bool = True,
 ) -> list[str]:
     model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
     selected_models: list[str] = []
 
     st.markdown(
-        "<style>.wm-name{cursor:help}.wm-badges{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;row-gap:4px}.wm-lock{font-size:1rem;opacity:0.85;display:flex;align-items:center;justify-content:center;height:100%;line-height:1}</style>",
+        "<style>.wm-name{cursor:help}.wm-left{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.wm-badges{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;row-gap:4px}.pvbp-text-chip{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;padding:1px 8px;font-size:.72rem;font-weight:700;line-height:1.45;border:1px solid transparent;letter-spacing:.01em}.pvbp-text-chip-auto{background:#e8f0ff;border-color:#bfd5ff;color:#1f4ea3}.pvbp-text-chip-last-ok{background:#e9f8ee;border-color:#b9e8c5;color:#1f7a3d}.pvbp-text-chip-last-warn{background:#fff7e6;border-color:#ffe2ad;color:#8a6200}.pvbp-text-chip-last-fail{background:#fdeaea;border-color:#f6c0c0;color:#9e2c2c}</style>",
         unsafe_allow_html=True,
     )
 
@@ -724,21 +740,43 @@ def render_weather_models(
         if not model:
             continue
 
-        cols = st.columns([0.35, 3.2, 1.3], vertical_alignment="center")
+        cols = st.columns([0.7, 3.0, 1.5], vertical_alignment="center")
 
         with cols[0]:
-            if disabled:
-                lock_icon = "🔒" if (auto_locked_models and model_id in auto_locked_models) else ""
-                st.markdown(f"<div class='wm-lock'>{_esc(lock_icon)}</div>", unsafe_allow_html=True)
-                checked = bool(auto_locked_models and model_id in auto_locked_models)
-            else:
+            if show_checkboxes:
                 checked = st.checkbox(
                     "enabled",
                     value=(model_id in default_selected),
                     key=f"{widget_key_prefix}_{model_id}",
                     label_visibility="collapsed",
-                    disabled=False,
+                    disabled=disabled,
                 )
+            else:
+                checked = bool(auto_selected_models and model_id in auto_selected_models)
+
+            status_icon, status_tip = last_run_status_badge(model_id)
+            chip_html: list[str] = []
+            if show_auto_chips and auto_selected_models and model_id in auto_selected_models:
+                chip_html.append(
+                    text_chip(
+                        "AUTO",
+                        "In Auto mode, the system will try this model for your location and forecast horizon.",
+                        kind="auto",
+                    )
+                )
+            if used_models and model_id in used_models:
+                if status_icon == "❌":
+                    last_label = "LAST ❌"
+                    last_kind = "last-fail"
+                elif status_icon == "⚠":
+                    last_label = "LAST ⚠"
+                    last_kind = "last-warn"
+                else:
+                    last_label = "LAST ✅"
+                    last_kind = "last-ok"
+                    status_tip = status_tip or "Used successfully in the last run."
+                chip_html.append(text_chip(last_label, status_tip, kind=last_kind))
+            st.markdown(f"<div class='wm-left'>{''.join(chip_html)}</div>", unsafe_allow_html=True)
 
         with cols[1]:
             label = str(model.get("label") or model_id)
@@ -750,17 +788,8 @@ def render_weather_models(
 
         with cols[2]:
             static_badges = list(model.get("badges") or [])
-            status_icon, status_tip = last_run_status_badge(model_id)
 
             badge_html: list[str] = []
-            if status_icon:
-                badge_html.append(
-                    f"<span class='pvbp-badge' title='{_esc(status_tip)}'><span class='pvbp-badge-icon'>{_esc(status_icon)}</span></span>"
-                )
-
-            if used_models and model_id in used_models and status_icon != "❌":
-                badge_html.append(badge_chip("✅", "Used in the last run."))
-
             if show_capability_badges:
                 for badge in static_badges:
                     icon = _normalize_badge_icon(str(badge))
@@ -3426,21 +3455,22 @@ with left:
         initial_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
 
     current_mode = str(effective_cfg.get("forecast_mode", "auto")).strip().lower()
-    mode_label_default = "Expert" if current_mode == "expert" else "Auto (System picks the best models)"
+    mode_label_default = "Expert" if current_mode == "expert" else "Auto"
 
     with weather_models_box:
         with st.expander("Weather models", expanded=True):
-            mode_col_left, mode_col_right = st.columns([2.8, 2.2], vertical_alignment="center")
-            with mode_col_left:
-                st.markdown(f"Forecast mode <span class='info-tooltip' title='{_esc(get_help('forecast_mode'))}'>ⓘ</span>", unsafe_allow_html=True)
-            with mode_col_right:
-                forecast_mode_label = st.selectbox(
-                    "Forecast mode",
-                    options=["Auto (System picks the best models)", "Expert"],
-                    index=0 if mode_label_default != "Expert" else 1,
-                    key="forecast_mode_select",
-                    label_visibility="collapsed",
-                )
+            ui_mode_value = str(st.session_state.get("forecast_mode_select", "")).strip()
+            if ui_mode_value and ui_mode_value not in {"Auto", "Expert"}:
+                normalized_mode = FORECAST_MODE_OPTIONS.get(ui_mode_value, "auto")
+                st.session_state["forecast_mode_select"] = "Expert" if normalized_mode == "expert" else "Auto"
+
+            forecast_mode_label = st.selectbox(
+                "Forecast mode",
+                options=["Auto", "Expert"],
+                index=0 if mode_label_default != "Expert" else 1,
+                key="forecast_mode_select",
+                help=get_help("forecast_mode"),
+            )
             forecast_mode = FORECAST_MODE_OPTIONS.get(forecast_mode_label, "auto")
             weather_cfg = effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}
             saved_sat = bool(weather_cfg.get("use_satellite_nowcast_0_6h", False))
@@ -3451,16 +3481,15 @@ with left:
             used_auto = set(st.session_state.get("last_weather_ensemble_models_used", []) or [])
 
             if forecast_mode == "auto":
-                st.markdown("**System will try:** " + " ".join([f"`{(model_options.get(mid, {}).get('label', mid)).split()[0]}`" for mid in WEATHER_MODEL_ORDER if mid in auto_selected]))
-                used_line = " ".join([f"`{mid}`" for mid in used_auto]) if used_auto else "(no previous run yet)"
-                st.markdown(f"**Used in last run:** {used_line}")
                 _ = render_weather_models(
                     weather_models_catalog,
                     auto_selected,
                     widget_key_prefix="wm_auto",
                     disabled=True,
                     used_models=used_auto,
-                    auto_locked_models=auto_selected,
+                    auto_selected_models=auto_selected,
+                    show_auto_chips=True,
+                    show_checkboxes=False,
                     show_capability_badges=True,
                 )
                 selected_models = []
@@ -3482,6 +3511,9 @@ with left:
                     weather_models_catalog,
                     initial_selected,
                     widget_key_prefix="wm",
+                    used_models=used_auto,
+                    show_auto_chips=False,
+                    show_checkboxes=True,
                     show_capability_badges=True,
                 )
                 sat_nowcast_ui = st.checkbox(
