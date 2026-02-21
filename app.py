@@ -659,6 +659,15 @@ def text_chip(text: str, tip: str, *, kind: str = "neutral") -> str:
     )
 
 
+def icon_chip(icon_text: str, tip: str, *, kind: str = "neutral") -> str:
+    title_attr = f' title="{html.escape(tip)}"' if tip else ""
+    return (
+        f'<span class="pvbp-icon-chip pvbp-icon-chip-{_esc(kind)}"{title_attr}>'
+        f"{html.escape(icon_text)}"
+        "</span>"
+    )
+
+
 def weather_model_option_help(model: dict) -> str:
     badges_raw = list(model.get("badges", []) or [])
     normalized_badges: list[str] = []
@@ -735,7 +744,7 @@ def render_weather_models(
     selected_models: list[str] = []
 
     st.markdown(
-        "<style>.wm-name{cursor:help}.wm-left{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.wm-badges{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;row-gap:4px}.pvbp-text-chip{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;padding:1px 8px;font-size:.72rem;font-weight:700;line-height:1.45;border:1px solid transparent;letter-spacing:.01em}.pvbp-text-chip-auto{background:#e8f0ff;border-color:#bfd5ff;color:#1f4ea3}.pvbp-text-chip-last-ok{background:#e9f8ee;border-color:#b9e8c5;color:#1f7a3d}.pvbp-text-chip-last-warn{background:#fff7e6;border-color:#ffe2ad;color:#8a6200}.pvbp-text-chip-last-fail{background:#fdeaea;border-color:#f6c0c0;color:#9e2c2c}</style>",
+        "<style>.wm-name{cursor:help}.wm-left{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.wm-badges{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;row-gap:4px}.pvbp-text-chip{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;padding:1px 8px;font-size:.72rem;font-weight:700;line-height:1.45;border:1px solid transparent;letter-spacing:.01em}.pvbp-text-chip-auto{background:#e8f0ff;border-color:#bfd5ff;color:#1f4ea3}.pvbp-text-chip-last-ok{background:#e9f8ee;border-color:#b9e8c5;color:#1f7a3d}.pvbp-text-chip-last-warn{background:#fff7e6;border-color:#ffe2ad;color:#8a6200}.pvbp-text-chip-last-fail{background:#fdeaea;border-color:#f6c0c0;color:#9e2c2c}.pvbp-icon-chip{background:transparent;border:none;padding:0;margin:0;font-size:1em;line-height:1;cursor:help;display:inline-block}.pvbp-icon-chip-auto{color:#1f4ea3}.pvbp-icon-chip-last-ok{color:#1f7a3d}.pvbp-icon-chip-last-warn{color:#8a6200}.pvbp-icon-chip-last-fail{color:#9e2c2c}</style>",
         unsafe_allow_html=True,
     )
 
@@ -762,7 +771,7 @@ def render_weather_models(
             chip_html: list[str] = []
             if show_auto_chips and auto_selected_models and model_id in auto_selected_models:
                 chip_html.append(
-                    text_chip(
+                    icon_chip(
                         "✨",
                         "Auto mode will try this model for your location and forecast horizon.",
                         kind="auto",
@@ -781,7 +790,7 @@ def render_weather_models(
                     last_label = "✅"
                     last_kind = "last-ok"
                     status_tip = status_tip or "Used successfully in the last run."
-                chip_html.append(text_chip(last_label, status_tip, kind=last_kind))
+                chip_html.append(icon_chip(last_label, status_tip, kind=last_kind))
             st.markdown(f"<div class='wm-left'>{''.join(chip_html)}</div>", unsafe_allow_html=True)
 
         with cols[1]:
