@@ -685,6 +685,20 @@ class BackendState:
         self._save_settings()
         return self.settings
 
+    def reset_settings_to_factory_defaults(self) -> dict:
+        preserved = copy.deepcopy(self.settings.get("config", {}).get("tariff", {}).get("offpeak_windows_by_dow"))
+        self.settings = self._build_settings_from_repo_defaults()
+        if isinstance(preserved, list):
+            self.settings["config"].setdefault("tariff", {})["offpeak_windows_by_dow"] = preserved
+        self._apply_config(self.settings["config"])
+        self.settings["timezone"] = str(
+            self.settings["config"].get("location", {}).get("timezone")
+            or self.settings.get("timezone")
+            or "Europe/Brussels"
+        )
+        self._save_settings()
+        return self.settings
+
     def update_inputs(self, payload: InputsPayload) -> dict:
         now_local = dt.datetime.now(self._tzinfo()).isoformat()
         self.last_inputs = {
@@ -1392,6 +1406,12 @@ def put_settings(payload: SettingsPayload, authorization: str | None = Header(de
 def reset_settings_to_repo_defaults(authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
     return state.reset_settings_to_repo_defaults()
+
+
+@app.post("/v1/settings/factory_settings")
+def reset_settings_to_factory_defaults(authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return state.reset_settings_to_factory_defaults()
 
 
 @app.get("/v1/inputs/last")
