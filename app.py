@@ -3151,7 +3151,7 @@ with left:
         tariff_by_day = core.parse_offpeak_windows_by_dow(tariff_source)
         default_tariff_by_day = core.parse_offpeak_windows_by_dow(core.DEFAULT_CONFIG["tariff"]["offpeak_windows_by_dow"])
 
-        header_cols = st.columns([1.0, 1.2, 1.2], vertical_alignment="bottom")
+        header_cols = st.columns([1.0, 1.2, 1.6], vertical_alignment="bottom")
         header_cols[0].markdown("**Day**")
         header_cols[1].markdown("**From**")
         header_cols[2].markdown("**To**")
@@ -3160,7 +3160,7 @@ with left:
         for day_idx, day_name in enumerate(day_names):
             day_windows = tariff_by_day.get(day_idx) or default_tariff_by_day.get(day_idx, [("00:00", "24:00")])
             day_from, day_to = day_windows[0]
-            cols = st.columns([1.0, 1.2, 1.2, 2.8], vertical_alignment="center")
+            cols = st.columns([1.0, 1.2, 1.6], vertical_alignment="center")
             cols[0].markdown(f"{day_name[:3]}")
             from_value = cols[1].text_input(
                 f"From {day_name}",
@@ -3168,21 +3168,26 @@ with left:
                 key=f"tariff_from_{day_idx}",
                 label_visibility="collapsed",
             ).strip()
-            to_value = cols[2].text_input(
-                f"To {day_name}",
-                value=day_to,
-                key=f"tariff_to_{day_idx}",
-                label_visibility="collapsed",
-            ).strip()
+            with cols[2]:
+                to_inner = st.columns([4.0, 0.6], vertical_alignment="center")
+                to_value = to_inner[0].text_input(
+                    f"To {day_name}",
+                    value=day_to,
+                    key=f"tariff_to_{day_idx}",
+                    label_visibility="collapsed",
+                ).strip()
             tariff_inputs.append((from_value, to_value))
             try:
                 start_min = parse_hhmm(from_value, allow_24_end=False)
                 end_min = parse_hhmm(to_value, allow_24_end=True)
                 compute_offpeak_segments(start_min, end_min)
-                cols[3].caption("✅")
+                to_inner[1].markdown("&nbsp;", unsafe_allow_html=True)
             except ValueError as exc:
-                message = f"{day_name}: {exc}"
-                cols[3].caption(f"⚠️ {message}")
+                message = html.escape(f"{day_name}: {exc}", quote=True)
+                to_inner[1].markdown(
+                    f'<span title="{message}" style="cursor: help; color: #ff6b6b;">❌</span>',
+                    unsafe_allow_html=True,
+                )
 
         st.markdown("#### PV")
         cfg_pv = effective_cfg["pv"]
