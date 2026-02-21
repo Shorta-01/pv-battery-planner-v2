@@ -3140,7 +3140,7 @@ with left:
         for day_idx, day_name in enumerate(day_names):
             day_windows = tariff_by_day.get(day_idx) or default_tariff_by_day.get(day_idx, [("00:00", "24:00")])
             day_from, day_to = day_windows[0]
-            cols = st.columns([1.0, 1.2, 1.2], vertical_alignment="center")
+            cols = st.columns([1.0, 1.2, 1.2, 2.8], vertical_alignment="center")
             cols[0].markdown(f"{day_name[:3]}")
             from_value = cols[1].text_input(
                 f"From {day_name}",
@@ -3155,26 +3155,14 @@ with left:
                 label_visibility="collapsed",
             ).strip()
             tariff_inputs.append((from_value, to_value))
-
-        tq1, tq2, tq3 = st.columns(3)
-        if tq1.button("Copy Mon → Tue–Fri", key="btn_tariff_copy_weekdays", width="stretch"):
-            mon_from = st.session_state.get("tariff_from_0", "00:00")
-            mon_to = st.session_state.get("tariff_to_0", "24:00")
-            for idx in [1, 2, 3, 4]:
-                st.session_state[f"tariff_from_{idx}"] = mon_from
-                st.session_state[f"tariff_to_{idx}"] = mon_to
-            st.rerun()
-        if tq2.button("Set weekend to 24h", key="btn_tariff_weekend_24h", width="stretch"):
-            for idx in [5, 6]:
-                st.session_state[f"tariff_from_{idx}"] = "00:00"
-                st.session_state[f"tariff_to_{idx}"] = "24:00"
-            st.rerun()
-        if tq3.button("Reset", key="btn_tariff_reset_only", width="stretch"):
-            for idx in range(7):
-                default_day = default_tariff_by_day.get(idx, [("00:00", "24:00")])[0]
-                st.session_state[f"tariff_from_{idx}"] = default_day[0]
-                st.session_state[f"tariff_to_{idx}"] = default_day[1]
-            st.rerun()
+            try:
+                start_min = parse_hhmm(from_value, allow_24_end=False)
+                end_min = parse_hhmm(to_value, allow_24_end=True)
+                compute_offpeak_segments(start_min, end_min)
+                cols[3].caption("✅")
+            except ValueError as exc:
+                message = f"{day_name}: {exc}"
+                cols[3].caption(f"⚠️ {message}")
 
         st.markdown("#### PV")
         cfg_pv = effective_cfg["pv"]
@@ -3597,7 +3585,7 @@ with left:
     spacer, col_reset, col_save, col_run = st.columns([4.2, 2.6, 2.2, 2.2])
     with col_reset:
         reset_clicked = st.button(
-            "Reset all settings",
+            "Factory settings",
             type="secondary",
             key="btn_reset_defaults",
             width="stretch",
@@ -3624,8 +3612,8 @@ with left:
 
     if st.session_state.get("confirm_reset_repo_defaults_open"):
         with st.container(border=True):
-            st.warning("Resetting will restore all settings to their default values.")
-            st.caption("This action cannot be undone.")
+            st.warning("Factory settings will restore default settings, but will keep your Off-peak hours time windows.")
+            st.caption("This action cannot be undone. Off-peak hours time windows will be preserved.")
             confirm_col, cancel_col = st.columns(2)
             with confirm_col:
                 confirm_reset = st.button(
@@ -3643,26 +3631,30 @@ with left:
 
             if confirm_reset:
                 try:
-                    updated = api_post("/v1/settings/reset_to_repo_defaults", {})
+                    updated = api_post("/v1/settings/factory_settings", {})
                     st.cache_data.clear()
                     st.session_state["_pending_location_state"] = updated["config"]["location"]
-                    st.session_state["_settings_flash"] = "Reset to defaults."
+                    st.session_state["_settings_flash"] = "Factory settings applied."
                     st.session_state["confirm_reset_repo_defaults_open"] = False
+                    clear_prefixes = ("cfg_", "loc_", "pv_", "battery_", "wm_", "forecast_mode", "nightly_run_time")
+                    clear_widget_keys = {
+                        "tariff_peak_price",
+                        "tariff_offpeak_price",
+                        "tariff_injection_price",
+                        "forecast_mode_select",
+                        "use_sat_nowcast_auto",
+                        "use_sat_nowcast_expert",
+                        "nightly_run_time_input",
+                    }
+                    preserve_prefixes = ("tariff_from_", "tariff_to_", "_api_")
+                    preserve_keys = {"api_token", "api_token_input", "api_token_validated"}
+                    for key in list(st.session_state.keys()):
+                        if key.startswith(preserve_prefixes) or key in preserve_keys:
+                            continue
+                        if key.startswith(clear_prefixes) or key in clear_widget_keys:
+                            st.session_state.pop(key, None)
                     for mid in WEATHER_MODEL_ORDER:
                         st.session_state.pop(f"wm_{mid}", None)
-                    for k in [
-                        "pv_pr",
-                        "pv_inverter_eff",
-                        "pv_inverter_ac_model",
-                        "pv_iam_model",
-                        "pv_iam_b",
-                        "pv_albedo_enabled",
-                        "pv_albedo",
-                        "pv_cal_global",
-                        "pv_cal_east",
-                        "pv_cal_south",
-                    ]:
-                        st.session_state.pop(k, None)
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Could not reset settings: {exc}")
