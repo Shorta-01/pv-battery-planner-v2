@@ -121,7 +121,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
     "gfs": {
         "label": "NOAA GFS",
         "endpoint": "https://api.open-meteo.com/v1/forecast",
-        "params": {"models": "gfs"},
+        "params": {"models": "gfs_seamless"},
         "badges": ["🌐", "🧭"],
         "recommended_for_be": True,
         "max_days": 16,
@@ -275,7 +275,7 @@ HISTORICAL_FORECAST_MODEL_PARAMS: dict[str, str] = {
     "ecmwf_ifs": "ecmwf_ifs",
     "dwd_icon_eu": "icon_eu",
     "meteofrance_seamless": "meteofrance_seamless",
-    "gfs": "gfs",
+    "gfs": "gfs_seamless",
 }
 
 BASE_HOURLY_VARIABLES = [
