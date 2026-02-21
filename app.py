@@ -3684,7 +3684,6 @@ if run_clicked:
             )
             st.session_state["last_forecast_mode"] = forecast_mode
             st.session_state["last_weather_ensemble_models_used"] = list(models_used)
-            forecast_mode, selected_models, sat_nowcast_for_run = render_weather_models_panel()
             tomorrow = dt.date.fromisoformat(result["target_date"])
             weather_df = df_from_split(result["weather"])
             pv = df_from_split(result["pv"])
