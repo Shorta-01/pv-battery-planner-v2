@@ -27,7 +27,7 @@ PLOTLY_DARK = "plotly_dark"
 INPUT_TOOLTIPS = {
     "soc_percent": "This is your battery level at 22:00. It matters because charging need is based on how full the battery already is. Example: 35 means the battery starts at 35%.",
     "yesterday_kwh": "This is your total home usage yesterday. It matters because the app uses it to estimate tomorrow's hourly load. Example: if yesterday was 18 kWh, tomorrow's hourly load profile scales to 18 kWh.",
-    "buffer_percent": "This adds a safety margin to the target SOC. It matters when forecasts are uncertain. Example: 3% means the target cutoff SOC is increased by 3 percentage points.",
+    "buffer_percent": "Adds a small safety margin to the charging cutoff SOC we calculate for tonight. This helps when tomorrow’s solar forecast is wrong or your home uses more power than expected. Example: if the planner suggests charging to 60% and you set 3%, the target becomes 63%. This does not change Min SOC.",
     "performance_ratio": "Overall PV real-world efficiency after losses. Recommended starting point: 0.82. Typical working range: 0.70–0.85. Example: 0.82 means you expect about 82% of ideal output.",
     "inverter_eff": "DC→AC inverter efficiency (only used in split loss mode). Recommended: 0.97. Typical range: 0.95–0.98 for modern inverters.",
     "pv_loss_model": "Choose how PV losses are applied before inverter modeling: split = performance ratio then inverter efficiency/model, combined = performance ratio only.",
@@ -38,7 +38,7 @@ INPUT_TOOLTIPS = {
     "inverter_ac_model": "How DC power becomes AC power. linear: AC = DC × inverter efficiency, then clip at the inverter AC limit (simple). pvwatts: part-load inverter behavior (more realistic at low power). Example: 2.0 kW DC with 0.97 → ~1.94 kW AC in linear mode before clipping.",
     "pv_calibration_factor_east": "Directly scales EAST PV energy. Start at 1.00, keep within 0.70–1.30, and tune after comparing forecast vs actual.",
     "pv_calibration_factor_south": "Directly scales SOUTH PV energy. Start at 1.00, keep within 0.70–1.30, and tune after comparing forecast vs actual.",
-    "max_ac_user_cap": "The app computes a recommended AC charge power from required energy and off-peak window hours. This field is your safety cap: final used value is min(recommended, your cap, inverter/battery limits).",
+    "max_ac_user_cap": "The app computes a recommended AC charge power from required energy and off-peak window hours. This field is your safety cap: final used value is min(recommended, your cap, inverter/battery limits). Battery hardware max charge is shown in the Battery section.",
 }
 
 
@@ -380,7 +380,7 @@ def save_settings_payload(new_cfg: dict, *, rerun: bool = True) -> bool:
             "/v1/settings",
             {
                 "config": new_cfg,
-                "nightly_run_time": str(st.session_state.get("nightly_run_time_input", backend_settings.get("nightly_run_time", "22:00"))),
+                "nightly_run_time": str(backend_settings.get("nightly_run_time", "22:00")),
                 "timezone": str(new_cfg["location"].get("timezone", backend_settings.get("timezone", "Europe/Brussels"))),
                 "max_ac_charge_power_kw_default": float(st.session_state.get("cfg_max_grid_charge_power_kw", backend_settings.get("max_ac_charge_power_kw_default", 5.0))),
             },
@@ -3254,48 +3254,16 @@ with left:
 
         with st.expander("Advanced", expanded=False):
             st.markdown("##### Scheduler & Safety")
-            safety_col, nightly_col = st.columns(2, vertical_alignment="bottom")
-            with safety_col:
-                buffer_percent = st.slider("Forecast safety buffer SOC (%)", 0.0, 10.0, 0.0, 0.5, help=get_help("buffer_percent"))
-            with nightly_col:
-                nightly_time_str = str(backend_settings.get("nightly_run_time", "22:00"))
-                try:
-                    nightly_minutes = parse_hhmm(nightly_time_str)
-                except ValueError:
-                    nightly_minutes = parse_hhmm("22:00")
-                    st.warning("Stored nightly run time was invalid, so 22:00 is shown instead.")
-                nightly_hour, nightly_minute = divmod(nightly_minutes, 60)
-                nightly_time_value = dt.time(hour=nightly_hour, minute=nightly_minute)
-                nightly_run_time = st.time_input(
-                    "Nightly run time (HH:MM)",
-                    value=nightly_time_value,
-                    step=dt.timedelta(minutes=5),
-                    help="Pick scheduler time. It controls automatic run timing. Example: 22:00.",
-                ).strftime("%H:%M")
-                st.session_state["nightly_run_time_input"] = nightly_run_time
-
-            st.markdown("##### Power limits")
-            power_col1, power_col2 = st.columns(2, vertical_alignment="bottom")
-            with power_col1:
-                st.number_input(
-                    "Inverter AC limit (kW)",
-                    min_value=0.1,
-                    value=float(cfg_pv["inverter_ac_kw_limit"]),
-                    step=0.1,
-                    disabled=True,
-                    key="adv_inverter_ac_limit_display",
-                    help=get_help("inverter_ac_kw_limit"),
-                )
-            with power_col2:
-                st.number_input(
-                    "Battery max charge (kW)",
-                    min_value=0.0,
-                    value=float(effective_cfg["battery"].get("battery_max_charge_kw", core.BATTERY_MAX_CHARGE_KW)),
-                    step=0.1,
-                    disabled=True,
-                    key="adv_battery_max_charge_display",
-                    help=get_help("battery_max_charge_kw"),
-                )
+            buffer_percent = st.number_input(
+                "Extra cutoff buffer (%)",
+                min_value=0.0,
+                max_value=10.0,
+                value=0.0,
+                step=0.5,
+                format="%.1f",
+                help=get_help("buffer_percent"),
+                key="extra_cutoff_buffer_percent",
+            )
 
             st.markdown("##### PV modelling")
             cfg_pv_loss_model = st.selectbox(
@@ -3387,6 +3355,15 @@ with left:
                 value=float(backend_settings.get("max_ac_charge_power_kw_default", 5.0)),
                 step=0.1,
                 help=get_help("max_ac_user_cap"),
+            )
+            st.number_input(
+                "Battery max charge (kW) (hardware limit)",
+                min_value=0.0,
+                value=float(effective_cfg["battery"].get("battery_max_charge_kw", core.BATTERY_MAX_CHARGE_KW)),
+                step=0.1,
+                disabled=True,
+                help=get_help("battery_max_charge_kw"),
+                key="battery_max_charge_hw_display",
             )
         user_max_ac_kw = float(cfg_max_grid_charge_power_kw)
 
@@ -3627,7 +3604,6 @@ with left:
                         "forecast_mode_select",
                         "use_sat_nowcast_auto",
                         "use_sat_nowcast_expert",
-                        "nightly_run_time_input",
                     }
                     preserve_prefixes = ("tariff_from_", "tariff_to_", "_api_")
                     preserve_keys = {"api_token", "api_token_input", "api_token_validated"}
