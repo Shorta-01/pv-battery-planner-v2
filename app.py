@@ -3059,6 +3059,7 @@ with left:
                 st.error("Run forecast is blocked: Yesterday total consumption must be between 2.0 and 60.0 kWh. Enter a typical day such as 12.0 kWh if yesterday was unusual.")
 
     weather_models_box = st.empty()
+    car_charger_box = st.empty()
 
     with st.expander("Settings", expanded=False):
         st.markdown("#### Location")
@@ -3607,79 +3608,102 @@ with left:
 
 
     def render_car_charger_panel() -> None:
-        with st.expander("Car charger", expanded=True):
-            evse = get_evse_status()
+        # Renders in the placeholder created above (between Weather models and Settings)
+        with car_charger_box.container():
+            with st.expander("Car charger", expanded=True):
+                evse = get_evse_status()
 
-            enabled = bool(evse.get("enabled", False))
-            connected = bool(evse.get("connected", False))
-            plugged = bool(evse.get("is_plugged", False))
-            charging = bool(evse.get("is_charging", False))
-            status = str(evse.get("status", "unknown") or "unknown")
-            last_seen = evse.get("last_seen_iso")
-            auth_mode = str(evse.get("auth_mode", "unknown") or "unknown")
-            last_error = evse.get("last_error")
+                enabled = bool(evse.get("enabled", False))
+                connected = bool(evse.get("connected", False))
+                plugged = bool(evse.get("is_plugged", False))
+                charging = bool(evse.get("is_charging", False))
 
-            ocpp_label = "Connected ✅" if connected else "Disconnected ❌"
-            st.markdown(f"**OCPP:** {ocpp_label}  \n**EVSE state:** {status}")
+                status = str(evse.get("status") or "unknown")
+                last_seen = evse.get("last_seen_iso")
+                auth_mode = str(evse.get("auth_mode") or "unknown")
+                last_error = evse.get("last_error")
 
-            diag_cols = st.columns(3)
-            diag_cols[0].markdown(f"**Plugged:** {'Yes' if plugged else 'No'}")
-            diag_cols[1].markdown(f"**Charging:** {'Yes' if charging else 'No'}")
-            diag_cols[2].markdown(f"**Auth:** {auth_mode}")
+                # --- Modern status headline (single line) ---
+                ocpp_badge = "Connected ✅" if connected else "Disconnected ❌"
+                state_label = status if status else "unknown"
+                plugged_label = "Yes" if plugged else "No"
+                charging_label = "Yes" if charging else "No"
 
-            if last_seen:
-                st.caption(f"Last seen: {last_seen}")
-
-            if last_error:
-                st.warning(f"OCPP note: {last_error}")
-
-            power_kw = evse.get("power_kw")
-            sess_kwh = evse.get("energy_session_kwh")
-            total_kwh = evse.get("energy_total_kwh")
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Power (kW)", f"{float(power_kw):.2f}" if power_kw is not None else "—")
-            m2.metric("Session energy (kWh)", f"{float(sess_kwh):.2f}" if sess_kwh is not None else "—")
-            m3.metric("Total energy (kWh)", f"{float(total_kwh):.2f}" if total_kwh is not None else "—")
-
-            btn_cols = st.columns([1.2, 1.2, 2.0])
-            can_control = enabled and connected and plugged
-
-            if charging:
-                stop_clicked = btn_cols[0].button(
-                    "Stop charging",
-                    disabled=(not can_control),
-                    type="secondary",
-                    key="btn_cc_stop",
-                    use_container_width=True,
+                st.markdown(
+                    f"**OCPP:** {ocpp_badge} · **State:** {state_label} · **Plugged:** {plugged_label} · **Charging:** {charging_label}"
                 )
-                if stop_clicked:
-                    res = api_post("/v1/evse/stop", {})
-                    st.cache_data.clear()
-                    if bool(res.get("ok", False)):
-                        st.success("Stop command sent.")
-                    else:
-                        st.error(f"Stop failed: {res}")
-            else:
-                resume_clicked = btn_cols[0].button(
-                    "Resume charging",
-                    disabled=(not can_control),
-                    type="secondary",
-                    key="btn_cc_resume",
-                    use_container_width=True,
-                )
-                if resume_clicked:
-                    res = api_post("/v1/evse/resume", {})
-                    st.cache_data.clear()
-                    if bool(res.get("ok", False)):
-                        st.success("Resume command sent.")
-                    else:
-                        st.error(f"Resume failed: {res}")
 
-            if not connected:
-                st.info(
-                    "Charger is not connected to OCPP. "
-                    "OCPP must be enabled in FusionSolar installer mode and pointed to this PC (Domain/Port/Path)."
-                )
+                if connected and last_seen:
+                    st.caption(f"Last seen: {last_seen}")
+
+                if last_error:
+                    st.warning(f"OCPP note: {last_error}")
+
+                # --- Controls (ONLY here, not top bar) ---
+                # Control only when feature enabled + connected + plugged
+                can_control = bool(enabled and connected and plugged)
+
+                btn_cols = st.columns([1.4, 1.4, 3.2], vertical_alignment="center")
+
+                if charging:
+                    stop_clicked = btn_cols[0].button(
+                        "Stop charging",
+                        type="secondary",
+                        disabled=(not can_control),
+                        key="btn_cc_stop",
+                        width="stretch",
+                    )
+                    if stop_clicked:
+                        try:
+                            api_post("/v1/evse/stop", {})
+                            st.cache_data.clear()
+                            st.success("Stop command sent.")
+                        except Exception as exc:
+                            st.error(f"Stop failed: {exc}")
+                else:
+                    # Make Resume button primary to match Run forecast style
+                    resume_clicked = btn_cols[0].button(
+                        "Resume charging",
+                        type="primary",
+                        disabled=(not can_control),
+                        key="btn_cc_resume",
+                        width="stretch",
+                    )
+                    if resume_clicked:
+                        try:
+                            api_post("/v1/evse/resume", {})
+                            st.cache_data.clear()
+                            st.success("Resume command sent.")
+                        except Exception as exc:
+                            st.error(f"Resume failed: {exc}")
+
+                # --- Metrics: only show when connected (avoid the “— — —” look when offline) ---
+                # These keys may or may not exist; display only if connected.
+                if connected:
+                    power_kw = evse.get("power_kw")
+                    session_kwh = evse.get("energy_session_kwh")
+                    total_kwh = evse.get("energy_total_kwh")
+
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Power (kW)", f"{float(power_kw):.2f}" if power_kw is not None else "—")
+                    m2.metric("Session energy (kWh)", f"{float(session_kwh):.2f}" if session_kwh is not None else "—")
+                    m3.metric("Total energy (kWh)", f"{float(total_kwh):.2f}" if total_kwh is not None else "—")
+                else:
+                    st.info(
+                        "Charger is not connected to OCPP. OCPP must be enabled in FusionSolar installer mode and pointed to this PC (Domain/Port/Path)."
+                    )
+
+                # --- Technical details (collapsed by default) ---
+                with st.expander("Technical details", expanded=False):
+                    st.markdown(f"**Enabled:** {enabled}")
+                    st.markdown(f"**Auth mode:** {auth_mode}")
+                    if evse.get("ws_path"):
+                        st.markdown(f"**WS path:** {evse.get('ws_path')}")
+                    if evse.get("transaction_id") is not None:
+                        st.markdown(f"**Transaction ID:** {evse.get('transaction_id')}")
+                    # Keep raw keys minimal; no JSON dump unless APP_DEBUG is on
+                    if APP_DEBUG:
+                        st.code(evse)
 
     forecast_mode, selected_models, sat_nowcast_for_run = render_weather_models_panel()
 
