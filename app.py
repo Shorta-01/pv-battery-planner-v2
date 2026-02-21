@@ -186,6 +186,7 @@ def normalize_effective_cfg_to_payload(effective_cfg: dict, valid_model_ids: set
     battery_cfg = effective_cfg.get("battery", {}) if isinstance(effective_cfg, dict) else {}
     weather_cfg = effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}
     load_profile_cfg = effective_cfg.get("load_profile", {}) if isinstance(effective_cfg, dict) else {}
+    car_charger_cfg = effective_cfg.get("car_charger", {}) if isinstance(effective_cfg, dict) else {}
 
     return {
         "location": {
@@ -210,6 +211,11 @@ def normalize_effective_cfg_to_payload(effective_cfg: dict, valid_model_ids: set
         },
         "pv": dict(pv_cfg),
         "battery": dict(battery_cfg),
+        "car_charger": {
+            "enabled": bool((car_charger_cfg or {}).get("enabled", False)),
+            "basic_user": str((car_charger_cfg or {}).get("basic_user", "")),
+            "basic_pass": str((car_charger_cfg or {}).get("basic_pass", "")),
+        },
         "load_profile": {
             "load_profile_24h": [float(v) for v in load_profile_cfg.get("load_profile_24h", core.DEFAULT_CONFIG["load_profile"]["load_profile_24h"])],
         },
@@ -300,6 +306,11 @@ def build_settings_payload(effective_cfg: dict, valid_model_ids: set[str]) -> tu
             "battery_max_charge_kw": float(ui["cfg_battery_max_charge_kw"]),
             "battery_max_discharge_kw": float(ui["cfg_battery_max_discharge_kw"]),
             "max_ac_charge_kw_hard_limit": float(ui["cfg_max_ac_charge_kw_hard_limit"]),
+        },
+        "car_charger": {
+            "enabled": bool(ui.get("cfg_cc_enabled", False)),
+            "basic_user": str(ui.get("cfg_cc_user", "")).strip(),
+            "basic_pass": str(ui.get("cfg_cc_pass", "")),
         },
         "load_profile": {
             "load_profile_24h": [float(v) for v in ui["cfg_load_profile"]],
@@ -1692,6 +1703,14 @@ def api_post(path: str, payload: dict) -> dict:
             raise
 
     raise RuntimeError("Could not complete backend request.")
+
+
+@st.cache_data(ttl=1)
+def get_evse_status() -> dict:
+    try:
+        return api_get("/v1/evse/status")
+    except Exception:
+        return {"connected": False, "is_plugged": False, "is_charging": False, "status": "unknown", "error": "unreachable"}
 
 
 def df_from_split(payload: dict) -> pd.DataFrame:
@@ -3398,6 +3417,29 @@ with left:
                     key="pv_albedo",
                 )
 
+
+        st.markdown("#### Car Charger")
+        cc_col1, cc_col2 = st.columns(2, vertical_alignment="bottom")
+        with cc_col1:
+            cfg_cc_enabled = st.checkbox(
+                "Enable car charger control (OCPP)",
+                value=bool((effective_cfg.get("car_charger", {}) or {}).get("enabled", False)),
+            )
+        with cc_col2:
+            st.caption("OCPP endpoint is hosted by the backend at /ocpp (same port as backend).")
+
+        cc_col3, cc_col4 = st.columns(2, vertical_alignment="bottom")
+        with cc_col3:
+            cfg_cc_user = st.text_input("OCPP username", value=str((effective_cfg.get("car_charger", {}) or {}).get("basic_user", "")))
+        with cc_col4:
+            cfg_cc_pass = st.text_input(
+                "OCPP password",
+                value=str((effective_cfg.get("car_charger", {}) or {}).get("basic_pass", "")),
+                type="password",
+            )
+
+        st.info("FusionSolar OCPP settings: Domain Name = your laptop LAN IP, Port = backend port (default 8787), Path = /ocpp, Username/Password = above.")
+
         cfg_load_profile = [float(v) for v in effective_cfg["load_profile"]["load_profile_24h"]]
 
         if st.session_state.get("_geo_success"):
@@ -3437,6 +3479,9 @@ with left:
             "cfg_battery_max_charge_kw": cfg_battery_max_charge_kw,
             "cfg_battery_max_discharge_kw": cfg_battery_max_discharge_kw,
             "cfg_max_ac_charge_kw_hard_limit": cfg_max_ac_charge_kw_hard_limit,
+            "cfg_cc_enabled": bool(cfg_cc_enabled),
+            "cfg_cc_user": str(cfg_cc_user),
+            "cfg_cc_pass": str(cfg_cc_pass),
             "cfg_load_profile": cfg_load_profile,
             "saved_sat": bool((effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}).get("use_satellite_nowcast_0_6h", False)),
             "cfg_max_grid_charge_power_kw": float(user_max_ac_kw),
@@ -3572,7 +3617,13 @@ with left:
     st.caption(" | ".join(summary_parts))
 
     ensemble_method = "weighted"
-    spacer, col_reset, col_save, col_run = st.columns([4.2, 2.6, 2.2, 2.2])
+    spacer, col_reset, col_save, col_ev, col_run = st.columns([3.6, 2.6, 2.2, 2.2, 2.2])
+    evse_status = get_evse_status()
+    ev_connected = bool(evse_status.get("connected", False))
+    ev_plugged = bool(evse_status.get("is_plugged", False))
+    ev_charging = bool(evse_status.get("is_charging", False))
+    ev_enabled = bool(evse_status.get("enabled", False))
+
     with col_reset:
         reset_clicked = st.button(
             "Factory settings",
@@ -3588,6 +3639,39 @@ with left:
             key="btn_save_settings_top",
             width="stretch",
         )
+    with col_ev:
+        if ev_charging:
+            ev_clicked = st.button(
+                "Stop charging",
+                type="secondary",
+                disabled=(not (ev_enabled and ev_connected and ev_plugged and ev_charging)),
+                key="btn_ev_stop_resume",
+                width="stretch",
+            )
+            if ev_clicked:
+                try:
+                    api_post("/v1/evse/stop", {})
+                    st.cache_data.clear()
+                    st.success("Stop command sent to charger")
+                except Exception as exc:
+                    st.error(f"Could not stop charging: {exc}")
+        else:
+            ev_clicked = st.button(
+                "Resume charging",
+                type="secondary",
+                disabled=(not (ev_enabled and ev_connected and ev_plugged and (not ev_charging))),
+                key="btn_ev_stop_resume",
+                width="stretch",
+            )
+            if ev_clicked:
+                try:
+                    api_post("/v1/evse/resume", {})
+                    st.cache_data.clear()
+                    st.success("Resume command sent to charger")
+                except Exception as exc:
+                    st.error(f"Could not resume charging: {exc}")
+        st.caption(f"EVSE: {evse_status.get('status','unknown')} | connected={ev_connected} | plugged={ev_plugged}")
+
     with col_run:
         run_clicked = st.button(
             "Run forecast",

@@ -179,6 +179,11 @@ DEFAULT_CONFIG = {
         "battery_max_discharge_kw": BATTERY_MAX_DISCHARGE_KW,
         "max_ac_charge_kw_hard_limit": MAX_AC_CHARGE_KW_HARD_LIMIT,
     },
+    "car_charger": {
+        "enabled": False,
+        "basic_user": "",
+        "basic_pass": "",
+    },
     "load_profile": {
         "load_profile_24h": LOAD_PROFILE,
     },

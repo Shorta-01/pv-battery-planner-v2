@@ -16,11 +16,12 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 import planner_core as core
+import ocpp_evse
 import scoring
 from db_sqlite import (
     compute_config_hash,
@@ -1362,6 +1363,16 @@ def unhandled_exception_handler(request, exc: Exception):
 
 
 state = BackendState()
+evse_mgr = ocpp_evse.OcppEvseManager()
+
+
+@app.websocket("/ocpp")
+async def ocpp_ws(websocket: WebSocket):
+    cfg = state.settings.get("config", {}).get("car_charger", {}) if isinstance(state.settings.get("config"), dict) else {}
+    enabled = bool(cfg.get("enabled", False))
+    user = str(cfg.get("basic_user", "") or "")
+    pw = str(cfg.get("basic_pass", "") or "")
+    await evse_mgr.handle_websocket(websocket, enabled=enabled, basic_user=user, basic_pass=pw)
 
 
 def _require_token(authorization: str | None) -> None:
@@ -1491,6 +1502,30 @@ def score_day(date: str, source: str = "manual_csv", authorization: str | None =
         "pv_hourly_points": result["pv_hourly_points"],
         "models_scored": sorted(result.get("model_scores", {}).keys()),
     }
+
+
+
+
+@app.get("/v1/evse/status")
+def evse_status(authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    cfg = state.settings.get("config", {}).get("car_charger", {}) if isinstance(state.settings.get("config"), dict) else {}
+    out = evse_mgr.status_dict()
+    out["enabled"] = bool(cfg.get("enabled", False))
+    out["ws_path"] = "/ocpp"
+    return out
+
+
+@app.post("/v1/evse/stop")
+async def evse_stop(authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return await evse_mgr.remote_stop()
+
+
+@app.post("/v1/evse/resume")
+async def evse_resume(authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return await evse_mgr.remote_resume(connector_id=1, id_tag="LOCAL")
 
 
 @app.get("/v1/weather/models")
