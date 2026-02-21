@@ -3057,9 +3057,15 @@ with left:
                     unsafe_allow_html=True,
                 )
             else:
-                st.markdown("<div style='line-height:2.2rem;text-align:center;color:#8b8e93'>—</div>", unsafe_allow_html=True)
+                st.markdown(
+                    "<div style='line-height:2.2rem;text-align:center'>"
+                    "<span title=\"Click Search address to set your location.\" style='color:#9aa0a6; font-size:0.9rem;'>Not set</span>"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
         with btn_col:
-            if st.button("Lookup", type="primary", key="btn_open_lookup"):
+            btn_label = "Change address" if has_lookup_details else "Search address"
+            if st.button(btn_label, type="primary", key="btn_open_lookup"):
                 open_lookup(loc_cfg)
                 st.rerun()
 
