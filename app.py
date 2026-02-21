@@ -36,9 +36,8 @@ INPUT_TOOLTIPS = {
     "albedo": "Ground reflectance. Recommended default: 0.20 (grass). Asphalt ~0.10–0.15. Snow can be 0.60+. Only change if your ground conditions are unusual.",
     "albedo_enabled": "Enable only if you want to override albedo manually. Leave OFF for normal use. Turn ON for unusual ground reflectance (snow, very bright surfaces).",
     "inverter_ac_model": "How DC power becomes AC power. linear: AC = DC × inverter efficiency, then clip at the inverter AC limit (simple). pvwatts: part-load inverter behavior (more realistic at low power). Example: 2.0 kW DC with 0.97 → ~1.94 kW AC in linear mode before clipping.",
-    "pv_calibration_factor": "Global PV tuning factor. Start at 1.00. Effective east = global × east(relative). Effective south = global × south(relative). Use only after comparing forecast vs actual.",
-    "pv_calibration_factor_east": "East relative tuning multiplied by global. Start at 1.00. Example: global 0.95 and east 1.02 → effective east 0.969.",
-    "pv_calibration_factor_south": "South relative tuning multiplied by global. Start at 1.00. Example: global 0.95 and south 0.98 → effective south 0.931.",
+    "pv_calibration_factor_east": "Directly scales EAST PV energy. Start at 1.00, keep within 0.70–1.30, and tune after comparing forecast vs actual.",
+    "pv_calibration_factor_south": "Directly scales SOUTH PV energy. Start at 1.00, keep within 0.70–1.30, and tune after comparing forecast vs actual.",
     "max_ac_user_cap": "The app computes a recommended AC charge power from required energy and off-peak window hours. This field is your safety cap: final used value is min(recommended, your cap, inverter/battery limits).",
 }
 
@@ -285,7 +284,6 @@ def build_settings_payload(effective_cfg: dict, valid_model_ids: set[str]) -> tu
             "iam_ashrae_b": float(ui["cfg_iam_ashrae_b"]),
             "albedo": (float(ui["cfg_albedo"]) if ui["cfg_albedo_enabled"] else None),
             "inverter_ac_model": str(ui["cfg_inverter_ac_model"]),
-            "pv_calibration_factor": float(ui["cfg_pv_calibration_factor"]),
             "pv_calibration_factor_east": float(ui["cfg_pv_calibration_factor_east"]),
             "pv_calibration_factor_south": float(ui["cfg_pv_calibration_factor_south"]),
             "inverter_ac_kw_limit": float(ui["cfg_inverter_ac_kw_limit"]),
@@ -3183,7 +3181,7 @@ with left:
         with row1_col3:
             cfg_inverter_ac_kw_limit = st.number_input("Inverter AC limit (kW)", min_value=0.1, value=float(cfg_pv["inverter_ac_kw_limit"]), step=0.1, help=get_help("inverter_ac_kw_limit"))
 
-        row2_col1, row2_col2, row2_col3 = st.columns(3)
+        row2_col1, row2_col2, row2_col3, row2_col4 = st.columns(4)
         with row2_col1:
             cfg_array_east_panels = st.number_input("East array panels", min_value=0, value=int(cfg_pv["array_east_panels"]), step=1, help=get_help("array_panels"))
         with row2_col2:
@@ -3204,8 +3202,19 @@ with left:
                 step=1.0,
                 format="%.0f",
             )
+        with row2_col4:
+            cfg_pv_calibration_factor_east = st.number_input(
+                "PV calibration factor East",
+                min_value=0.70,
+                max_value=1.30,
+                value=float(cfg_pv.get("pv_calibration_factor_east", 1.0)),
+                step=0.01,
+                format="%.2f",
+                help=INPUT_TOOLTIPS["pv_calibration_factor_east"],
+                key="pv_cal_east",
+            )
 
-        row3_col1, row3_col2, row3_col3 = st.columns(3)
+        row3_col1, row3_col2, row3_col3, row3_col4 = st.columns(4)
         with row3_col1:
             cfg_array_south_panels = st.number_input("South array panels", min_value=0, value=int(cfg_pv["array_south_panels"]), step=1, help=get_help("array_panels"))
         with row3_col2:
@@ -3225,6 +3234,17 @@ with left:
                 value=float(cfg_pv["azimuth_south_deg"]),
                 step=1.0,
                 format="%.0f",
+            )
+        with row3_col4:
+            cfg_pv_calibration_factor_south = st.number_input(
+                "PV calibration factor South",
+                min_value=0.70,
+                max_value=1.30,
+                value=float(cfg_pv.get("pv_calibration_factor_south", 1.0)),
+                step=0.01,
+                format="%.2f",
+                help=INPUT_TOOLTIPS["pv_calibration_factor_south"],
+                key="pv_cal_south",
             )
 
 
@@ -3278,6 +3298,12 @@ with left:
                 )
 
             st.markdown("##### PV modelling")
+            cfg_pv_loss_model = st.selectbox(
+                "PV loss model",
+                options=["split", "combined"],
+                index=["split", "combined"].index(cfg_pv_loss_model if cfg_pv_loss_model in {"split", "combined"} else "split"),
+                help=INPUT_TOOLTIPS["pv_loss_model"],
+            )
             row4_col1, row4_col2 = st.columns(2, vertical_alignment="bottom")
             with row4_col1:
                 cfg_inverter_eff = st.number_input(
@@ -3344,48 +3370,6 @@ with left:
                     key="pv_albedo",
                 )
 
-            row7_col1, row7_col2 = st.columns(2, vertical_alignment="bottom")
-            with row7_col1:
-                cfg_pv_calibration_factor = st.number_input(
-                    "PV calibration factor (global)",
-                    min_value=0.70,
-                    max_value=1.30,
-                    value=float(cfg_pv.get("pv_calibration_factor", 1.0)),
-                    step=0.01,
-                    format="%.2f",
-                    help=INPUT_TOOLTIPS["pv_calibration_factor"],
-                    key="pv_cal_global",
-                )
-            with row7_col2:
-                cfg_pv_calibration_factor_east = st.number_input(
-                    "PV calibration factor east (relative)",
-                    min_value=0.70,
-                    max_value=1.30,
-                    value=float(cfg_pv.get("pv_calibration_factor_east", 1.0)),
-                    step=0.01,
-                    format="%.2f",
-                    help=INPUT_TOOLTIPS["pv_calibration_factor_east"],
-                    key="pv_cal_east",
-                )
-
-            cfg_pv_calibration_factor_south = st.number_input(
-                "PV calibration factor south (relative)",
-                min_value=0.70,
-                max_value=1.30,
-                value=float(cfg_pv.get("pv_calibration_factor_south", 1.0)),
-                step=0.01,
-                format="%.2f",
-                help=INPUT_TOOLTIPS["pv_calibration_factor_south"],
-                key="pv_cal_south",
-            )
-
-        cfg_pv_loss_model = st.selectbox(
-            "PV loss model",
-            options=["split", "combined"],
-            index=["split", "combined"].index(str(cfg_pv.get("pv_loss_model", "split")).strip().lower() if str(cfg_pv.get("pv_loss_model", "split")).strip().lower() in {"split", "combined"} else "split"),
-            help=INPUT_TOOLTIPS["pv_loss_model"],
-        )
-
         st.markdown("#### Battery")
         bat_row1_col1, bat_row1_col2 = st.columns(2, vertical_alignment="bottom")
         with bat_row1_col1:
@@ -3440,7 +3424,6 @@ with left:
             "cfg_albedo_enabled": cfg_albedo_enabled,
             "cfg_albedo": cfg_albedo,
             "cfg_inverter_ac_model": cfg_inverter_ac_model,
-            "cfg_pv_calibration_factor": cfg_pv_calibration_factor,
             "cfg_pv_calibration_factor_east": cfg_pv_calibration_factor_east,
             "cfg_pv_calibration_factor_south": cfg_pv_calibration_factor_south,
             "cfg_inverter_ac_kw_limit": cfg_inverter_ac_kw_limit,
