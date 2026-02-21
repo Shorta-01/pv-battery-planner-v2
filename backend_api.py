@@ -746,13 +746,19 @@ class BackendState:
         weather_cfg = cfg.get("weather", {}) if isinstance(cfg, dict) else {}
         store_provider_payloads = bool(weather_cfg.get("store_provider_payloads", False)) if isinstance(weather_cfg, dict) else False
         requested_use_sat = bool(weather_cfg.get("use_satellite_nowcast_0_6h", False)) if isinstance(weather_cfg, dict) else False
+        now_utc = dt.datetime.now(dt.timezone.utc)
+        requested_days = max(1, (target_date - now_utc.astimezone(ZoneInfo(tz)).date()).days)
         if mode == "auto":
-            effective_use_sat = should_use_satellite_nowcast_auto(
-                latitude=loc.latitude,
-                longitude=loc.longitude,
-                timezone_name=tz,
-                requested_days=1,
-            )
+            if requested_days > 1:
+                effective_use_sat = False
+            else:
+                effective_use_sat = should_use_satellite_nowcast_auto(
+                    latitude=loc.latitude,
+                    longitude=loc.longitude,
+                    timezone_name=tz,
+                    requested_days=1,
+                    now_utc=now_utc,
+                )
         elif use_satellite_nowcast_0_6h_override is not None:
             effective_use_sat = bool(use_satellite_nowcast_0_6h_override)
         else:
