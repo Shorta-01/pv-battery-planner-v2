@@ -122,7 +122,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "label": "NOAA GFS",
         "endpoint": "https://api.open-meteo.com/v1/forecast",
         "params": {"models": "gfs_seamless"},
-        "badges": ["🌐", "🧭"],
+        "badges": ["🌐", "☀️", "🗓️"],
         "recommended_for_be": True,
         "max_days": 16,
         "tier": "global",

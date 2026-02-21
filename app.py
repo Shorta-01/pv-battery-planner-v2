@@ -62,8 +62,8 @@ INPUT_TOOLTIPS.update({
     "battery_max_charge_kw": "Maximum battery charging power. It caps charging speed. Example: 3.0 kW.",
     "battery_max_discharge_kw": "Maximum battery discharge power. It caps support to load. Example: 3.0 kW.",
     "max_ac_charge_kw_hard_limit": "Hard AC charging cap. It protects wiring/inverter. Example: 2.5 kW.",
-    "forecast_mode": "Auto lets the system pick models and nowcast behavior. Expert lets you choose models and nowcast yourself. Example: use Auto for normal operation.",
-    "sat_nowcast": "Adds satellite radiation for near-term (0–6h). It can improve short-term cloud timing. Example: ON during daytime, OFF for week-ahead.",
+    "forecast_mode": "Auto lets the system pick models and nowcast behavior. Custom lets you choose models and nowcast yourself. Example: use Auto for normal operation.",
+    "sat_nowcast": "Adds satellite-based radiation for the next 0–6 hours. It can improve short-term cloud timing. It does not affect week-ahead.",
     "address_query": "Search text for location lookup. It helps fill coordinates/timezone. Example: Main Street 10, Brussels.",
 })
 
@@ -100,6 +100,7 @@ WEATHER_MODEL_ORDER = [
     "ecmwf_ifs",
     "dwd_icon_eu",
     "meteofrance_seamless",
+    "gfs",
 ]
 
 WEATHER_MODEL_DEFAULT = {"knmi_harmonie_arome", "dwd_icon_d2", "ecmwf_ifs"}
@@ -107,6 +108,7 @@ FORECAST_MODE_OPTIONS = {
     "Auto": "auto",
     "Auto (Recommended)": "auto",
     "Auto (System picks the best models)": "auto",
+    "Custom": "expert",
     "Expert": "expert",
 }
 
@@ -116,6 +118,7 @@ WEATHER_MODEL_HOVERTEXT = {
     "ecmwf_ifs": "ECMWF global model. Very reliable for fronts and the overall weather pattern, good stable baseline.",
     "dwd_icon_eu": "European ICON model. Useful secondary view when the high-res model is noisy or inconsistent.",
     "meteofrance_seamless": "Météo-France seamless blend. Helpful extra perspective for Western Europe cloud patterns.",
+    "gfs": "NOAA global model with long horizon coverage. Useful fallback and long-range baseline when regional models are out of horizon.",
 }
 
 BADGE_META = {
@@ -126,6 +129,7 @@ BADGE_META = {
     "☀": {"label": "SOLAR+", "tip": "Best PV inputs. This model provides the main solar irradiance fields directly, which usually improves PV accuracy."},
     "∑": {"label": "SOLAR∼", "tip": "Derived PV inputs. Some solar irradiance fields are missing, so we estimate them. PV still works, but accuracy can drop on difficult cloud days."},
     "⏱": {"label": "15m", "tip": "Uses 15-minute solar radiation (then aggregated to hourly). Can improve the PV curve shape when clouds change quickly."},
+    "🗓": {"label": "LONG RANGE", "tip": "Long range horizon. This model can provide forecasts far beyond tomorrow (up to its max days)."},
 }
 
 BADGE_ALIASES = {
@@ -137,6 +141,7 @@ BADGE_ALIASES = {
     "🧩": "∑",
     "☀️": "☀",
     "⏱️": "⏱",
+    "🗓️": "🗓",
 }
 
 
@@ -758,20 +763,22 @@ def render_weather_models(
             if show_auto_chips and auto_selected_models and model_id in auto_selected_models:
                 chip_html.append(
                     text_chip(
-                        "AUTO",
-                        "In Auto mode, the system will try this model for your location and forecast horizon.",
+                        "✨",
+                        "Auto mode will try this model for your location and forecast horizon.",
                         kind="auto",
                     )
                 )
             if used_models and model_id in used_models:
                 if status_icon == "❌":
-                    last_label = "LAST ❌"
+                    last_label = "❌"
                     last_kind = "last-fail"
+                    status_tip = status_tip or "Model failed in the last run."
                 elif status_icon == "⚠":
-                    last_label = "LAST ⚠"
+                    last_label = "⚠"
                     last_kind = "last-warn"
+                    status_tip = status_tip or "Worked in the last run, but some PV inputs were missing or estimated."
                 else:
-                    last_label = "LAST ✅"
+                    last_label = "✅"
                     last_kind = "last-ok"
                     status_tip = status_tip or "Used successfully in the last run."
                 chip_html.append(text_chip(last_label, status_tip, kind=last_kind))
@@ -3442,15 +3449,15 @@ with left:
         initial_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
 
     current_mode = str(effective_cfg.get("forecast_mode", "auto")).strip().lower()
-    mode_label_default = "Expert" if current_mode == "expert" else "Auto"
+    mode_label_default = "Custom" if current_mode == "expert" else "Auto"
 
     def render_weather_models_panel() -> tuple[str, list[str], bool]:
         with weather_models_box.container():
             with st.expander("Weather models", expanded=True):
                 ui_mode_value = str(st.session_state.get("forecast_mode_select", "")).strip()
-                if ui_mode_value and ui_mode_value not in {"Auto", "Expert"}:
+                if ui_mode_value and ui_mode_value not in {"Auto", "Custom"}:
                     normalized_mode = str(ui_mode_value).strip().lower()
-                    st.session_state["forecast_mode_select"] = "Expert" if normalized_mode == "expert" else "Auto"
+                    st.session_state["forecast_mode_select"] = "Custom" if normalized_mode == "expert" else "Auto"
 
                 forecast_mode_label_col, forecast_mode_select_col = st.columns([1.6, 2.4], vertical_alignment="center")
                 with forecast_mode_label_col:
@@ -3458,8 +3465,8 @@ with left:
                 with forecast_mode_select_col:
                     forecast_mode_label = st.selectbox(
                         "Forecast mode",
-                        options=["Auto", "Expert"],
-                        index=0 if mode_label_default != "Expert" else 1,
+                        options=["Auto", "Custom"],
+                        index=0 if mode_label_default != "Custom" else 1,
                         key="forecast_mode_select",
                         label_visibility="collapsed",
                         help=get_help("forecast_mode"),
@@ -3482,7 +3489,7 @@ with left:
                         disabled=True,
                         used_models=(last_run_used if has_last_run else set()),
                         auto_selected_models=auto_selected,
-                        show_auto_chips=False,
+                        show_auto_chips=True,
                         show_checkboxes=False,
                         show_capability_badges=True,
                     )
@@ -3493,13 +3500,16 @@ with left:
                         timezone_name=wm_timezone,
                         requested_days=1,
                     )
-                    st.checkbox(
-                        "Use satellite nowcast radiation (0-6)",
-                        value=bool(sat_nowcast_for_run),
-                        disabled=True,
-                        key="use_sat_nowcast_auto",
-                        help=get_help("sat_nowcast"),
-                    )
+                    sat_cols = st.columns([2.6, 1.4], vertical_alignment="center")
+                    with sat_cols[0]:
+                        st.markdown("Satellite nowcast (0–6h)")
+                    with sat_cols[1]:
+                        nowcast_label = "Auto ON" if sat_nowcast_for_run else "Auto OFF"
+                        nowcast_tip = (
+                            "Auto turns this ON only when it can improve the next few daylight hours. "
+                            "It affects only the next 0–6 hours, not the full day."
+                        )
+                        st.markdown(f"<span title='{_esc(nowcast_tip)}'><b>{_esc(nowcast_label)}</b></span>", unsafe_allow_html=True)
                 else:
                     selected_models = render_weather_models(
                         weather_models_catalog,
@@ -3511,7 +3521,7 @@ with left:
                         show_capability_badges=True,
                     )
                     sat_nowcast_ui = st.checkbox(
-                        "Use satellite nowcast radiation (0-6)",
+                        "Use satellite nowcast for the next 0–6 hours",
                         value=saved_sat,
                         key="use_sat_nowcast_expert",
                         help=get_help("sat_nowcast"),
