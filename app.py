@@ -3438,7 +3438,17 @@ with left:
                 type="password",
             )
 
-        st.info("FusionSolar OCPP settings: Domain Name = your laptop LAN IP, Port = backend port (default 8787), Path = /ocpp, Username/Password = above.")
+        st.info(
+            "FusionSolar OCPP settings: Domain Name = your laptop LAN IP, Port = backend port (default 8787), "
+            "Path = /ocpp. If username+password are empty, OCPP runs with NO AUTH (LAN mode). "
+            "If you set credentials here, set the same credentials in FusionSolar."
+        )
+
+        if cfg_cc_enabled and (cfg_cc_user.strip() == "") and (cfg_cc_pass == ""):
+            st.warning("OCPP authentication is disabled (username/password empty). This is OK on a private LAN only.")
+
+        if cfg_cc_enabled and ((cfg_cc_user.strip() == "") ^ (cfg_cc_pass == "")):
+            st.error("OCPP credentials are misconfigured. Set BOTH username and password, or leave BOTH empty.")
 
         cfg_load_profile = [float(v) for v in effective_cfg["load_profile"]["load_profile_24h"]]
 

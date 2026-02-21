@@ -21,6 +21,7 @@ class OcppEvseManager:
         self._transaction_id: int | None = None
         self._last_seen_iso: str | None = None
         self._last_error: str | None = None
+        self._auth_mode = "unknown"
         self._ws: WebSocket | None = None
         self._pending_calls: dict[str, asyncio.Future] = {}
 
@@ -122,33 +123,49 @@ class OcppEvseManager:
             if fut is not None and not fut.done():
                 fut.set_result({"ok": False, "errorCode": msg[2], "errorDescription": msg[3], "details": msg[4]})
 
-    def _auth_ok(self, websocket: WebSocket, *, enabled: bool, basic_user: str, basic_pass: str) -> tuple[bool, str | None]:
-        if not enabled:
-            return False, "car_charger is disabled"
-        if not basic_user or not basic_pass:
-            return False, "missing car_charger credentials"
+    def _auth_ok(self, websocket: WebSocket, *, basic_user: str, basic_pass: str) -> bool:
         auth = websocket.headers.get("authorization", "")
         if not auth.startswith("Basic "):
-            return False, "missing basic auth"
+            return False
         token = auth.split(" ", 1)[1].strip()
         try:
             decoded = base64.b64decode(token).decode("utf-8")
         except Exception:
-            return False, "invalid basic auth encoding"
+            return False
         if ":" not in decoded:
-            return False, "invalid basic auth format"
+            return False
         user, pw = decoded.split(":", 1)
         if user != basic_user or pw != basic_pass:
-            return False, "invalid basic auth credentials"
-        return True, None
+            return False
+        return True
 
     async def handle_websocket(self, websocket: WebSocket, *, enabled: bool, basic_user: str, basic_pass: str) -> None:
-        ok, reason = self._auth_ok(websocket, enabled=enabled, basic_user=basic_user, basic_pass=basic_pass)
-        if not ok:
+        if not enabled:
             await websocket.accept(subprotocol="ocpp1.6")
-            await self._set_state(last_error=reason)
-            await websocket.close(code=1008, reason=reason)
+            self._auth_mode = "unknown"
+            await self._set_state(last_error="car_charger is disabled")
+            await websocket.close(code=1008, reason="car_charger is disabled")
             return
+
+        user = (basic_user or "").strip()
+        pw = basic_pass or ""
+
+        if user == "" and pw == "":
+            self._auth_mode = "none"
+        elif (user == "") ^ (pw == ""):
+            await websocket.accept(subprotocol="ocpp1.6")
+            self._auth_mode = "unknown"
+            await self._set_state(last_error="ocpp_auth_misconfigured: username/password must both be set or both empty")
+            await websocket.close(code=1008, reason="ocpp_auth_misconfigured")
+            return
+        else:
+            if not self._auth_ok(websocket, basic_user=user, basic_pass=pw):
+                await websocket.accept(subprotocol="ocpp1.6")
+                self._auth_mode = "basic"
+                await self._set_state(last_error="ocpp_auth_failed")
+                await websocket.close(code=1008, reason="ocpp_auth_failed")
+                return
+            self._auth_mode = "basic"
 
         await websocket.accept(subprotocol="ocpp1.6")
         async with self._lock:
@@ -208,5 +225,6 @@ class OcppEvseManager:
             "is_charging": bool(self._is_charging or status == "Charging"),
             "last_seen_iso": self._last_seen_iso,
             "transaction_id": self._transaction_id,
+            "auth_mode": self._auth_mode,
             "last_error": self._last_error,
         }
