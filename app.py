@@ -3605,7 +3605,85 @@ with left:
 
         return forecast_mode, selected_models, sat_nowcast_for_run
 
+
+    def render_car_charger_panel() -> None:
+        with st.expander("Car charger", expanded=True):
+            evse = get_evse_status()
+
+            enabled = bool(evse.get("enabled", False))
+            connected = bool(evse.get("connected", False))
+            plugged = bool(evse.get("is_plugged", False))
+            charging = bool(evse.get("is_charging", False))
+            status = str(evse.get("status", "unknown") or "unknown")
+            last_seen = evse.get("last_seen_iso")
+            auth_mode = str(evse.get("auth_mode", "unknown") or "unknown")
+            last_error = evse.get("last_error")
+
+            ocpp_label = "Connected ✅" if connected else "Disconnected ❌"
+            st.markdown(f"**OCPP:** {ocpp_label}  \n**EVSE state:** {status}")
+
+            diag_cols = st.columns(3)
+            diag_cols[0].markdown(f"**Plugged:** {'Yes' if plugged else 'No'}")
+            diag_cols[1].markdown(f"**Charging:** {'Yes' if charging else 'No'}")
+            diag_cols[2].markdown(f"**Auth:** {auth_mode}")
+
+            if last_seen:
+                st.caption(f"Last seen: {last_seen}")
+
+            if last_error:
+                st.warning(f"OCPP note: {last_error}")
+
+            power_kw = evse.get("power_kw")
+            sess_kwh = evse.get("energy_session_kwh")
+            total_kwh = evse.get("energy_total_kwh")
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Power (kW)", f"{float(power_kw):.2f}" if power_kw is not None else "—")
+            m2.metric("Session energy (kWh)", f"{float(sess_kwh):.2f}" if sess_kwh is not None else "—")
+            m3.metric("Total energy (kWh)", f"{float(total_kwh):.2f}" if total_kwh is not None else "—")
+
+            btn_cols = st.columns([1.2, 1.2, 2.0])
+            can_control = enabled and connected and plugged
+
+            if charging:
+                stop_clicked = btn_cols[0].button(
+                    "Stop charging",
+                    disabled=(not can_control),
+                    type="secondary",
+                    key="btn_cc_stop",
+                    use_container_width=True,
+                )
+                if stop_clicked:
+                    res = api_post("/v1/evse/stop", {})
+                    st.cache_data.clear()
+                    if bool(res.get("ok", False)):
+                        st.success("Stop command sent.")
+                    else:
+                        st.error(f"Stop failed: {res}")
+            else:
+                resume_clicked = btn_cols[0].button(
+                    "Resume charging",
+                    disabled=(not can_control),
+                    type="secondary",
+                    key="btn_cc_resume",
+                    use_container_width=True,
+                )
+                if resume_clicked:
+                    res = api_post("/v1/evse/resume", {})
+                    st.cache_data.clear()
+                    if bool(res.get("ok", False)):
+                        st.success("Resume command sent.")
+                    else:
+                        st.error(f"Resume failed: {res}")
+
+            if not connected:
+                st.info(
+                    "Charger is not connected to OCPP. "
+                    "OCPP must be enabled in FusionSolar installer mode and pointed to this PC (Domain/Port/Path)."
+                )
+
     forecast_mode, selected_models, sat_nowcast_for_run = render_weather_models_panel()
+
+    render_car_charger_panel()
 
     readiness_issues = validate_sidebar_readiness(
         st.session_state.get("_cfg_ui_snapshot", {}),
@@ -3627,13 +3705,7 @@ with left:
     st.caption(" | ".join(summary_parts))
 
     ensemble_method = "weighted"
-    spacer, col_reset, col_save, col_ev, col_run = st.columns([3.6, 2.6, 2.2, 2.2, 2.2])
-    evse_status = get_evse_status()
-    ev_connected = bool(evse_status.get("connected", False))
-    ev_plugged = bool(evse_status.get("is_plugged", False))
-    ev_charging = bool(evse_status.get("is_charging", False))
-    ev_enabled = bool(evse_status.get("enabled", False))
-
+    spacer, col_reset, col_save, col_run = st.columns([4.2, 2.6, 2.2, 2.2])
     with col_reset:
         reset_clicked = st.button(
             "Factory settings",
@@ -3649,38 +3721,6 @@ with left:
             key="btn_save_settings_top",
             width="stretch",
         )
-    with col_ev:
-        if ev_charging:
-            ev_clicked = st.button(
-                "Stop charging",
-                type="secondary",
-                disabled=(not (ev_enabled and ev_connected and ev_plugged and ev_charging)),
-                key="btn_ev_stop_resume",
-                width="stretch",
-            )
-            if ev_clicked:
-                try:
-                    api_post("/v1/evse/stop", {})
-                    st.cache_data.clear()
-                    st.success("Stop command sent to charger")
-                except Exception as exc:
-                    st.error(f"Could not stop charging: {exc}")
-        else:
-            ev_clicked = st.button(
-                "Resume charging",
-                type="secondary",
-                disabled=(not (ev_enabled and ev_connected and ev_plugged and (not ev_charging))),
-                key="btn_ev_stop_resume",
-                width="stretch",
-            )
-            if ev_clicked:
-                try:
-                    api_post("/v1/evse/resume", {})
-                    st.cache_data.clear()
-                    st.success("Resume command sent to charger")
-                except Exception as exc:
-                    st.error(f"Could not resume charging: {exc}")
-        st.caption(f"EVSE: {evse_status.get('status','unknown')} | connected={ev_connected} | plugged={ev_plugged}")
 
     with col_run:
         run_clicked = st.button(
