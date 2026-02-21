@@ -143,17 +143,6 @@ BADGE_ALIASES = {
 
 UI_PROGRESS_BAR_HEIGHT_PX = 8
 
-PV_RECO_PR = 0.82
-PV_RECO_INVERTER_EFF = 0.97
-PV_RECO_INVERTER_AC_MODEL = "pvwatts"
-PV_RECO_IAM_MODEL = "ashrae"
-PV_RECO_IAM_B = 0.05
-PV_RECO_ALBEDO = 0.20
-PV_RECO_CAL_GLOBAL = 1.00
-PV_RECO_CAL_EAST = 1.00
-PV_RECO_CAL_SOUTH = 1.00
-
-
 def _esc(s: str) -> str:
     return html.escape(str(s or ""), quote=True)
 
@@ -3036,7 +3025,7 @@ with left:
             if yesterday_kwh < 2.0 or yesterday_kwh > 60.0:
                 st.error("Run forecast is blocked: Yesterday total consumption must be between 2.0 and 60.0 kWh. Enter a typical day such as 12.0 kWh if yesterday was unusual.")
 
-    weather_models_box = st.container()
+    weather_models_box = st.empty()
 
     with st.expander("Settings", expanded=False):
         st.markdown("#### Location")
@@ -3190,7 +3179,7 @@ with left:
         st.markdown("#### PV")
         cfg_pv = effective_cfg["pv"]
 
-        row1_col1, row1_col2 = st.columns(2)
+        row1_col1, row1_col2, row1_col3 = st.columns(3)
         with row1_col1:
             cfg_panel_wp = st.number_input("Panel power (Wp)", min_value=1, value=int(cfg_pv["panel_wp"]), step=1, help=get_help("panel_wp"))
         with row1_col2:
@@ -3203,6 +3192,8 @@ with left:
                 help=INPUT_TOOLTIPS["performance_ratio"],
                 key="pv_pr",
             )
+        with row1_col3:
+            cfg_inverter_ac_kw_limit = st.number_input("Inverter AC limit (kW)", min_value=0.1, value=float(cfg_pv["inverter_ac_kw_limit"]), step=0.1, help=get_help("inverter_ac_kw_limit"))
 
         row2_col1, row2_col2, row2_col3 = st.columns(3)
         with row2_col1:
@@ -3248,14 +3239,10 @@ with left:
                 format="%.0f",
             )
 
-        cfg_inverter_ac_kw_limit = st.number_input("Inverter AC limit (kW)", min_value=0.1, value=float(cfg_pv["inverter_ac_kw_limit"]), step=0.1, help=get_help("inverter_ac_kw_limit"))
 
-        apply_pv_reco = st.button(
-            "Use recommended PV defaults",
-            type="secondary",
-            width="content",
-            key="btn_pv_reco",
-        )
+        cfg_pv_loss_model = str(cfg_pv.get("pv_loss_model", "split")).strip().lower()
+        if cfg_pv_loss_model not in {"split", "combined"}:
+            cfg_pv_loss_model = "split"
 
         with st.expander("Advanced", expanded=False):
             st.markdown("##### Scheduler & Safety")
@@ -3305,13 +3292,6 @@ with left:
             st.markdown("##### PV modelling")
             row4_col1, row4_col2 = st.columns(2, vertical_alignment="bottom")
             with row4_col1:
-                cfg_pv_loss_model = st.selectbox(
-                    "PV loss model",
-                    options=["split", "combined"],
-                    index=["split", "combined"].index(str(cfg_pv.get("pv_loss_model", "split")).strip().lower() if str(cfg_pv.get("pv_loss_model", "split")).strip().lower() in {"split", "combined"} else "split"),
-                    help=INPUT_TOOLTIPS["pv_loss_model"],
-                )
-            with row4_col2:
                 cfg_inverter_eff = st.number_input(
                     "Inverter efficiency",
                     min_value=0.50,
@@ -3410,6 +3390,14 @@ with left:
                 help=INPUT_TOOLTIPS["pv_calibration_factor_south"],
                 key="pv_cal_south",
             )
+
+        cfg_pv_loss_model = st.selectbox(
+            "PV loss model",
+            options=["split", "combined"],
+            index=["split", "combined"].index(str(cfg_pv.get("pv_loss_model", "split")).strip().lower() if str(cfg_pv.get("pv_loss_model", "split")).strip().lower() in {"split", "combined"} else "split"),
+            help=INPUT_TOOLTIPS["pv_loss_model"],
+        )
+
         st.markdown("#### Battery")
         bat_row1_col1, bat_row1_col2 = st.columns(2, vertical_alignment="bottom")
         with bat_row1_col1:
@@ -3440,20 +3428,6 @@ with left:
             st.success(st.session_state["_geo_success"])
         if st.session_state.get("_geo_error"):
             st.error(st.session_state["_geo_error"])
-        if apply_pv_reco:
-            st.session_state["pv_pr"] = PV_RECO_PR
-            st.session_state["pv_inverter_eff"] = PV_RECO_INVERTER_EFF
-            st.session_state["pv_inverter_ac_model"] = PV_RECO_INVERTER_AC_MODEL
-            st.session_state["pv_iam_model"] = PV_RECO_IAM_MODEL
-            st.session_state["pv_iam_b"] = PV_RECO_IAM_B
-            st.session_state["pv_albedo_enabled"] = False
-            st.session_state["pv_albedo"] = PV_RECO_ALBEDO
-            st.session_state["pv_cal_global"] = PV_RECO_CAL_GLOBAL
-            st.session_state["pv_cal_east"] = PV_RECO_CAL_EAST
-            st.session_state["pv_cal_south"] = PV_RECO_CAL_SOUTH
-            st.session_state["_settings_flash"] = "Applied recommended PV defaults (not saved yet). Click Save settings to persist."
-            st.rerun()
-
         st.session_state["_cfg_ui_snapshot"] = {
             "day_names": day_names,
             "tariff_inputs": tariff_inputs,
@@ -3522,73 +3496,83 @@ with left:
     current_mode = str(effective_cfg.get("forecast_mode", "auto")).strip().lower()
     mode_label_default = "Expert" if current_mode == "expert" else "Auto"
 
-    with weather_models_box:
-        with st.expander("Weather models", expanded=True):
-            ui_mode_value = str(st.session_state.get("forecast_mode_select", "")).strip()
-            if ui_mode_value and ui_mode_value not in {"Auto", "Expert"}:
-                normalized_mode = str(ui_mode_value).strip().lower()
-                st.session_state["forecast_mode_select"] = "Expert" if normalized_mode == "expert" else "Auto"
+    def render_weather_models_panel() -> tuple[str, list[str], bool]:
+        with weather_models_box.container():
+            with st.expander("Weather models", expanded=True):
+                ui_mode_value = str(st.session_state.get("forecast_mode_select", "")).strip()
+                if ui_mode_value and ui_mode_value not in {"Auto", "Expert"}:
+                    normalized_mode = str(ui_mode_value).strip().lower()
+                    st.session_state["forecast_mode_select"] = "Expert" if normalized_mode == "expert" else "Auto"
 
-            forecast_mode_label = st.selectbox(
-                "Forecast mode",
-                options=["Auto", "Expert"],
-                index=0 if mode_label_default != "Expert" else 1,
-                key="forecast_mode_select",
-                help=get_help("forecast_mode"),
-            )
-            forecast_mode = FORECAST_MODE_OPTIONS.get(forecast_mode_label, "auto")
-            weather_cfg = effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}
-            saved_sat = bool(weather_cfg.get("use_satellite_nowcast_0_6h", False))
+                forecast_mode_label_col, forecast_mode_select_col = st.columns([1.6, 2.4], vertical_alignment="center")
+                with forecast_mode_label_col:
+                    st.markdown("**Forecast mode**")
+                with forecast_mode_select_col:
+                    forecast_mode_label = st.selectbox(
+                        "Forecast mode",
+                        options=["Auto", "Expert"],
+                        index=0 if mode_label_default != "Expert" else 1,
+                        key="forecast_mode_select",
+                        label_visibility="collapsed",
+                        help=get_help("forecast_mode"),
+                    )
+                forecast_mode = FORECAST_MODE_OPTIONS.get(forecast_mode_label, "auto")
+                weather_cfg = effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}
+                saved_sat = bool(weather_cfg.get("use_satellite_nowcast_0_6h", False))
 
-            auto_selected = set(auto_select_models_for_location(wm_latitude, wm_longitude, requested_days=1)) & available_ids
-            if not auto_selected:
-                auto_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
-            last_run_used = set(st.session_state.get("last_weather_ensemble_models_used", []) or [])
-            has_last_run = bool(st.session_state.get("last_weather_ensemble_debug") or last_run_used)
+                auto_selected = set(auto_select_models_for_location(wm_latitude, wm_longitude, requested_days=1)) & available_ids
+                if not auto_selected:
+                    auto_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
+                last_run_used = set(st.session_state.get("last_weather_ensemble_models_used", []) or [])
+                has_last_run = bool(st.session_state.get("last_weather_ensemble_debug") or last_run_used)
 
-            if forecast_mode == "auto":
-                _ = render_weather_models(
-                    weather_models_catalog,
-                    auto_selected,
-                    widget_key_prefix="wm_auto",
-                    disabled=True,
-                    used_models=(last_run_used if has_last_run else set()),
-                    auto_selected_models=auto_selected,
-                    show_auto_chips=True,
-                    show_checkboxes=False,
-                    show_capability_badges=True,
-                )
-                selected_models = []
-                sat_nowcast_for_run = should_use_satellite_nowcast_auto(
-                    latitude=wm_latitude,
-                    longitude=wm_longitude,
-                    timezone_name=wm_timezone,
-                    requested_days=1,
-                )
-                st.checkbox(
-                    "Use satellite nowcast radiation (0-6)",
-                    value=bool(sat_nowcast_for_run),
-                    disabled=True,
-                    key="use_sat_nowcast_auto",
-                    help=get_help("sat_nowcast"),
-                )
-            else:
-                selected_models = render_weather_models(
-                    weather_models_catalog,
-                    initial_selected,
-                    widget_key_prefix="wm",
-                    used_models=(last_run_used if has_last_run else set()),
-                    show_auto_chips=False,
-                    show_checkboxes=True,
-                    show_capability_badges=True,
-                )
-                sat_nowcast_ui = st.checkbox(
-                    "Use satellite nowcast radiation (0-6)",
-                    value=saved_sat,
-                    key="use_sat_nowcast_expert",
-                    help=get_help("sat_nowcast"),
-                )
-                sat_nowcast_for_run = bool(sat_nowcast_ui)
+                if forecast_mode == "auto":
+                    _ = render_weather_models(
+                        weather_models_catalog,
+                        auto_selected,
+                        widget_key_prefix="wm_auto",
+                        disabled=True,
+                        used_models=(last_run_used if has_last_run else set()),
+                        auto_selected_models=auto_selected,
+                        show_auto_chips=False,
+                        show_checkboxes=False,
+                        show_capability_badges=True,
+                    )
+                    selected_models = []
+                    sat_nowcast_for_run = should_use_satellite_nowcast_auto(
+                        latitude=wm_latitude,
+                        longitude=wm_longitude,
+                        timezone_name=wm_timezone,
+                        requested_days=1,
+                    )
+                    st.checkbox(
+                        "Use satellite nowcast radiation (0-6)",
+                        value=bool(sat_nowcast_for_run),
+                        disabled=True,
+                        key="use_sat_nowcast_auto",
+                        help=get_help("sat_nowcast"),
+                    )
+                else:
+                    selected_models = render_weather_models(
+                        weather_models_catalog,
+                        initial_selected,
+                        widget_key_prefix="wm",
+                        used_models=(last_run_used if has_last_run else set()),
+                        show_auto_chips=False,
+                        show_checkboxes=True,
+                        show_capability_badges=True,
+                    )
+                    sat_nowcast_ui = st.checkbox(
+                        "Use satellite nowcast radiation (0-6)",
+                        value=saved_sat,
+                        key="use_sat_nowcast_expert",
+                        help=get_help("sat_nowcast"),
+                    )
+                    sat_nowcast_for_run = bool(sat_nowcast_ui)
+
+        return forecast_mode, selected_models, sat_nowcast_for_run
+
+    forecast_mode, selected_models, sat_nowcast_for_run = render_weather_models_panel()
 
     readiness_issues = validate_sidebar_readiness(
         st.session_state.get("_cfg_ui_snapshot", {}),
@@ -3738,8 +3722,8 @@ if run_clicked:
                 or []
             )
             st.session_state["last_forecast_mode"] = forecast_mode
-            if forecast_mode == "auto":
-                st.session_state["last_weather_ensemble_models_used"] = list(models_used)
+            st.session_state["last_weather_ensemble_models_used"] = list(models_used)
+            forecast_mode, selected_models, sat_nowcast_for_run = render_weather_models_panel()
             tomorrow = dt.date.fromisoformat(result["target_date"])
             weather_df = df_from_split(result["weather"])
             pv = df_from_split(result["pv"])
