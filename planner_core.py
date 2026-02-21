@@ -85,7 +85,6 @@ PV_IAM_MODEL = "none"
 PV_IAM_ASHRAE_B = 0.05
 PV_ALBEDO: float | None = None
 INVERTER_AC_MODEL = "linear"
-PV_CALIBRATION_FACTOR = 1.00
 PV_CALIBRATION_FACTOR_EAST = 1.00
 PV_CALIBRATION_FACTOR_SOUTH = 1.00
 PV_GAMMA_PDC = -0.003
@@ -168,7 +167,6 @@ DEFAULT_CONFIG = {
         "iam_ashrae_b": PV_IAM_ASHRAE_B,
         "albedo": PV_ALBEDO,
         "inverter_ac_model": INVERTER_AC_MODEL,
-        "pv_calibration_factor": PV_CALIBRATION_FACTOR,
         "pv_calibration_factor_east": PV_CALIBRATION_FACTOR_EAST,
         "pv_calibration_factor_south": PV_CALIBRATION_FACTOR_SOUTH,
         "inverter_ac_kw_limit": INVERTER_AC_KW_LIMIT,
@@ -357,9 +355,6 @@ def validate_config(cfg: dict) -> None:
     inverter_ac_model = str(pv.get("inverter_ac_model", "linear")).strip().lower()
     if inverter_ac_model not in {"linear", "pvwatts"}:
         raise ValueError("pv.inverter_ac_model must be either 'linear' or 'pvwatts'.")
-    pv_calibration_factor = float(pv.get("pv_calibration_factor", 1.0))
-    if not (0.7 <= pv_calibration_factor <= 1.3):
-        raise ValueError("pv.pv_calibration_factor must be in [0.7, 1.3].")
     pv_calibration_factor_east_raw = pv.get("pv_calibration_factor_east", 1.0)
     pv_calibration_factor_south_raw = pv.get("pv_calibration_factor_south", 1.0)
     pv_calibration_factor_east = 1.0 if pv_calibration_factor_east_raw is None else float(pv_calibration_factor_east_raw)
@@ -452,7 +447,7 @@ def apply_config(cfg: dict) -> None:
     global PANEL_WP, ARRAY_SOUTH_PANELS, ARRAY_EAST_PANELS
     global TILT_EAST_DEG, TILT_SOUTH_DEG, AZIMUTH_EAST_DEG, AZIMUTH_SOUTH_DEG
     global PERFORMANCE_RATIO, INVERTER_EFF, PV_LOSS_MODEL, PV_IAM_MODEL, PV_IAM_ASHRAE_B, PV_ALBEDO, INVERTER_AC_MODEL
-    global PV_CALIBRATION_FACTOR, PV_CALIBRATION_FACTOR_EAST, PV_CALIBRATION_FACTOR_SOUTH, INVERTER_AC_KW_LIMIT
+    global PV_CALIBRATION_FACTOR_EAST, PV_CALIBRATION_FACTOR_SOUTH, INVERTER_AC_KW_LIMIT
     global BATTERY_KWH, MIN_SOC_PERCENT, MAX_CUTOFF_SOC_PERCENT
     global BATTERY_MAX_CHARGE_KW, BATTERY_MAX_DISCHARGE_KW, MAX_AC_CHARGE_KW_HARD_LIMIT
     global LOAD_PROFILE, MIN_SOC, MAX_CUTOFF_SOC, EFFECTIVE_CFG, OFFPEAK_WINDOWS_BY_DOW
@@ -487,13 +482,10 @@ def apply_config(cfg: dict) -> None:
     PV_IAM_ASHRAE_B = 0.05 if iam_ashrae_b_raw is None else float(iam_ashrae_b_raw)
     PV_ALBEDO = None if pv.get("albedo") is None else float(pv.get("albedo"))
     INVERTER_AC_MODEL = str(pv.get("inverter_ac_model", "linear")).strip().lower()
-    PV_CALIBRATION_FACTOR = float(pv.get("pv_calibration_factor", 1.0))
     base_calibration_factor_east_raw = pv.get("pv_calibration_factor_east", 1.0)
     base_calibration_factor_south_raw = pv.get("pv_calibration_factor_south", 1.0)
-    base_calibration_factor_east = 1.0 if base_calibration_factor_east_raw is None else float(base_calibration_factor_east_raw)
-    base_calibration_factor_south = 1.0 if base_calibration_factor_south_raw is None else float(base_calibration_factor_south_raw)
-    PV_CALIBRATION_FACTOR_EAST = PV_CALIBRATION_FACTOR * base_calibration_factor_east
-    PV_CALIBRATION_FACTOR_SOUTH = PV_CALIBRATION_FACTOR * base_calibration_factor_south
+    PV_CALIBRATION_FACTOR_EAST = 1.0 if base_calibration_factor_east_raw is None else float(base_calibration_factor_east_raw)
+    PV_CALIBRATION_FACTOR_SOUTH = 1.0 if base_calibration_factor_south_raw is None else float(base_calibration_factor_south_raw)
     INVERTER_AC_KW_LIMIT = float(pv["inverter_ac_kw_limit"])
 
     BATTERY_KWH = float(battery["battery_kwh"])
@@ -518,6 +510,13 @@ def build_effective_config(user_cfg: dict) -> dict:
     migrated_cfg = migrate_legacy_tilt_config(user_cfg)
     merged_cfg = deep_update(copy.deepcopy(DEFAULT_CONFIG), migrated_cfg)
     pv_cfg = merged_cfg.get("pv", {}) if isinstance(merged_cfg.get("pv"), dict) else {}
+    if "pv_calibration_factor" in pv_cfg:
+        g = float(pv_cfg.get("pv_calibration_factor", 1.0) or 1.0)
+        east_rel = float(pv_cfg.get("pv_calibration_factor_east", 1.0) or 1.0)
+        south_rel = float(pv_cfg.get("pv_calibration_factor_south", 1.0) or 1.0)
+        pv_cfg["pv_calibration_factor_east"] = g * east_rel
+        pv_cfg["pv_calibration_factor_south"] = g * south_rel
+        del pv_cfg["pv_calibration_factor"]
     loss_model = str(pv_cfg.get("loss_model", pv_cfg.get("pv_loss_model", "split"))).strip().lower()
     pv_cfg["loss_model"] = loss_model
     pv_cfg["pv_loss_model"] = loss_model
@@ -1220,7 +1219,8 @@ def quick_sanity_checks() -> None:
         assert 0 < PERFORMANCE_RATIO <= 1
         assert 0 < INVERTER_EFF <= 1
         assert PV_LOSS_MODEL in {"split", "combined"}
-        assert 0.7 <= PV_CALIBRATION_FACTOR <= 1.3
+        assert 0.7 <= PV_CALIBRATION_FACTOR_EAST <= 1.3
+        assert 0.7 <= PV_CALIBRATION_FACTOR_SOUTH <= 1.3
         assert 0 < BATTERY_AC_CHARGE_EFF <= 1
         assert 0 < BATTERY_PV_CHARGE_EFF <= 1
         assert 0 < BATTERY_DISCHARGE_EFF <= 1
@@ -1971,8 +1971,10 @@ def validate_pv_outputs(out: "pd.DataFrame") -> None:
         raise ValueError("INVERTER_EFF must be within (0, 1].")
     if PV_LOSS_MODEL not in {"split", "combined"}:
         raise ValueError("PV_LOSS_MODEL must be either 'split' or 'combined'.")
-    if not (0.7 <= PV_CALIBRATION_FACTOR <= 1.3):
-        raise ValueError("PV_CALIBRATION_FACTOR must be within [0.7, 1.3].")
+    if not (0.7 <= PV_CALIBRATION_FACTOR_EAST <= 1.3):
+        raise ValueError("PV_CALIBRATION_FACTOR_EAST must be within [0.7, 1.3].")
+    if not (0.7 <= PV_CALIBRATION_FACTOR_SOUTH <= 1.3):
+        raise ValueError("PV_CALIBRATION_FACTOR_SOUTH must be within [0.7, 1.3].")
 
     eps = 1e-9
     for col in ["pv_east_kwh", "pv_south_kwh", "pv_total_unclipped_kwh", "pv_total_kwh", "pv_clipped_kwh"]:
