@@ -1368,10 +1368,20 @@ evse_mgr = ocpp_evse.OcppEvseManager()
 
 @app.websocket("/ocpp")
 async def ocpp_ws(websocket: WebSocket):
-    cfg = state.settings.get("config", {}).get("car_charger", {}) if isinstance(state.settings.get("config"), dict) else {}
-    enabled = bool(cfg.get("enabled", False))
-    user = str(cfg.get("basic_user", "") or "")
-    pw = str(cfg.get("basic_pass", "") or "")
+    enabled = False
+    user = ""
+    pw = ""
+    try:
+        if SETTINGS_PATH.exists():
+            payload = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+            cfg = payload.get("config", {}) if isinstance(payload, dict) else {}
+            cc = cfg.get("car_charger", {}) if isinstance(cfg, dict) else {}
+            enabled = bool(cc.get("enabled", False))
+            user = str(cc.get("basic_user", "") or "")
+            pw = str(cc.get("basic_pass", "") or "")
+    except Exception:
+        pass
+
     await evse_mgr.handle_websocket(websocket, enabled=enabled, basic_user=user, basic_pass=pw)
 
 
@@ -1509,9 +1519,17 @@ def score_day(date: str, source: str = "manual_csv", authorization: str | None =
 @app.get("/v1/evse/status")
 def evse_status(authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
-    cfg = state.settings.get("config", {}).get("car_charger", {}) if isinstance(state.settings.get("config"), dict) else {}
+    enabled = False
+    try:
+        if SETTINGS_PATH.exists():
+            payload = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+            cfg = payload.get("config", {}) if isinstance(payload, dict) else {}
+            cc = cfg.get("car_charger", {}) if isinstance(cfg, dict) else {}
+            enabled = bool(cc.get("enabled", False))
+    except Exception:
+        pass
     out = evse_mgr.status_dict()
-    out["enabled"] = bool(cfg.get("enabled", False))
+    out["enabled"] = enabled
     out["ws_path"] = "/ocpp"
     return out
 

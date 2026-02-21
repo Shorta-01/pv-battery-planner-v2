@@ -22,6 +22,10 @@ class OcppEvseManager:
         self._last_seen_iso: str | None = None
         self._last_error: str | None = None
         self._auth_mode = "unknown"
+        self._last_power_kw: float | None = None
+        self._energy_total_kwh: float | None = None
+        self._energy_session_start_kwh: float | None = None
+        self._energy_session_kwh: float | None = None
         self._ws: WebSocket | None = None
         self._pending_calls: dict[str, asyncio.Future] = {}
 
@@ -78,16 +82,59 @@ class OcppEvseManager:
             txid = payload.get("transactionId")
             if txid is None:
                 txid = int(dt.datetime.now().timestamp())
+            self._energy_session_start_kwh = None
+            self._energy_session_kwh = None
             await self._set_state(transaction_id=int(txid), is_charging=True, status="Charging", last_error=None)
             await self._send_json([3, unique_id, {"idTagInfo": {"status": "Accepted"}, "transactionId": int(txid)}])
             return
 
         if action == "StopTransaction":
+            self._energy_session_start_kwh = None
+            self._energy_session_kwh = None
             await self._set_state(transaction_id=None, is_charging=False, last_error=None)
             await self._send_json([3, unique_id, {"idTagInfo": {"status": "Accepted"}}])
             return
 
         if action == "MeterValues":
+            meter_values = payload.get("meterValue", [])
+            if isinstance(meter_values, list):
+                for meter_value in meter_values:
+                    if not isinstance(meter_value, dict):
+                        continue
+                    sampled_values = meter_value.get("sampledValue", [])
+                    if not isinstance(sampled_values, list):
+                        continue
+                    for sampled in sampled_values:
+                        if not isinstance(sampled, dict):
+                            continue
+                        value_raw = sampled.get("value")
+                        try:
+                            value = float(value_raw)
+                        except (TypeError, ValueError):
+                            continue
+
+                        measurand = str(sampled.get("measurand", "") or "")
+                        unit = str(sampled.get("unit", "") or "")
+
+                        if (not measurand) or measurand in {"Power.Active.Import"}:
+                            if unit == "W":
+                                self._last_power_kw = value / 1000.0
+                            elif unit == "kW":
+                                self._last_power_kw = value
+
+                        if "Energy.Active.Import" in measurand:
+                            energy_total_kwh: float | None = None
+                            if unit == "Wh":
+                                energy_total_kwh = value / 1000.0
+                            elif unit == "kWh":
+                                energy_total_kwh = value
+
+                            if energy_total_kwh is not None:
+                                self._energy_total_kwh = energy_total_kwh
+                                if self._energy_session_start_kwh is None:
+                                    self._energy_session_start_kwh = energy_total_kwh
+                                self._energy_session_kwh = max(0.0, energy_total_kwh - self._energy_session_start_kwh)
+
             await self._set_state(last_error=None)
             await self._send_json([3, unique_id, {}])
             return
@@ -227,4 +274,7 @@ class OcppEvseManager:
             "transaction_id": self._transaction_id,
             "auth_mode": self._auth_mode,
             "last_error": self._last_error,
+            "power_kw": self._last_power_kw,
+            "energy_total_kwh": self._energy_total_kwh,
+            "energy_session_kwh": self._energy_session_kwh,
         }
