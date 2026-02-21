@@ -3279,6 +3279,39 @@ with left:
         if cfg_pv_loss_model not in {"split", "combined"}:
             cfg_pv_loss_model = "split"
 
+        st.markdown("#### Battery")
+        bat_row1_col1, bat_row1_col2 = st.columns(2, vertical_alignment="bottom")
+        with bat_row1_col1:
+            cfg_battery_kwh = st.number_input("Battery capacity (kWh)", min_value=0.0, value=float(effective_cfg["battery"]["battery_kwh"]), step=0.1, help=get_help("battery_kwh"))
+        with bat_row1_col2:
+            cfg_min_soc_percent = st.number_input("Min SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["min_soc_percent"]), step=0.5, help=get_help("min_soc"))
+
+        bat_row2_col1, bat_row2_col2 = st.columns(2, vertical_alignment="bottom")
+        with bat_row2_col1:
+            cfg_max_cutoff_soc_percent = st.number_input("Max cutoff SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["max_cutoff_soc_percent"]), step=0.5, help=get_help("cutoff_soc"))
+        with bat_row2_col2:
+            cfg_max_grid_charge_power_kw = st.number_input(
+                "Max grid charge power (kW)",
+                min_value=0.0,
+                value=float(backend_settings.get("max_ac_charge_power_kw_default", 5.0)),
+                step=0.1,
+                help=get_help("max_ac_user_cap"),
+            )
+            st.number_input(
+                "Battery max charge (kW) (hardware limit)",
+                min_value=0.0,
+                value=float(effective_cfg["battery"].get("battery_max_charge_kw", core.BATTERY_MAX_CHARGE_KW)),
+                step=0.1,
+                disabled=True,
+                help=get_help("battery_max_charge_kw"),
+                key="battery_max_charge_hw_display",
+            )
+        user_max_ac_kw = float(cfg_max_grid_charge_power_kw)
+
+        cfg_battery_max_charge_kw = float(effective_cfg["battery"].get("battery_max_charge_kw", core.BATTERY_MAX_CHARGE_KW))
+        cfg_battery_max_discharge_kw = float(effective_cfg["battery"].get("battery_max_discharge_kw", core.BATTERY_MAX_DISCHARGE_KW))
+        cfg_max_ac_charge_kw_hard_limit = float(effective_cfg["battery"].get("max_ac_charge_kw_hard_limit", core.MAX_AC_CHARGE_KW_HARD_LIMIT))
+
         with st.expander("Advanced", expanded=False):
             st.markdown("##### Scheduler & Safety")
             buffer_percent = st.number_input(
@@ -3364,39 +3397,6 @@ with left:
                     help=INPUT_TOOLTIPS["albedo"],
                     key="pv_albedo",
                 )
-
-        st.markdown("#### Battery")
-        bat_row1_col1, bat_row1_col2 = st.columns(2, vertical_alignment="bottom")
-        with bat_row1_col1:
-            cfg_battery_kwh = st.number_input("Battery capacity (kWh)", min_value=0.0, value=float(effective_cfg["battery"]["battery_kwh"]), step=0.1, help=get_help("battery_kwh"))
-        with bat_row1_col2:
-            cfg_min_soc_percent = st.number_input("Min SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["min_soc_percent"]), step=0.5, help=get_help("min_soc"))
-
-        bat_row2_col1, bat_row2_col2 = st.columns(2, vertical_alignment="bottom")
-        with bat_row2_col1:
-            cfg_max_cutoff_soc_percent = st.number_input("Max cutoff SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["max_cutoff_soc_percent"]), step=0.5, help=get_help("cutoff_soc"))
-        with bat_row2_col2:
-            cfg_max_grid_charge_power_kw = st.number_input(
-                "Max grid charge power (kW)",
-                min_value=0.0,
-                value=float(backend_settings.get("max_ac_charge_power_kw_default", 5.0)),
-                step=0.1,
-                help=get_help("max_ac_user_cap"),
-            )
-            st.number_input(
-                "Battery max charge (kW) (hardware limit)",
-                min_value=0.0,
-                value=float(effective_cfg["battery"].get("battery_max_charge_kw", core.BATTERY_MAX_CHARGE_KW)),
-                step=0.1,
-                disabled=True,
-                help=get_help("battery_max_charge_kw"),
-                key="battery_max_charge_hw_display",
-            )
-        user_max_ac_kw = float(cfg_max_grid_charge_power_kw)
-
-        cfg_battery_max_charge_kw = float(effective_cfg["battery"].get("battery_max_charge_kw", core.BATTERY_MAX_CHARGE_KW))
-        cfg_battery_max_discharge_kw = float(effective_cfg["battery"].get("battery_max_discharge_kw", core.BATTERY_MAX_DISCHARGE_KW))
-        cfg_max_ac_charge_kw_hard_limit = float(effective_cfg["battery"].get("max_ac_charge_kw_hard_limit", core.MAX_AC_CHARGE_KW_HARD_LIMIT))
 
         cfg_load_profile = [float(v) for v in effective_cfg["load_profile"]["load_profile_24h"]]
 
