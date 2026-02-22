@@ -1001,7 +1001,13 @@ def _aggregate_minutely_15_to_hourly(minutely_payload: dict[str, Any], tz: str) 
 
     if hourly.empty:
         return hourly
-    return hourly.groupby(hourly.index.floor("h")).mean(numeric_only=True)
+    return hourly.groupby(hourly.index.ceil("h")).mean(numeric_only=True)
+
+
+def _align_backward_hourly_mean_to_hour_start(s: pd.Series) -> pd.Series:
+    # Open-Meteo radiation series are preceding-hour means timestamped at hour-end.
+    # We want hour-start labeling for planning tables and PV-per-hour.
+    return pd.to_numeric(s, errors="coerce").shift(-1)
 
 def _finalize_irradiance_components(
     *,
@@ -1352,6 +1358,11 @@ def fetch_open_meteo_weather(
             dhi_15 = pd.to_numeric(agg15["dhi_wm2"], errors="coerce") if "dhi_wm2" in agg15.columns else pd.Series(np.nan, index=df.index)
             dni_candidate = dni_15.combine_first(dni_candidate)
             dhi_candidate = dhi_15.combine_first(dhi_candidate)
+
+    df["ghi_wm2"] = _align_backward_hourly_mean_to_hour_start(df["ghi_wm2"])
+    dni_candidate = _align_backward_hourly_mean_to_hour_start(dni_candidate)
+    dhi_candidate = _align_backward_hourly_mean_to_hour_start(dhi_candidate)
+    bhi = _align_backward_hourly_mean_to_hour_start(bhi)
 
     if core.PVLIB_AVAILABLE and dni_candidate.isna().any() and bhi.notna().any():
         import pvlib  # type: ignore
