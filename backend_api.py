@@ -17,6 +17,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import requests
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -127,6 +128,39 @@ def _valid_hhmm(value: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _parse_elevation_m(payload: object) -> float | None:
+    if not isinstance(payload, dict):
+        return None
+    raw = payload.get("elevation")
+    if isinstance(raw, list):
+        if not raw:
+            return None
+        raw = raw[0]
+    try:
+        if raw is None:
+            return None
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fetch_elevation_m(lat: float, lon: float) -> float | None:
+    try:
+        resp = requests.get(
+            "https://api.open-meteo.com/v1/elevation",
+            params={"latitude": float(lat), "longitude": float(lon)},
+            timeout=8,
+        )
+        resp.raise_for_status()
+    except requests.RequestException:
+        return None
+
+    try:
+        return _parse_elevation_m(resp.json())
+    except ValueError:
+        return None
 
 
 def pick_decision_quantile(soc_offpeak_confidence: str) -> tuple[str, str]:
@@ -710,6 +744,24 @@ class BackendState:
             self.settings["nightly_run_time"] = DEFAULT_NIGHTLY_TIME
             changed = True
 
+        cfg = self.settings.get("config") if isinstance(self.settings, dict) else None
+        loc_cfg = cfg.get("location") if isinstance(cfg, dict) else None
+        if isinstance(loc_cfg, dict):
+            raw_lat = loc_cfg.get("latitude")
+            raw_lon = loc_cfg.get("longitude")
+            try:
+                lat = float(raw_lat)
+                lon = float(raw_lon)
+            except (TypeError, ValueError):
+                lat = None
+                lon = None
+            has_elevation = loc_cfg.get("elevation_m") is not None
+            if lat is not None and lon is not None and not has_elevation:
+                elevation_m = _fetch_elevation_m(lat, lon)
+                if elevation_m is not None:
+                    loc_cfg["elevation_m"] = float(elevation_m)
+                    changed = True
+
         self.settings_sanitized_warnings = warnings
         if changed:
             self._save_settings()
@@ -815,6 +867,7 @@ class BackendState:
             name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
             latitude=float(loc_cfg["latitude"]),
             longitude=float(loc_cfg["longitude"]),
+            elevation_m=float(loc_cfg["elevation_m"]) if loc_cfg.get("elevation_m") is not None else None,
         )
 
         mode = str(forecast_mode or "auto").lower().strip()
