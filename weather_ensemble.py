@@ -84,6 +84,23 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
             "notes": "Direct/diffuse may be approximated on open-data feeds.",
         },
     },
+    "ecmwf_aifs": {
+        "label": "ECMWF AIFS 0.25° Single",
+        "endpoint": "https://api.open-meteo.com/v1/ecmwf",
+        "params": {"models": "ecmwf_aifs"},
+        "badges": ["🌐", "🆕", "☀️"],
+        "recommended_for_be": True,
+        "max_days": 15,
+        "tier": "global",
+        "supports_15min_radiation": False,
+        "capability": {
+            "ghi_native": True,
+            "direct_native": True,
+            "diffuse_native": True,
+            "dni_native": True,
+            "notes": "ECMWF AIFS Single 0.25° open-data; 6-hourly native steps interpolated by Open-Meteo.",
+        },
+    },
     "dwd_icon_eu": {
         "label": "DWD ICON-EU",
         "endpoint": "https://api.open-meteo.com/v1/forecast",
@@ -232,6 +249,35 @@ def auto_select_models_for_location(lat: float | object, lon: float | None = Non
         return eligible[:1]
     fallback_any = [m for m in stable_priority if m in WEATHER_MODELS]
     return fallback_any[:1]
+
+
+def select_week_ahead_models(*, requested_days: int = 7) -> list[str]:
+    """Return all weather models valid for week-ahead horizons in stable deterministic order."""
+    horizon = max(1, int(requested_days or 1))
+    tier_order = {"short": 0, "medium": 1, "global": 2}
+
+    eligible = [
+        model_id
+        for model_id, spec in WEATHER_MODELS.items()
+        if int(spec.get("max_days", 0) or 0) >= horizon
+    ]
+
+    return sorted(
+        eligible,
+        key=lambda model_id: (
+            0 if bool(WEATHER_MODELS[model_id].get("recommended_for_be", False)) else 1,
+            tier_order.get(str(WEATHER_MODELS[model_id].get("tier") or "global"), 9),
+            -int(WEATHER_MODELS[model_id].get("max_days", 0) or 0),
+            model_id,
+        ),
+    )
+
+
+def _nan_safe_hourly_median(matrix: pd.DataFrame) -> pd.Series:
+    median = matrix.median(axis=1, skipna=True)
+    all_missing_mask = matrix.notna().sum(axis=1) == 0
+    median.loc[all_missing_mask] = np.nan
+    return median.astype(float)
 
 
 def should_use_satellite_nowcast_auto(
@@ -1668,7 +1714,7 @@ def build_weather_ensemble_table(
         out[f"{var}_max"] = matrix.max(axis=1, skipna=True)
 
         if normalized_method == "median":
-            out[var] = matrix.median(axis=1, skipna=True)
+            out[var] = _nan_safe_hourly_median(matrix)
             continue
         if normalized_method == "mean":
             out[var] = matrix.mean(axis=1, skipna=True)
@@ -1975,7 +2021,7 @@ def build_ensemble_forecast(
         model_series = per_model_pv_columns[column_name]
         matrix = pd.concat(model_series.values(), axis=1)
         if ensemble_method == "median":
-            return matrix.median(axis=1, skipna=True), None, {}
+            return _nan_safe_hourly_median(matrix), None, {}
         if ensemble_method == "mean":
             return matrix.mean(axis=1, skipna=True), None, {}
         model_keys = list(model_series.keys())
@@ -2012,9 +2058,9 @@ def build_ensemble_forecast(
         spread_median = float(spread.median()) if not spread.empty else 0.0
         extreme_mask = spread > max(0.5, 2.0 * spread_median)
         if int(extreme_mask.sum()) >= 3:
-            median_ac = matrix.median(axis=1)
+            median_ac = _nan_safe_hourly_median(matrix)
             matrix_unclip = pd.concat(per_model_pv_columns["pv_total_unclipped_kwh"].values(), axis=1)
-            median_unclip = matrix_unclip.median(axis=1)
+            median_unclip = _nan_safe_hourly_median(matrix_unclip)
             ensemble_ac_p50.loc[extreme_mask] = median_ac.loc[extreme_mask]
             ensemble_unclipped_p50.loc[extreme_mask] = median_unclip.loc[extreme_mask]
 
@@ -2024,12 +2070,13 @@ def build_ensemble_forecast(
     ensemble_south_p50 = ensemble_south_p50.reindex(canonical_index)
 
     ensemble_unclipped_p50 = pd.Series(np.maximum(ensemble_unclipped_p50, ensemble_ac_p50), index=ensemble_ac_p50.index)
-    east_south_total = (ensemble_east_p50 + ensemble_south_p50).fillna(0.0)
+    east_south_total = (ensemble_east_p50 + ensemble_south_p50)
     rebalance = pd.Series(1.0, index=ensemble_ac_p50.index, dtype=float)
     positive_split = east_south_total > 0
     rebalance.loc[positive_split] = (ensemble_ac_p50.loc[positive_split] / east_south_total.loc[positive_split]).astype(float)
-    ensemble_east_p50 = (ensemble_east_p50 * rebalance).fillna(0.0).clip(lower=0.0)
-    ensemble_south_p50 = (ensemble_south_p50 * rebalance).fillna(0.0).clip(lower=0.0)
+    split_known = ensemble_east_p50.notna() | ensemble_south_p50.notna()
+    ensemble_east_p50 = (ensemble_east_p50 * rebalance).clip(lower=0.0).where(split_known)
+    ensemble_south_p50 = (ensemble_south_p50 * rebalance).clip(lower=0.0).where(split_known)
     ensemble_clipped_p50 = (ensemble_unclipped_p50 - ensemble_ac_p50).clip(lower=0.0)
 
     matrix = pd.DataFrame(per_model_pv_columns["pv_total_kwh"]).reindex(canonical_index)

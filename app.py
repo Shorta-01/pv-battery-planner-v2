@@ -4243,6 +4243,24 @@ if run_clicked:
                             f"reason={weather_ensemble.get('satellite_nowcast_reason')}"
                         )
 
+                    week_models = metrics.get("week_models_used") if isinstance(metrics.get("week_models_used"), list) else []
+                    week_count = int(metrics.get("week_models_count") or len(week_models or []))
+                    includes_aifs = "ecmwf_aifs" in week_models
+                    st.caption(f"Week Ahead models used: {week_count}")
+                    st.caption(f"Includes AIFS: {'yes' if includes_aifs else 'no'}")
+                    week_count_ser_raw = metrics.get("pv_week_models_used_count_per_hour")
+                    if isinstance(week_count_ser_raw, dict) and week_count_ser_raw.get("data"):
+                        try:
+                            week_count_ser = deserialize_series_payload(week_count_ser_raw)
+                            week_count_ser = pd.to_numeric(week_count_ser, errors="coerce")
+                            if not week_count_ser.dropna().empty:
+                                st.caption(
+                                    "Week model count/hour (min/median/max): "
+                                    f"{int(week_count_ser.min())}/{float(week_count_ser.median()):.1f}/{int(week_count_ser.max())}"
+                                )
+                        except Exception:
+                            pass
+
                     weather_units_help_map = {
                         "temperature_2m": {"label": "Temp (°C)", "help": "Air temperature at 2m above ground.", "format": "%.1f"},
                         "wind_speed_10m": {"label": "Wind (m/s)", "help": "Wind speed at 10m.", "format": "%.1f"},
