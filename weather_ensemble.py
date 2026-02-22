@@ -671,8 +671,14 @@ def _mark_provider_failure(model_id: str) -> dict[str, Any]:
     }
 
 
-def _provider_cache_path(model_id: str, target_date: dt.date, run_hour: int) -> Path:
-    return PROVIDER_CACHE_DIR / f"{model_id}__{target_date.isoformat()}__{int(run_hour):02d}.json"
+def _provider_cache_location_bucket(lat: float, lon: float, elevation_m: float | None = None) -> str:
+    elev_bucket = int(round(float(elevation_m))) if elevation_m is not None else "none"
+    return f"{float(lat):.4f}_{float(lon):.4f}_{elev_bucket}"
+
+
+def _provider_cache_path(model_id: str, target_date: dt.date, run_hour: int, location_bucket: str) -> Path:
+    safe_bucket = "".join(ch if ch.isalnum() or ch in {"_", ".", "-"} else "_" for ch in str(location_bucket))
+    return PROVIDER_CACHE_DIR / f"{model_id}__{safe_bucket}__{target_date.isoformat()}__{int(run_hour):02d}.json"
 
 
 def _cleanup_provider_cache(now: dt.datetime | None = None) -> None:
@@ -692,21 +698,35 @@ def _cleanup_provider_cache(now: dt.datetime | None = None) -> None:
             continue
 
 
-def _store_provider_cache(model_id: str, target_date: dt.date, run_hour: int, data: dict[str, Any]) -> None:
+def _store_provider_cache(
+    model_id: str,
+    target_date: dt.date,
+    run_hour: int,
+    data: dict[str, Any],
+    *,
+    location_bucket: str,
+) -> None:
     PROVIDER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
         "model_id": model_id,
         "target_date": target_date.isoformat(),
         "run_hour": int(run_hour),
+        "location_bucket": str(location_bucket),
         "cached_at_utc": _to_utc_iso(),
         "weather_payload": data,
     }
-    _write_json_file(_provider_cache_path(model_id, target_date, run_hour), payload)
+    _write_json_file(_provider_cache_path(model_id, target_date, run_hour, location_bucket), payload)
 
 
-def _load_provider_cache(model_id: str, target_date: dt.date, run_hour: int) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+def _load_provider_cache(
+    model_id: str,
+    target_date: dt.date,
+    run_hour: int,
+    *,
+    location_bucket: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     for hour in range(int(run_hour), -1, -1):
-        path = _provider_cache_path(model_id, target_date, hour)
+        path = _provider_cache_path(model_id, target_date, hour, location_bucket)
         payload = _read_json_file(path, default=None)
         if not isinstance(payload, dict):
             continue
@@ -717,6 +737,7 @@ def _load_provider_cache(model_id: str, target_date: dt.date, run_hour: int) -> 
                 "target_date": target_date.isoformat(),
                 "requested_run_hour": int(run_hour),
                 "cache_run_hour": int(payload.get("run_hour", hour) or hour),
+                "location_bucket": str(payload.get("location_bucket") or location_bucket),
                 "cached_at_utc": str(payload.get("cached_at_utc") or ""),
             }
             return weather_payload, meta
@@ -1104,6 +1125,7 @@ def fetch_open_meteo_weather(
         }
 
     hourly_variables = BASE_HOURLY_VARIABLES[:] + IRRADIANCE_HOURLY_VARIABLES
+    location_bucket = _provider_cache_location_bucket(loc.latitude, loc.longitude, loc.elevation_m)
 
     params = {
         "latitude": loc.latitude,
@@ -1230,7 +1252,12 @@ def fetch_open_meteo_weather(
 
         if data is None:
             failure_state = _mark_provider_failure(model_id)
-            cached_payload, cache_meta = _load_provider_cache(model_id, target_date, run_hour)
+            cached_payload, cache_meta = _load_provider_cache(
+                model_id,
+                target_date,
+                run_hour,
+                location_bucket=location_bucket,
+            )
             if isinstance(cached_payload, dict):
                 data = cached_payload
                 fetch_meta.update({
@@ -1259,7 +1286,13 @@ def fetch_open_meteo_weather(
 
     if fetch_meta.get("source") == "live" or fetch_meta.get("source") == "forecast_fallback":
         _mark_provider_success(model_id)
-        _store_provider_cache(model_id, target_date, run_hour, data)
+        _store_provider_cache(
+            model_id,
+            target_date,
+            run_hour,
+            data,
+            location_bucket=location_bucket,
+        )
 
     provider_payload = {
         "fetched_at_utc": _to_utc_iso(),

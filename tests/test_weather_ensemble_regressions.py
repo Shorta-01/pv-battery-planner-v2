@@ -850,7 +850,8 @@ def test_circuit_breaker_opens_and_skips_live_calls(monkeypatch: pytest.MonkeyPa
         "daily": {"sunrise": [hourly_index[7].isoformat()], "sunset": [hourly_index[17].isoformat()]},
     }
 
-    we._store_provider_cache("ecmwf_ifs", dt.date(2026, 1, 10), run_hour, payload)
+    bucket = we._provider_cache_location_bucket(50.8, 4.3, None)
+    we._store_provider_cache("ecmwf_ifs", dt.date(2026, 1, 10), run_hour, payload, location_bucket=bucket)
 
     calls = {"count": 0}
 
