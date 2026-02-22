@@ -984,6 +984,73 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
         conn.commit()
 
 
+def fetch_effective_daily_kwh(
+    db_path: str,
+    *,
+    lookback_runs: int = 14,
+    prefer_same_day_type: bool = True,
+) -> tuple[float | None, dict]:
+    """Return effective daily kWh from recent successful run history."""
+    limit = max(1, int(lookback_runs))
+    try:
+        with _connect(db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT run_at_utc, yesterday_kwh_used
+                FROM forecast_runs
+                WHERE status = 'ok' AND yesterday_kwh_used IS NOT NULL
+                ORDER BY run_at_utc DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return None, {"n_samples": 0, "method": "none", "day_type": "mixed"}
+
+    meta = {"n_samples": 0, "method": "none", "day_type": "mixed"}
+    if not rows:
+        return None, meta
+
+    tz = ZoneInfo(DEFAULT_TIMEZONE)
+    today_local = dt.datetime.now(tz).date()
+    target_is_weekend = today_local.weekday() >= 5
+
+    same_type_values: list[float] = []
+    mixed_values: list[float] = []
+    for row in rows:
+        try:
+            val = float(row["yesterday_kwh_used"])
+        except (TypeError, ValueError):
+            continue
+        mixed_values.append(val)
+        run_at_raw = row["run_at_utc"]
+        try:
+            run_at = pd.to_datetime(run_at_raw, utc=True).tz_convert(tz)
+        except Exception:
+            continue
+        row_is_weekend = run_at.weekday() >= 5
+        if row_is_weekend == target_is_weekend:
+            same_type_values.append(val)
+
+    values = same_type_values if (prefer_same_day_type and len(same_type_values) >= 2) else mixed_values
+    if not values:
+        return None, meta
+
+    meta["n_samples"] = len(values)
+    if prefer_same_day_type and len(same_type_values) >= 2:
+        meta["day_type"] = "weekend" if target_is_weekend else "weekday"
+    else:
+        meta["day_type"] = "mixed"
+
+    if len(values) >= 5:
+        meta["method"] = "median"
+        return float(pd.Series(values).median()), meta
+    if len(values) >= 2:
+        meta["method"] = "mean"
+        return float(pd.Series(values).mean()), meta
+    return None, meta
+
+
 def fetch_recent_run_summaries(db_path: str, limit: int = 30) -> list[dict]:
     limit = max(1, int(limit))
     with _connect(db_path) as conn:
