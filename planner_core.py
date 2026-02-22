@@ -2265,6 +2265,7 @@ def compute_soc_low_timing_aware(
     for_date: dt.date,
     buffer_soc: float = 0.0,
     tariff_cfg: Optional[dict] = None,
+    pv_col: str = "pv_total_kwh",
 ) -> float:
     expensive_windows = get_expensive_windows(for_date, tariff_cfg)
     if not expensive_windows:
@@ -2282,7 +2283,7 @@ def compute_soc_low_timing_aware(
     for ts in df.index:
         if not in_any_window(ts.time(), expensive_windows):
             continue
-        pv = float(df.loc[ts, "pv_total_kwh"])
+        pv = float(df.loc[ts, pv_col])
         load = float(loads.loc[ts])
         net = load - pv  # + tekort, - overschot
         if optimization_mode == "price_aware":
@@ -2407,7 +2408,8 @@ def run_detailed_plan(
         pv = add_load_and_surplus_columns(pv, total_consumption_kwh)
 
     tariff_cfg = EFFECTIVE_CFG.get("tariff", DEFAULT_CONFIG["tariff"]) if isinstance(EFFECTIVE_CFG, dict) else DEFAULT_CONFIG["tariff"]
-    soc_low = compute_soc_low_timing_aware(pv, total_consumption_kwh, target_date, tariff_cfg=tariff_cfg)
+    pv_col = "pv_total_decision_kwh" if "pv_total_decision_kwh" in pv.columns else "pv_total_kwh"
+    soc_low = compute_soc_low_timing_aware(pv, total_consumption_kwh, target_date, tariff_cfg=tariff_cfg, pv_col=pv_col)
     _, soc_high = compute_soc_high_headroom(
         pv,
         total_consumption_kwh,
