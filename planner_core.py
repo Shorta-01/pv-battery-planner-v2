@@ -955,6 +955,59 @@ def get_charge_session_index(charge_date: dt.date, cfg: Optional[dict] = None, s
     return idx[mask.to_numpy()]
 
 
+def compute_charging_window_for_target_date(target_date: dt.date, tariff_cfg: dict) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """
+    Returns (start_ts, end_ts) tz-aware in TIMEZONE for the off-peak window that should be used
+    to charge before target_date.
+    """
+    target_midnight = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=TIMEZONE)
+    charge_date = target_date - dt.timedelta(days=1)
+    charge_midnight = pd.Timestamp(dt.datetime.combine(charge_date, dt.time(0, 0)), tz=TIMEZONE)
+
+    def _window_to_interval(base_midnight: pd.Timestamp, start_hhmm: str, end_hhmm: str) -> tuple[pd.Timestamp, pd.Timestamp]:
+        smin = to_minutes(start_hhmm)
+        emin = to_minutes(end_hhmm)
+        start_dt = base_midnight + dt.timedelta(minutes=smin)
+        if smin == 0 and emin == 1440:
+            return start_dt, base_midnight + dt.timedelta(days=1)
+        if smin < emin:
+            end_dt = base_midnight + dt.timedelta(minutes=emin)
+        else:
+            end_dt = base_midnight + dt.timedelta(days=1) + dt.timedelta(minutes=emin)
+        return start_dt, end_dt
+
+    charge_windows = normalize_windows(get_offpeak_windows_for_date(charge_date, tariff_cfg))
+    if ("00:00", "24:00") in charge_windows:
+        return charge_midnight, target_midnight
+
+    intervals = [
+        _window_to_interval(charge_midnight, start_hhmm, end_hhmm)
+        for start_hhmm, end_hhmm in charge_windows
+    ]
+
+    crossing_midnight = [(start_ts, end_ts) for start_ts, end_ts in intervals if start_ts < target_midnight < end_ts]
+    if crossing_midnight:
+        return max(crossing_midnight, key=lambda x: x[0])
+
+    target_windows = normalize_windows(get_offpeak_windows_for_date(target_date, tariff_cfg))
+    if target_windows:
+        earliest_start_hhmm, earliest_end_hhmm = min(target_windows, key=lambda x: to_minutes(x[0]))
+        return _window_to_interval(target_midnight, earliest_start_hhmm, earliest_end_hhmm)
+
+    return target_midnight, target_midnight
+
+
+def get_charge_session_index_from_window(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> pd.DatetimeIndex:
+    """
+    Hourly index of charging decision slots fully inside [start_ts, end_ts).
+    """
+    start_h = pd.Timestamp(start_ts).ceil("h")
+    end_h = pd.Timestamp(end_ts).floor("h")
+    if end_h <= start_h:
+        return pd.DatetimeIndex([], tz=TIMEZONE)
+    return pd.date_range(start_h, end_h, freq="h", inclusive="left")
+
+
 def get_charge_windows(charge_date: dt.date, cfg: Optional[dict] = None) -> List[Tuple[str, str]]:
     return get_offpeak_windows_for_date(charge_date, cfg)
 
@@ -973,9 +1026,11 @@ def fmt_windows(windows: List[Tuple[str, str]]) -> str:
 
 
 def overnight_charge_hours_summary(charge_date: dt.date, cfg: Optional[dict] = None) -> tuple[float, str]:
-    session_idx = get_charge_session_index(charge_date, cfg)
+    target_date = charge_date + dt.timedelta(days=1)
+    window_start, window_end = compute_charging_window_for_target_date(target_date, cfg or EFFECTIVE_CFG["tariff"])
+    session_idx = get_charge_session_index_from_window(window_start, window_end)
     available_charge_hours = float(len(session_idx))
-    return available_charge_hours, f"{fmt_windows(get_offpeak_windows_for_date(charge_date, cfg))}: {available_charge_hours:.1f}h off-peak"
+    return available_charge_hours, f"{window_start.strftime('%H:%M')}–{window_end.strftime('%H:%M')}: {available_charge_hours:.1f}h off-peak"
 
 
 def complement_windows(windows: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
@@ -1184,7 +1239,8 @@ def compute_euro_savings_no_battery_vs_plan(
     tomorrow_end = tomorrow_start + dt.timedelta(days=1)
 
     idx_tomorrow = pd.date_range(tomorrow_start, tomorrow_end, freq="h", inclusive="left", tz=TIMEZONE)
-    charge_session_idx = get_charge_session_index(today_date, tariff_cfg)
+    window_start, window_end = compute_charging_window_for_target_date(tomorrow_date, tariff_cfg)
+    charge_session_idx = get_charge_session_index_from_window(window_start, window_end)
     idx_tonight = charge_session_idx[charge_session_idx < tomorrow_start]
 
     dt_h_tomorrow = timestep_hours(idx_tomorrow)
@@ -1218,7 +1274,15 @@ def compute_euro_savings_no_battery_vs_plan(
 
     plan_cost_tom = plan_import_tom * base_price_tom - plan_export_tom * inj
 
-    night_df = simulate_night_charging_series(soc_at_22, charge_kw, cutoff_soc, tomorrow_date, total_consumption_kwh, tariff_cfg)
+    night_df = simulate_night_charging_series(
+        soc_at_22,
+        charge_kw,
+        cutoff_soc,
+        session_start=window_start,
+        session_end=window_end,
+        total_consumption_kwh=total_consumption_kwh,
+        tariff_cfg=tariff_cfg,
+    )
     plan_import_ton = night_df["grid_import_kwh"].reindex(idx_tonight).fillna(0.0).astype(float)
 
     base_price_ton = pd.Series([import_price_eur_per_kwh(ts, tariff_cfg) for ts in idx_tonight], index=idx_tonight)
@@ -2331,7 +2395,10 @@ def plan_charge_power(
     user_cap_kw: Optional[float] = None,
     tariff_cfg: Optional[dict] = None,
 ) -> Tuple[float, float, str, float]:
-    session_idx = get_charge_session_index(charge_date, tariff_cfg)
+    cfg = tariff_cfg or DEFAULT_CONFIG["tariff"]
+    target_date = charge_date + dt.timedelta(days=1)
+    window_start, window_end = compute_charging_window_for_target_date(target_date, cfg)
+    session_idx = get_charge_session_index_from_window(window_start, window_end)
     available_charge_hours = float(len(session_idx))
     if available_charge_hours <= 0:
         return 0.0, 0.0, "No off-peak hours available in configured charging windows.", soc_start
@@ -2545,19 +2612,23 @@ def simulate_night_charging_series(
     soc_at_22: float,
     charge_kw: float,
     cutoff_soc: float,
-    tomorrow_date: dt.date,
+    session_start: Optional[pd.Timestamp] = None,
+    session_end: Optional[pd.Timestamp] = None,
     total_consumption_kwh: float = 0.0,
     tariff_cfg: Optional[dict] = None,
+    tomorrow_date: Optional[dt.date] = None,
 ) -> "pd.DataFrame":
-    session_start = pd.Timestamp(dt.datetime.combine(tomorrow_date - dt.timedelta(days=1), dt.time(22, 0)), tz=TIMEZONE)
-    session_end = pd.Timestamp(dt.datetime.combine(tomorrow_date, dt.time(7, 0)), tz=TIMEZONE)
+    cfg = tariff_cfg or DEFAULT_CONFIG["tariff"]
+    if session_start is None or session_end is None:
+        if tomorrow_date is None:
+            raise ValueError("tomorrow_date is required when session_start/session_end are not provided.")
+        session_start, session_end = compute_charging_window_for_target_date(tomorrow_date, cfg)
     idx = pd.date_range(session_start, session_end, freq="h", inclusive="left", tz=TIMEZONE)
     loads = build_hourly_load_series(idx, total_consumption_kwh)
     energy = max(0.0, min(1.0, soc_at_22)) * BATTERY_KWH
     min_energy = MIN_SOC * BATTERY_KWH
     max_energy = MAX_CUTOFF_SOC * BATTERY_KWH
     charge_cutoff_energy = min(MAX_CUTOFF_SOC, max(MIN_SOC, cutoff_soc)) * BATTERY_KWH
-    cfg = tariff_cfg or DEFAULT_CONFIG["tariff"]
     night_load_from_battery = bool(cfg.get("night_load_from_battery", True))
 
     rows = []
@@ -2624,8 +2695,17 @@ def simulate_full_day_soc(
     tomorrow_idx = pd.date_range(tomorrow_start, tomorrow_end, freq="h", inclusive="left", tz=TIMEZONE)
 
     cfg = tariff_cfg or DEFAULT_CONFIG["tariff"]
-    night_df = simulate_night_charging_series(soc_at_22, charge_kw, cutoff_soc, tomorrow_date, total_consumption_kwh, cfg)
-    day_start_ts = pd.Timestamp(dt.datetime.combine(tomorrow_date, dt.time(7, 0)), tz=TIMEZONE)
+    window_start, window_end = compute_charging_window_for_target_date(tomorrow_date, cfg)
+    night_df = simulate_night_charging_series(
+        soc_at_22,
+        charge_kw,
+        cutoff_soc,
+        session_start=window_start,
+        session_end=window_end,
+        total_consumption_kwh=total_consumption_kwh,
+        tariff_cfg=cfg,
+    )
+    day_start_ts = window_end
     soc_day_start = float(night_df.iloc[-1]["soc_end_pct"]) / 100.0 if not night_df.empty else soc_at_22
 
     day_idx = pd.date_range(day_start_ts, tomorrow_end, freq="h", inclusive="left", tz=TIMEZONE)
