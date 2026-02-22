@@ -142,6 +142,7 @@ DEFAULT_CONFIG = {
         "address_query": ADDRESS_QUERY,
         "latitude": LATITUDE,
         "longitude": LONGITUDE,
+        "elevation_m": None,
         "timezone": TIMEZONE,
         "address_structured": {
             "street": "",
@@ -684,6 +685,7 @@ class Location:
     name: str
     latitude: float
     longitude: float
+    elevation_m: float | None = None
 
 
 @dataclass
@@ -2322,6 +2324,7 @@ def run_forecast_pipeline(
             name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
             latitude=float(loc_cfg["latitude"]),
             longitude=float(loc_cfg["longitude"]),
+            elevation_m=float(loc_cfg["elevation_m"]) if loc_cfg.get("elevation_m") is not None else None,
         )
 
         weather = fetch_weather_for_date(loc, target_date, tz=tz)

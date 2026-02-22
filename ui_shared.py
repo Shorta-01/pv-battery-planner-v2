@@ -72,14 +72,14 @@ def save_run_history_entry(run_date: dt.date, cutoff_soc_pct: float, allowed_cha
 
 
 @st.cache_data(ttl=3600)
-def cached_fetch_weather(lat: float, lon: float, tomorrow_iso: str) -> core.ForecastResult:
-    loc = core.Location(name="Configured", latitude=lat, longitude=lon)
+def cached_fetch_weather(lat: float, lon: float, tomorrow_iso: str, elevation_m: float | None = None) -> core.ForecastResult:
+    loc = core.Location(name="Configured", latitude=lat, longitude=lon, elevation_m=elevation_m)
     return core.fetch_tomorrow_weather(loc)
 
 
 @st.cache_data(ttl=3600)
-def cached_pv_forecast(weather_json: str, lat: float, lon: float, config_json: str) -> pd.DataFrame:
-    loc = core.Location(name="Configured", latitude=lat, longitude=lon)
+def cached_pv_forecast(weather_json: str, lat: float, lon: float, config_json: str, elevation_m: float | None = None) -> pd.DataFrame:
+    loc = core.Location(name="Configured", latitude=lat, longitude=lon, elevation_m=elevation_m)
     weather_df = pd.read_json(weather_json, orient="split")
     pv = core.build_pv_forecast(weather_df, loc)
     return pv

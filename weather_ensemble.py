@@ -58,7 +58,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "recommended_for_be": True,
         "max_days": 2,
         "tier": "short",
-        "supports_15min_radiation": False,
+        "supports_15min_radiation": True,
         "capability": {
             "ghi_native": True,
             "direct_native": True,
@@ -947,8 +947,9 @@ def _decompose_from_ghi(df: pd.DataFrame, loc: core.Location, tz: str) -> pd.Dat
     return df
 
 
-def _cache_key(model_id: str, lat: float, lon: float, tz: str, target_date: dt.date) -> tuple:
-    return (model_id, round(float(lat), 4), round(float(lon), 4), str(tz), target_date.isoformat())
+def _cache_key(model_id: str, lat: float, lon: float, tz: str, target_date: dt.date, elevation_m: float | None = None) -> tuple:
+    elev_bucket = int(round(float(elevation_m))) if elevation_m is not None else None
+    return (model_id, round(float(lat), 4), round(float(lon), 4), elev_bucket, str(tz), target_date.isoformat())
 
 
 
@@ -1077,7 +1078,7 @@ def fetch_open_meteo_weather(
 
     cache_extra_key = json.dumps(extra_params, sort_keys=True, default=str) if extra_params else ""
     key = (
-        _cache_key(model_id, loc.latitude, loc.longitude, tz, target_date),
+        _cache_key(model_id, loc.latitude, loc.longitude, tz, target_date, loc.elevation_m),
         bool(accuracy_mode),
         bool(fast_mode),
         str(endpoint_override or ""),
@@ -1119,9 +1120,12 @@ def fetch_open_meteo_weather(
     params.update(spec.get("params", {}))
     if extra_params:
         params.update(extra_params)
+    if loc.elevation_m is not None:
+        params["elevation"] = int(round(float(loc.elevation_m)))
 
     use_icon15 = (
         model_id == "dwd_icon_d2"
+        and bool(spec.get("supports_15min_radiation", False))
         and bool(accuracy_mode)
         and not bool(fast_mode)
         and _is_central_europe(loc.latitude, loc.longitude)
@@ -1515,6 +1519,7 @@ def _weighted_ensemble(
     dynamic_weights: dict[str, float] | None = None,
     missing_vars_by_model: dict[str, list[str]] | None = None,
     derived_irradiance_by_model: dict[str, bool] | None = None,
+    derived_irradiance_hours_by_model: dict[str, int] | None = None,
 ) -> tuple[pd.Series, dict[str, float] | None, dict[str, float]]:
     weighted_subset = dict(dynamic_weights or {})
     if not weighted_subset:
@@ -1536,6 +1541,17 @@ def _weighted_ensemble(
             factor = 0.60
         elif derived:
             factor = 0.80
+        derived_hours = int((derived_irradiance_hours_by_model or {}).get(model_id, 0) or 0)
+        if derived_hours <= 0:
+            hours_factor = 1.0
+        elif derived_hours <= 6:
+            hours_factor = 0.90
+        elif derived_hours <= 12:
+            hours_factor = 0.75
+        else:
+            hours_factor = 0.60
+        factor *= float(hours_factor)
+
         factor = max(min_weight_factor, float(factor))
         quality_factors[model_id] = factor
         adjusted_weights[model_id] = float(base_w) * factor
@@ -1928,6 +1944,7 @@ def build_ensemble_forecast(
             dynamic_weights=dynamic_weights,
             missing_vars_by_model=missing_vars_by_model,
             derived_irradiance_by_model=derived_irradiance_by_model,
+            derived_irradiance_hours_by_model=derived_irradiance_hours_by_model,
         )
 
     ensemble_ac_p50, weights_used, quality_weight_factors_by_model = _ensemble_column("pv_total_kwh")
