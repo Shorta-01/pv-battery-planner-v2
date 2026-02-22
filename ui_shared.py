@@ -13,6 +13,13 @@ import planner_core as core
 
 RUN_HISTORY_PATH = Path("run_history_log.json")
 
+
+DATA_SOURCE_TOOLTIPS = {
+    "soc": "SOC source used in planning. 'manual' means user-entered value.",
+    "load": "Load source used in planning. 'manual' means based on user-entered yesterday consumption.",
+    "pv": "PV source used in planning. 'forecast' means weather/PV model forecast output.",
+}
+
 PV_QUALITY_THRESHOLDS = {
     "Excellent": 75,
     "Good": 55,

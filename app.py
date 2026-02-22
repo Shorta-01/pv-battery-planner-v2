@@ -26,7 +26,7 @@ from weather_ensemble import auto_select_models_for_location, should_use_satelli
 PLOTLY_DARK = "plotly_dark"
 
 INPUT_TOOLTIPS = {
-    "soc_percent": "This is your battery level at 22:00. It matters because charging need is based on how full the battery already is. Example: 35 means the battery starts at 35%.",
+    "soc_percent": "This is your battery level now. It matters because charging need is based on how full the battery already is. Example: 35 means the battery currently sits at 35%.",
     "yesterday_kwh": "This is your total home usage yesterday. It matters because the app uses it to estimate tomorrow's hourly load. Example: if yesterday was 18 kWh, tomorrow's hourly load profile scales to 18 kWh.",
     "buffer_percent": "Adds a small safety margin to the charging cutoff SOC we calculate for tonight. This helps when tomorrow’s solar forecast is wrong or your home uses more power than expected. Example: if the planner suggests charging to 60% and you set 3%, the target becomes 63%. This does not change Min SOC.",
     "performance_ratio": "Overall PV real-world efficiency after losses. Recommended starting point: 0.82. Typical working range: 0.70–0.85. Example: 0.82 means you expect about 82% of ideal output.",
@@ -3135,7 +3135,7 @@ with left:
         inputs_soc_col, inputs_kwh_col = st.columns([2, 3], vertical_alignment="bottom")
         with inputs_soc_col:
             soc_percent = st.number_input(
-                "Battery SOC at 22:00 (%)",
+                "SOC now (%)",
                 min_value=0.0,
                 max_value=100.0,
                 value=float(st.session_state.last_soc),
@@ -4001,6 +4001,7 @@ if run_clicked:
             api_put(
                 "/v1/inputs/last",
                 {
+                    "soc_now_percent": float(soc_percent),
                     "soc_at_22_percent": float(soc_percent),
                     "yesterday_consumption_kwh": float(yesterday_kwh),
                 },

@@ -157,12 +157,14 @@ class SettingsPayload(BaseModel):
 
 
 class InputsPayload(BaseModel):
-    soc_at_22_percent: float = Field(..., ge=0.0, le=100.0)
+    soc_now_percent: float | None = None
+    soc_at_22_percent: float | None = None
     yesterday_consumption_kwh: float = Field(..., gt=0.0)
 
 
 class RunNowPayload(BaseModel):
-    soc_at_22_percent: float | None = Field(default=None, ge=0.0, le=100.0)
+    soc_now_percent: float | None = None
+    soc_at_22_percent: float | None = None
     yesterday_consumption_kwh: float | None = Field(default=None, gt=0.0)
     buffer_percent: float = Field(default=0.0, ge=0.0, le=10.0)
     user_max_ac_kw: float | None = Field(default=None, ge=0.0)
@@ -176,6 +178,36 @@ class RunNowPayload(BaseModel):
 
 class NightlyTickPayload(BaseModel):
     force: bool = False
+
+
+def _resolve_soc_percent(
+    *,
+    payload_soc_now: float | None,
+    payload_soc_legacy: float | None,
+    source: dict,
+    warnings: list[str],
+) -> float:
+    source_soc_now = source.get("soc_now_percent") if isinstance(source, dict) else None
+    source_soc_legacy = source.get("soc_at_22_percent") if isinstance(source, dict) else None
+    raw_soc = payload_soc_now
+    field_name = "soc_now_percent"
+    if raw_soc is None:
+        raw_soc = payload_soc_legacy
+        if raw_soc is not None:
+            field_name = "soc_at_22_percent"
+    if raw_soc is None:
+        raw_soc = source_soc_now
+    if raw_soc is None:
+        raw_soc = source_soc_legacy
+        if raw_soc is not None:
+            field_name = "soc_at_22_percent"
+
+    soc = _coerce_float(raw_soc, 45.0, field_name=field_name, warnings=warnings)
+    if soc < 0.0 or soc > 100.0:
+        clamped = min(100.0, max(0.0, soc))
+        warnings.append(f"{field_name}: clamped to {clamped}")
+        soc = clamped
+    return soc
 
 
 class ActualsHourlyPayload(BaseModel):
@@ -513,8 +545,10 @@ class BackendState:
             payload.setdefault("run_at_utc", dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat())
             payload.setdefault("config", self.settings.get("config", {}))
             if "inputs_used" not in payload and self.last_inputs:
+                soc_last = self.last_inputs.get("soc_now_percent", self.last_inputs.get("soc_at_22_percent"))
                 payload["inputs_used"] = {
-                    "soc_at_22_percent": self.last_inputs.get("soc_at_22_percent"),
+                    "soc_now_percent": soc_last,
+                    "soc_at_22_percent": soc_last,
                     "yesterday_consumption_kwh": self.last_inputs.get("yesterday_consumption_kwh"),
                 }
             insert_forecast_run(str(SQLITE_PATH), payload)
@@ -619,14 +653,17 @@ class BackendState:
 
         warnings: list[str] = []
 
-        raw_soc = self.last_inputs.get("soc_at_22_percent")
-        soc = _coerce_float(raw_soc, 45.0, field_name="soc_at_22_percent", warnings=warnings)
-        if soc < 0.0 or soc > 100.0:
-            clamped = min(100.0, max(0.0, soc))
-            warnings.append(f"soc_at_22_percent: clamped to {clamped}")
-            soc = clamped
-        if raw_soc != soc:
+        raw_soc_now = self.last_inputs.get("soc_now_percent")
+        raw_soc_legacy = self.last_inputs.get("soc_at_22_percent")
+        soc = _resolve_soc_percent(
+            payload_soc_now=raw_soc_now,
+            payload_soc_legacy=raw_soc_legacy,
+            source=self.last_inputs,
+            warnings=warnings,
+        )
+        if raw_soc_now != soc or raw_soc_legacy != soc:
             changed = True
+        self.last_inputs["soc_now_percent"] = soc
         self.last_inputs["soc_at_22_percent"] = soc
 
         raw_ykwh = self.last_inputs.get("yesterday_consumption_kwh")
@@ -726,8 +763,15 @@ class BackendState:
 
     def update_inputs(self, payload: InputsPayload) -> dict:
         now_local = dt.datetime.now(self._tzinfo()).isoformat()
+        soc = _resolve_soc_percent(
+            payload_soc_now=payload.soc_now_percent,
+            payload_soc_legacy=payload.soc_at_22_percent,
+            source=self.last_inputs,
+            warnings=[],
+        )
         self.last_inputs = {
-            "soc_at_22_percent": float(payload.soc_at_22_percent),
+            "soc_now_percent": float(soc),
+            "soc_at_22_percent": float(soc),
             "yesterday_consumption_kwh": float(payload.yesterday_consumption_kwh),
             "last_inputs_updated_at": now_local,
         }
@@ -807,6 +851,7 @@ class BackendState:
         run_id = str(uuid.uuid4())
         config_hash = compute_config_hash(cfg)
         inputs_used = {
+            "soc_now_percent": float(soc_percent),
             "soc_at_22_percent": float(soc_percent),
             "yesterday_consumption_kwh": float(yesterday_kwh),
             "buffer_percent": float(buffer_percent),
@@ -862,6 +907,7 @@ class BackendState:
                 "warnings_count": len(warnings),
                 "inputs_used": inputs_used,
                 "planner_version": "v2",
+                "data_source": {"soc": "manual", "load": "manual", "pv": "forecast"},
                 "config_hash": config_hash,
                 "config_json": json.dumps(
                     {
@@ -1178,6 +1224,7 @@ class BackendState:
             "week_ahead_models_considered": list(week_models),
             "system_snapshot": {k: v for k, v in system_snapshot.items() if v is not None},
             "planner_version": "v2",
+            "data_source": {"soc": "manual", "load": "manual", "pv": "forecast"},
             "config_hash": config_hash,
             "config_json": json.dumps(
                 {
@@ -1241,16 +1288,12 @@ class BackendState:
         try:
             source = self.last_inputs
             warnings: list[str] = [*self.last_inputs_sanitized_warnings, *self.settings_sanitized_warnings]
-            soc = _coerce_float(
-                payload.soc_at_22_percent if payload.soc_at_22_percent is not None else source.get("soc_at_22_percent"),
-                45.0,
-                field_name="soc_at_22_percent",
+            soc = _resolve_soc_percent(
+                payload_soc_now=payload.soc_now_percent,
+                payload_soc_legacy=payload.soc_at_22_percent,
+                source=source,
                 warnings=warnings,
             )
-            if soc < 0.0 or soc > 100.0:
-                clamped = min(100.0, max(0.0, soc))
-                warnings.append(f"soc_at_22_percent: clamped to {clamped}")
-                soc = clamped
 
             ykwh = _coerce_float(
                 payload.yesterday_consumption_kwh if payload.yesterday_consumption_kwh is not None else source.get("yesterday_consumption_kwh"),
@@ -1312,16 +1355,12 @@ class BackendState:
                 return {"ran": False, "reason": "already_ran", "target_date": target_date.isoformat()}
 
             warnings: list[str] = [*self.last_inputs_sanitized_warnings, *self.settings_sanitized_warnings]
-            soc = _coerce_float(
-                self.last_inputs.get("soc_at_22_percent"),
-                45.0,
-                field_name="soc_at_22_percent",
+            soc = _resolve_soc_percent(
+                payload_soc_now=None,
+                payload_soc_legacy=None,
+                source=self.last_inputs,
                 warnings=warnings,
             )
-            if soc < 0.0 or soc > 100.0:
-                clamped = min(100.0, max(0.0, soc))
-                warnings.append(f"soc_at_22_percent: clamped to {clamped}")
-                soc = clamped
 
             ykwh = _coerce_float(
                 self.last_inputs.get("yesterday_consumption_kwh"),

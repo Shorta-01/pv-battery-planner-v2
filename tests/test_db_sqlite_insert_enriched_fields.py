@@ -22,6 +22,7 @@ def test_insert_forecast_run_persists_enriched_fields(tmp_path):
         "warnings": ["w1", "w2"],
         "warnings_count": 2,
         "inputs_used": {
+            "soc_now_percent": 38.5,
             "soc_at_22_percent": 38.5,
             "yesterday_consumption_kwh": 11.2,
             "ensemble_method": "weighted",
@@ -50,7 +51,7 @@ def test_insert_forecast_run_persists_enriched_fields(tmp_path):
         row = conn.execute(
             """
             SELECT status, warnings_count, inputs_used_json, weather_ensemble_json,
-                   pv_p10_kwh, pv_p50_kwh, pv_p90_kwh, run_duration_ms, config_schema_version
+                   pv_p10_kwh, pv_p50_kwh, pv_p90_kwh, run_duration_ms, config_schema_version, soc_now_used
             FROM forecast_runs
             WHERE run_id = ?
             """,
@@ -67,6 +68,7 @@ def test_insert_forecast_run_persists_enriched_fields(tmp_path):
     assert row["pv_p90_kwh"] == 3.3
     assert row["run_duration_ms"] == 1234
     assert row["config_schema_version"] == 3
+    assert row["soc_now_used"] == 38.5
 
 
 def test_insert_forecast_run_defaults_config_schema_version_when_missing(tmp_path):
