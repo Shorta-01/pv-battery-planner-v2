@@ -3414,6 +3414,9 @@ with left:
                 key="pv_cal_south",
             )
 
+        if int(cfg_array_east_panels) + int(cfg_array_south_panels) <= 0:
+            st.error("Set at least one PV array panel count above 0.")
+
 
         cfg_pv_loss_model = str(cfg_pv.get("pv_loss_model", "split")).strip().lower()
         if cfg_pv_loss_model not in {"split", "combined"}:
