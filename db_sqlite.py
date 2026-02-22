@@ -58,6 +58,7 @@ def init_db(db_path: str) -> None:
                 run_duration_ms INTEGER,
                 config_schema_version INTEGER,
                 soc_at_22_used REAL,
+                soc_now_used REAL,
                 yesterday_kwh_used REAL,
                 planner_version TEXT,
                 config_hash TEXT,
@@ -235,6 +236,7 @@ def init_db(db_path: str) -> None:
         }
         for col_name, col_type in [
             ("status", "TEXT"),
+            ("soc_now_used", "REAL"),
             ("warnings_count", "INTEGER"),
             ("inputs_used_json", "TEXT"),
             ("weather_ensemble_json", "TEXT"),
@@ -740,8 +742,10 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
     metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
     inputs_used = payload.get("inputs_used") if isinstance(payload.get("inputs_used"), dict) else {}
     if not inputs_used:
+        soc_fallback = payload.get("soc_now_percent", payload.get("soc_at_22_percent"))
         inputs_used = {
-            "soc_at_22_percent": payload.get("soc_at_22_percent"),
+            "soc_now_percent": soc_fallback,
+            "soc_at_22_percent": soc_fallback,
             "yesterday_consumption_kwh": payload.get("yesterday_consumption_kwh"),
         }
     weather_ensemble = payload.get("weather_ensemble") if isinstance(payload.get("weather_ensemble"), dict) else {}
@@ -831,6 +835,7 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
         "run_duration_ms": int(payload.get("run_duration_ms")) if payload.get("run_duration_ms") is not None else None,
         "config_schema_version": config_schema_version,
         "soc_at_22_used": _safe_float(inputs_used.get("soc_at_22_percent")),
+        "soc_now_used": _safe_float(inputs_used.get("soc_now_percent")),
         "yesterday_kwh_used": _safe_float(inputs_used.get("yesterday_consumption_kwh")),
         "planner_version": payload.get("planner_version"),
         "config_hash": config_hash,
@@ -849,7 +854,7 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
                 charge_kw, cutoff_soc, pv_forecast_kwh, cons_forecast_kwh, warnings_count,
                 inputs_used_json, weather_ensemble_json, pv_week_ahead_json, pv_p10_kwh, pv_p50_kwh, pv_p90_kwh,
                 run_duration_ms, config_schema_version,
-                soc_at_22_used, yesterday_kwh_used, planner_version,
+                soc_at_22_used, soc_now_used, yesterday_kwh_used, planner_version,
                 config_hash, config_json, warnings_json, pv_quality, created_at_utc,
                 mode, requested_days, models_used_json, ensemble_method, weights_used_json,
                 config_snapshot_json, input_snapshot_json
@@ -858,7 +863,7 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
                 :charge_kw, :cutoff_soc, :pv_forecast_kwh, :cons_forecast_kwh, :warnings_count,
                 :inputs_used_json, :weather_ensemble_json, :pv_week_ahead_json, :pv_p10_kwh, :pv_p50_kwh, :pv_p90_kwh,
                 :run_duration_ms, :config_schema_version,
-                :soc_at_22_used, :yesterday_kwh_used, :planner_version,
+                :soc_at_22_used, :soc_now_used, :yesterday_kwh_used, :planner_version,
                 :config_hash, :config_json, :warnings_json, :pv_quality, :created_at_utc,
                 :mode, :requested_days, :models_used_json, :ensemble_method, :weights_used_json,
                 :config_snapshot_json, :input_snapshot_json
