@@ -635,6 +635,14 @@ def inject_tooltip_css() -> None:
             font-size: 14px;
             line-height: 1;
         }
+        .pvbp-tip { position: relative; display: inline-flex; align-items: flex-end; gap: 2px; cursor: help; }
+        .pvbp-tiptext {
+            display:none; position:absolute; left:50%; transform:translateX(-50%); bottom:125%;
+            min-width:180px; max-width:260px; background:rgba(22,27,34,0.98); color:#f8fafc;
+            border:1px solid rgba(255,255,255,0.2); border-radius:8px; padding:6px 8px; font-size:0.72rem;
+            line-height:1.25; z-index:9999; white-space:normal;
+        }
+        .pvbp-tip:hover .pvbp-tiptext, .pvbp-tip:focus .pvbp-tiptext { display:block; }
         .stButton>button {
             white-space: nowrap;
         }
@@ -1395,8 +1403,9 @@ def _pv_quality_signal_html(label: str, color: str, tooltip: str) -> str:
         )
 
     return (
-        f"<span title=\"{tip}\" style='display:inline-flex;gap:2px;align-items:flex-end;'>"
+        "<span class='pvbp-tip' tabindex='0'>"
         + "".join(bars)
+        + f"<span class='pvbp-tiptext'>{tip}</span>"
         + "</span>"
     )
 
@@ -1406,6 +1415,7 @@ def render_pv_quality_widget(
     pv_df: pd.DataFrame,
     pv_quality_dict: dict,
     tomorrow_date: dt.date,
+    effective_cfg: dict | None = None,
     pv_tomorrow_low_kwh: float | None = None,
     pv_tomorrow_high_kwh: float | None = None,
     tomorrow_weather_code: int | float | str | None = None,
@@ -1420,8 +1430,9 @@ def render_pv_quality_widget(
 
     pv_label = str((pv_quality_dict or {}).get("label") or "Mixed")
     pv_color = str((pv_quality_dict or {}).get("color") or "#94a3b8")
-    offpeak_windows = core.get_offpeak_windows(tomorrow_date)
-    expensive_windows = core.get_expensive_windows(tomorrow_date)
+    tariff_cfg = (effective_cfg or {}).get("tariff", effective_cfg or {}) if isinstance(effective_cfg, dict) else {}
+    offpeak_windows = core.get_offpeak_windows_for_date(tomorrow_date, tariff_cfg)
+    expensive_windows = core.get_expensive_windows(tomorrow_date, tariff_cfg)
     offpeak_segments = windows_to_segments(offpeak_windows)
 
     if not offpeak_windows and not expensive_windows:
@@ -1518,7 +1529,7 @@ def render_pv_quality_widget(
     icons_html = (
         "<div style='display:inline-flex;gap:0.5rem;align-items:center;white-space:nowrap;'>"
         f"{pv_quality_icon}"
-        f"<span title=\"{_esc_attr(w_tip)}\" style='font-size:1.25rem;line-height:1;'>{weather_icon}</span>"
+        f"<span class='pvbp-tip' tabindex='0' style='font-size:1.25rem;line-height:1;'>{weather_icon}<span class='pvbp-tiptext'>{_esc_attr(w_tip)}</span></span>"
         "</div>"
     )
 
@@ -4088,6 +4099,7 @@ if run_clicked:
                     tomorrow_weather_code=tomorrow_weather_code,
                     tomorrow_source_label=tomorrow_source_label,
                     tomorrow_source_days=tomorrow_source_days,
+                    effective_cfg=effective_cfg,
                 )
 
             pv_week_ahead_display = (pv_week_ahead or [])[:6]

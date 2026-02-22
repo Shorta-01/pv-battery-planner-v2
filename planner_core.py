@@ -894,10 +894,23 @@ def get_offpeak_windows_for_date(for_date: dt.date, cfg: Optional[dict] = None) 
     return normalize_windows(parsed.get(for_date.weekday(), []))
 
 
+def get_offpeak_mask_for_date(index: pd.DatetimeIndex, target_date: dt.date, cfg: Optional[dict] = None) -> pd.Series:
+    normalized = pd.DatetimeIndex(index)
+    if len(normalized) == 0:
+        return pd.Series(False, index=normalized, dtype=bool)
+
+    windows = get_offpeak_windows_for_date(target_date, cfg)
+    values = [in_any_window(ts.time(), windows) for ts in normalized]
+    return pd.Series(values, index=normalized, dtype=bool)
+
+
 def get_offpeak_mask(index: pd.DatetimeIndex, cfg: Optional[dict] = None) -> pd.Series:
     normalized = pd.DatetimeIndex(index)
     if len(normalized) == 0:
         return pd.Series(False, index=normalized, dtype=bool)
+
+    if isinstance(cfg, dt.date):
+        return get_offpeak_mask_for_date(normalized, cfg, None)
 
     values = [in_any_window(ts.time(), get_offpeak_windows_for_date(ts.date(), cfg)) for ts in normalized]
     return pd.Series(values, index=normalized, dtype=bool)
@@ -933,11 +946,12 @@ def get_offpeak_mask_overnight_session(index: pd.DatetimeIndex, charge_date: dt.
     return mask
 
 
-def get_charge_session_index(charge_date: dt.date, cfg: Optional[dict] = None) -> pd.DatetimeIndex:
-    start = pd.Timestamp(dt.datetime.combine(charge_date, dt.time(0, 0)), tz=TIMEZONE)
-    end = start + dt.timedelta(days=2)
-    idx = pd.date_range(start, end, freq="h", inclusive="left", tz=TIMEZONE)
-    mask = get_offpeak_mask_overnight_session(idx, charge_date, cfg)
+def get_charge_session_index(charge_date: dt.date, cfg: Optional[dict] = None, start_hhmm: str = "22:00") -> pd.DatetimeIndex:
+    hh, mm = (int(v) for v in str(start_hhmm).split(":"))
+    session_start = pd.Timestamp(dt.datetime.combine(charge_date, dt.time(hh, mm)), tz=TIMEZONE)
+    session_end = session_start + dt.timedelta(days=1)
+    idx = pd.date_range(session_start, session_end, freq="h", inclusive="left", tz=TIMEZONE)
+    mask = get_offpeak_mask(idx, cfg)
     return idx[mask.to_numpy()]
 
 
@@ -961,7 +975,7 @@ def fmt_windows(windows: List[Tuple[str, str]]) -> str:
 def overnight_charge_hours_summary(charge_date: dt.date, cfg: Optional[dict] = None) -> tuple[float, str]:
     session_idx = get_charge_session_index(charge_date, cfg)
     available_charge_hours = float(len(session_idx))
-    return available_charge_hours, f"{fmt_windows(get_charge_windows(charge_date, cfg))}: {available_charge_hours:.1f}h off-peak"
+    return available_charge_hours, f"{fmt_windows(get_offpeak_windows_for_date(charge_date, cfg))}: {available_charge_hours:.1f}h off-peak"
 
 
 def complement_windows(windows: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
@@ -1204,12 +1218,12 @@ def compute_euro_savings_no_battery_vs_plan(
 
     plan_cost_tom = plan_import_tom * base_price_tom - plan_export_tom * inj
 
-    night_df = simulate_night_charging_series(soc_at_22, charge_kw, cutoff_soc, tomorrow_date, yesterday_total_kwh, tariff_cfg)
-    charge_tonight = night_df["grid_import_kwh"].reindex(idx_tonight).fillna(0.0).astype(float)
+    night_df = simulate_night_charging_series(soc_at_22, charge_kw, cutoff_soc, tomorrow_date, total_consumption_kwh, tariff_cfg)
+    plan_import_ton = night_df["grid_import_kwh"].reindex(idx_tonight).fillna(0.0).astype(float)
 
     base_price_ton = pd.Series([import_price_eur_per_kwh(ts, tariff_cfg) for ts in idx_tonight], index=idx_tonight)
     base_cost_ton = load_tonight * base_price_ton
-    plan_cost_ton = (load_tonight + charge_tonight) * base_price_ton
+    plan_cost_ton = plan_import_ton * base_price_ton
 
     baseline_total = float(base_cost_ton.sum() + base_cost_tom.sum())
     plan_total = float(plan_cost_ton.sum() + plan_cost_tom.sum())
@@ -2532,14 +2546,13 @@ def simulate_night_charging_series(
     charge_kw: float,
     cutoff_soc: float,
     tomorrow_date: dt.date,
-    yesterday_total_kwh: float,
+    total_consumption_kwh: float = 0.0,
     tariff_cfg: Optional[dict] = None,
 ) -> "pd.DataFrame":
-    idx = get_charge_session_index(tomorrow_date - dt.timedelta(days=1), tariff_cfg)
-    tomorrow_start = pd.Timestamp(dt.datetime.combine(tomorrow_date, dt.time(0, 0)), tz=TIMEZONE)
-    required_points = pd.DatetimeIndex([tomorrow_start, tomorrow_start + dt.timedelta(hours=7)])
-    idx = idx.union(required_points).sort_values()
-    loads = build_hourly_load_series(idx, yesterday_total_kwh)
+    session_start = pd.Timestamp(dt.datetime.combine(tomorrow_date - dt.timedelta(days=1), dt.time(22, 0)), tz=TIMEZONE)
+    session_end = pd.Timestamp(dt.datetime.combine(tomorrow_date, dt.time(7, 0)), tz=TIMEZONE)
+    idx = pd.date_range(session_start, session_end, freq="h", inclusive="left", tz=TIMEZONE)
+    loads = build_hourly_load_series(idx, total_consumption_kwh)
     energy = max(0.0, min(1.0, soc_at_22)) * BATTERY_KWH
     min_energy = MIN_SOC * BATTERY_KWH
     max_energy = MAX_CUTOFF_SOC * BATTERY_KWH
@@ -2567,7 +2580,7 @@ def simulate_night_charging_series(
             delivered = discharge * BATTERY_DISCHARGE_EFF
             remaining_load = max(0.0, remaining_load - delivered)
 
-        if in_any_window(ts.time(), get_charge_windows(ts.date(), cfg)) and energy < charge_cutoff_energy - 1e-9:
+        if bool(get_offpeak_mask(pd.DatetimeIndex([ts]), cfg).iloc[0]) and energy < charge_cutoff_energy - 1e-9:
             charge_grid_kwh = min(charge_kw * step_h, BATTERY_MAX_CHARGE_KW * step_h)
             room = max(0.0, min(max_energy, charge_cutoff_energy) - energy)
             charge_to_battery = min(room, charge_grid_kwh * BATTERY_AC_CHARGE_EFF)
@@ -2579,19 +2592,19 @@ def simulate_night_charging_series(
         grid_import = remaining_load + charging_grid_import
         soc_end_pct = (energy / BATTERY_KWH * 100.0) if BATTERY_KWH > 0 else soc_start_pct
         rows.append({
-            "time": ts,
-            "load_kwh": load,
+            "ts_local": ts,
+            "load_kwh": float(load),
+            "grid_import_kwh": float(grid_import),
+            "batt_discharge_kwh": float(batt_discharge_kwh),
+            "batt_charge_kwh": float(batt_charge_kwh),
+            "soc_start_pct": float(soc_start_pct),
+            "soc_end_pct": float(soc_end_pct),
             "pv_to_load_kwh": 0.0,
-            "batt_charge_kwh": batt_charge_kwh,
-            "batt_discharge_kwh": batt_discharge_kwh,
-            "grid_import_kwh": grid_import,
             "grid_export_kwh": 0.0,
             "curtailed_kwh": 0.0,
-            "soc_start_pct": soc_start_pct,
-            "soc_end_pct": soc_end_pct,
         })
 
-    night_df = pd.DataFrame(rows).set_index("time")
+    night_df = pd.DataFrame(rows).set_index("ts_local")
     if ENABLE_INVARIANT_CHECKS:
         validate_flow_invariants(night_df, "night")
     return night_df
@@ -2599,7 +2612,7 @@ def simulate_night_charging_series(
 
 def simulate_full_day_soc(
     df: "pd.DataFrame",
-    yesterday_total_kwh: float,
+    total_consumption_kwh: float,
     soc_at_22: float,
     charge_kw: float,
     cutoff_soc: float,
@@ -2610,24 +2623,25 @@ def simulate_full_day_soc(
     tomorrow_end = tomorrow_start + dt.timedelta(days=1)
     tomorrow_idx = pd.date_range(tomorrow_start, tomorrow_end, freq="h", inclusive="left", tz=TIMEZONE)
 
-    night_df = simulate_night_charging_series(soc_at_22, charge_kw, cutoff_soc, tomorrow_date, yesterday_total_kwh, tariff_cfg)
-    soc_00 = float(night_df.loc[tomorrow_start, "soc_start_pct"]) / 100.0
+    cfg = tariff_cfg or DEFAULT_CONFIG["tariff"]
+    night_df = simulate_night_charging_series(soc_at_22, charge_kw, cutoff_soc, tomorrow_date, total_consumption_kwh, cfg)
+    day_start_ts = pd.Timestamp(dt.datetime.combine(tomorrow_date, dt.time(7, 0)), tz=TIMEZONE)
+    soc_day_start = float(night_df.iloc[-1]["soc_end_pct"]) / 100.0 if not night_df.empty else soc_at_22
 
-    dt_h = timestep_hours(tomorrow_idx)
-    loads = build_hourly_load_series(tomorrow_idx, yesterday_total_kwh)
-    pv_total = pd.to_numeric(df.get("pv_total_kwh", pd.Series(0.0, index=tomorrow_idx)).reindex(tomorrow_idx), errors="coerce").fillna(0.0)
-    pv_unclipped = pd.to_numeric(df.get("pv_total_unclipped_kwh", pv_total).reindex(tomorrow_idx), errors="coerce")
+    day_idx = pd.date_range(day_start_ts, tomorrow_end, freq="h", inclusive="left", tz=TIMEZONE)
+    dt_h = timestep_hours(day_idx)
+    loads = build_hourly_load_series(day_idx, total_consumption_kwh)
+    pv_total = pd.to_numeric(df.get("pv_total_kwh", pd.Series(0.0, index=day_idx)).reindex(day_idx), errors="coerce").fillna(0.0)
+    pv_unclipped = pd.to_numeric(df.get("pv_total_unclipped_kwh", pv_total).reindex(day_idx), errors="coerce")
     pv_unclipped = pv_unclipped.combine_first(pv_total).fillna(0.0)
 
-    cfg = tariff_cfg or DEFAULT_CONFIG["tariff"]
-    energy = max(0.0, min(1.0, soc_00)) * BATTERY_KWH
+    energy = max(0.0, min(1.0, soc_day_start)) * BATTERY_KWH
     min_energy = MIN_SOC * BATTERY_KWH
     max_energy = MAX_CUTOFF_SOC * BATTERY_KWH
     charge_cutoff_energy = min(MAX_CUTOFF_SOC, max(MIN_SOC, cutoff_soc)) * BATTERY_KWH
 
     rows = []
-    soc_vals = []
-    for ts in tomorrow_idx:
+    for ts in day_idx:
         step_h = float(dt_h.loc[ts])
         pv_ac_limited = float(pv_total.loc[ts])
         pv_unclip = float(max(pv_unclipped.loc[ts], pv_ac_limited))
@@ -2681,7 +2695,6 @@ def simulate_full_day_soc(
 
         grid_import = remaining_load + charging_grid_import
         soc_end_pct = (energy / BATTERY_KWH * 100.0) if BATTERY_KWH > 0 else soc_start_pct
-        soc_vals.append(soc_end_pct)
         rows.append({
             "time": ts,
             "load_kwh": load,
@@ -2695,8 +2708,10 @@ def simulate_full_day_soc(
             "soc_end_pct": soc_end_pct,
         })
 
-    flows_df = pd.DataFrame(rows).set_index("time")
-    soc_series = pd.Series(soc_vals, index=tomorrow_idx, name="soc_percent")
+    day_flows_df = pd.DataFrame(rows).set_index("time")
+    night_tomorrow_df = night_df[(night_df.index >= tomorrow_start) & (night_df.index < day_start_ts)]
+    flows_df = pd.concat([night_tomorrow_df, day_flows_df]).sort_index().reindex(tomorrow_idx).fillna(0.0)
+    soc_series = pd.Series(pd.to_numeric(flows_df["soc_end_pct"], errors="coerce").fillna(0.0).values, index=tomorrow_idx, name="soc_percent")
     if ENABLE_INVARIANT_CHECKS:
         validate_flow_invariants(flows_df, "full_day")
     return soc_series, flows_df
