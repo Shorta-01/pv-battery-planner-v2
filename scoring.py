@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import datetime as dt
 import math
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+import pandas as pd
 
 import db_sqlite
+import planner_core as core
+
+if TYPE_CHECKING:
+    from planner_core import Location
 
 
 def compute_pv_quality_score(
@@ -13,14 +19,50 @@ def compute_pv_quality_score(
     target_date,
     tz: str,
     fallback_score: int = 55,
+    loc: "Location | None" = None,
 ) -> dict[str, Any]:
     """Compatibility helper for backend_api run payload quality metadata."""
     pv_total = 0.0
     if hasattr(pv_df, "get"):
         try:
-            pv_total = float(pv_df.get("pv_total_kwh", 0.0).sum())
+            pv_total = float(pd.to_numeric(pv_df.get("pv_total_kwh", 0.0), errors="coerce").sum(min_count=1) or 0.0)
         except Exception:
             pv_total = 0.0
+
+    try:
+        if loc is not None and hasattr(pv_df, "index") and getattr(pv_df.index, "tz", None) is not None:
+            idx = pv_df.index
+            clear_df = pd.DataFrame(index=idx)
+            if hasattr(weather_df, "reindex"):
+                clear_df["temp_air_c"] = pd.to_numeric(weather_df.reindex(idx).get("temp_air_c"), errors="coerce").fillna(10.0)
+                clear_df["wind_speed_ms"] = pd.to_numeric(weather_df.reindex(idx).get("wind_speed_ms"), errors="coerce").fillna(1.0).clip(lower=0.0)
+            else:
+                clear_df["temp_air_c"] = 10.0
+                clear_df["wind_speed_ms"] = 1.0
+            clear_df["cloud_cover_pct"] = 0.0
+            clear_pv = core.build_pv_forecast(clear_df, loc, tz=tz)
+            clear_kwh = float(pd.to_numeric(clear_pv.get("pv_ac_limited_kwh", clear_pv.get("pv_total_kwh", 0.0)), errors="coerce").sum(min_count=1) or 0.0)
+            ratio = pv_total / max(clear_kwh, 0.1)
+            score = int(max(0, min(100, round(100.0 * ratio))))
+            if score >= 75:
+                label, color = "high", "green"
+            elif score >= 55:
+                label, color = "medium", "amber"
+            else:
+                label, color = "low", "red"
+            return {
+                "score": score,
+                "label": label,
+                "ratio": float(ratio),
+                "color": color,
+                "is_fallback": False,
+                "pv_total_kwh": pv_total,
+                "clear_sky_kwh": clear_kwh,
+                "target_date": str(target_date),
+                "timezone": tz,
+            }
+    except Exception:
+        pass
 
     score = int(max(0, min(100, fallback_score)))
     if pv_total > 0:

@@ -192,6 +192,7 @@ DEFAULT_CONFIG = {
         "offpeak_grid_price_eur_per_kwh": OFFPEAK_GRID_PRICE_EUR_PER_KWH,
         "injection_grid_price_eur_per_kwh": INJECTION_GRID_PRICE_EUR_PER_KWH,
         "optimization_mode": "window_only",
+        "night_load_from_battery": True,
         "offpeak_windows_by_dow": [
             [["22:00", "07:00"]],  # Monday
             [["22:00", "07:00"]],  # Tuesday
@@ -893,12 +894,21 @@ def get_offpeak_windows_for_date(for_date: dt.date, cfg: Optional[dict] = None) 
     return normalize_windows(parsed.get(for_date.weekday(), []))
 
 
-def get_offpeak_mask(index: pd.DatetimeIndex, target_date: dt.date, cfg: Optional[dict] = None) -> pd.Series:
-    windows = get_offpeak_windows_for_date(target_date, cfg)
+def get_offpeak_mask(index: pd.DatetimeIndex, cfg: Optional[dict] = None) -> pd.Series:
+    normalized = pd.DatetimeIndex(index)
+    if len(normalized) == 0:
+        return pd.Series(False, index=normalized, dtype=bool)
+
+    values = [in_any_window(ts.time(), get_offpeak_windows_for_date(ts.date(), cfg)) for ts in normalized]
+    return pd.Series(values, index=normalized, dtype=bool)
+
+
+def get_offpeak_mask_overnight_session(index: pd.DatetimeIndex, charge_date: dt.date, cfg: Optional[dict] = None) -> pd.Series:
+    windows = get_offpeak_windows_for_date(charge_date, cfg)
     if len(index) == 0 or not windows:
         return pd.Series(False, index=index, dtype=bool)
 
-    t0 = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=TIMEZONE)
+    t0 = pd.Timestamp(dt.datetime.combine(charge_date, dt.time(0, 0)), tz=TIMEZONE)
     t1 = t0 + dt.timedelta(days=1)
     t2 = t1 + dt.timedelta(days=1)
     normalized = pd.DatetimeIndex(index)
@@ -923,22 +933,22 @@ def get_offpeak_mask(index: pd.DatetimeIndex, target_date: dt.date, cfg: Optiona
     return mask
 
 
-def get_charge_session_index(charge_date: dt.date) -> pd.DatetimeIndex:
+def get_charge_session_index(charge_date: dt.date, cfg: Optional[dict] = None) -> pd.DatetimeIndex:
     start = pd.Timestamp(dt.datetime.combine(charge_date, dt.time(0, 0)), tz=TIMEZONE)
     end = start + dt.timedelta(days=2)
     idx = pd.date_range(start, end, freq="h", inclusive="left", tz=TIMEZONE)
-    mask = get_offpeak_mask(idx, charge_date)
+    mask = get_offpeak_mask_overnight_session(idx, charge_date, cfg)
     return idx[mask.to_numpy()]
 
 
-def get_charge_windows(charge_date: dt.date) -> List[Tuple[str, str]]:
-    return get_offpeak_windows(charge_date)
+def get_charge_windows(charge_date: dt.date, cfg: Optional[dict] = None) -> List[Tuple[str, str]]:
+    return get_offpeak_windows_for_date(charge_date, cfg)
 
 
 def import_price_eur_per_kwh(ts: pd.Timestamp, tariff_cfg: dict) -> float:
     offpeak = float(tariff_cfg.get("offpeak_grid_price_eur_per_kwh", 0.0))
     peak = float(tariff_cfg.get("peak_grid_price_eur_per_kwh", 0.0))
-    windows = get_offpeak_windows(ts.date())
+    windows = get_offpeak_windows_for_date(ts.date(), tariff_cfg)
     return offpeak if in_any_window(ts.time(), windows) else peak
 
 
@@ -948,10 +958,10 @@ def fmt_windows(windows: List[Tuple[str, str]]) -> str:
     return ", ".join([f"{start}–{end}" for start, end in windows])
 
 
-def overnight_charge_hours_summary(charge_date: dt.date) -> tuple[float, str]:
-    session_idx = get_charge_session_index(charge_date)
+def overnight_charge_hours_summary(charge_date: dt.date, cfg: Optional[dict] = None) -> tuple[float, str]:
+    session_idx = get_charge_session_index(charge_date, cfg)
     available_charge_hours = float(len(session_idx))
-    return available_charge_hours, f"{fmt_windows(get_charge_windows(charge_date))}: {available_charge_hours:.1f}h off-peak"
+    return available_charge_hours, f"{fmt_windows(get_charge_windows(charge_date, cfg))}: {available_charge_hours:.1f}h off-peak"
 
 
 def complement_windows(windows: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
@@ -1001,9 +1011,9 @@ def complement_windows(windows: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
     return [(to_hhmm(a), to_hhmm(b)) for a, b in comp if a != b]
 
 
-def get_expensive_windows(for_date: dt.date) -> List[Tuple[str, str]]:
+def get_expensive_windows(for_date: dt.date, cfg: Optional[dict] = None) -> List[Tuple[str, str]]:
     # Hoog tarief = complement van daluren
-    return complement_windows(get_offpeak_windows(for_date))
+    return complement_windows(get_offpeak_windows_for_date(for_date, cfg))
 
 
 # ============================================================
@@ -1160,7 +1170,7 @@ def compute_euro_savings_no_battery_vs_plan(
     tomorrow_end = tomorrow_start + dt.timedelta(days=1)
 
     idx_tomorrow = pd.date_range(tomorrow_start, tomorrow_end, freq="h", inclusive="left", tz=TIMEZONE)
-    charge_session_idx = get_charge_session_index(today_date)
+    charge_session_idx = get_charge_session_index(today_date, tariff_cfg)
     idx_tonight = charge_session_idx[charge_session_idx < tomorrow_start]
 
     dt_h_tomorrow = timestep_hours(idx_tomorrow)
@@ -1185,7 +1195,7 @@ def compute_euro_savings_no_battery_vs_plan(
 
     plan_import_raw = flows_df["grid_import_kwh"].reindex(idx_tomorrow).fillna(0.0).astype(float)
     plan_export_raw = flows_df["grid_export_kwh"].reindex(idx_tomorrow).fillna(0.0).astype(float)
-    offpeak_tomorrow_mask = get_offpeak_mask(idx_tomorrow, tomorrow_date, tariff_cfg)
+    offpeak_tomorrow_mask = get_offpeak_mask(idx_tomorrow, tariff_cfg)
 
     plan_import_tom = plan_import_raw.copy()
     plan_export_tom = plan_export_raw.copy()
@@ -1194,7 +1204,7 @@ def compute_euro_savings_no_battery_vs_plan(
 
     plan_cost_tom = plan_import_tom * base_price_tom - plan_export_tom * inj
 
-    night_df = simulate_night_charging_series(soc_at_22, charge_kw, cutoff_soc, tomorrow_date)
+    night_df = simulate_night_charging_series(soc_at_22, charge_kw, cutoff_soc, tomorrow_date, yesterday_total_kwh, tariff_cfg)
     charge_tonight = night_df["grid_import_kwh"].reindex(idx_tonight).fillna(0.0).astype(float)
 
     base_price_ton = pd.Series([import_price_eur_per_kwh(ts, tariff_cfg) for ts in idx_tonight], index=idx_tonight)
@@ -1594,7 +1604,7 @@ def normalize_hourly_forecast_index(df: "pd.DataFrame", date: dt.date, tz: str) 
 
     irr_cols = [c for c in ["ghi_wm2", "dni_wm2", "dhi_wm2", "cloud_cover_pct"] if c in out.columns]
     for col in irr_cols:
-        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0).clip(lower=0.0)
+        out[col] = pd.to_numeric(out[col], errors="coerce").clip(lower=0.0)
 
     if "temp_air_c" in out.columns:
         out["temp_air_c"] = pd.to_numeric(out["temp_air_c"], errors="coerce").ffill().bfill().fillna(10.0)
@@ -1680,62 +1690,40 @@ def estimate_pv_with_pvlib(
         return trans.clip(lower=CLOUD_TRANSMITTANCE_MIN, upper=1.0)
 
     def derive_irradiance_from_ghi(ghi_in: "pd.Series") -> Tuple["pd.Series", "pd.Series", "pd.Series"]:
-        ghi_s = pd.to_numeric(ghi_in, errors="coerce").reindex(df_local.index).fillna(0.0).clip(lower=0.0)
+        ghi_s = pd.to_numeric(ghi_in, errors="coerce").reindex(df_local.index).clip(lower=0.0)
         repair_method = IRR_REPAIR_METHOD.lower()
         if repair_method == "erbs":
-            decomp = pvlib.irradiance.erbs(ghi_s, solpos["apparent_zenith"], times)
+            decomp = pvlib.irradiance.erbs(ghi_s.fillna(0.0), solpos["apparent_zenith"], times)
             dni_s = pd.to_numeric(decomp["dni"], errors="coerce").fillna(0.0).clip(lower=0.0)
             dhi_s = pd.to_numeric(decomp["dhi"], errors="coerce").fillna(0.0).clip(lower=0.0)
         else:
-            decomp = pvlib.irradiance.disc(ghi_s, solpos["apparent_zenith"], times)
+            decomp = pvlib.irradiance.disc(ghi_s.fillna(0.0), solpos["apparent_zenith"], times)
             dni_s = pd.to_numeric(decomp["dni"], errors="coerce").fillna(0.0).clip(lower=0.0)
             cos_zen_local = pd.to_numeric(solpos["apparent_zenith"], errors="coerce").apply(
                 lambda z: max(0.0, math.cos(math.radians(z))) if pd.notna(z) else 0.0
             )
-            dhi_s = (ghi_s - (dni_s * cos_zen_local)).fillna(0.0).clip(lower=0.0)
+            dhi_s = (ghi_s.fillna(0.0) - (dni_s * cos_zen_local)).clip(lower=0.0)
         return ghi_s.astype(float), dni_s.astype(float), dhi_s.astype(float)
 
     irradiance_cols = ["ghi_wm2", "dni_wm2", "dhi_wm2"]
-    missing_irr_cols = [c for c in irradiance_cols if c not in df_local.columns]
-    irr_nan_ratio = float(df_local[irradiance_cols].isna().mean().mean()) if not missing_irr_cols else 1.0
-    irradiance_anomalies = irradiance_sanity_warnings(df_local, loc, tz_use, model_id="pv_input")
-    use_clearsky = bool(missing_irr_cols) or irr_nan_ratio > 0.5 or bool(irradiance_anomalies)
-    if irradiance_anomalies:
-        print(
-            "Irradiance sanity fallback to clear-sky triggered: "
-            + " | ".join(irradiance_anomalies)
-        )
+    cs = pvloc.get_clearsky(times, model="ineichen")
+    daylight = pd.to_numeric(cs.get("ghi"), errors="coerce").reindex(df_local.index).fillna(0.0) > 20.0
 
-    if use_clearsky:
-        provider_ghi = pd.to_numeric(df_local.get("ghi_wm2"), errors="coerce") if "ghi_wm2" in df_local.columns else pd.Series(np.nan, index=df_local.index)
-        ghi_coverage = float(provider_ghi.notna().mean()) if len(provider_ghi) else 0.0
-        if ghi_coverage >= 0.5:
-            ghi, dni, dhi = derive_irradiance_from_ghi(provider_ghi)
-        else:
-            cs = pvloc.get_clearsky(times, model="ineichen")
-            if "cloud_cover_pct" in df_local.columns:
-                trans = cloud_transmittance_from_cover(df_local["cloud_cover_pct"])
-                ghi_cloud = cs["ghi"] * trans
-                if "ghi_wm2" in df_local.columns:
-                    ghi_provider = pd.to_numeric(df_local["ghi_wm2"], errors="coerce")
-                    daylight = cs["ghi"] > 20.0
-                    valid_bias = daylight & ghi_provider.notna()
-                    if bool(valid_bias.any()):
-                        bias = (ghi_provider[valid_bias] / cs["ghi"][valid_bias].clip(lower=1.0)).median()
-                        if pd.notna(bias):
-                            bias = float(np.clip(bias, 0.6, 1.2))
-                            ghi_cloud = ghi_cloud * bias
-                ghi, dni, dhi = derive_irradiance_from_ghi(ghi_cloud)
-            else:
-                ghi, dni, dhi = derive_irradiance_from_ghi(cs["ghi"])
-    else:
-        ghi = pd.to_numeric(df_local["ghi_wm2"], errors="coerce")
+    provider_ghi = pd.to_numeric(df_local.get("ghi_wm2"), errors="coerce") if "ghi_wm2" in df_local.columns else pd.Series(np.nan, index=df_local.index)
+    cloud_cover = pd.to_numeric(df_local.get("cloud_cover_pct"), errors="coerce") if "cloud_cover_pct" in df_local.columns else pd.Series(np.nan, index=df_local.index)
+    trans = cloud_transmittance_from_cover(cloud_cover) if "cloud_cover_pct" in df_local.columns else pd.Series(1.0, index=df_local.index)
+    ghi_candidate = pd.to_numeric(cs.get("ghi"), errors="coerce").reindex(df_local.index) * trans
+    ghi_final = provider_ghi.where(provider_ghi.notna(), ghi_candidate.where(cloud_cover.notna(), np.nan))
+    ghi_final = pd.to_numeric(ghi_final, errors="coerce").clip(lower=0.0)
+
+    if "dni_wm2" in df_local.columns and "dhi_wm2" in df_local.columns and provider_ghi.notna().any():
         dni = pd.to_numeric(df_local["dni_wm2"], errors="coerce")
         dhi = pd.to_numeric(df_local["dhi_wm2"], errors="coerce")
+        ghi = ghi_final
+    else:
+        ghi, dni, dhi = derive_irradiance_from_ghi(ghi_final)
 
-    ghi = pd.to_numeric(ghi, errors="coerce").reindex(df_local.index).astype(float).fillna(0.0).clip(lower=0.0)
-    dni = pd.to_numeric(dni, errors="coerce").reindex(df_local.index).astype(float).fillna(0.0).clip(lower=0.0)
-    dhi = pd.to_numeric(dhi, errors="coerce").reindex(df_local.index).astype(float).fillna(0.0).clip(lower=0.0)
+    missing_inputs = ghi_final.isna() & daylight
 
     zenith = pd.to_numeric(solpos["apparent_zenith"], errors="coerce").reindex(df_local.index)
     cos_zenith = zenith.apply(lambda z: math.cos(math.radians(z)) if pd.notna(z) else 0.0)
@@ -1765,8 +1753,8 @@ def estimate_pv_with_pvlib(
                 dni = pd.to_numeric(disc_out["dni"], errors="coerce").reindex(df_local.index).fillna(0.0).clip(lower=0.0)
                 dhi = (ghi - (dni * cos_zenith)).fillna(0.0).clip(lower=0.0)
                 repair_method = "disc"
-            dni = pd.to_numeric(dni, errors="coerce").reindex(df_local.index).astype(float).fillna(0.0).clip(lower=0.0)
-            dhi = pd.to_numeric(dhi, errors="coerce").reindex(df_local.index).astype(float).fillna(0.0).clip(lower=0.0)
+            dni = pd.to_numeric(dni, errors="coerce").reindex(df_local.index).astype(float).clip(lower=0.0)
+            dhi = pd.to_numeric(dhi, errors="coerce").reindex(df_local.index).astype(float).clip(lower=0.0)
             print(
                 f"Irradiance repair applied (median_rel_err={median_rel_err:.3f}, bad_fraction={fraction_bad_points:.3f}) "
                 f"using method={repair_method}"
@@ -1873,6 +1861,14 @@ def estimate_pv_with_pvlib(
     south_ac_kwh_clipped = south_ac_kwh_clipped.where(avail)
     total_ac_kwh_clipped = total_ac_kwh_clipped.where(avail)
     total_ac_kwh_unclipped = total_ac_kwh_unclipped.where(avail)
+    east_ac_kwh_clipped = east_ac_kwh_clipped.mask(missing_inputs, np.nan)
+    south_ac_kwh_clipped = south_ac_kwh_clipped.mask(missing_inputs, np.nan)
+    total_ac_kwh_clipped = total_ac_kwh_clipped.mask(missing_inputs, np.nan)
+    total_ac_kwh_unclipped = total_ac_kwh_unclipped.mask(missing_inputs, np.nan)
+    east_ac_kwh_clipped = east_ac_kwh_clipped.where(daylight | east_ac_kwh_clipped.isna(), 0.0)
+    south_ac_kwh_clipped = south_ac_kwh_clipped.where(daylight | south_ac_kwh_clipped.isna(), 0.0)
+    total_ac_kwh_clipped = total_ac_kwh_clipped.where(daylight | total_ac_kwh_clipped.isna(), 0.0)
+    total_ac_kwh_unclipped = total_ac_kwh_unclipped.where(daylight | total_ac_kwh_unclipped.isna(), 0.0)
 
     return (
         east_ac_kwh_clipped.astype(float),
@@ -1947,21 +1943,23 @@ def ensure_pv_columns(df: "pd.DataFrame", *, prefer_split: bool = True, split_ra
     split_missing = ("pv_east_kwh" not in out.columns) or ("pv_south_kwh" not in out.columns)
     if split_missing and prefer_split:
         e_ratio, s_ratio = split_ratio
-        total = pd.to_numeric(out["pv_total_kwh"], errors="coerce").fillna(0.0)
+        total = pd.to_numeric(out["pv_total_kwh"], errors="coerce")
         out["pv_east_kwh"] = (total * float(e_ratio)).astype(float)
         out["pv_south_kwh"] = (total * float(s_ratio)).astype(float)
     elif split_missing:
         out["pv_east_kwh"] = 0.0
-        out["pv_south_kwh"] = pd.to_numeric(out["pv_total_kwh"], errors="coerce").fillna(0.0)
+        out["pv_south_kwh"] = pd.to_numeric(out["pv_total_kwh"], errors="coerce")
 
     if "pv_clipped_kwh" not in out.columns:
         out["pv_clipped_kwh"] = (out["pv_total_unclipped_kwh"] - out["pv_total_kwh"]).clip(lower=0.0)
 
-    out["pv_total_kwh"] = pd.to_numeric(out["pv_total_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
-    out["pv_total_unclipped_kwh"] = pd.to_numeric(out["pv_total_unclipped_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
-    out["pv_total_unclipped_kwh"] = np.maximum(out["pv_total_unclipped_kwh"], out["pv_total_kwh"])
-    out["pv_east_kwh"] = pd.to_numeric(out["pv_east_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
-    out["pv_south_kwh"] = pd.to_numeric(out["pv_south_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    out["pv_total_kwh"] = pd.to_numeric(out["pv_total_kwh"], errors="coerce").clip(lower=0.0)
+    out["pv_total_unclipped_kwh"] = pd.to_numeric(out["pv_total_unclipped_kwh"], errors="coerce").clip(lower=0.0)
+    out["pv_total_unclipped_kwh"] = out["pv_total_unclipped_kwh"].combine_first(out["pv_total_kwh"])
+    both = out["pv_total_unclipped_kwh"].notna() & out["pv_total_kwh"].notna()
+    out.loc[both, "pv_total_unclipped_kwh"] = out.loc[both, ["pv_total_unclipped_kwh", "pv_total_kwh"]].max(axis=1)
+    out["pv_east_kwh"] = pd.to_numeric(out["pv_east_kwh"], errors="coerce").clip(lower=0.0)
+    out["pv_south_kwh"] = pd.to_numeric(out["pv_south_kwh"], errors="coerce").clip(lower=0.0)
 
     out["pv_dc_available_kwh"] = out["pv_total_unclipped_kwh"]
     out["pv_ac_limited_kwh"] = out["pv_total_kwh"]
@@ -2080,7 +2078,7 @@ def compute_soc_low_timing_aware(
     buffer_soc: float = 0.0,
     tariff_cfg: Optional[dict] = None,
 ) -> float:
-    expensive_windows = get_expensive_windows(for_date)
+    expensive_windows = get_expensive_windows(for_date, tariff_cfg)
     if not expensive_windows:
         return MIN_SOC
 
@@ -2168,10 +2166,11 @@ def run_forecast_pipeline(
             cutoff_soc,
             charge_date,
             user_cap_kw=user_max_ac_kw,
+            tariff_cfg=tariff_cfg,
         )
 
         detail_df, grid_import, grid_export, _, _ = simulate_expensive_hours_detailed(
-            pv, yesterday_kwh, achieved_soc_start, target_date
+            pv, yesterday_kwh, achieved_soc_start, target_date, tariff_cfg=tariff_cfg
         )
         full_soc, full_flows = simulate_full_day_soc(
             pv,
@@ -2180,6 +2179,7 @@ def run_forecast_pipeline(
             charge_kw,
             cutoff_soc,
             target_date,
+            tariff_cfg=tariff_cfg,
         )
 
         return PlannerOutput(
@@ -2236,6 +2236,7 @@ def run_detailed_plan(
         cutoff_soc,
         charge_date,
         user_cap_kw=max_ac_charge_power_kw,
+        tariff_cfg=tariff_cfg,
     )
 
     detail_df, _, _, _, _ = simulate_expensive_hours_detailed(
@@ -2243,6 +2244,7 @@ def run_detailed_plan(
         total_consumption_kwh,
         achieved_soc_start,
         target_date,
+        tariff_cfg=tariff_cfg,
     )
     soc_series, flows_df = simulate_full_day_soc(
         pv,
@@ -2251,6 +2253,7 @@ def run_detailed_plan(
         charge_kw,
         cutoff_soc,
         target_date,
+        tariff_cfg=tariff_cfg,
     )
     return detail_df, flows_df, soc_series, float(charge_kw), float(cutoff_soc), str(cutoff_reason)
 
@@ -2307,8 +2310,14 @@ def choose_cutoff_soc(for_date: dt.date, soc_low: float, soc_high: float) -> Tup
     )
 
 
-def plan_charge_power(soc_start: float, soc_cutoff: float, charge_date: dt.date, user_cap_kw: Optional[float] = None) -> Tuple[float, float, str, float]:
-    session_idx = get_charge_session_index(charge_date)
+def plan_charge_power(
+    soc_start: float,
+    soc_cutoff: float,
+    charge_date: dt.date,
+    user_cap_kw: Optional[float] = None,
+    tariff_cfg: Optional[dict] = None,
+) -> Tuple[float, float, str, float]:
+    session_idx = get_charge_session_index(charge_date, tariff_cfg)
     available_charge_hours = float(len(session_idx))
     if available_charge_hours <= 0:
         return 0.0, 0.0, "No off-peak hours available in configured charging windows.", soc_start
@@ -2350,9 +2359,10 @@ def simulate_expensive_hours_detailed(
     df: "pd.DataFrame",
     total_consumption_kwh: float,
     start_soc: float,
-    for_date: dt.date
+    for_date: dt.date,
+    tariff_cfg: Optional[dict] = None,
 ) -> Tuple["pd.DataFrame", float, float, float, bool]:
-    expensive_windows = get_expensive_windows(for_date)
+    expensive_windows = get_expensive_windows(for_date, tariff_cfg or DEFAULT_CONFIG["tariff"])
     if not expensive_windows:
         detail = df.copy().iloc[0:0]
         return detail, 0.0, 0.0, start_soc, False
@@ -2522,47 +2532,64 @@ def simulate_night_charging_series(
     charge_kw: float,
     cutoff_soc: float,
     tomorrow_date: dt.date,
+    yesterday_total_kwh: float,
+    tariff_cfg: Optional[dict] = None,
 ) -> "pd.DataFrame":
-    idx = get_charge_session_index(tomorrow_date - dt.timedelta(days=1))
+    idx = get_charge_session_index(tomorrow_date - dt.timedelta(days=1), tariff_cfg)
     tomorrow_start = pd.Timestamp(dt.datetime.combine(tomorrow_date, dt.time(0, 0)), tz=TIMEZONE)
     required_points = pd.DatetimeIndex([tomorrow_start, tomorrow_start + dt.timedelta(hours=7)])
     idx = idx.union(required_points).sort_values()
+    loads = build_hourly_load_series(idx, yesterday_total_kwh)
     energy = max(0.0, min(1.0, soc_at_22)) * BATTERY_KWH
+    min_energy = MIN_SOC * BATTERY_KWH
     max_energy = MAX_CUTOFF_SOC * BATTERY_KWH
     charge_cutoff_energy = min(MAX_CUTOFF_SOC, max(MIN_SOC, cutoff_soc)) * BATTERY_KWH
+    cfg = tariff_cfg or DEFAULT_CONFIG["tariff"]
+    night_load_from_battery = bool(cfg.get("night_load_from_battery", True))
 
     rows = []
     for ts in idx:
         step_h = 1.0
         soc_start_pct = (energy / BATTERY_KWH * 100.0) if BATTERY_KWH > 0 else 0.0
-
+        load = float(loads.loc[ts])
+        remaining_load = load
+        batt_discharge_kwh = 0.0
         batt_charge_kwh = 0.0
-        grid_import = 0.0
+        charging_grid_import = 0.0
 
-        if in_any_window(ts.time(), get_charge_windows(ts.date())):
+        if night_load_from_battery and remaining_load > 0:
+            available = max(0.0, energy - min_energy)
+            discharge_power_limited = BATTERY_MAX_DISCHARGE_KW * step_h
+            needed_from_batt = remaining_load / BATTERY_DISCHARGE_EFF if BATTERY_DISCHARGE_EFF > 0 else remaining_load
+            discharge = min(available, needed_from_batt, discharge_power_limited)
+            energy -= discharge
+            batt_discharge_kwh = discharge
+            delivered = discharge * BATTERY_DISCHARGE_EFF
+            remaining_load = max(0.0, remaining_load - delivered)
+
+        if in_any_window(ts.time(), get_charge_windows(ts.date(), cfg)) and energy < charge_cutoff_energy - 1e-9:
             charge_grid_kwh = min(charge_kw * step_h, BATTERY_MAX_CHARGE_KW * step_h)
             room = max(0.0, min(max_energy, charge_cutoff_energy) - energy)
             charge_to_battery = min(room, charge_grid_kwh * BATTERY_AC_CHARGE_EFF)
             if charge_to_battery > 0:
-                grid_import = charge_to_battery / BATTERY_AC_CHARGE_EFF if BATTERY_AC_CHARGE_EFF > 0 else 0.0
+                charging_grid_import = charge_to_battery / BATTERY_AC_CHARGE_EFF if BATTERY_AC_CHARGE_EFF > 0 else 0.0
                 energy = min(max_energy, energy + charge_to_battery)
                 batt_charge_kwh = charge_to_battery
 
+        grid_import = remaining_load + charging_grid_import
         soc_end_pct = (energy / BATTERY_KWH * 100.0) if BATTERY_KWH > 0 else soc_start_pct
-        rows.append(
-            {
-                "time": ts,
-                "load_kwh": 0.0,
-                "pv_to_load_kwh": 0.0,
-                "batt_charge_kwh": batt_charge_kwh,
-                "batt_discharge_kwh": 0.0,
-                "grid_import_kwh": grid_import,
-                "grid_export_kwh": 0.0,
-                "curtailed_kwh": 0.0,
-                "soc_start_pct": soc_start_pct,
-                "soc_end_pct": soc_end_pct,
-            }
-        )
+        rows.append({
+            "time": ts,
+            "load_kwh": load,
+            "pv_to_load_kwh": 0.0,
+            "batt_charge_kwh": batt_charge_kwh,
+            "batt_discharge_kwh": batt_discharge_kwh,
+            "grid_import_kwh": grid_import,
+            "grid_export_kwh": 0.0,
+            "curtailed_kwh": 0.0,
+            "soc_start_pct": soc_start_pct,
+            "soc_end_pct": soc_end_pct,
+        })
 
     night_df = pd.DataFrame(rows).set_index("time")
     if ENABLE_INVARIANT_CHECKS:
@@ -2577,40 +2604,44 @@ def simulate_full_day_soc(
     charge_kw: float,
     cutoff_soc: float,
     tomorrow_date: dt.date,
+    tariff_cfg: Optional[dict] = None,
 ) -> Tuple["pd.Series", "pd.DataFrame"]:
-    idx = df.index
-    dt_h = timestep_hours(idx)
-    loads = build_hourly_load_series(idx, yesterday_total_kwh)
-
-    night_df = simulate_night_charging_series(soc_at_22, charge_kw, cutoff_soc, tomorrow_date)
     tomorrow_start = pd.Timestamp(dt.datetime.combine(tomorrow_date, dt.time(0, 0)), tz=TIMEZONE)
+    tomorrow_end = tomorrow_start + dt.timedelta(days=1)
+    tomorrow_idx = pd.date_range(tomorrow_start, tomorrow_end, freq="h", inclusive="left", tz=TIMEZONE)
+
+    night_df = simulate_night_charging_series(soc_at_22, charge_kw, cutoff_soc, tomorrow_date, yesterday_total_kwh, tariff_cfg)
     soc_00 = float(night_df.loc[tomorrow_start, "soc_start_pct"]) / 100.0
-    soc_07 = float(night_df.loc[tomorrow_start + dt.timedelta(hours=7), "soc_start_pct"]) / 100.0
 
-    day_idx = idx[idx >= tomorrow_start + dt.timedelta(hours=7)]
-    day_loads = loads.loc[day_idx]
+    dt_h = timestep_hours(tomorrow_idx)
+    loads = build_hourly_load_series(tomorrow_idx, yesterday_total_kwh)
+    pv_total = pd.to_numeric(df.get("pv_total_kwh", pd.Series(0.0, index=tomorrow_idx)).reindex(tomorrow_idx), errors="coerce").fillna(0.0)
+    pv_unclipped = pd.to_numeric(df.get("pv_total_unclipped_kwh", pv_total).reindex(tomorrow_idx), errors="coerce")
+    pv_unclipped = pv_unclipped.combine_first(pv_total).fillna(0.0)
 
-    energy = max(MIN_SOC, min(MAX_CUTOFF_SOC, soc_07)) * BATTERY_KWH
+    cfg = tariff_cfg or DEFAULT_CONFIG["tariff"]
+    energy = max(0.0, min(1.0, soc_00)) * BATTERY_KWH
     min_energy = MIN_SOC * BATTERY_KWH
     max_energy = MAX_CUTOFF_SOC * BATTERY_KWH
+    charge_cutoff_energy = min(MAX_CUTOFF_SOC, max(MIN_SOC, cutoff_soc)) * BATTERY_KWH
 
-    day_rows = []
-    day_soc_vals = []
-    for ts in day_idx:
+    rows = []
+    soc_vals = []
+    for ts in tomorrow_idx:
         step_h = float(dt_h.loc[ts])
-        pv_ac_limited = float(df.loc[ts, "pv_total_kwh"]) if "pv_total_kwh" in df.columns else 0.0
-        pv_unclipped = float(df.loc[ts, "pv_total_unclipped_kwh"]) if "pv_total_unclipped_kwh" in df.columns else pv_ac_limited
-        load = float(day_loads.loc[ts])
+        pv_ac_limited = float(pv_total.loc[ts])
+        pv_unclip = float(max(pv_unclipped.loc[ts], pv_ac_limited))
+        load = float(loads.loc[ts])
 
         soc_start_pct = (energy / BATTERY_KWH * 100.0) if BATTERY_KWH > 0 else 0.0
         pv_to_load = min(pv_ac_limited, load)
         remaining_load = max(0.0, load - pv_to_load)
         pv_after_load = max(0.0, pv_ac_limited - pv_to_load)
-        overflow = max(0.0, pv_unclipped - pv_ac_limited)
+        overflow = max(0.0, pv_unclip - pv_ac_limited)
 
         batt_charge_kwh = 0.0
         batt_discharge_kwh = 0.0
-        grid_import = 0.0
+        charging_grid_import = 0.0
         grid_export = 0.0
         curtailed = 0.0
 
@@ -2621,7 +2652,7 @@ def simulate_full_day_soc(
             pv_limited_store = pv_for_storage * BATTERY_PV_CHARGE_EFF
             store = min(room, pv_limited_store, charge_power_limited)
             energy += store
-            batt_charge_kwh = store
+            batt_charge_kwh += store
             pv_used_for_batt = store / BATTERY_PV_CHARGE_EFF if BATTERY_PV_CHARGE_EFF > 0 else 0.0
             pv_after_batt = max(0.0, pv_for_storage - pv_used_for_batt)
             export_limit = max(0.0, (INVERTER_AC_KW_LIMIT * step_h) - pv_to_load)
@@ -2636,11 +2667,22 @@ def simulate_full_day_soc(
             energy -= discharge
             batt_discharge_kwh = discharge
             delivered = discharge * BATTERY_DISCHARGE_EFF
-            grid_import = max(0.0, remaining_load - delivered)
+            remaining_load = max(0.0, remaining_load - delivered)
 
+        offpeak = in_any_window(ts.time(), get_offpeak_windows_for_date(ts.date(), cfg))
+        if offpeak and energy < charge_cutoff_energy - 1e-9:
+            charge_grid_kwh = min(charge_kw * step_h, BATTERY_MAX_CHARGE_KW * step_h)
+            room = max(0.0, min(max_energy, charge_cutoff_energy) - energy)
+            charge_to_battery = min(room, charge_grid_kwh * BATTERY_AC_CHARGE_EFF)
+            if charge_to_battery > 0:
+                charging_grid_import = charge_to_battery / BATTERY_AC_CHARGE_EFF if BATTERY_AC_CHARGE_EFF > 0 else 0.0
+                energy = min(max_energy, energy + charge_to_battery)
+                batt_charge_kwh += charge_to_battery
+
+        grid_import = remaining_load + charging_grid_import
         soc_end_pct = (energy / BATTERY_KWH * 100.0) if BATTERY_KWH > 0 else soc_start_pct
-        day_soc_vals.append(soc_end_pct)
-        day_rows.append({
+        soc_vals.append(soc_end_pct)
+        rows.append({
             "time": ts,
             "load_kwh": load,
             "pv_to_load_kwh": pv_to_load,
@@ -2653,22 +2695,11 @@ def simulate_full_day_soc(
             "soc_end_pct": soc_end_pct,
         })
 
-    day_flows = pd.DataFrame(day_rows).set_index("time")
-    day_soc = pd.Series(day_soc_vals, index=day_idx, name="soc_percent")
-
-    night_tomorrow = night_df[(night_df.index >= tomorrow_start) & (night_df.index < tomorrow_start + dt.timedelta(hours=7))]
-    night_soc = night_tomorrow["soc_end_pct"].rename("soc_percent")
-
-    full_flows = pd.concat([night_tomorrow, day_flows]).sort_index()
-    full_soc = pd.concat([night_soc, day_soc]).sort_index()
-
-    if BATTERY_KWH > 0 and not full_soc.empty:
-        full_soc.iloc[0] = soc_00 * 100.0
-
+    flows_df = pd.DataFrame(rows).set_index("time")
+    soc_series = pd.Series(soc_vals, index=tomorrow_idx, name="soc_percent")
     if ENABLE_INVARIANT_CHECKS:
-        validate_flow_invariants(full_flows, "full_day")
-
-    return full_soc, full_flows
+        validate_flow_invariants(flows_df, "full_day")
+    return soc_series, flows_df
 
 
 def run_planner(inputs: PlannerInputs) -> PlannerOutput:
