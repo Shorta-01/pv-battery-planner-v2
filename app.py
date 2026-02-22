@@ -4009,6 +4009,9 @@ if run_clicked:
             run_response = api_post(
                 "/v1/run/now",
                 {
+                    "soc_now_percent": float(soc_percent),
+                    "soc_at_22_percent": float(soc_percent),
+                    "yesterday_consumption_kwh": float(yesterday_kwh),
                     "buffer_percent": float(buffer_percent),
                     "user_max_ac_kw": float(user_max_ac_kw),
                     "weather_models": selected_models if forecast_mode == "expert" else None,
