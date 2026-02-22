@@ -54,6 +54,7 @@ from weather_ensemble import (
     should_use_satellite_nowcast_auto,
     get_model_caps,
     weather_models_payload,
+    select_week_ahead_models,
 )
 
 LOCAL_STATE_DIR = Path("local_state")
@@ -880,7 +881,7 @@ class BackendState:
                 tomorrow_models = auto_select_models_for_location(loc, requested_days=1)
         else:
             tomorrow_models = auto_select_models_for_location(loc.latitude, loc.longitude, requested_days=1)
-        week_models = auto_select_models_for_location(loc.latitude, loc.longitude, requested_days=7)
+        week_models = select_week_ahead_models(requested_days=7)
         if not tomorrow_models:
             raise HTTPException(status_code=400, detail="Select at least one weather model.")
 
@@ -1078,6 +1079,47 @@ class BackendState:
                     out.append(None if pd.isna(v) else float(v))
             return out
 
+        def _daily_counts_nullable(series: pd.Series | None, days: int = 7) -> list[int | None]:
+            if series is None or len(series) == 0:
+                return [None] * days
+            s = pd.to_numeric(series, errors="coerce")
+            if not isinstance(s.index, pd.DatetimeIndex):
+                return [None] * days
+            if s.index.tz is None:
+                s = s.copy()
+                s.index = s.index.tz_localize(tz)
+            else:
+                s = s.tz_convert(tz)
+            daily = s.resample("D").median()
+            out: list[int | None] = []
+            for i in range(days):
+                if i >= len(daily) or pd.isna(daily.iloc[i]):
+                    out.append(None)
+                else:
+                    out.append(int(round(float(daily.iloc[i]))))
+            return out
+
+        def _daily_coverage(series: pd.Series | None, days: int = 7) -> list[float | None]:
+            if series is None or len(series) == 0:
+                return [None] * days
+            s = pd.to_numeric(series, errors="coerce")
+            if not isinstance(s.index, pd.DatetimeIndex):
+                return [None] * days
+            if s.index.tz is None:
+                s = s.copy()
+                s.index = s.index.tz_localize(tz)
+            else:
+                s = s.tz_convert(tz)
+            daily_valid = s.notna().resample("D").sum()
+            daily_total = s.resample("D").size()
+            out: list[float | None] = []
+            for i in range(days):
+                if i >= len(daily_total) or daily_total.iloc[i] <= 0:
+                    out.append(None)
+                else:
+                    out.append(float(daily_valid.iloc[i] / daily_total.iloc[i]))
+            return out
+
         if ensemble_week is not None:
             pv_totals_p50 = _daily_totals_nullable(ensemble_week.pv_ensemble_p50)
             pv_totals_p10 = _daily_totals_nullable(ensemble_week.pv_ensemble_p10)
@@ -1086,6 +1128,7 @@ class BackendState:
             weather_by_model = getattr(ensemble_week, "weather_by_model", {}) or {}
             weights_used_week = getattr(ensemble_week, "weights_used", None)
             derived_weather_code_by_model_week = getattr(ensemble_week, "derived_weather_code_by_model", {}) or {}
+            week_models_used_count_per_hour = getattr(ensemble_week, "pv_models_used_count_per_hour", None)
         else:
             pv_totals_p50 = [None] * 7
             pv_totals_p10 = [None] * 7
@@ -1094,6 +1137,12 @@ class BackendState:
             weather_by_model = {}
             weights_used_week = None
             derived_weather_code_by_model_week = {}
+            week_models_used_count_per_hour = None
+
+        week_models_count_per_day = _daily_counts_nullable(week_models_used_count_per_hour)
+        week_coverage_per_day = _daily_coverage(
+            getattr(ensemble_week, "pv_ensemble_p50", None) if ensemble_week is not None else None
+        )
 
         pv_week_ahead_all = _build_pv_week_ahead(
             target_date=target_date,
@@ -1385,6 +1434,11 @@ class BackendState:
                 "soc_offpeak_start_peak_overlap": bool(soc_offpeak_debug.get("peak_overlap", False)),
                 "pv_decision_scenario": decision_quantile,
                 "pv_decision_reason": decision_reason,
+                "week_models_used": list(week_models),
+                "week_models_count": int(len(week_models)),
+                "pv_week_models_used_count_per_hour": self._serialize_series(week_models_used_count_per_hour) if isinstance(week_models_used_count_per_hour, pd.Series) else None,
+                "pv_week_valid_model_count_per_day": week_models_count_per_day,
+                "pv_week_coverage_per_day": week_coverage_per_day,
             },
             "pv_quality": pv_quality,
             "warnings": warnings,
@@ -1406,6 +1460,8 @@ class BackendState:
             "forecast_mode_effective": mode,
             "tomorrow_models_used": tomorrow_models_used,
             "week_ahead_models_considered": list(week_models),
+            "week_models_used": list(week_models),
+            "pv_week_models_used_count_per_hour": self._serialize_series(week_models_used_count_per_hour) if isinstance(week_models_used_count_per_hour, pd.Series) else None,
             "system_snapshot": {k: v for k, v in system_snapshot.items() if v is not None},
             "planner_version": "v2",
             "data_source": {"soc": "manual", "load": "manual", "pv": "forecast"},
