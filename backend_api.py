@@ -129,6 +129,13 @@ def _valid_hhmm(value: str) -> bool:
         return False
 
 
+def pick_decision_quantile(soc_offpeak_confidence: str) -> tuple[str, str]:
+    confidence = str(soc_offpeak_confidence or "").strip()
+    if confidence == "Low":
+        return "p10", "low_confidence"
+    return "p25", "normal"
+
+
 def _to_history_summary(payload: dict) -> dict:
     if not isinstance(payload, dict):
         return {}
@@ -1152,8 +1159,7 @@ class BackendState:
             used_history=bool(used_history),
             pv_credit_available=bool(pv_credit_available),
         )
-        decision_quantile = "p10" if soc_offpeak_confidence == "Low" else "p25"
-        decision_reason = "low_confidence" if soc_offpeak_confidence == "Low" else "normal"
+        decision_quantile, decision_reason = pick_decision_quantile(soc_offpeak_confidence)
         if decision_quantile == "p10":
             decision_series = ensemble_tomorrow.pv_ensemble_p10
         else:
