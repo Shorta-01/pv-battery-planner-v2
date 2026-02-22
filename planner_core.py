@@ -378,8 +378,12 @@ def validate_config(cfg: dict) -> None:
             RuntimeWarning,
             stacklevel=2,
         )
-    if int(pv["array_south_panels"]) <= 0 or int(pv["array_east_panels"]) <= 0:
-        raise ValueError("pv.array_south_panels and pv.array_east_panels must be > 0.")
+    array_south_panels = int(pv["array_south_panels"])
+    array_east_panels = int(pv["array_east_panels"])
+    if array_south_panels < 0 or array_east_panels < 0:
+        raise ValueError("pv.array_south_panels and pv.array_east_panels must be >= 0.")
+    if (array_south_panels + array_east_panels) <= 0:
+        raise ValueError("pv.array_*_panels: at least one PV array must have > 0 panels.")
     if int(pv["panel_wp"]) <= 0:
         raise ValueError("pv.panel_wp must be > 0.")
     if not (0.0 <= float(pv["tilt_east_deg"]) <= 90.0):
@@ -1413,7 +1417,8 @@ def compute_euro_savings_no_battery_vs_plan(
 
 def quick_sanity_checks() -> None:
     try:
-        assert ARRAY_EAST_PANELS > 0 and ARRAY_SOUTH_PANELS > 0
+        assert ARRAY_EAST_PANELS >= 0 and ARRAY_SOUTH_PANELS >= 0
+        assert (ARRAY_EAST_PANELS + ARRAY_SOUTH_PANELS) > 0
         assert 0 < PERFORMANCE_RATIO <= 1
         assert 0 < INVERTER_EFF <= 1
         assert PV_LOSS_MODEL in {"split", "combined"}
