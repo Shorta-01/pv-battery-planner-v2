@@ -25,6 +25,15 @@ from weather_ensemble import auto_select_models_for_location, should_use_satelli
 
 PLOTLY_DARK = "plotly_dark"
 
+ENFORCED_PV_DEFAULTS = {
+    "inverter_eff": 0.97,
+    "pv_loss_model": "split",
+    "iam_model": "ashrae",
+    "iam_ashrae_b": 0.05,
+    "albedo": 0.20,
+    "inverter_ac_model": "pvwatts",
+}
+
 INPUT_TOOLTIPS = {
     "soc_percent": "This is your battery level now. It matters because charging need is based on how full the battery already is. Example: 35 means the battery currently sits at 35%.",
     "yesterday_kwh": "This is your total home usage yesterday. It matters because the app uses it to estimate tomorrow's hourly load. Example: if yesterday was 18 kWh, tomorrow's hourly load profile scales to 18 kWh.",
@@ -290,12 +299,12 @@ def build_settings_payload(effective_cfg: dict, valid_model_ids: set[str]) -> tu
             "azimuth_east_deg": float(ui["cfg_azimuth_east_deg"]),
             "azimuth_south_deg": float(ui["cfg_azimuth_south_deg"]),
             "performance_ratio": float(ui["cfg_performance_ratio"]),
-            "inverter_eff": float(ui["cfg_inverter_eff"]),
-            "pv_loss_model": str(ui["cfg_pv_loss_model"]),
-            "iam_model": str(ui["cfg_iam_model"]),
-            "iam_ashrae_b": float(ui["cfg_iam_ashrae_b"]),
-            "albedo": (float(ui["cfg_albedo"]) if ui["cfg_albedo_enabled"] else None),
-            "inverter_ac_model": str(ui["cfg_inverter_ac_model"]),
+            "inverter_eff": ENFORCED_PV_DEFAULTS["inverter_eff"],
+            "pv_loss_model": ENFORCED_PV_DEFAULTS["pv_loss_model"],
+            "iam_model": ENFORCED_PV_DEFAULTS["iam_model"],
+            "iam_ashrae_b": ENFORCED_PV_DEFAULTS["iam_ashrae_b"],
+            "albedo": ENFORCED_PV_DEFAULTS["albedo"],
+            "inverter_ac_model": ENFORCED_PV_DEFAULTS["inverter_ac_model"],
             "pv_calibration_factor_east": float(ui["cfg_pv_calibration_factor_east"]),
             "pv_calibration_factor_south": float(ui["cfg_pv_calibration_factor_south"]),
             "inverter_ac_kw_limit": float(ui["cfg_inverter_ac_kw_limit"]),
@@ -3417,11 +3426,6 @@ with left:
         if int(cfg_array_east_panels) + int(cfg_array_south_panels) <= 0:
             st.error("Set at least one PV array panel count above 0.")
 
-
-        cfg_pv_loss_model = str(cfg_pv.get("pv_loss_model", "split")).strip().lower()
-        if cfg_pv_loss_model not in {"split", "combined"}:
-            cfg_pv_loss_model = "split"
-
         st.markdown("#### Battery")
         bat_row1_col1, bat_row1_col2 = st.columns(2, vertical_alignment="bottom")
         with bat_row1_col1:
@@ -3469,76 +3473,24 @@ with left:
             )
 
             st.markdown("##### PV modelling")
-            cfg_pv_loss_model = st.selectbox(
-                "PV loss model",
-                options=["split", "combined"],
-                index=["split", "combined"].index(cfg_pv_loss_model if cfg_pv_loss_model in {"split", "combined"} else "split"),
-                help=INPUT_TOOLTIPS["pv_loss_model"],
-            )
-            row4_col1, row4_col2 = st.columns(2, vertical_alignment="bottom")
-            with row4_col1:
-                cfg_inverter_eff = st.number_input(
-                    "Inverter efficiency",
-                    min_value=0.50,
-                    max_value=1.00,
-                    value=float(cfg_pv["inverter_eff"]),
-                    step=0.01,
-                    disabled=(cfg_pv_loss_model == "combined"),
-                    help=INPUT_TOOLTIPS["inverter_eff"],
-                    key="pv_inverter_eff",
+            history_debug_mode = st.session_state.get("history_mode", "Simple") == "Debug"
+            if history_debug_mode:
+                st.caption("Debug: PV modelling defaults are enforced internally.")
+                st.code(
+                    "\n".join([
+                        "loss_model=split",
+                        "inverter_ac_model=pvwatts",
+                        "iam_model=ashrae (b=0.05)",
+                        "albedo=0.20",
+                        "temperature_model=faiman (u0=25.0, u1=6.84)",
+                        "inverter_eff=0.97",
+                    ]),
+                    language="text",
                 )
-            if cfg_pv_loss_model == "combined":
-                st.caption("Inverter efficiency is not used in combined loss mode.")
-
-            row5_col1, row5_col2 = st.columns(2, vertical_alignment="bottom")
-            with row5_col1:
-                inverter_ac_model_value = str(cfg_pv.get("inverter_ac_model", "linear")).strip().lower()
-                cfg_inverter_ac_model = st.selectbox(
-                    "Inverter AC model",
-                    options=["linear", "pvwatts"],
-                    index=["linear", "pvwatts"].index(inverter_ac_model_value if inverter_ac_model_value in {"linear", "pvwatts"} else "linear"),
-                    help=INPUT_TOOLTIPS["inverter_ac_model"],
-                    key="pv_inverter_ac_model",
-                )
-            with row5_col2:
-                iam_model_value = str(cfg_pv.get("iam_model", "none")).strip().lower()
-                cfg_iam_model = st.selectbox(
-                    "IAM model",
-                    options=["none", "ashrae"],
-                    index=["none", "ashrae"].index(iam_model_value if iam_model_value in {"none", "ashrae"} else "none"),
-                    help=INPUT_TOOLTIPS["iam_model"],
-                    key="pv_iam_model",
-                )
-
-            row6_col1, row6_col2 = st.columns(2, vertical_alignment="bottom")
-            with row6_col1:
-                cfg_iam_ashrae_b = st.number_input(
-                    "IAM ASHRAE b",
-                    min_value=0.00,
-                    max_value=0.50,
-                    value=float(cfg_pv.get("iam_ashrae_b", 0.05)),
-                    step=0.01,
-                    disabled=(cfg_iam_model != "ashrae"),
-                    help=INPUT_TOOLTIPS["iam_ashrae_b"],
-                    key="pv_iam_b",
-                )
-            with row6_col2:
-                albedo_default = cfg_pv.get("albedo", None)
-                cfg_albedo_enabled = st.checkbox(
-                    "Set custom albedo",
-                    value=albedo_default is not None,
-                    help=INPUT_TOOLTIPS["albedo_enabled"],
-                    key="pv_albedo_enabled",
-                )
-                cfg_albedo = st.number_input(
-                    "Albedo",
-                    min_value=0.00,
-                    max_value=1.00,
-                    value=float(albedo_default if albedo_default is not None else 0.20),
-                    step=0.01,
-                    disabled=(not cfg_albedo_enabled),
-                    help=INPUT_TOOLTIPS["albedo"],
-                    key="pv_albedo",
+            else:
+                st.caption(
+                    "PV modelling is automatic: split losses, pvwatts inverter, "
+                    "ASHRAE IAM (b=0.05), albedo 0.20, Faiman temperature model."
                 )
 
 
@@ -3597,13 +3549,6 @@ with left:
             "cfg_azimuth_east_deg": cfg_azimuth_east_deg,
             "cfg_azimuth_south_deg": cfg_azimuth_south_deg,
             "cfg_performance_ratio": cfg_performance_ratio,
-            "cfg_inverter_eff": cfg_inverter_eff,
-            "cfg_pv_loss_model": cfg_pv_loss_model,
-            "cfg_iam_model": cfg_iam_model,
-            "cfg_iam_ashrae_b": cfg_iam_ashrae_b,
-            "cfg_albedo_enabled": cfg_albedo_enabled,
-            "cfg_albedo": cfg_albedo,
-            "cfg_inverter_ac_model": cfg_inverter_ac_model,
             "cfg_pv_calibration_factor_east": cfg_pv_calibration_factor_east,
             "cfg_pv_calibration_factor_south": cfg_pv_calibration_factor_south,
             "cfg_inverter_ac_kw_limit": cfg_inverter_ac_kw_limit,

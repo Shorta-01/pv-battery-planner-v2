@@ -81,10 +81,10 @@ AZIMUTH_SOUTH_DEG = 180.0
 PERFORMANCE_RATIO = 0.82
 INVERTER_EFF = 0.97
 PV_LOSS_MODEL = "split"
-PV_IAM_MODEL = "none"
+PV_IAM_MODEL = "ashrae"
 PV_IAM_ASHRAE_B = 0.05
-PV_ALBEDO: float | None = None
-INVERTER_AC_MODEL = "linear"
+PV_ALBEDO: float | None = 0.20
+INVERTER_AC_MODEL = "pvwatts"
 PV_CALIBRATION_FACTOR_EAST = 1.00
 PV_CALIBRATION_FACTOR_SOUTH = 1.00
 PV_GAMMA_PDC = -0.003
@@ -486,13 +486,12 @@ def apply_config(cfg: dict) -> None:
     AZIMUTH_EAST_DEG = float(pv["azimuth_east_deg"])
     AZIMUTH_SOUTH_DEG = float(pv["azimuth_south_deg"])
     PERFORMANCE_RATIO = float(pv["performance_ratio"])
-    INVERTER_EFF = float(pv["inverter_eff"])
-    PV_LOSS_MODEL = str(pv.get("loss_model", pv.get("pv_loss_model", "split"))).strip().lower()
-    PV_IAM_MODEL = str(pv.get("iam_model", "none")).strip().lower()
-    iam_ashrae_b_raw = pv.get("iam_ashrae_b", 0.05)
-    PV_IAM_ASHRAE_B = 0.05 if iam_ashrae_b_raw is None else float(iam_ashrae_b_raw)
-    PV_ALBEDO = None if pv.get("albedo") is None else float(pv.get("albedo"))
-    INVERTER_AC_MODEL = str(pv.get("inverter_ac_model", "linear")).strip().lower()
+    INVERTER_EFF = 0.97
+    PV_LOSS_MODEL = "split"
+    PV_IAM_MODEL = "ashrae"
+    PV_IAM_ASHRAE_B = 0.05
+    PV_ALBEDO = 0.20
+    INVERTER_AC_MODEL = "pvwatts"
     base_calibration_factor_east_raw = pv.get("pv_calibration_factor_east", 1.0)
     base_calibration_factor_south_raw = pv.get("pv_calibration_factor_south", 1.0)
     PV_CALIBRATION_FACTOR_EAST = 1.0 if base_calibration_factor_east_raw is None else float(base_calibration_factor_east_raw)
@@ -1995,6 +1994,8 @@ def estimate_pv_with_pvlib(
             poa_global=poa,
             temp_air=temp_air,
             wind_speed=wind_speed,
+            u0=25.0,
+            u1=6.84,
         )
         dc_w = pvlib.pvsystem.pvwatts_dc(
             poa, pdc0=pdc0_kw * 1000.0, gamma_pdc=PV_GAMMA_PDC, temp_cell=temp_cell
