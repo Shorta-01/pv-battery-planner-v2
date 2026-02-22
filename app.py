@@ -4133,7 +4133,9 @@ if run_clicked:
                     f"source={load_total_source}; pv_has_load_kwh={'load_kwh' in pv.columns}"
                 )
             metric_with_help(c3, "Estimated grid import (expensive h)", f"{grid_import:.2f}")
-            metric_with_help(c4, "Estimated export/curtailment (kWh)", f"{(grid_export + detail_df['curtailed_kwh'].sum() if not detail_df.empty else 0.0):.2f}")
+            curtailed_total = float(pd.to_numeric(flows_df.get("curtailed_kwh", 0.0), errors="coerce").fillna(0.0).sum()) if flows_df is not None and not flows_df.empty else 0.0
+            export_total = float(pd.to_numeric(flows_df.get("grid_export_kwh", 0.0), errors="coerce").fillna(0.0).sum()) if flows_df is not None and not flows_df.empty else float(grid_export or 0.0)
+            metric_with_help(c4, "Estimated export/curtailment (kWh)", f"{(export_total + curtailed_total):.2f}")
             tooltip_heading("PV production vs Load (estimated) (hourly)", CHART_TOOLTIPS["PV production vs Load (estimated) (hourly)"])
             pv_load_fig = make_chart_pv_load(pv, soc_series, cutoff_soc, effective_cfg)
             add_tariff_and_sun_markers(pv_load_fig, tomorrow, sunrise, sunset)

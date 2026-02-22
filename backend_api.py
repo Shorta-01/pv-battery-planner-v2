@@ -1050,6 +1050,7 @@ class BackendState:
             target_date=target_date,
             tz=tz,
             fallback_score=55,
+            loc=loc,
         )
 
         pv_totals_kwh = {

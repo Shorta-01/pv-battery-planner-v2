@@ -263,6 +263,28 @@ def should_use_satellite_nowcast_auto(
     except Exception:
         return False
 
+
+
+def _nowcast_sky_is_volatile(primary_weather: pd.DataFrame) -> bool:
+    if primary_weather is None or primary_weather.empty:
+        return True
+
+    if "cloud_cover_pct" in primary_weather.columns:
+        cloud = pd.to_numeric(primary_weather["cloud_cover_pct"], errors="coerce").dropna().clip(lower=0.0, upper=100.0)
+        if len(cloud) >= 4:
+            cloud_range = float(cloud.max() - cloud.min())
+            mean_abs_diff = float(cloud.diff().abs().dropna().mean()) if len(cloud) > 1 else 0.0
+            return bool(cloud_range >= 30.0 and mean_abs_diff >= 10.0)
+
+    if "ghi_wm2" in primary_weather.columns:
+        ghi = pd.to_numeric(primary_weather["ghi_wm2"], errors="coerce").dropna().clip(lower=0.0)
+        if len(ghi) >= 4:
+            mean_ghi = float(ghi.mean())
+            if mean_ghi > 20.0:
+                cv = float(ghi.std(ddof=0) / mean_ghi) if mean_ghi > 0 else 0.0
+                return bool(cv >= 0.6)
+
+    return True
 WEATHER_MODEL_ALIASES: dict[str, str] = {
     "icon_d2": "dwd_icon_d2",
     "icon_eu": "dwd_icon_eu",
@@ -1849,6 +1871,8 @@ def build_ensemble_forecast(
             ghi_probe = pd.to_numeric(primary_weather.get("ghi_wm2"), errors="coerce") if "ghi_wm2" in primary_weather.columns else pd.Series(np.nan, index=sat_index)
             if ghi_probe.fillna(0.0).max() <= 5.0:
                 satellite_nowcast_reason = "skipped (night)"
+            elif not _nowcast_sky_is_volatile(primary_weather):
+                satellite_nowcast_reason = "skipped (stable sky)"
             else:
                 try:
                     sat_df = fetch_satellite_radiation_nowcast(loc.latitude, loc.longitude, tz, forecast_hours=6)
