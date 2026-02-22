@@ -1160,6 +1160,7 @@ class BackendState:
         warnings = list(dict.fromkeys(warnings))
         status = "degraded" if warnings else "ok"
 
+        offpeak_start, offpeak_end = core.compute_charging_window_for_target_date(target_date, cfg.get("tariff", {}))
         run_duration_ms = int((time.perf_counter() - run_started) * 1000)
         system_snapshot = {
             "lat": loc_cfg.get("latitude"),
@@ -1201,6 +1202,8 @@ class BackendState:
                 "pv_forecast_kwh": pv_forecast_kwh,
                 "cons_forecast_kwh": cons_forecast_kwh,
                 "tomorrow_coverage_hours": tomorrow_coverage_hours,
+                "offpeak_start_local": offpeak_start.isoformat(),
+                "offpeak_end_local": offpeak_end.isoformat(),
             },
             "pv_quality": pv_quality,
             "warnings": warnings,
