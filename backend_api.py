@@ -858,6 +858,8 @@ class BackendState:
             "soc_offpeak_start_hours_until": None,
             "soc_offpeak_start_confidence": None,
             "soc_offpeak_start_method": None,
+            "pv_decision_scenario": None,
+            "pv_decision_reason": None,
             "yesterday_consumption_kwh": float(yesterday_kwh),
             "buffer_percent": float(buffer_percent),
             "max_ac_charge_power_kw": float(user_max_ac_kw),
@@ -1150,6 +1152,22 @@ class BackendState:
             used_history=bool(used_history),
             pv_credit_available=bool(pv_credit_available),
         )
+        decision_quantile = "p10" if soc_offpeak_confidence == "Low" else "p25"
+        decision_reason = "low_confidence" if soc_offpeak_confidence == "Low" else "normal"
+        if decision_quantile == "p10":
+            decision_series = ensemble_tomorrow.pv_ensemble_p10
+        else:
+            decision_series = getattr(ensemble_tomorrow, "pv_ensemble_p25", None)
+        if decision_series is None:
+            decision_series = (
+                ensemble_tomorrow.pv_ensemble_p10
+                if decision_quantile == "p25"
+                else ensemble_tomorrow.pv_ensemble_p50
+            )
+        if decision_series is None:
+            decision_series = ensemble_tomorrow.pv_ensemble_p50
+        pv["pv_total_decision_kwh"] = pd.to_numeric(decision_series.reindex(pv.index), errors="coerce")
+
         detail_df, flows_df, soc_series, charge_kw, cutoff_soc, cutoff_reason = core.run_detailed_plan(
             target_date=target_date,
             weather=weather,
@@ -1264,6 +1282,8 @@ class BackendState:
         inputs_used["soc_offpeak_start_used_history"] = bool(soc_offpeak_debug.get("used_history", used_history))
         inputs_used["soc_offpeak_start_pv_credit_available"] = bool(soc_offpeak_debug.get("pv_credit_available", pv_credit_available))
         inputs_used["soc_offpeak_start_peak_overlap"] = bool(soc_offpeak_debug.get("peak_overlap", False))
+        inputs_used["pv_decision_scenario"] = decision_quantile
+        inputs_used["pv_decision_reason"] = decision_reason
 
         payload = {
             "run_id": run_id,
@@ -1304,6 +1324,8 @@ class BackendState:
                 "soc_offpeak_start_used_history": bool(soc_offpeak_debug.get("used_history", used_history)),
                 "soc_offpeak_start_pv_credit_available": bool(soc_offpeak_debug.get("pv_credit_available", pv_credit_available)),
                 "soc_offpeak_start_peak_overlap": bool(soc_offpeak_debug.get("peak_overlap", False)),
+                "pv_decision_scenario": decision_quantile,
+                "pv_decision_reason": decision_reason,
             },
             "pv_quality": pv_quality,
             "warnings": warnings,

@@ -361,6 +361,7 @@ class EnsembleWeatherResult:
     pv_ensemble_east_p50: pd.Series
     pv_ensemble_south_p50: pd.Series
     pv_ensemble_p10: pd.Series | None
+    pv_ensemble_p25: pd.Series | None
     pv_ensemble_p90: pd.Series | None
     per_model_pv_totals_kwh: dict[str, float]
     missing_vars_by_model: dict[str, list[str]]
@@ -1972,6 +1973,7 @@ def build_ensemble_forecast(
 
     matrix = pd.DataFrame(per_model_pv_columns["pv_total_kwh"]).reindex(canonical_index)
     p10 = matrix.quantile(0.10, axis=1)
+    p25 = matrix.quantile(0.25, axis=1)
     p90 = matrix.quantile(0.90, axis=1)
 
     primary_model = next((m for m in selected if m in weather_ok), next(iter(weather_ok.keys())))
@@ -2001,6 +2003,7 @@ def build_ensemble_forecast(
         pv_ensemble_east_p50=ensemble_east_p50.astype(float),
         pv_ensemble_south_p50=ensemble_south_p50.astype(float),
         pv_ensemble_p10=p10.astype(float) if p10 is not None else None,
+        pv_ensemble_p25=p25.astype(float) if p25 is not None else None,
         pv_ensemble_p90=p90.astype(float) if p90 is not None else None,
         per_model_pv_totals_kwh=per_model_pv_totals,
         missing_vars_by_model=missing_vars_by_model,
