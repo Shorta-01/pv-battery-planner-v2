@@ -12,6 +12,8 @@ from typing import Any
 
 import pandas as pd
 
+from error_logging import MAX_ERROR_BODY_CHARS, iso_utc_now, trim
+
 DEFAULT_TIMEZONE = "Europe/Brussels"
 CURRENT_CONFIG_SCHEMA_VERSION = 1
 MAX_PROVIDER_RESPONSE_CHARS = 250_000
@@ -193,6 +195,25 @@ def init_db(db_path: str) -> None:
                 PRIMARY KEY (score_date, model_id, source)
             );
             CREATE INDEX IF NOT EXISTS idx_backtest_daily_scores_date ON backtest_daily_scores (score_date);
+
+            CREATE TABLE IF NOT EXISTS error_events (
+                error_id TEXT PRIMARY KEY,
+                created_at_utc TEXT NOT NULL,
+                source TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                error_type TEXT NOT NULL,
+                "where" TEXT NOT NULL,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                context_json TEXT,
+                fixed INTEGER NOT NULL DEFAULT 0,
+                fixed_at_utc TEXT,
+                dedupe_key TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_error_events_created_at ON error_events (created_at_utc);
+            CREATE INDEX IF NOT EXISTS idx_error_events_fixed ON error_events (fixed, created_at_utc);
+            CREATE INDEX IF NOT EXISTS idx_error_events_dedupe ON error_events (dedupe_key, created_at_utc);
+            CREATE INDEX IF NOT EXISTS idx_error_events_type ON error_events (error_type, created_at_utc);
             """
         )
 
@@ -293,6 +314,99 @@ def compute_config_hash(config: dict) -> str:
 
 def _iso_utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+
+
+def insert_error_event(
+    db_path: str,
+    *,
+    source: str,
+    severity: str,
+    error_type: str,
+    where: str,
+    title: str,
+    body: str,
+    context: dict | None = None,
+    dedupe_key: str | None = None,
+    dedupe_window_seconds: int = 300,
+) -> str:
+    created_at_utc = iso_utc_now()
+    error_id = uuid.uuid4().hex
+    body_trimmed = trim(str(body or ""), MAX_ERROR_BODY_CHARS)
+    context_json = json.dumps(context, sort_keys=True, default=str) if isinstance(context, dict) else None
+
+    with _connect(db_path) as conn:
+        if dedupe_key:
+            candidate = conn.execute(
+                """
+                SELECT error_id
+                FROM error_events
+                WHERE dedupe_key = ?
+                  AND fixed = 0
+                  AND strftime('%s', created_at_utc) >= strftime('%s', ?) - ?
+                ORDER BY created_at_utc DESC
+                LIMIT 1
+                """,
+                (dedupe_key, created_at_utc, int(max(0, dedupe_window_seconds))),
+            ).fetchone()
+            if candidate:
+                return str(candidate["error_id"])
+
+        conn.execute(
+            """
+            INSERT INTO error_events (
+                error_id, created_at_utc, source, severity, error_type, "where", title, body,
+                context_json, fixed, fixed_at_utc, dedupe_key
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
+            """,
+            (error_id, created_at_utc, source, severity, error_type, where, title, body_trimmed, context_json, dedupe_key),
+        )
+    return error_id
+
+
+def fetch_error_events(db_path: str, *, limit: int = 200, include_fixed: bool = False) -> list[dict]:
+    sql = (
+        "SELECT error_id, created_at_utc, source, severity, error_type, \"where\", title, fixed "
+        "FROM error_events "
+    )
+    params: list[Any] = []
+    if not include_fixed:
+        sql += "WHERE fixed = 0 "
+    sql += "ORDER BY created_at_utc DESC LIMIT ?"
+    params.append(max(1, int(limit)))
+
+    with _connect(db_path) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def fetch_error_event_by_id(db_path: str, error_id: str) -> dict | None:
+    with _connect(db_path) as conn:
+        row = conn.execute("SELECT * FROM error_events WHERE error_id = ?", (error_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def set_error_fixed(db_path: str, *, error_id: str, fixed: bool) -> None:
+    fixed_at_utc = iso_utc_now() if fixed else None
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE error_events SET fixed = ?, fixed_at_utc = ? WHERE error_id = ?",
+            (1 if fixed else 0, fixed_at_utc, error_id),
+        )
+
+
+def delete_error_event(db_path: str, *, error_id: str) -> None:
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM error_events WHERE error_id = ?", (error_id,))
+
+
+def delete_all_error_events(db_path: str, *, only_fixed: bool = False) -> int:
+    with _connect(db_path) as conn:
+        if only_fixed:
+            cursor = conn.execute("DELETE FROM error_events WHERE fixed = 1")
+        else:
+            cursor = conn.execute("DELETE FROM error_events")
+    return int(cursor.rowcount or 0)
 
 
 def _parse_df(payload: dict, key: str) -> pd.DataFrame:
