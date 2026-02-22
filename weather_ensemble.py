@@ -88,7 +88,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "label": "ECMWF AIFS 0.25° Single",
         "endpoint": "https://api.open-meteo.com/v1/ecmwf",
         "params": {"models": "ecmwf_aifs"},
-        "badges": ["🌐", "🆕", "☀️"],
+        "badges": ["", "", "☀️"],
         "recommended_for_be": True,
         "max_days": 15,
         "tier": "global",
@@ -98,7 +98,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
             "direct_native": True,
             "diffuse_native": True,
             "dni_native": True,
-            "notes": "ECMWF AIFS Single 0.25° open-data; 6-hourly native steps interpolated by Open-Meteo.",
+            "notes": "ECMWF AIFS Single 0.25° (Open-Meteo ECMWF API).",
         },
     },
     "dwd_icon_eu": {
@@ -274,10 +274,15 @@ def select_week_ahead_models(*, requested_days: int = 7) -> list[str]:
 
 
 def _nan_safe_hourly_median(matrix: pd.DataFrame) -> pd.Series:
-    median = matrix.median(axis=1, skipna=True)
-    all_missing_mask = matrix.notna().sum(axis=1) == 0
-    median.loc[all_missing_mask] = np.nan
-    return median.astype(float)
+    """
+    Per-row median ignoring NaNs; returns NaN where all values are NaN.
+    """
+    if matrix is None or matrix.empty:
+        return pd.Series(dtype=float)
+    out = matrix.median(axis=1, skipna=True)
+    all_nan = matrix.isna().all(axis=1)
+    out = out.where(~all_nan, np.nan)
+    return pd.to_numeric(out, errors="coerce")
 
 
 def should_use_satellite_nowcast_auto(
@@ -341,6 +346,7 @@ HISTORICAL_FORECAST_MODEL_PARAMS: dict[str, str] = {
     "knmi_harmonie_arome": "knmi_harmonie_arome_netherlands",
     "dwd_icon_d2": "icon_d2",
     "ecmwf_ifs": "ecmwf_ifs",
+    "ecmwf_aifs": "ecmwf_aifs",
     "dwd_icon_eu": "icon_eu",
     "meteofrance_seamless": "meteofrance_seamless",
     "gfs": "gfs_seamless",
