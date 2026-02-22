@@ -5,6 +5,7 @@ import csv
 import datetime as dt
 import gc
 import json
+import inspect
 import os
 import time
 import secrets
@@ -1044,14 +1045,31 @@ class BackendState:
         cons_forecast_kwh = float(cons.sum())
         if "load_kwh" not in pv.columns:
             pv = core.add_load_and_surplus_columns(pv, cons_forecast_kwh)
-        pv_quality = scoring.compute_pv_quality_score(
+        quality_sig = inspect.signature(scoring.compute_pv_quality_score)
+        quality_kwargs = {
+            "pv_df": pv,
+            "weather_df": weather.df,
+            "target_date": target_date,
+            "tz": tz,
+            "fallback_score": 55,
+        }
+        if "loc" in quality_sig.parameters:
+            quality_kwargs["loc"] = loc
+        pv_quality = scoring.compute_pv_quality_score(**quality_kwargs)
+
+        today_date = target_date - dt.timedelta(days=1)
+        savings = core.compute_euro_savings_no_battery_vs_plan(
             pv_df=pv,
-            weather_df=weather.df,
-            target_date=target_date,
-            tz=tz,
-            fallback_score=55,
-            loc=loc,
+            flows_df=flows_df,
+            soc_at_22=soc_percent / 100.0,
+            charge_kw=charge_kw,
+            cutoff_soc=cutoff_soc,
+            today_date=today_date,
+            tomorrow_date=target_date,
+            total_consumption_kwh=cons_forecast_kwh,
+            tariff_cfg=(cfg.get("tariff", {}) if isinstance(cfg, dict) else {}),
         )
+        pv_quality.update(savings)
 
         pv_totals_kwh = {
             "p50": canonical_tomorrow_total_kwh,

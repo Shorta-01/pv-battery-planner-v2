@@ -29,6 +29,17 @@ def compute_pv_quality_score(
         except Exception:
             pv_total = 0.0
 
+    def _bucket(score: int) -> tuple[str, str]:
+        if score >= 85:
+            return "Excellent", "#22c55e"
+        if score >= 70:
+            return "Good", "#84cc16"
+        if score >= 50:
+            return "Mixed", "#f59e0b"
+        if score >= 30:
+            return "Poor", "#f97316"
+        return "Very low", "#ef4444"
+
     try:
         if loc is not None and hasattr(pv_df, "index") and getattr(pv_df.index, "tz", None) is not None:
             idx = pv_df.index
@@ -42,14 +53,9 @@ def compute_pv_quality_score(
             clear_df["cloud_cover_pct"] = 0.0
             clear_pv = core.build_pv_forecast(clear_df, loc, tz=tz)
             clear_kwh = float(pd.to_numeric(clear_pv.get("pv_ac_limited_kwh", clear_pv.get("pv_total_kwh", 0.0)), errors="coerce").sum(min_count=1) or 0.0)
-            ratio = pv_total / max(clear_kwh, 0.1)
+            ratio = max(0.0, min(pv_total / max(clear_kwh, 0.1), 1.0))
             score = int(max(0, min(100, round(100.0 * ratio))))
-            if score >= 75:
-                label, color = "high", "green"
-            elif score >= 55:
-                label, color = "medium", "amber"
-            else:
-                label, color = "low", "red"
+            label, color = _bucket(score)
             return {
                 "score": score,
                 "label": label,
@@ -67,14 +73,7 @@ def compute_pv_quality_score(
     score = int(max(0, min(100, fallback_score)))
     if pv_total > 0:
         score = int(max(score, min(100, round(40 + min(pv_total, 15.0) * 4))))
-
-    if score >= 75:
-        label, color = "high", "green"
-    elif score >= 55:
-        label, color = "medium", "amber"
-    else:
-        label, color = "low", "red"
-
+    label, color = _bucket(score)
     return {
         "score": score,
         "label": label,
