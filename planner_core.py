@@ -997,6 +997,40 @@ def compute_charging_window_for_target_date(target_date: dt.date, tariff_cfg: di
     return target_midnight, target_midnight
 
 
+def estimate_soc_at_offpeak_start(
+    soc_now_percent: float,
+    now_local: dt.datetime,
+    offpeak_start: pd.Timestamp,
+    yesterday_consumption_kwh: float,
+    battery_kwh: float,
+    min_soc_percent: float,
+) -> tuple[float, float, str, str]:
+    """Estimate battery SOC at off-peak window start using yesterday's average load."""
+    hours_until = max(0.0, (offpeak_start - now_local).total_seconds() / 3600.0)
+
+    avg_kw = float(yesterday_consumption_kwh) / 24.0
+    cons_kwh = avg_kw * hours_until
+
+    battery_kwh = max(float(battery_kwh), 1e-9)
+    energy_now = (float(soc_now_percent) / 100.0) * battery_kwh
+    energy_est = energy_now - cons_kwh
+
+    energy_floor = (float(min_soc_percent) / 100.0) * battery_kwh
+    energy_est = max(energy_floor, energy_est)
+
+    soc_est = (energy_est / battery_kwh) * 100.0
+    soc_est = max(0.0, min(100.0, soc_est))
+
+    if hours_until < 2:
+        confidence = "High"
+    elif hours_until <= 6:
+        confidence = "Medium"
+    else:
+        confidence = "Low"
+
+    return float(soc_est), float(hours_until), confidence, "avg_load_from_yesterday"
+
+
 def get_charge_session_index_from_window(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> pd.DatetimeIndex:
     """
     Hourly index of charging decision slots fully inside [start_ts, end_ts).

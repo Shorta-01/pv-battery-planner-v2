@@ -853,6 +853,10 @@ class BackendState:
         inputs_used = {
             "soc_now_percent": float(soc_percent),
             "soc_at_22_percent": float(soc_percent),
+            "soc_offpeak_start_estimated_percent": None,
+            "soc_offpeak_start_hours_until": None,
+            "soc_offpeak_start_confidence": None,
+            "soc_offpeak_start_method": None,
             "yesterday_consumption_kwh": float(yesterday_kwh),
             "buffer_percent": float(buffer_percent),
             "max_ac_charge_power_kw": float(user_max_ac_kw),
@@ -1071,12 +1075,24 @@ class BackendState:
 
         cons_profile = core.load_consumption_profile_kwh_per_hour()
         cons = core.build_consumption_forecast(cons_profile, yesterday_kwh, target_date, tz)
+        offpeak_start, offpeak_end = core.compute_charging_window_for_target_date(target_date, cfg.get("tariff", {}))
+        now_local = dt.datetime.now(ZoneInfo(tz))
+        battery_kwh = float(cfg.get("battery", {}).get("battery_kwh", core.BATTERY_KWH))
+        min_soc_percent = float(cfg.get("battery", {}).get("min_soc_percent", core.MIN_SOC_PERCENT))
+        estimated_soc_percent, hours_until_offpeak_start, soc_offpeak_confidence, soc_offpeak_method = core.estimate_soc_at_offpeak_start(
+            soc_now_percent=float(soc_percent),
+            now_local=now_local,
+            offpeak_start=offpeak_start,
+            yesterday_consumption_kwh=float(yesterday_kwh),
+            battery_kwh=battery_kwh,
+            min_soc_percent=min_soc_percent,
+        )
         detail_df, flows_df, soc_series, charge_kw, cutoff_soc, cutoff_reason = core.run_detailed_plan(
             target_date=target_date,
             weather=weather,
             pv_df=pv,
             consumption_kwh=cons,
-            soc_at_22_percent=soc_percent,
+            soc_at_22_percent=estimated_soc_percent,
             buffer_percent=buffer_percent,
             max_ac_charge_power_kw=user_max_ac_kw,
         )
@@ -1160,7 +1176,6 @@ class BackendState:
         warnings = list(dict.fromkeys(warnings))
         status = "degraded" if warnings else "ok"
 
-        offpeak_start, offpeak_end = core.compute_charging_window_for_target_date(target_date, cfg.get("tariff", {}))
         run_duration_ms = int((time.perf_counter() - run_started) * 1000)
         system_snapshot = {
             "lat": loc_cfg.get("latitude"),
@@ -1174,6 +1189,12 @@ class BackendState:
             "loss_factor": cfg.get("system", {}).get("loss_factor"),
         }
         tomorrow_models_used = list(getattr(ensemble_tomorrow, "selected_models", []) or [])
+
+        inputs_used["soc_at_22_percent"] = float(estimated_soc_percent)
+        inputs_used["soc_offpeak_start_estimated_percent"] = float(estimated_soc_percent)
+        inputs_used["soc_offpeak_start_hours_until"] = float(hours_until_offpeak_start)
+        inputs_used["soc_offpeak_start_confidence"] = str(soc_offpeak_confidence)
+        inputs_used["soc_offpeak_start_method"] = str(soc_offpeak_method)
 
         payload = {
             "run_id": run_id,
@@ -1204,6 +1225,10 @@ class BackendState:
                 "tomorrow_coverage_hours": tomorrow_coverage_hours,
                 "offpeak_start_local": offpeak_start.isoformat(),
                 "offpeak_end_local": offpeak_end.isoformat(),
+                "soc_offpeak_start_estimated_percent": float(estimated_soc_percent),
+                "soc_offpeak_start_hours_until": float(hours_until_offpeak_start),
+                "soc_offpeak_start_confidence": str(soc_offpeak_confidence),
+                "soc_offpeak_start_method": str(soc_offpeak_method),
             },
             "pv_quality": pv_quality,
             "warnings": warnings,

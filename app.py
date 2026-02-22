@@ -1592,45 +1592,56 @@ def render_pv_quality_widget(
     )
 
 
-def render_key_charging_widget(container, allowed_charge_kw: float, cutoff_soc_pct: float) -> None:
-    power_pct = clamp_pct((allowed_charge_kw / 7.0) * 100.0)
-    soc_pct = clamp_pct(cutoff_soc_pct)
-    tip = (
-        "These are the two FusionSolar settings for tonight. "
-        "Allowed AC charge power is the grid charging power limit. "
-        "AC charge cutoff SOC is the battery level where grid charging stops. "
-        "Example: 0.50 kW and 70%."
-    )
-    container.markdown(
-        (
-            "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.75rem 0.85rem;"
-            "background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));'>"
-            "<div style='display:flex;align-items:center;justify-content:flex-start;gap:0.5rem;'>"
-            "<div style='font-size:0.72rem;opacity:0.8;text-transform:uppercase;letter-spacing:0.06em;'>Key charging targets</div>"
-            f"<span class='info-tooltip' title='{_esc_attr(tip)}'>ⓘ</span>"
-            "</div>"
-            "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.9rem;margin-top:0.55rem;'>"
-            "<div style='padding:0.45rem 0.55rem;border:1px solid rgba(255,255,255,0.08);border-radius:12px;background:rgba(255,255,255,0.02);'>"
-            "<div style='font-size:0.72rem;opacity:0.84;'>Allowed AC charge power (kW)</div>"
-            f"<div style='margin-top:0.22rem;font-size:1.45rem;font-weight:700;'>{allowed_charge_kw:.2f}</div>"
-            f"<div style='margin-top:0.32rem;height:{UI_PROGRESS_BAR_HEIGHT_PX}px;border-radius:999px;background:rgba(255,255,255,0.12);overflow:hidden;'>"
-            f"<div style='height:100%;width:{power_pct:.1f}%;background:linear-gradient(90deg,#4cc9f0,#4895ef,#4361ee);'></div>"
-            "</div>"
-            "<div style='margin-top:0.22rem;font-size:0.68rem;opacity:0.78;'>Range: 0 to 7 kW</div>"
-            "</div>"
-            "<div style='padding:0.45rem 0.55rem;border:1px solid rgba(255,255,255,0.08);border-radius:12px;background:rgba(255,255,255,0.02);'>"
-            "<div style='font-size:0.72rem;opacity:0.84;'>AC charge cutoff SOC (%)</div>"
-            f"<div style='margin-top:0.22rem;font-size:1.45rem;font-weight:700;'>{cutoff_soc_pct:.1f}%</div>"
-            f"<div style='margin-top:0.32rem;height:{UI_PROGRESS_BAR_HEIGHT_PX}px;border-radius:999px;background:rgba(255,255,255,0.12);overflow:hidden;'>"
-            f"<div style='height:100%;width:{soc_pct:.1f}%;background:linear-gradient(90deg,#f4a261,#e9c46a,#52b788);'></div>"
-            "</div>"
-            "<div style='margin-top:0.22rem;font-size:0.68rem;opacity:0.78;'>Range: 0 to 100%</div>"
-            "</div>"
-            "</div>"
-            "</div>"
-        ),
-        unsafe_allow_html=True,
-    )
+def render_offpeak_plan_summary(
+    container,
+    metrics: dict,
+    user_cap_kw: float,
+    inverter_ac_kw_limit: float,
+    battery_max_charge_kw: float,
+    hard_limit_kw: float,
+) -> None:
+    container.markdown("### Off-peak Plan Summary")
+    chip_col_l, chip_col_r = container.columns([5, 2])
+    with chip_col_r:
+        st.caption("Data source: Manual (today)")
+
+    offpeak_start_raw = metrics.get("offpeak_start_local") if isinstance(metrics, dict) else None
+    offpeak_start_ts = pd.to_datetime(offpeak_start_raw, errors="coerce")
+    offpeak_label = "—"
+    if pd.notna(offpeak_start_ts):
+        offpeak_label = offpeak_start_ts.strftime("%H:%M")
+        if offpeak_start_ts.date() != dt.datetime.now(offpeak_start_ts.tzinfo).date():
+            offpeak_label = offpeak_start_ts.strftime("%Y-%m-%d %H:%M")
+
+    conf = str((metrics or {}).get("soc_offpeak_start_confidence") or "")
+    icon = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}.get(conf, "⚪")
+    soc_est = _safe_float((metrics or {}).get("soc_offpeak_start_estimated_percent"), float("nan"))
+    soc_label = f"{soc_est:.1f}% {icon}" if pd.notna(soc_est) else f"— {icon}"
+
+    c1, c2 = container.columns(2)
+    c1.metric("Off-peak starts", offpeak_label)
+    c2.metric("Estimated SOC at off-peak start", soc_label)
+
+    container.divider()
+
+    effective_limit = min(float(user_cap_kw), float(inverter_ac_kw_limit), float(battery_max_charge_kw), float(hard_limit_kw))
+    limiter_reason = "hard limit"
+    if abs(effective_limit - float(hard_limit_kw)) < 1e-9:
+        limiter_reason = "hard limit"
+    elif abs(effective_limit - float(user_cap_kw)) < 1e-9:
+        limiter_reason = "user"
+    elif abs(effective_limit - float(inverter_ac_kw_limit)) < 1e-9:
+        limiter_reason = "inverter"
+    elif abs(effective_limit - float(battery_max_charge_kw)) < 1e-9:
+        limiter_reason = "battery"
+
+    charge_kw = _safe_float((metrics or {}).get("charge_kw"), 0.0)
+    cutoff_soc = _safe_float((metrics or {}).get("cutoff_soc"), 0.0)
+    t1, t2 = container.columns(2)
+    t1.metric("Planned grid charge power (kW)", f"{charge_kw:.2f}")
+    t1.caption(f"Effective limit: {effective_limit:.2f} kW (limited by {limiter_reason})")
+    t2.metric("Minimum morning SOC target (%)", f"{cutoff_soc * 100.0:.1f}%")
+    t2.caption("Set as AC charge cutoff SOC in FusionSolar")
 
 
 def windows_to_segments(windows: list[tuple[str, str]]) -> list[tuple[int, int]]:
@@ -4087,10 +4098,13 @@ if run_clicked:
         with right:
             top_left, top_right = st.columns([4, 3], gap="large")
             with top_left:
-                render_key_charging_widget(
+                render_offpeak_plan_summary(
                     st.container(),
-                    allowed_charge_kw=float(charge_kw),
-                    cutoff_soc_pct=float(cutoff_soc * 100.0),
+                    metrics=metrics,
+                    user_cap_kw=float(user_max_ac_kw),
+                    inverter_ac_kw_limit=float(effective_cfg["inverter"]["ac_limit_kw"]),
+                    battery_max_charge_kw=float(effective_cfg["battery"]["battery_max_charge_kw"]),
+                    hard_limit_kw=float(effective_cfg["battery"].get("max_ac_charge_kw_hard_limit", core.MAX_AC_CHARGE_KW_HARD_LIMIT)),
                 )
             with top_right:
                 render_pv_quality_widget(
