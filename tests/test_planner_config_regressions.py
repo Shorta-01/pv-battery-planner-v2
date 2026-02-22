@@ -348,18 +348,18 @@ def test_run_forecast_pipeline_price_response_modes(monkeypatch: "pytest.MonkeyP
     assert float(aware_high_out.charge_kw) >= float(aware_low_out.charge_kw)
 
 
-def test_apply_config_plumbs_new_pv_modeling_options() -> None:
+def test_apply_config_enforces_advanced_pv_defaults() -> None:
     cfg = copy.deepcopy(core.DEFAULT_CONFIG)
-    cfg["pv"]["iam_model"] = "ashrae"
+    cfg["pv"]["iam_model"] = "none"
     cfg["pv"]["iam_ashrae_b"] = 0.08
     cfg["pv"]["albedo"] = 0.35
-    cfg["pv"]["inverter_ac_model"] = "pvwatts"
+    cfg["pv"]["inverter_ac_model"] = "linear"
 
     core.apply_config(cfg)
 
     assert core.PV_IAM_MODEL == "ashrae"
-    assert core.PV_IAM_ASHRAE_B == pytest.approx(0.08)
-    assert core.PV_ALBEDO == pytest.approx(0.35)
+    assert core.PV_IAM_ASHRAE_B == pytest.approx(0.05)
+    assert core.PV_ALBEDO == pytest.approx(0.20)
     assert core.INVERTER_AC_MODEL == "pvwatts"
 
 
