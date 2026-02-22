@@ -19,6 +19,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 import planner_core as core
+from error_logging import classify_exception, format_exception_body
 from tariff_time import compute_offpeak_segments, make_summary_lines, parse_hhmm
 from weather_ensemble import auto_select_models_for_location, should_use_satellite_nowcast_auto
 
@@ -407,6 +408,7 @@ def save_settings_payload(new_cfg: dict, *, rerun: bool = True) -> bool:
         if rerun:
             st.rerun()
     except Exception as exc:
+        log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:save_settings", title="Frontend error: save settings", exc=exc)
         st.error(f"Could not save settings: {exc}")
         return False
     return True
@@ -415,6 +417,7 @@ LOCAL_STATE_DIR = Path("local_state")
 API_BASE_URL = os.getenv("PVBP_BACKEND_URL", "http://127.0.0.1:8787")
 API_TOKEN_FILE = LOCAL_STATE_DIR / "api_token.txt"
 APP_DEBUG = os.getenv("DEBUG", "").strip() in ("1", "true", "True", "yes", "YES")
+UI_ERROR_BUFFER_PATH = LOCAL_STATE_DIR / "ui_error_buffer.jsonl"
 
 st.session_state.setdefault("history_all_runs", False)
 st.session_state.setdefault("history_show_run_at", False)
@@ -1705,6 +1708,79 @@ def api_post(path: str, payload: dict) -> dict:
     raise RuntimeError("Could not complete backend request.")
 
 
+def api_delete(path: str, *, params: dict | None = None) -> dict:
+    response = http_session().delete(f"{API_BASE_URL}{path}", headers=api_headers(), params=params, timeout=30)
+    response.raise_for_status()
+    if response.text.strip():
+        return response.json()
+    return {}
+
+
+def append_ui_error_buffer(payload: dict) -> None:
+    try:
+        LOCAL_STATE_DIR.mkdir(parents=True, exist_ok=True)
+        with UI_ERROR_BUFFER_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, sort_keys=True, default=str) + "\n")
+    except Exception:
+        pass
+
+
+def flush_ui_error_buffer() -> None:
+    if not UI_ERROR_BUFFER_PATH.exists():
+        return
+    try:
+        lines = [line.strip() for line in UI_ERROR_BUFFER_PATH.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except Exception:
+        return
+
+    keep: list[str] = []
+    for line in lines:
+        try:
+            payload = json.loads(line)
+            api_post("/v1/errors", payload)
+        except Exception:
+            keep.append(line)
+
+    try:
+        if keep:
+            UI_ERROR_BUFFER_PATH.write_text("\n".join(keep) + "\n", encoding="utf-8")
+        else:
+            UI_ERROR_BUFFER_PATH.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def log_frontend_error(
+    *,
+    severity: str,
+    error_type: str,
+    where: str,
+    title: str,
+    exc: BaseException | None = None,
+    body: str | None = None,
+    context: dict | None = None,
+) -> None:
+    payload_body = body or ""
+    if exc is not None:
+        payload_body = format_exception_body(title=title, where=where, exc=exc, extra=context)
+    if not payload_body:
+        payload_body = f"Title: {title}\nWhere: {where}"
+
+    payload = {
+        "source": "frontend",
+        "severity": severity,
+        "error_type": error_type,
+        "where": where,
+        "title": title,
+        "body": payload_body,
+        "context": context or {},
+    }
+    try:
+        api_post("/v1/errors", payload)
+    except Exception:
+        append_ui_error_buffer(payload)
+
+
 @st.cache_data(ttl=1)
 def get_evse_status() -> dict:
     try:
@@ -2989,11 +3065,21 @@ inject_tooltip_css()
 st.title("PV Battery Planner")
 
 try:
+    flush_ui_error_buffer()
     health_payload = api_get("/v1/health")
     backend_settings = api_get("/v1/settings")
     weather_models_catalog = api_get("/v1/weather/models").get("items", [])
+    flush_ui_error_buffer()
     valid_model_ids = {m.get("id") for m in weather_models_catalog if isinstance(m.get("id"), str)}
 except Exception as exc:
+    log_frontend_error(
+        severity="error",
+        error_type="network",
+        where="app.py:startup",
+        title="Frontend error: backend unreachable",
+        exc=exc,
+        context={"endpoint": "/v1/health"},
+    )
     st.error(
         f"Backend unavailable at {API_BASE_URL}. Start backend with: "
         "uvicorn backend_api:app --host 127.0.0.1 --port 8787. "
@@ -3659,6 +3745,7 @@ with left:
                             st.cache_data.clear()
                             st.success("Stop command sent.")
                         except Exception as exc:
+                            log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:car_charger_stop", title="Frontend error: car charger stop", exc=exc)
                             st.error(f"Stop failed: {exc}")
                 else:
                     # Make Resume button primary to match Run forecast style
@@ -3675,6 +3762,7 @@ with left:
                             st.cache_data.clear()
                             st.success("Resume command sent.")
                         except Exception as exc:
+                            log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:car_charger_resume", title="Frontend error: car charger resume", exc=exc)
                             st.error(f"Resume failed: {exc}")
 
                 # --- Metrics: only show when connected (avoid the “— — —” look when offline) ---
@@ -3804,10 +3892,78 @@ with left:
                         st.session_state.pop(f"wm_{mid}", None)
                     st.rerun()
                 except Exception as exc:
+                    log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:reset_settings", title="Frontend error: reset settings", exc=exc)
                     st.error(f"Could not reset settings: {exc}")
             if cancel_reset:
                 st.session_state["confirm_reset_repo_defaults_open"] = False
                 st.rerun()
+
+    with st.expander("Error logging", expanded=False):
+        errors_include_fixed = st.checkbox("Show fixed", value=False, key="errors_include_fixed")
+        errors_limit = st.selectbox("Limit", options=[50, 100, 200, 500], index=2, key="errors_limit")
+        refresh_errors = st.button("Refresh errors", key="errors_refresh")
+        _ = refresh_errors
+        error_items: list[dict] = []
+        errors_unreachable = False
+        try:
+            error_items = api_get(f"/v1/errors?limit={int(errors_limit)}&include_fixed={str(bool(errors_include_fixed)).lower()}").get("items", [])
+        except Exception:
+            errors_unreachable = True
+            st.info("Error logging is currently unreachable.")
+
+        if error_items:
+            table_rows = []
+            for item in error_items:
+                ts_raw = str(item.get("created_at_utc", ""))
+                table_rows.append({
+                    "Date/time": ts_raw.replace("T", " ").replace("Z", " UTC"),
+                    "Source": item.get("source", ""),
+                    "Error type": item.get("error_type", ""),
+                    "Where": item.get("where", ""),
+                    "Title": item.get("title", ""),
+                    "Fixed": bool(item.get("fixed", 0)),
+                })
+            st.data_editor(pd.DataFrame(table_rows), disabled=True, hide_index=True, use_container_width=True)
+
+            labels = [f"{r.get('created_at_utc','')} · {r.get('title','')}" for r in error_items]
+            selected_label = st.selectbox("Select error", options=labels, key="error_selected_label")
+            selected_index = labels.index(selected_label)
+            selected = error_items[selected_index]
+            selected_id = str(selected.get("error_id"))
+
+            fixed_value = st.checkbox("Fixed", value=bool(selected.get("fixed", 0)), key=f"error_fixed_{selected_id}")
+            if st.button("Save fixed state", key=f"save_fixed_{selected_id}"):
+                try:
+                    api_post(f"/v1/errors/{selected_id}/fixed", {"fixed": bool(fixed_value)})
+                    st.success("Updated fixed state")
+                except Exception as exc:
+                    st.error(f"Could not update fixed state: {exc}")
+
+            try:
+                detail = api_get(f"/v1/errors/{selected_id}")
+                st.code(str(detail.get("body", "")), language="text")
+                with st.expander("Context"):
+                    st.code(str(detail.get("context_json", "")), language="json")
+            except Exception as exc:
+                st.error(f"Could not load error detail: {exc}")
+
+            st.markdown("**Danger zone**")
+            confirm_delete = st.checkbox("I understand this will delete logs", key="confirm_error_delete")
+            delete_fixed_only = st.checkbox("Delete fixed only", value=False, key="delete_fixed_only")
+            if st.button("Delete selected error", key="delete_selected_error", disabled=not confirm_delete):
+                try:
+                    api_delete(f"/v1/errors/{selected_id}")
+                    st.success("Deleted selected error")
+                except Exception as exc:
+                    st.error(f"Could not delete selected error: {exc}")
+            if st.button("Delete all errors", key="delete_all_errors", disabled=not confirm_delete):
+                try:
+                    payload = api_delete("/v1/errors", params={"only_fixed": str(bool(delete_fixed_only)).lower()})
+                    st.success(f"Deleted {int(payload.get('deleted', 0))} errors")
+                except Exception as exc:
+                    st.error(f"Could not delete all errors: {exc}")
+        elif not errors_unreachable:
+            st.caption("No errors logged.")
 
     flash = st.session_state.pop("_settings_flash", None)
     if flash:
@@ -3850,6 +4006,7 @@ if run_clicked:
                     "pv_uncertainty": True,
                 },
             )
+            flush_ui_error_buffer()
             result = run_response["result"]
             dbg = result.get("weather_ensemble")
             st.session_state["last_weather_ensemble_debug"] = dbg if isinstance(dbg, dict) else {}
@@ -4140,16 +4297,21 @@ if run_clicked:
                 st.warning(f"Nightly context warning: {warning}")
     except ImportError as exc:
         st.error(f"Missing dependency: {exc}. Install with: python -m pip install -r requirements.txt")
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+        log_frontend_error(severity="error", error_type="network", where="app.py:run_forecast", title="Frontend error: backend unreachable", exc=exc, context={"endpoint": "/v1/run/now"})
         st.error("Backend unreachable. Is backend running?")
     except RuntimeError as exc:
+        log_frontend_error(severity="error", error_type="http_error", where="app.py:run_forecast", title="Frontend error: HTTP failure", exc=exc)
         st.error(str(exc))
     except requests.RequestException as exc:
+        log_frontend_error(severity="error", error_type="http_error", where="app.py:run_forecast", title="Frontend error: HTTP failure", exc=exc)
         st.error(f"Backend API call failed: {exc}")
     except core.ExternalServiceError as exc:
+        log_frontend_error(severity="error", error_type="external_service", where="app.py:run_forecast", title="Frontend error: external service", exc=exc)
         st.error(f"Weather fetch failed: {exc.category}")
         st.info(exc.hint)
     except Exception as exc:
+        log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:run_forecast", title="Frontend error: run forecast", exc=exc)
         st.error(f"Could not fetch weather or compute forecast. Please retry in a minute. Details: {exc}")
         if APP_DEBUG:
             with st.expander("Debug traceback", expanded=False):

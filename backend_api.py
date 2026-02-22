@@ -17,21 +17,30 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 import planner_core as core
 import ocpp_evse
 import scoring
+
+from error_logging import compute_dedupe_key, format_exception_body
 from db_sqlite import (
     compute_config_hash,
+    delete_all_error_events,
+    delete_error_event,
+    fetch_error_event_by_id,
+    fetch_error_events,
     fetch_history_all_runs,
     fetch_history_latest_per_day,
     fetch_latest_full_run,
     fetch_full_run_by_id,
     init_db,
     insert_actual_hourly_rows,
+    insert_error_event,
     insert_forecast_run,
+    set_error_fixed,
 )
 from weather_ensemble import (
     DEFAULT_ACCURACY_MODELS,
@@ -173,6 +182,20 @@ class ActualsHourlyPayload(BaseModel):
     source: str = "manual_csv"
 
 
+
+
+class ErrorEventPayload(BaseModel):
+    source: str
+    severity: str
+    error_type: str
+    where: str
+    title: str
+    body: str
+    context: dict | None = None
+
+
+class ErrorFixedPayload(BaseModel):
+    fixed: bool
 
 
 def _wmo_severity(code: int) -> int:
@@ -1337,8 +1360,45 @@ class BackendState:
 app = FastAPI(title="PV Battery Planner Backend")
 
 
+def _log_backend_error_event(*, request: Request, exc: BaseException, error_type: str, severity: str, title: str, extra: dict | None = None) -> None:
+    where = f"backend_api:{request.url.path}"
+    body = format_exception_body(title=title, where=where, exc=exc, extra=extra)
+    dedupe_key = compute_dedupe_key(source="backend", error_type=error_type, where=where, title=title, body=body)
+    try:
+        insert_error_event(
+            str(SQLITE_PATH),
+            source="backend",
+            severity=severity,
+            error_type=error_type,
+            where=where,
+            title=title,
+            body=body,
+            context=extra,
+            dedupe_key=dedupe_key,
+        )
+    except Exception:
+        pass
+
+
 @app.exception_handler(core.ExternalServiceError)
-def external_service_error_handler(request, exc: core.ExternalServiceError):
+def external_service_error_handler(request: Request, exc: core.ExternalServiceError):
+    extra = {
+        "method": request.method,
+        "path": request.url.path,
+        "query": dict(request.query_params),
+        "client_host": getattr(request.client, "host", None),
+        "service": getattr(exc, "service", None),
+        "category": getattr(exc, "category", None),
+        "hint": getattr(exc, "hint", None),
+    }
+    _log_backend_error_event(
+        request=request,
+        exc=exc,
+        error_type="external_service",
+        severity="error",
+        title=f"Backend external service error: {request.method} {request.url.path}",
+        extra=extra,
+    )
     return JSONResponse(
         status_code=502,
         content={
@@ -1351,8 +1411,47 @@ def external_service_error_handler(request, exc: core.ExternalServiceError):
     )
 
 
+@app.exception_handler(HTTPException)
+def http_exception_handler(request: Request, exc: HTTPException):
+    _log_backend_error_event(
+        request=request,
+        exc=exc,
+        error_type="http_error",
+        severity="warning" if 400 <= int(exc.status_code) < 500 else "error",
+        title=f"Backend HTTP error: {request.method} {request.url.path}",
+        extra={"status_code": exc.status_code, "detail": exc.detail},
+    )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+@app.exception_handler(RequestValidationError)
+def validation_exception_handler(request: Request, exc: RequestValidationError):
+    _log_backend_error_event(
+        request=request,
+        exc=exc,
+        error_type="validation",
+        severity="warning",
+        title=f"Backend validation error: {request.method} {request.url.path}",
+        extra={"errors": exc.errors()},
+    )
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+
 @app.exception_handler(Exception)
-def unhandled_exception_handler(request, exc: Exception):
+def unhandled_exception_handler(request: Request, exc: Exception):
+    _log_backend_error_event(
+        request=request,
+        exc=exc,
+        error_type="exception",
+        severity="error",
+        title=f"Backend exception: {request.method} {request.url.path}",
+        extra={
+            "method": request.method,
+            "path": request.url.path,
+            "query": dict(request.query_params),
+            "client_host": getattr(request.client, "host", None),
+        },
+    )
     payload = {
         "error": "internal_server_error",
         "detail": str(exc),
@@ -1544,6 +1643,78 @@ async def evse_stop(authorization: str | None = Header(default=None)) -> dict:
 async def evse_resume(authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
     return await evse_mgr.remote_resume(connector_id=1, id_tag="LOCAL")
+
+
+@app.get("/v1/errors")
+def get_errors(
+    limit: int = 200,
+    include_fixed: bool = False,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    _require_token(authorization)
+    limit = max(1, min(1000, int(limit)))
+    return {"items": fetch_error_events(str(SQLITE_PATH), limit=limit, include_fixed=bool(include_fixed))}
+
+
+@app.get("/v1/errors/{error_id}")
+def get_error_by_id(error_id: str, authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    item = fetch_error_event_by_id(str(SQLITE_PATH), error_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Error event not found")
+    return item
+
+
+@app.post("/v1/errors")
+def post_error(payload: ErrorEventPayload, authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    if payload.source not in {"frontend", "backend"}:
+        raise HTTPException(status_code=400, detail="Invalid source")
+    if payload.severity not in {"error", "warning"}:
+        raise HTTPException(status_code=400, detail="Invalid severity")
+    if payload.error_type not in {"exception", "http_error", "network", "validation", "external_service", "ui_state", "unknown"}:
+        raise HTTPException(status_code=400, detail="Invalid error_type")
+
+    dedupe_key = compute_dedupe_key(
+        source=payload.source,
+        error_type=payload.error_type,
+        where=payload.where,
+        title=payload.title,
+        body=payload.body,
+    )
+    error_id = insert_error_event(
+        str(SQLITE_PATH),
+        source=payload.source,
+        severity=payload.severity,
+        error_type=payload.error_type,
+        where=payload.where,
+        title=payload.title,
+        body=payload.body,
+        context=payload.context,
+        dedupe_key=dedupe_key,
+    )
+    return {"error_id": error_id}
+
+
+@app.post("/v1/errors/{error_id}/fixed")
+def post_error_fixed(error_id: str, payload: ErrorFixedPayload, authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    set_error_fixed(str(SQLITE_PATH), error_id=error_id, fixed=bool(payload.fixed))
+    return {"ok": True}
+
+
+@app.delete("/v1/errors/{error_id}")
+def delete_one_error(error_id: str, authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    delete_error_event(str(SQLITE_PATH), error_id=error_id)
+    return {"ok": True}
+
+
+@app.delete("/v1/errors")
+def delete_errors(only_fixed: bool = False, authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    deleted = delete_all_error_events(str(SQLITE_PATH), only_fixed=bool(only_fixed))
+    return {"ok": True, "deleted": int(deleted)}
 
 
 @app.get("/v1/weather/models")
