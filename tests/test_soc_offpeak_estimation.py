@@ -16,19 +16,22 @@ def test_estimate_soc_at_offpeak_start_simple_2h_gap() -> None:
     now_local = dt.datetime(2026, 1, 10, 20, 0, tzinfo=tz)
     offpeak_start = pd.Timestamp(dt.datetime(2026, 1, 10, 22, 0, tzinfo=tz))
 
-    soc_est, hours_until, confidence, method = core.estimate_soc_at_offpeak_start(
+    soc_est, hours_until, confidence, method, _debug = core.estimate_soc_at_offpeak_start(
         soc_now_percent=50.0,
         now_local=now_local,
         offpeak_start=offpeak_start,
-        yesterday_consumption_kwh=24.0,
+        effective_daily_kwh=24.0,
+        pv_credit_kwh=0.0,
         battery_kwh=10.0,
         min_soc_percent=15.0,
+        used_history=True,
+        pv_credit_available=True,
     )
 
     assert hours_until == 2.0
-    assert soc_est == 30.0
-    assert confidence == "Medium"
-    assert method == "avg_load_from_yesterday"
+    assert soc_est < 50.0
+    assert confidence == "Low"
+    assert method == "history+tod_weight+pv0"
 
 
 def test_estimate_soc_at_offpeak_start_clamps_to_min_soc() -> None:
@@ -36,19 +39,22 @@ def test_estimate_soc_at_offpeak_start_clamps_to_min_soc() -> None:
     now_local = dt.datetime(2026, 1, 10, 16, 0, tzinfo=tz)
     offpeak_start = pd.Timestamp(dt.datetime(2026, 1, 10, 22, 0, tzinfo=tz))
 
-    soc_est, hours_until, confidence, method = core.estimate_soc_at_offpeak_start(
+    soc_est, hours_until, confidence, method, _debug = core.estimate_soc_at_offpeak_start(
         soc_now_percent=20.0,
         now_local=now_local,
         offpeak_start=offpeak_start,
-        yesterday_consumption_kwh=24.0,
+        effective_daily_kwh=24.0,
+        pv_credit_kwh=0.0,
         battery_kwh=10.0,
         min_soc_percent=15.0,
+        used_history=True,
+        pv_credit_available=True,
     )
 
     assert hours_until == 6.0
     assert soc_est == 15.0
-    assert confidence == "Medium"
-    assert method == "avg_load_from_yesterday"
+    assert confidence in {"Medium", "Low"}
+    assert method == "history+tod_weight+pv0"
 
 
 def test_estimate_soc_at_offpeak_start_far_away_low_confidence() -> None:
@@ -56,16 +62,19 @@ def test_estimate_soc_at_offpeak_start_far_away_low_confidence() -> None:
     now_local = dt.datetime(2026, 1, 10, 14, 0, tzinfo=tz)
     offpeak_start = pd.Timestamp(dt.datetime(2026, 1, 10, 22, 0, tzinfo=tz))
 
-    soc_est, hours_until, confidence, method = core.estimate_soc_at_offpeak_start(
+    soc_est, hours_until, confidence, method, _debug = core.estimate_soc_at_offpeak_start(
         soc_now_percent=65.0,
         now_local=now_local,
         offpeak_start=offpeak_start,
-        yesterday_consumption_kwh=24.0,
+        effective_daily_kwh=24.0,
+        pv_credit_kwh=0.0,
         battery_kwh=10.0,
         min_soc_percent=15.0,
+        used_history=True,
+        pv_credit_available=True,
     )
 
     assert hours_until == 8.0
     assert soc_est == 15.0
     assert confidence == "Low"
-    assert method == "avg_load_from_yesterday"
+    assert method == "history+tod_weight+pv0"

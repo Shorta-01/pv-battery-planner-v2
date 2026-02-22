@@ -1595,6 +1595,7 @@ def render_pv_quality_widget(
 def render_offpeak_plan_summary(
     container,
     metrics: dict,
+    data_source: dict,
     user_cap_kw: float,
     inverter_ac_kw_limit: float,
     battery_max_charge_kw: float,
@@ -1603,7 +1604,9 @@ def render_offpeak_plan_summary(
     container.markdown("### Off-peak Plan Summary")
     chip_col_l, chip_col_r = container.columns([5, 2])
     with chip_col_r:
-        st.caption("Data source: Manual (today)")
+        soc_source = str((data_source or {}).get("soc") or "manual").lower()
+        source_label = "FusionSolar" if soc_source == "fusionsolar" else "Manual"
+        st.caption(f"Data source: {source_label}")
 
     offpeak_start_raw = metrics.get("offpeak_start_local") if isinstance(metrics, dict) else None
     offpeak_start_ts = pd.to_datetime(offpeak_start_raw, errors="coerce")
@@ -1621,6 +1624,15 @@ def render_offpeak_plan_summary(
     c1, c2 = container.columns(2)
     c1.metric("Off-peak starts", offpeak_label)
     c2.metric("Estimated SOC at off-peak start", soc_label)
+
+    delta_h = _safe_float((metrics or {}).get("soc_offpeak_start_hours_until"), float("nan"))
+    load_kwh = _safe_float((metrics or {}).get("soc_offpeak_start_load_kwh_window"), float("nan"))
+    pv_credit = _safe_float((metrics or {}).get("soc_offpeak_start_pv_credit_kwh"), float("nan"))
+    used_history = bool((metrics or {}).get("soc_offpeak_start_used_history"))
+    if pd.notna(delta_h) and pd.notna(load_kwh) and pd.notna(pv_credit):
+        container.caption(
+            f"Δh={delta_h:.1f} · Load≈{load_kwh:.1f} kWh · PV credit≈{pv_credit:.1f} kWh · History: {'yes' if used_history else 'no'}"
+        )
 
     container.divider()
 
@@ -4101,6 +4113,7 @@ if run_clicked:
                 render_offpeak_plan_summary(
                     st.container(),
                     metrics=metrics,
+                    data_source=result.get("data_source", {}),
                     user_cap_kw=float(user_max_ac_kw),
                     inverter_ac_kw_limit=float(effective_cfg["inverter"]["ac_limit_kw"]),
                     battery_max_charge_kw=float(effective_cfg["battery"]["battery_max_charge_kw"]),

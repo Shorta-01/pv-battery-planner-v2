@@ -33,6 +33,7 @@ from db_sqlite import (
     delete_error_event,
     fetch_error_event_by_id,
     fetch_error_events,
+    fetch_effective_daily_kwh,
     fetch_history_all_runs,
     fetch_history_latest_per_day,
     fetch_latest_full_run,
@@ -1079,13 +1080,75 @@ class BackendState:
         now_local = dt.datetime.now(ZoneInfo(tz))
         battery_kwh = float(cfg.get("battery", {}).get("battery_kwh", core.BATTERY_KWH))
         min_soc_percent = float(cfg.get("battery", {}).get("min_soc_percent", core.MIN_SOC_PERCENT))
-        estimated_soc_percent, hours_until_offpeak_start, soc_offpeak_confidence, soc_offpeak_method = core.estimate_soc_at_offpeak_start(
+
+        effective_daily_kwh, _effective_meta = fetch_effective_daily_kwh(SQLITE_PATH, lookback_runs=14, prefer_same_day_type=True)
+        used_history = effective_daily_kwh is not None
+        if effective_daily_kwh is None:
+            effective_daily_kwh = float(yesterday_kwh)
+
+        hours_until_offpeak_start = max(0.0, (offpeak_start - now_local).total_seconds() / 3600.0)
+        daytime_pv_window = (
+            offpeak_start.date() == now_local.date()
+            and 8 <= now_local.hour < 18
+            and hours_until_offpeak_start > 0
+        )
+        prelim_load_kwh = core.estimate_window_consumption_kwh(
+            start_local=now_local,
+            end_local=offpeak_start.to_pydatetime(),
+            effective_daily_kwh=float(effective_daily_kwh),
+        )
+        pv_credit_kwh = 0.0
+        pv_credit_available = not daytime_pv_window
+        if daytime_pv_window:
+            try:
+                loc_cfg_today = cfg.get("location", {})
+                today_date = now_local.date()
+                selected_today_models = auto_select_models_for_location(
+                    float(loc_cfg_today.get("latitude")),
+                    float(loc_cfg_today.get("longitude")),
+                    requested_days=1,
+                )
+                use_nowcast = should_use_satellite_nowcast_auto(
+                    float(loc_cfg_today.get("latitude")),
+                    float(loc_cfg_today.get("longitude")),
+                    requested_days=1,
+                ) and hours_until_offpeak_start <= 6
+                ensemble_today = build_ensemble_forecast(
+                    loc=loc,
+                    target_date=today_date,
+                    tz=tz,
+                    weather_models=selected_today_models,
+                    ensemble_method="weighted",
+                    pv_uncertainty=False,
+                    requested_days=1,
+                    use_satellite_nowcast_0_6h=use_nowcast,
+                )
+                start_h = pd.Timestamp(now_local).ceil("h")
+                end_h = pd.Timestamp(offpeak_start).floor("h")
+                today_remaining_pv_kwh = 0.0
+                if end_h > start_h:
+                    pv_window = pd.to_numeric(
+                        ensemble_today.pv_ensemble_p50.reindex(pd.date_range(start_h, end_h, freq="h", inclusive="left")),
+                        errors="coerce",
+                    ).fillna(0.0)
+                    today_remaining_pv_kwh = float(pv_window.sum())
+                pv_credit_kwh = min(today_remaining_pv_kwh * 0.5, prelim_load_kwh)
+                pv_credit_available = True
+            except Exception as exc:
+                warnings.append(f"PV credit unavailable for SOC off-peak estimate: {exc}")
+                pv_credit_kwh = 0.0
+                pv_credit_available = False
+
+        estimated_soc_percent, hours_until_offpeak_start, soc_offpeak_confidence, soc_offpeak_method, soc_offpeak_debug = core.estimate_soc_at_offpeak_start(
             soc_now_percent=float(soc_percent),
             now_local=now_local,
             offpeak_start=offpeak_start,
-            yesterday_consumption_kwh=float(yesterday_kwh),
+            effective_daily_kwh=float(effective_daily_kwh),
+            pv_credit_kwh=float(pv_credit_kwh),
             battery_kwh=battery_kwh,
             min_soc_percent=min_soc_percent,
+            used_history=bool(used_history),
+            pv_credit_available=bool(pv_credit_available),
         )
         detail_df, flows_df, soc_series, charge_kw, cutoff_soc, cutoff_reason = core.run_detailed_plan(
             target_date=target_date,
@@ -1195,6 +1258,12 @@ class BackendState:
         inputs_used["soc_offpeak_start_hours_until"] = float(hours_until_offpeak_start)
         inputs_used["soc_offpeak_start_confidence"] = str(soc_offpeak_confidence)
         inputs_used["soc_offpeak_start_method"] = str(soc_offpeak_method)
+        inputs_used["soc_offpeak_start_load_kwh_window"] = float(soc_offpeak_debug.get("load_kwh_window", 0.0))
+        inputs_used["soc_offpeak_start_pv_credit_kwh"] = float(soc_offpeak_debug.get("pv_credit_kwh", 0.0))
+        inputs_used["soc_offpeak_start_effective_daily_kwh_used"] = float(soc_offpeak_debug.get("effective_daily_kwh_used", effective_daily_kwh))
+        inputs_used["soc_offpeak_start_used_history"] = bool(soc_offpeak_debug.get("used_history", used_history))
+        inputs_used["soc_offpeak_start_pv_credit_available"] = bool(soc_offpeak_debug.get("pv_credit_available", pv_credit_available))
+        inputs_used["soc_offpeak_start_peak_overlap"] = bool(soc_offpeak_debug.get("peak_overlap", False))
 
         payload = {
             "run_id": run_id,
@@ -1229,6 +1298,12 @@ class BackendState:
                 "soc_offpeak_start_hours_until": float(hours_until_offpeak_start),
                 "soc_offpeak_start_confidence": str(soc_offpeak_confidence),
                 "soc_offpeak_start_method": str(soc_offpeak_method),
+                "soc_offpeak_start_load_kwh_window": float(soc_offpeak_debug.get("load_kwh_window", 0.0)),
+                "soc_offpeak_start_pv_credit_kwh": float(soc_offpeak_debug.get("pv_credit_kwh", 0.0)),
+                "soc_offpeak_start_effective_daily_kwh_used": float(soc_offpeak_debug.get("effective_daily_kwh_used", effective_daily_kwh)),
+                "soc_offpeak_start_used_history": bool(soc_offpeak_debug.get("used_history", used_history)),
+                "soc_offpeak_start_pv_credit_available": bool(soc_offpeak_debug.get("pv_credit_available", pv_credit_available)),
+                "soc_offpeak_start_peak_overlap": bool(soc_offpeak_debug.get("peak_overlap", False)),
             },
             "pv_quality": pv_quality,
             "warnings": warnings,

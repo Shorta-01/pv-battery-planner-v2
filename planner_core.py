@@ -998,22 +998,30 @@ def compute_charging_window_for_target_date(target_date: dt.date, tariff_cfg: di
 
 
 def estimate_soc_at_offpeak_start(
+    *,
     soc_now_percent: float,
     now_local: dt.datetime,
     offpeak_start: pd.Timestamp,
-    yesterday_consumption_kwh: float,
+    effective_daily_kwh: float,
+    pv_credit_kwh: float,
     battery_kwh: float,
     min_soc_percent: float,
-) -> tuple[float, float, str, str]:
-    """Estimate battery SOC at off-peak window start using yesterday's average load."""
+    used_history: bool,
+    pv_credit_available: bool,
+) -> tuple[float, float, str, str, dict]:
+    """Estimate SOC at off-peak start with TOD load weighting and optional PV credit."""
     hours_until = max(0.0, (offpeak_start - now_local).total_seconds() / 3600.0)
-
-    avg_kw = float(yesterday_consumption_kwh) / 24.0
-    cons_kwh = avg_kw * hours_until
+    load_kwh_window = estimate_window_consumption_kwh(
+        start_local=now_local,
+        end_local=offpeak_start.to_pydatetime(),
+        effective_daily_kwh=float(effective_daily_kwh),
+    )
+    pv_credit_used = max(0.0, min(float(pv_credit_kwh), load_kwh_window))
+    net_kwh = max(0.0, load_kwh_window - pv_credit_used)
 
     battery_kwh = max(float(battery_kwh), 1e-9)
     energy_now = (float(soc_now_percent) / 100.0) * battery_kwh
-    energy_est = energy_now - cons_kwh
+    energy_est = energy_now - net_kwh
 
     energy_floor = (float(min_soc_percent) / 100.0) * battery_kwh
     energy_est = max(energy_floor, energy_est)
@@ -1022,13 +1030,76 @@ def estimate_soc_at_offpeak_start(
     soc_est = max(0.0, min(100.0, soc_est))
 
     if hours_until < 2:
-        confidence = "High"
+        confidence_level = 2
     elif hours_until <= 6:
-        confidence = "Medium"
+        confidence_level = 1
     else:
-        confidence = "Low"
+        confidence_level = 0
 
-    return float(soc_est), float(hours_until), confidence, "avg_load_from_yesterday"
+    start_h = pd.Timestamp(now_local).ceil("h")
+    end_h = pd.Timestamp(offpeak_start).floor("h")
+    peak_overlap = False
+    if end_h > start_h:
+        for ts in pd.date_range(start_h, end_h, freq="h", inclusive="left"):
+            if 17 <= ts.hour < 22:
+                peak_overlap = True
+                break
+    if peak_overlap:
+        confidence_level = max(0, confidence_level - 1)
+    if not used_history:
+        confidence_level = max(0, confidence_level - 1)
+    daytime = 8 <= now_local.hour < 18 and hours_until > 0
+    if daytime and not pv_credit_available:
+        confidence_level = 0
+
+    confidence = ["Low", "Medium", "High"][confidence_level]
+
+    history_label = "history" if used_history else "yesterday_only"
+    pv_label = "B2pv" if pv_credit_used > 0 else "pv0"
+    method = f"{history_label}+tod_weight+{pv_label}"
+    debug = {
+        "delta_h": float(hours_until),
+        "load_kwh_window": float(load_kwh_window),
+        "pv_credit_kwh": float(pv_credit_used),
+        "effective_daily_kwh_used": float(effective_daily_kwh),
+        "used_history": bool(used_history),
+        "pv_credit_available": bool(pv_credit_available),
+        "peak_overlap": bool(peak_overlap),
+    }
+    return float(soc_est), float(hours_until), confidence, method, debug
+
+
+def _tod_weight_for_hour(hour: int) -> float:
+    if 0 <= hour < 6:
+        return 0.7
+    if 6 <= hour < 9:
+        return 1.0
+    if 9 <= hour < 17:
+        return 0.9
+    if 17 <= hour < 22:
+        return 1.3
+    return 1.0
+
+
+def estimate_window_consumption_kwh(
+    *,
+    start_local: dt.datetime,
+    end_local: dt.datetime,
+    effective_daily_kwh: float,
+) -> float:
+    start_h = pd.Timestamp(start_local).ceil("h")
+    end_h = pd.Timestamp(end_local).floor("h")
+    if end_h <= start_h:
+        return 0.0
+
+    day_weights = sum(_tod_weight_for_hour(hour) for hour in range(24))
+    if day_weights <= 0:
+        return 0.0
+    kwh_per_weight = float(effective_daily_kwh) / day_weights
+    window_weight = 0.0
+    for ts in pd.date_range(start_h, end_h, freq="h", inclusive="left"):
+        window_weight += _tod_weight_for_hour(int(ts.hour))
+    return max(0.0, float(window_weight * kwh_per_weight))
 
 
 def get_charge_session_index_from_window(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> pd.DatetimeIndex:
