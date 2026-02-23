@@ -1207,6 +1207,19 @@ def supported_weather_models() -> list[str]:
     return sorted(WEATHER_MODELS.keys())
 
 
+def _compute_allow_synth_mask(weather_ok: dict, canonical_index: pd.DatetimeIndex) -> pd.Series:
+    any_native_ghi: pd.Series | None = None
+    for weather in weather_ok.values():
+        model_weather_df = weather.df.reindex(canonical_index)
+        ghi_series = pd.to_numeric(model_weather_df.get("ghi_wm2"), errors="coerce")
+        native_mask = ghi_series.notna()
+        any_native_ghi = native_mask if any_native_ghi is None else (any_native_ghi | native_mask)
+
+    if any_native_ghi is None:
+        return pd.Series(True, index=canonical_index, dtype=bool)
+    return (~any_native_ghi).reindex(canonical_index).fillna(False).astype(bool)
+
+
 def historical_forecast_params(model_id: str) -> tuple[str, dict[str, Any]]:
     canonical = normalize_weather_model_id(model_id)
     if canonical not in WEATHER_MODELS:
@@ -1473,7 +1486,7 @@ def fetch_open_meteo_weather(
     df["temp_air_c"] = _series("temperature_2m", 10.0).ffill().bfill().fillna(10.0)
     df["wind_speed_ms"] = _series("wind_speed_10m", 1.0).fillna(1.0).clip(lower=0.0)
     df["cloud_cover_pct"] = _series("cloud_cover", 0.0).fillna(0.0).clip(lower=0.0)
-    ghi = _series("shortwave_radiation", 0.0, record_missing=False).fillna(0.0).clip(lower=0.0)
+    ghi = _series("shortwave_radiation", np.nan, record_missing=False).clip(lower=0.0)
     bhi = _series("direct_radiation", np.nan, record_missing=False)
     dni_api = _series("direct_normal_irradiance", np.nan, record_missing=False)
     dhi_api = _series("diffuse_radiation", np.nan, record_missing=False)
@@ -2063,18 +2076,8 @@ def build_ensemble_forecast(
                     exc,
                 )
 
-    any_native_ghi: pd.Series | None = None
     overlap_hours_by_model: dict[str, int] = {}
-    for model_id, weather in weather_ok.items():
-        model_weather_df = weather.df.reindex(canonical_index)
-        ghi_series = pd.to_numeric(model_weather_df.get("ghi_wm2"), errors="coerce")
-        native_mask = ghi_series.notna()
-        any_native_ghi = native_mask if any_native_ghi is None else (any_native_ghi | native_mask)
-
-    if any_native_ghi is None:
-        allow_synth_mask = pd.Series(True, index=canonical_index, dtype=bool)
-    else:
-        allow_synth_mask = (~any_native_ghi).reindex(canonical_index).fillna(True).astype(bool)
+    allow_synth_mask = _compute_allow_synth_mask(weather_ok, canonical_index)
 
     for model_id, weather in weather_ok.items():
         fetch_meta = fetch_meta_by_model.get(model_id, {})
@@ -2085,7 +2088,7 @@ def build_ensemble_forecast(
         overlap_index = canonical_index[:max(overlap_hours, 0)]
         model_weather_df = weather.df.reindex(canonical_index).copy()
         pv_input_df = model_weather_df.loc[overlap_index].copy() if len(overlap_index) else model_weather_df.iloc[:0].copy()
-        allow_mask_for_model = allow_synth_mask.reindex(pv_input_df.index).fillna(True).astype(bool)
+        allow_mask_for_model = allow_synth_mask.reindex(pv_input_df.index).fillna(False).astype(bool)
         try:
             model_pv = core.build_pv_forecast(
                 pv_input_df,

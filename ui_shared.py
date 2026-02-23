@@ -103,8 +103,9 @@ def compute_clear_sky_reference_kwh(weather_df: pd.DataFrame, loc: core.Location
     clear_df["wind_speed_ms"] = pd.to_numeric(weather_df.get("wind_speed_ms"), errors="coerce").fillna(1.0).clip(lower=0.0)
     clear_df["cloud_cover_pct"] = 0.0
 
-    _, _, _, _, _, pv_ac_limited_kwh = core.estimate_pv_with_pvlib(clear_df, loc)
-    return float(pv_ac_limited_kwh.sum())
+    tz_name = getattr(weather_df.index, "tz", None)
+    pv_clear = core.build_pv_forecast(clear_df, loc, tz=str(tz_name) if tz_name is not None else None)
+    return float(pd.to_numeric(pv_clear.get("pv_total_kwh"), errors="coerce").fillna(0.0).sum())
 
 
 def compute_pv_quality(pv_df: pd.DataFrame, clear_kwh: float) -> dict:
@@ -125,4 +126,3 @@ def compute_pv_quality(pv_df: pd.DataFrame, clear_kwh: float) -> dict:
         "pv_total_kwh": pv_total_kwh,
         "color": PV_QUALITY_COLORS.get(label, "#d62828"),
     }
-
