@@ -375,7 +375,7 @@ def insert_error_event(
     return error_id
 
 
-def fetch_error_events(db_path: str, *, limit: int = 200, include_fixed: bool = False) -> list[dict]:
+def fetch_error_events(db_path: str, *, limit: int | None = None, include_fixed: bool = True) -> list[dict]:
     sql = (
         "SELECT error_id, created_at_utc, source, severity, error_type, \"where\", title, fixed "
         "FROM error_events "
@@ -383,8 +383,10 @@ def fetch_error_events(db_path: str, *, limit: int = 200, include_fixed: bool = 
     params: list[Any] = []
     if not include_fixed:
         sql += "WHERE fixed = 0 "
-    sql += "ORDER BY created_at_utc DESC LIMIT ?"
-    params.append(max(1, int(limit)))
+    sql += "ORDER BY created_at_utc DESC"
+    if limit is not None and int(limit) > 0:
+        sql += " LIMIT ?"
+        params.append(int(limit))
 
     with _connect(db_path) as conn:
         rows = conn.execute(sql, params).fetchall()
