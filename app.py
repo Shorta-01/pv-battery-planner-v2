@@ -1576,7 +1576,7 @@ def render_pv_quality_widget(
             )
 
         scope_suffix = "(tomorrow)" if scope == "tomorrow" else "(cycle)"
-        headline_label = "Savings" if scope == "tomorrow" else "Cycle savings"
+        headline_label = "SAVINGS" if scope == "tomorrow" else "CYCLE SAVINGS"
         savings_html = (
             "<div style='margin-top:0.65rem;padding-top:0.55rem;border-top:1px solid rgba(255,255,255,0.10);'>"
             "<div style='display:flex;align-items:center;justify-content:space-between;'>"
@@ -1601,8 +1601,9 @@ def render_pv_quality_widget(
                 f"⏱️ {detail_note}"
                 "</div>"
                 if detail_note
-                else ""
+                else "<div style='margin-top:0.12rem;font-size:0.68rem;opacity:0.75;'>⏱️ Hourly bars show tomorrow (00–24) detail.</div>"
             )
+            + "<div style='margin-top:0.12rem;font-size:0.68rem;opacity:0.75;'>Cycle savings use full off-peak cycle.</div>"
             + "<div style='margin-top:0.22rem;font-size:0.68rem;opacity:0.75;'>"
             f"{footer}"
             "</div>"

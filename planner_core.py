@@ -1403,8 +1403,22 @@ def compute_euro_savings_no_battery_vs_plan(
 
     plan_cost_cycle = plan_import_cycle * base_price_cycle - plan_export_cycle * inj
 
-    base_cost_tom = base_cost_cycle.reindex(idx_tomorrow).fillna(0.0)
-    plan_cost_tom = plan_cost_cycle.reindex(idx_tomorrow).fillna(0.0)
+    dt_h_tom = timestep_hours(idx_tomorrow)
+    pv_tom = pv_df["pv_total_kwh"].reindex(idx_tomorrow).fillna(0.0).astype(float)
+    load_tom = pd.Series(
+        [load_kwh_at(ts, total_consumption_kwh, float(dt_h_tom.loc[ts])) for ts in idx_tomorrow],
+        index=idx_tomorrow,
+        dtype=float,
+    )
+    base_import_tom = (load_tom - pv_tom).clip(lower=0.0)
+    base_export_tom = (pv_tom - load_tom).clip(lower=0.0)
+    price_tom = pd.Series([import_price_eur_per_kwh(ts, tariff_cfg) for ts in idx_tomorrow], index=idx_tomorrow)
+    base_cost_tom = base_import_tom * price_tom - base_export_tom * inj
+
+    plan_import_tom = flows_df["grid_import_kwh"].reindex(idx_tomorrow).fillna(0.0).astype(float)
+    plan_export_tom = flows_df["grid_export_kwh"].reindex(idx_tomorrow).fillna(0.0).astype(float)
+    plan_cost_tom = plan_import_tom * price_tom - plan_export_tom * inj
+
     hourly_savings = (base_cost_tom - plan_cost_tom).reindex(idx_tomorrow).fillna(0.0)
 
     baseline_cycle = float(base_cost_cycle.sum())
@@ -1427,6 +1441,7 @@ def compute_euro_savings_no_battery_vs_plan(
     baseline_tom = _safe_numeric(baseline_tom)
     plan_tom = _safe_numeric(plan_tom)
     savings_cycle = _safe_numeric(savings_cycle)
+    savings_tom = _safe_numeric(float(baseline_tom - plan_tom))
 
     return {
         "baseline_cost_eur_total": baseline_cycle,
@@ -1437,7 +1452,7 @@ def compute_euro_savings_no_battery_vs_plan(
         "savings_eur_cycle": savings_cycle,
         "baseline_cost_eur_tomorrow": baseline_tom,
         "plan_cost_eur_tomorrow": plan_tom,
-        "savings_eur_tomorrow": baseline_tom - plan_tom,
+        "savings_eur_tomorrow": savings_tom,
         "hourly_savings_eur_tomorrow": hourly_savings_list,
         "savings_horizon_kind": "offpeak_cycle",
         "savings_horizon_start_iso": cycle_start.isoformat(),
