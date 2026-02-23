@@ -3479,25 +3479,21 @@ with left:
             st.error("Set at least one PV array panel count above 0.")
 
         st.markdown("#### Battery")
-        bat_row1_col1, bat_row1_col2 = st.columns(2, vertical_alignment="bottom")
-        with bat_row1_col1:
-            cfg_battery_kwh = st.number_input("Battery capacity (kWh)", min_value=0.0, value=float(effective_cfg["battery"]["battery_kwh"]), step=0.1, help=get_help("battery_kwh"))
-        with bat_row1_col2:
+        bat_col_left, bat_col_right = st.columns(2, gap="large", vertical_alignment="bottom")
+        with bat_col_left:
+            cfg_battery_kwh = st.number_input("Capacity (kWh)", min_value=0.0, value=float(effective_cfg["battery"]["battery_kwh"]), step=0.1, help=get_help("battery_kwh"))
             cfg_min_soc_percent = st.number_input("Min SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["min_soc_percent"]), step=0.5, help=get_help("min_soc"))
 
-        bat_row2_col1, bat_row2_col2 = st.columns(2, vertical_alignment="bottom")
-        with bat_row2_col1:
-            cfg_max_cutoff_soc_percent = st.number_input("Max cutoff SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["max_cutoff_soc_percent"]), step=0.5, help=get_help("cutoff_soc"))
-        with bat_row2_col2:
+        with bat_col_right:
             cfg_max_grid_charge_power_kw = st.number_input(
-                "Max grid charge power (kW)",
+                "Grid cap (kW)",
                 min_value=0.0,
                 value=float(backend_settings.get("max_ac_charge_power_kw_default", 5.0)),
                 step=0.1,
                 help=get_help("max_ac_user_cap"),
             )
             st.number_input(
-                "Battery max charge (kW) (hardware limit)",
+                "Battery cap (kW)",
                 min_value=0.0,
                 value=float(effective_cfg["battery"].get("battery_max_charge_kw", core.BATTERY_MAX_CHARGE_KW)),
                 step=0.1,
@@ -3505,6 +3501,7 @@ with left:
                 help=get_help("battery_max_charge_kw"),
                 key="battery_max_charge_hw_display",
             )
+            cfg_max_cutoff_soc_percent = st.number_input("Cutoff SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["max_cutoff_soc_percent"]), step=0.5, help=get_help("cutoff_soc"))
         user_max_ac_kw = float(cfg_max_grid_charge_power_kw)
 
         cfg_battery_max_charge_kw = float(effective_cfg["battery"].get("battery_max_charge_kw", core.BATTERY_MAX_CHARGE_KW))
