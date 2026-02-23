@@ -168,6 +168,48 @@ MODEL_CAPS: dict[str, dict[str, Any]] = {
 }
 
 
+def _source_fingerprint(model_id: str) -> tuple[str, str]:
+    """Return stable source fingerprint tuple(endpoint_base, model_token)."""
+    spec = WEATHER_MODELS.get(model_id, {})
+    endpoint_base = str(spec.get("endpoint") or "")
+    params = spec.get("params") if isinstance(spec.get("params"), dict) else {}
+    model_token = str((params or {}).get("models") or "")
+    return endpoint_base, model_token
+
+
+def dedupe_models_by_source(model_ids: list[str]) -> tuple[list[str], list[str]]:
+    """De-duplicate weather model ids that point to the same upstream source."""
+    tier_order = {"short": 0, "medium": 1, "global": 2}
+    indexed: list[tuple[int, str]] = [(idx, model_id) for idx, model_id in enumerate(model_ids) if model_id in WEATHER_MODELS]
+    groups: dict[tuple[str, str], list[tuple[int, str]]] = {}
+    for idx, model_id in indexed:
+        groups.setdefault(_source_fingerprint(model_id), []).append((idx, model_id))
+
+    winners: set[str] = set()
+    dropped_with_idx: list[tuple[int, str]] = []
+    for entries in groups.values():
+        if len(entries) == 1:
+            winners.add(entries[0][1])
+            continue
+        winner = sorted(
+            entries,
+            key=lambda item: (
+                0 if bool(WEATHER_MODELS[item[1]].get("recommended_for_be", False)) else 1,
+                -int(WEATHER_MODELS[item[1]].get("max_days", 0) or 0),
+                tier_order.get(str(WEATHER_MODELS[item[1]].get("tier") or "global"), 9),
+                item[1],
+            ),
+        )[0][1]
+        winners.add(winner)
+        for idx, model_id in entries:
+            if model_id != winner:
+                dropped_with_idx.append((idx, model_id))
+
+    deduped = [model_id for _, model_id in indexed if model_id in winners]
+    dropped = [model_id for _, model_id in sorted(dropped_with_idx, key=lambda item: item[0])]
+    return deduped, dropped
+
+
 def get_model_caps(model_id: str) -> dict[str, Any]:
     caps = MODEL_CAPS.get(model_id)
     if caps is None:
@@ -226,7 +268,8 @@ def auto_select_models_for_location(lat: float | object, lon: float | None = Non
 
     if not lat_valid:
         chosen = _pick_preferred(stable_priority)
-        return chosen or eligible[:1]
+        deduped, _ = dedupe_models_by_source(chosen or eligible[:1])
+        return deduped
 
     in_benelux = 49.0 <= _lat <= 54.0 and 2.0 <= _lon <= 8.0
     in_europe = 35.0 <= _lat <= 72.0 and -15.0 <= _lon <= 35.0
@@ -244,11 +287,14 @@ def auto_select_models_for_location(lat: float | object, lon: float | None = Non
         chosen = _pick_preferred(["ecmwf_ifs", "gfs"])
 
     if chosen:
-        return chosen
+        deduped, _ = dedupe_models_by_source(chosen)
+        return deduped
     if eligible:
-        return eligible[:1]
+        deduped, _ = dedupe_models_by_source(eligible[:1])
+        return deduped
     fallback_any = [m for m in stable_priority if m in WEATHER_MODELS]
-    return fallback_any[:1]
+    deduped, _ = dedupe_models_by_source(fallback_any[:1])
+    return deduped
 
 
 def select_week_ahead_models(*, requested_days: int = 7) -> list[str]:
@@ -262,7 +308,7 @@ def select_week_ahead_models(*, requested_days: int = 7) -> list[str]:
         if int(spec.get("max_days", 0) or 0) >= horizon
     ]
 
-    return sorted(
+    selected = sorted(
         eligible,
         key=lambda model_id: (
             0 if bool(WEATHER_MODELS[model_id].get("recommended_for_be", False)) else 1,
@@ -271,6 +317,8 @@ def select_week_ahead_models(*, requested_days: int = 7) -> list[str]:
             model_id,
         ),
     )
+    deduped, _ = dedupe_models_by_source(selected)
+    return deduped
 
 
 def _nan_safe_hourly_median(matrix: pd.DataFrame) -> pd.Series:
@@ -438,6 +486,7 @@ class EnsembleWeatherResult:
     satellite_nowcast_reason: str | None = None
     pv_tomorrow_low_high_kwh: dict[str, float | int | None] | None = None
     pv_models_used_count_per_hour: pd.Series | None = None
+    deduped_models_dropped: list[str] | None = None
 
 
 def _local_day_window(target_date: dt.date, tz: str) -> tuple[pd.Timestamp, pd.Timestamp]:
@@ -1755,11 +1804,14 @@ def build_ensemble_forecast(
 ) -> EnsembleWeatherResult:
     selected = weather_models[:] if weather_models else DEFAULT_ACCURACY_MODELS[:]
     selected = [m for m in selected if m in WEATHER_MODELS]
+    selected, deduped_models_dropped = dedupe_models_by_source(selected)
     if fast_mode:
         if weather_models:
             selected = selected[:2]
         else:
             selected = [m for m in DEFAULT_ACCURACY_MODELS if m in WEATHER_MODELS][:2]
+        selected, extra_dropped = dedupe_models_by_source(selected)
+        deduped_models_dropped = (deduped_models_dropped or []) + extra_dropped
     if not selected:
         raise RuntimeError("Select at least one weather model.")
 
@@ -2142,4 +2194,5 @@ def build_ensemble_forecast(
         satellite_nowcast_hours=int(satellite_nowcast_hours),
         satellite_nowcast_weight_factor=float(satellite_nowcast_weight_factor) if satellite_nowcast_used else None,
         satellite_nowcast_reason=satellite_nowcast_reason,
+        deduped_models_dropped=deduped_models_dropped,
     )

@@ -2198,7 +2198,53 @@ def validate_pv_outputs(out: "pd.DataFrame") -> None:
         raise ValueError("pv_clipped_kwh cannot be negative.")
 
 
+def _soft_daylight_factor_from_elevation(elev_deg: float) -> float:
+    """Map solar elevation to a soft daylight gating factor in [0, 1]."""
+    elev = float(elev_deg)
+    if elev <= -3.0:
+        return 0.0
+    if elev >= 6.0:
+        return 1.0
+    return (elev + 3.0) / 9.0
+
+
+def compute_solar_elevation_series(index: "pd.DatetimeIndex", loc: Location) -> "pd.Series":
+    if not PVLIB_AVAILABLE:
+        raise RuntimeError("pvlib is required for solar elevation daylight gating")
+    latitude = float(loc.latitude)
+    longitude = float(loc.longitude)
+    solpos = pvlib.solarposition.get_solarposition(index, latitude, longitude, altitude=loc.elevation_m)
+    elev = pd.to_numeric(solpos.get("apparent_elevation"), errors="coerce")
+    return pd.Series(elev.values, index=index, dtype=float)
+
+
+def _apply_soft_daylight_factor_and_twilight_clamp(df: "pd.DataFrame", factor: "pd.Series") -> "pd.DataFrame":
+    out = df.copy()
+    pv_cols = [
+        col for col in out.columns
+        if isinstance(col, str) and col.startswith("pv_") and col.endswith("_kwh")
+    ]
+    if not pv_cols:
+        return out
+
+    aligned_factor = pd.to_numeric(factor.reindex(out.index), errors="coerce")
+    for col in pv_cols:
+        values = pd.to_numeric(out[col], errors="coerce")
+        gated = values * aligned_factor
+        twilight_mask = (aligned_factor < 0.25) & gated.notna() & (gated.abs() < 0.01)
+        gated.loc[twilight_mask] = 0.0
+        out[col] = gated
+    return out
+
+
+def apply_soft_daylight_gating(df: "pd.DataFrame", loc: Location) -> "pd.DataFrame":
+    elev = compute_solar_elevation_series(df.index, loc)
+    factor = elev.apply(_soft_daylight_factor_from_elevation)
+    return _apply_soft_daylight_factor_and_twilight_clamp(df, factor)
+
+
 def apply_daylight_clamp(df: "pd.DataFrame", sunrise: dt.datetime, sunset: dt.datetime) -> "pd.DataFrame":
+    """Backward-compatible hard clamp kept for legacy callers/tests."""
     out = df.copy()
     _, _, daylight_mask = normalize_daylight_window(out.index, sunrise, sunset)
     pv_cols = [
@@ -2344,7 +2390,7 @@ def run_forecast_pipeline(
 
         weather = fetch_weather_for_date(loc, target_date, tz=tz)
         pv = build_pv_forecast(weather.df, loc, tz=tz)
-        pv = apply_daylight_clamp(pv, weather.sunrise, weather.sunset).sort_index()
+        pv = apply_soft_daylight_gating(pv, loc).sort_index()
         pv = add_sun_percent(pv, weather.sunrise, weather.sunset)
         pv = add_load_and_surplus_columns(pv, yesterday_kwh)
 
