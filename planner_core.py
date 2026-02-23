@@ -1015,7 +1015,9 @@ def estimate_soc_at_offpeak_start(
     pv_credit_available: bool,
 ) -> tuple[float, float, str, str, dict]:
     """Estimate SOC at off-peak start with TOD load weighting and optional PV credit."""
-    hours_until = max(0.0, (offpeak_start - now_local).total_seconds() / 3600.0)
+    now_ts = _to_local_ts(now_local)
+    offpeak_ts = _to_local_ts(offpeak_start)
+    hours_until = max(0.0, (offpeak_ts - now_ts).total_seconds() / 3600.0)
     load_kwh_window = estimate_window_consumption_kwh(
         start_local=now_local,
         end_local=offpeak_start.to_pydatetime(),
@@ -1041,8 +1043,8 @@ def estimate_soc_at_offpeak_start(
     else:
         confidence_level = 0
 
-    start_h = pd.Timestamp(now_local).ceil("h")
-    end_h = pd.Timestamp(offpeak_start).floor("h")
+    start_h = _to_local_ts(now_local).ceil("h")
+    end_h = _to_local_ts(offpeak_start).floor("h")
     peak_overlap = False
     if end_h > start_h:
         for ts in pd.date_range(start_h, end_h, freq="h", inclusive="left"):
@@ -1086,14 +1088,26 @@ def _tod_weight_for_hour(hour: int) -> float:
     return 1.0
 
 
+def _to_local_ts(x: object, tz_name: str = TIMEZONE) -> pd.Timestamp:
+    """
+    Convert x (datetime or Timestamp) into a pandas Timestamp in the app timezone,
+    using ZoneInfo to avoid tzinfo-type mismatches (zoneinfo vs dateutil).
+    """
+    tzinfo = ZoneInfo(tz_name)
+    ts = pd.Timestamp(x)
+    if ts.tz is None:
+        return ts.tz_localize(tzinfo, ambiguous="infer", nonexistent="shift_forward")
+    return ts.tz_convert(tzinfo)
+
+
 def estimate_window_consumption_kwh(
     *,
     start_local: dt.datetime,
     end_local: dt.datetime,
     effective_daily_kwh: float,
 ) -> float:
-    start_h = pd.Timestamp(start_local).ceil("h")
-    end_h = pd.Timestamp(end_local).floor("h")
+    start_h = _to_local_ts(start_local).ceil("h")
+    end_h = _to_local_ts(end_local).floor("h")
     if end_h <= start_h:
         return 0.0
 
