@@ -17,7 +17,13 @@ TARGET_DATE = dt.date(2026, 1, 10)
 
 
 def _load_app_resolver():
-    source = Path("app.py").read_text()
+    repo_root = Path(__file__).resolve().parents[1]
+    app_path = repo_root / "app.py"
+    try:
+        source = app_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        # Fallback: still allow parsing even if a stray byte exists
+        source = app_path.read_text(encoding="utf-8", errors="replace")
     module = ast.parse(source)
     fn_node = next(
         node for node in module.body if isinstance(node, ast.FunctionDef) and node.name == "resolve_tomorrow_pv_low_high_kwh"
