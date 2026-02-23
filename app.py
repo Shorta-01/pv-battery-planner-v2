@@ -1545,6 +1545,9 @@ def render_pv_quality_widget(
     s = sv["savings"]
     hourly = sv["hourly"]
     footer = sv["note"]
+    scope = str(sv.get("display_scope") or "cycle")
+    horizon_label = str(sv.get("horizon_label") or "").strip()
+    detail_note = str(sv.get("detail_note") or "").strip()
     if s is not None and base_cost is not None and plan_cost is not None:
         s = float(s)
         pill_color = "#52b788" if s >= 0 else "#d62828"
@@ -1572,18 +1575,34 @@ def render_pv_quality_widget(
                 + "</div>"
             )
 
+        scope_suffix = "(tomorrow)" if scope == "tomorrow" else "(cycle)"
+        headline_label = "Savings" if scope == "tomorrow" else "Cycle savings"
         savings_html = (
             "<div style='margin-top:0.65rem;padding-top:0.55rem;border-top:1px solid rgba(255,255,255,0.10);'>"
             "<div style='display:flex;align-items:center;justify-content:space-between;'>"
             "<div style='font-size:0.72rem;opacity:0.85;text-transform:uppercase;letter-spacing:0.06em;'>"
-            "Savings"
+            f"{headline_label}"
             "</div>"
             f"<div style='font-size:0.95rem;font-weight:800;color:{pill_color};'>{pill}</div>"
             "</div>"
             f"<div style='margin-top:0.22rem;font-size:0.70rem;opacity:0.80;'>"
-            f"No battery: €{float(base_cost):.2f} · Battery plan: €{float(plan_cost):.2f}"
+            f"No battery {scope_suffix}: €{float(base_cost):.2f} · Battery plan {scope_suffix}: €{float(plan_cost):.2f}"
             "</div>"
             + bars_html
+            + (
+                "<div style='margin-top:0.22rem;font-size:0.68rem;opacity:0.75;'>"
+                f"🔁 {horizon_label}"
+                "</div>"
+                if horizon_label
+                else ""
+            )
+            + (
+                "<div style='margin-top:0.12rem;font-size:0.68rem;opacity:0.75;'>"
+                f"⏱️ {detail_note}"
+                "</div>"
+                if detail_note
+                else ""
+            )
             + "<div style='margin-top:0.22rem;font-size:0.68rem;opacity:0.75;'>"
             f"{footer}"
             "</div>"

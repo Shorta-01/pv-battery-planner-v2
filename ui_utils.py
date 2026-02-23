@@ -150,6 +150,10 @@ def resolve_pv_outlook_savings(pv_quality_dict: dict | None) -> dict[str, Any]:
     """Resolve consistent PV OUTLOOK savings display values."""
     data = pv_quality_dict or {}
 
+    cycle_base = _to_float_or_none(data.get("baseline_cost_eur_cycle"))
+    cycle_plan = _to_float_or_none(data.get("plan_cost_eur_cycle"))
+    cycle_savings = _to_float_or_none(data.get("savings_eur_cycle"))
+
     tomorrow_base = _to_float_or_none(data.get("baseline_cost_eur_tomorrow"))
     tomorrow_plan = _to_float_or_none(data.get("plan_cost_eur_tomorrow"))
     tomorrow_savings = _to_float_or_none(data.get("savings_eur_tomorrow"))
@@ -158,15 +162,29 @@ def resolve_pv_outlook_savings(pv_quality_dict: dict | None) -> dict[str, Any]:
     total_plan = _to_float_or_none(data.get("plan_cost_eur_total"))
     total_savings = _to_float_or_none(data.get("savings_eur_total"))
 
-    using_tomorrow = tomorrow_base is not None or tomorrow_plan is not None or tomorrow_savings is not None
+    display_scope = "tomorrow"
+    if cycle_base is not None or cycle_plan is not None or cycle_savings is not None:
+        display_scope = "cycle"
+    elif total_base is not None or total_plan is not None or total_savings is not None:
+        display_scope = "total"
 
-    base_cost = tomorrow_base if using_tomorrow else total_base
-    plan_cost = tomorrow_plan if using_tomorrow else total_plan
+    if display_scope == "cycle":
+        base_cost = cycle_base
+        plan_cost = cycle_plan
+        reported_savings = cycle_savings
+    elif display_scope == "total":
+        base_cost = total_base
+        plan_cost = total_plan
+        reported_savings = total_savings
+    else:
+        base_cost = tomorrow_base
+        plan_cost = tomorrow_plan
+        reported_savings = tomorrow_savings
 
     if base_cost is not None and plan_cost is not None:
         savings = base_cost - plan_cost
     else:
-        savings = tomorrow_savings if using_tomorrow else total_savings
+        savings = reported_savings
 
     hourly_raw = data.get("hourly_savings_eur_tomorrow")
     hourly: list[float] | None = None
@@ -182,16 +200,22 @@ def resolve_pv_outlook_savings(pv_quality_dict: dict | None) -> dict[str, Any]:
         if valid:
             hourly = converted
 
-    note = (
-        "Hourly savings (00–24). Values shown are for tomorrow only."
-        if using_tomorrow
-        else "Savings shown are totals. Hourly bars (if shown) are tomorrow (00–24)."
-    )
+    horizon_label = str(data.get("savings_horizon_label") or "").strip() or None
+    detail_note = "Hourly bars show tomorrow (00–24) detail."
+    if display_scope in {"cycle", "total"} and hourly is not None:
+        note = "Cycle savings shown (off-peak start → next off-peak start). Hourly bars show tomorrow (00–24)."
+    elif display_scope in {"cycle", "total"}:
+        note = "Cycle savings shown (off-peak start → next off-peak start)."
+    else:
+        note = "Values shown are for tomorrow only."
 
     return {
         "base_cost": base_cost,
         "plan_cost": plan_cost,
         "savings": savings,
         "hourly": hourly,
+        "display_scope": display_scope,
+        "horizon_label": horizon_label,
+        "detail_note": detail_note,
         "note": note,
     }
