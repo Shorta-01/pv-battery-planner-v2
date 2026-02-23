@@ -1310,10 +1310,11 @@ class BackendState:
         pv_quality = scoring.compute_pv_quality_score(**quality_kwargs)
 
         today_date = target_date - dt.timedelta(days=1)
+        # Savings cycle must start from estimated off-peak SOC for continuity with run_detailed_plan().
         savings = core.compute_euro_savings_no_battery_vs_plan(
             pv_df=pv,
             flows_df=flows_df,
-            soc_at_22=soc_percent / 100.0,
+            soc_at_22=float(estimated_soc_percent) / 100.0,
             charge_kw=charge_kw,
             cutoff_soc=cutoff_soc,
             today_date=today_date,
