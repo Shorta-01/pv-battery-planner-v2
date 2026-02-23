@@ -1598,7 +1598,7 @@ def render_pv_quality_widget(
                 "⏱️ Hourly bars = tomorrow (00–24)"
                 "</div>"
             )
-            "</div>"
+            + "</div>"
         )
     else:
         savings_html = "<div style='margin-top:0.50rem;font-size:0.70rem;opacity:0.78;'>Run forecast to see € savings.</div>"
