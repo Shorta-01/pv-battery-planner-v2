@@ -4,6 +4,7 @@ import datetime as dt
 import html
 import inspect
 import json
+import logging
 import os
 import time
 import traceback
@@ -3099,6 +3100,7 @@ else:
 
 def normalize_detail_df_for_ui(df: pd.DataFrame, effective_cfg: dict) -> pd.DataFrame:
     out = df.copy()
+    synthetic_pv_split_used = bool(df.attrs.get("synthetic_pv_split_used", False))
     pv_cfg = effective_cfg.get("pv", {}) if isinstance(effective_cfg, dict) else {}
     east_panels = int(pv_cfg.get("array_east_panels", 0) or 0)
     south_panels = int(pv_cfg.get("array_south_panels", 1) or 1)
@@ -3120,8 +3122,10 @@ def normalize_detail_df_for_ui(df: pd.DataFrame, effective_cfg: dict) -> pd.Data
 
     if "pv_east_kwh" not in out.columns:
         out["pv_east_kwh"] = pd.to_numeric(out["pv_total_kwh"], errors="coerce").fillna(0.0) * east_ratio
+        synthetic_pv_split_used = True
     if "pv_south_kwh" not in out.columns:
         out["pv_south_kwh"] = pd.to_numeric(out["pv_total_kwh"], errors="coerce").fillna(0.0) * south_ratio
+        synthetic_pv_split_used = True
 
     out["pv_total_kwh"] = pd.to_numeric(out["pv_total_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
     out["pv_total_unclipped_kwh"] = pd.to_numeric(out["pv_total_unclipped_kwh"], errors="coerce").fillna(0.0).clip(lower=0.0)
@@ -3147,11 +3151,28 @@ def normalize_detail_df_for_ui(df: pd.DataFrame, effective_cfg: dict) -> pd.Data
         load = pd.to_numeric(load_series, errors="coerce").fillna(0.0)
         out["pv_deficit_kwh"] = (load - out["pv_total_kwh"]).clip(lower=0.0)
 
+    out.attrs["synthetic_pv_split_used"] = synthetic_pv_split_used
     return out
 
 
 def make_chart_pv_load(df: pd.DataFrame, soc: pd.Series, cutoff_soc: float, effective_cfg: dict) -> go.Figure:
     working = normalize_detail_df_for_ui(df.copy(), effective_cfg)
+    if len(working.index) != len(soc.index):
+        logging.getLogger(__name__).warning(
+            "PV/load chart index length mismatch (working=%s, soc=%s)",
+            len(working.index),
+            len(soc.index),
+        )
+    elif not working.index.equals(soc.index):
+        logging.getLogger(__name__).warning("PV/load chart index mismatch between working frame and SOC series")
+
+    soc_plot = soc.copy()
+    soc_numeric = pd.to_numeric(soc_plot, errors="coerce")
+    finite = soc_numeric.dropna()
+    if not finite.empty and float(finite.max()) <= 1.0 + 1e-6:
+        soc_numeric = soc_numeric * 100.0
+    soc_plot = soc_numeric.clip(lower=0.0, upper=100.0)
+
     has_range = ("pv_total_low_kwh" in working.columns) and ("pv_total_high_kwh" in working.columns)
     if "load_kwh" not in working.columns:
         working["load_kwh"] = 0.0
@@ -3265,8 +3286,8 @@ def make_chart_pv_load(df: pd.DataFrame, soc: pd.Series, cutoff_soc: float, effe
     )
     fig.add_trace(
         go.Scatter(
-            x=soc.index,
-            y=soc.values,
+            x=soc_plot.index,
+            y=soc_plot.values,
             mode="lines",
             name="Battery SOC",
             line=dict(width=2, dash="dash", color="#c77dff"),
@@ -4387,9 +4408,12 @@ if run_clicked:
                     st.caption("DEBUG Tomorrow PV low/high unavailable (<2 usable models)")
 
             tooltip_heading("PV production vs Load (estimated) (hourly)", CHART_TOOLTIPS["PV production vs Load (estimated) (hourly)"])
-            pv_load_fig = make_chart_pv_load(pv, soc_series, cutoff_soc, effective_cfg)
+            normalized_pv = normalize_detail_df_for_ui(pv, effective_cfg)
+            pv_load_fig = make_chart_pv_load(normalized_pv, soc_series, cutoff_soc, effective_cfg)
             add_tariff_and_sun_markers(pv_load_fig, tomorrow, sunrise, sunset)
             st.plotly_chart(pv_load_fig, use_container_width=True)
+            if normalized_pv.attrs.get("synthetic_pv_split_used", False):
+                st.caption("East/South split estimated by panel ratio (fallback visualization). Total PV remains unchanged.")
 
             chart_left, chart_right = st.columns(2, gap="large")
             with chart_left:
