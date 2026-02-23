@@ -180,7 +180,15 @@ def init_db(db_path: str) -> None:
                 soc_mae_pct REAL,
                 import_error_kwh REAL,
                 export_error_kwh REAL,
-                created_at_utc TEXT NOT NULL
+                created_at_utc TEXT NOT NULL,
+                pv_rmse_kwh REAL,
+                pv_bias_kwh REAL,
+                pv_daily_forecast_kwh REAL,
+                pv_daily_actual_kwh REAL,
+                pv_daily_error_kwh REAL,
+                pv_hourly_points INTEGER,
+                source TEXT,
+                model_scores_json TEXT
             );
                         CREATE TABLE IF NOT EXISTS backtest_daily_scores (
                 score_date TEXT NOT NULL,
@@ -1566,6 +1574,22 @@ def fetch_backtest_daily_scores(
             (start_date, end_date, source),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def fetch_daily_score_for_date(db_path: str, score_date: str, source: str = "manual_csv") -> dict[str, Any] | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM daily_scores
+            WHERE score_date = ? AND source = ?
+            ORDER BY created_at_utc DESC
+            LIMIT 1
+            """,
+            (score_date, source),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
 def fetch_recent_model_mae_scores(
     db_path: str,
     *,

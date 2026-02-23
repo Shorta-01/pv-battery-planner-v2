@@ -34,6 +34,7 @@ from db_sqlite import (
     delete_error_event,
     fetch_error_event_by_id,
     fetch_error_events,
+    fetch_daily_score_for_date,
     fetch_effective_daily_kwh,
     fetch_history_all_runs,
     fetch_history_latest_per_day,
@@ -1499,6 +1500,7 @@ class BackendState:
                 "failed_models": getattr(ensemble_tomorrow, "failed_models", []),
                 "failed_model_reasons": getattr(ensemble_tomorrow, "failed_model_reasons", {}),
                 "model_live_failed_used_cached": getattr(ensemble_tomorrow, "model_live_failed_used_cached", {}),
+                "deduped_models_dropped": getattr(ensemble_tomorrow, "deduped_models_dropped", None),
                 "fast_mode": bool(fast_mode),
                 "tomorrow_weather_code": int(tomorrow_weather_code) if tomorrow_weather_code is not None else None,
                 "tomorrow_weather_code_source_model_id": tomorrow_source_model_id,
@@ -1911,6 +1913,15 @@ def score_day(date: str, source: str = "manual_csv", authorization: str | None =
     }
 
 
+
+
+@app.get("/v1/score/day")
+def get_score_day(date: str, source: str = "manual_csv", authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    row = fetch_daily_score_for_date(str(SQLITE_PATH), score_date=date, source=source)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Daily score not found")
+    return row
 
 
 @app.get("/v1/evse/status")

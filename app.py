@@ -4247,6 +4247,27 @@ if run_clicked:
                     else:
                         st.info("No data available.")
 
+                score_date = str(result.get("target_date") or tomorrow.isoformat())
+                with st.expander("Advanced: backtest score", expanded=False):
+                    try:
+                        score_payload = api_get(f"/v1/score/day?date={score_date}&source=manual_csv")
+                        st.caption(f"Date: {score_payload.get('score_date', score_date)} · Source: {score_payload.get('source', 'manual_csv')}")
+                        m1, m2, m3 = st.columns(3)
+                        m1.metric("PV MAE (kWh)", f"{float(score_payload.get('pv_mae_kwh') or 0.0):.3f}")
+                        m2.metric("PV RMSE (kWh)", f"{float(score_payload.get('pv_rmse_kwh') or 0.0):.3f}")
+                        m3.metric("PV Bias (kWh)", f"{float(score_payload.get('pv_bias_kwh') or 0.0):.3f}")
+                        d1, d2 = st.columns(2)
+                        d1.metric("PV daily forecast (kWh)", f"{float(score_payload.get('pv_daily_forecast_kwh') or 0.0):.3f}")
+                        d2.metric("PV daily actual (kWh)", f"{float(score_payload.get('pv_daily_actual_kwh') or 0.0):.3f}")
+                    except requests.HTTPError as exc:
+                        status = exc.response.status_code if exc.response is not None else None
+                        if status == 404:
+                            st.info("No score yet (ingest actuals + compute score).")
+                        else:
+                            st.warning(f"Could not fetch score: HTTP {status}")
+                    except Exception as exc:
+                        st.warning(f"Could not fetch score: {exc}")
+
                 combined = pv.join(flows_df[["soc_end_pct", "grid_import_kwh", "grid_export_kwh", "curtailed_kwh"]], how="left")
                 if "pv_curtailed_kwh" not in combined.columns and "curtailed_kwh" in combined.columns:
                     combined["pv_curtailed_kwh"] = pd.to_numeric(combined["curtailed_kwh"], errors="coerce").fillna(0.0)
