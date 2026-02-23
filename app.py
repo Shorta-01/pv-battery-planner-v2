@@ -1544,10 +1544,7 @@ def render_pv_quality_widget(
     plan_cost = sv["plan_cost"]
     s = sv["savings"]
     hourly = sv["hourly"]
-    footer = sv["note"]
     scope = str(sv.get("display_scope") or "cycle")
-    horizon_label = str(sv.get("horizon_label") or "").strip()
-    detail_note = str(sv.get("detail_note") or "").strip()
     if s is not None and base_cost is not None and plan_cost is not None:
         s = float(s)
         pill_color = "#52b788" if s >= 0 else "#d62828"
@@ -1591,22 +1588,16 @@ def render_pv_quality_widget(
             + bars_html
             + (
                 "<div style='margin-top:0.22rem;font-size:0.68rem;opacity:0.75;'>"
-                f"🔁 {horizon_label}"
+                "🔁 Cycle = off-peak start → next off-peak start"
                 "</div>"
-                if horizon_label
+                if scope != "tomorrow"
                 else ""
             )
             + (
                 "<div style='margin-top:0.12rem;font-size:0.68rem;opacity:0.75;'>"
-                f"⏱️ {detail_note}"
+                "⏱️ Hourly bars = tomorrow (00–24)"
                 "</div>"
-                if detail_note
-                else "<div style='margin-top:0.12rem;font-size:0.68rem;opacity:0.75;'>⏱️ Hourly bars show tomorrow (00–24) detail.</div>"
             )
-            + "<div style='margin-top:0.12rem;font-size:0.68rem;opacity:0.75;'>Cycle savings use full off-peak cycle.</div>"
-            + "<div style='margin-top:0.22rem;font-size:0.68rem;opacity:0.75;'>"
-            f"{footer}"
-            "</div>"
             "</div>"
         )
     else:

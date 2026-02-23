@@ -193,7 +193,7 @@ DEFAULT_CONFIG = {
         "offpeak_grid_price_eur_per_kwh": OFFPEAK_GRID_PRICE_EUR_PER_KWH,
         "injection_grid_price_eur_per_kwh": INJECTION_GRID_PRICE_EUR_PER_KWH,
         "optimization_mode": "window_only",
-        "night_load_from_battery": True,
+        "night_load_from_battery": False,
         "offpeak_windows_by_dow": [
             [["22:00", "07:00"]],  # Monday
             [["22:00", "07:00"]],  # Tuesday
@@ -1143,6 +1143,16 @@ def import_price_eur_per_kwh(ts: pd.Timestamp, tariff_cfg: dict) -> float:
     return offpeak if in_any_window(ts.time(), windows) else peak
 
 
+def should_use_battery_for_offpeak_load(tariff_cfg: Optional[dict]) -> bool:
+    cfg = tariff_cfg or {}
+    mode = str(cfg.get("optimization_mode", "window_only") or "window_only").strip().lower()
+    explicit = bool(cfg.get("night_load_from_battery", False))
+    # In window_only mode, preserve battery for expensive hours / peak bridging.
+    if mode == "window_only":
+        return False
+    return explicit
+
+
 def fmt_windows(windows: List[Tuple[str, str]]) -> str:
     if not windows:
         return "none"
@@ -1462,6 +1472,10 @@ def compute_euro_savings_no_battery_vs_plan(
             f"{cycle_start.strftime('%H:%M')} → {cycle_end.strftime('%H:%M')}"
         ),
         "savings_hourly_detail_scope": "tomorrow_00_24",
+        "savings_cycle_start_soc_percent_used": float(soc_at_22 * 100.0),
+        "savings_night_load_from_battery_used": bool(should_use_battery_for_offpeak_load(tariff_cfg)),
+        "savings_cycle_window_start_local": cycle_start.isoformat(),
+        "savings_cycle_window_end_local": cycle_end.isoformat(),
     }
 
 
@@ -2939,7 +2953,7 @@ def simulate_night_charging_series(
     min_energy = MIN_SOC * BATTERY_KWH
     max_energy = MAX_CUTOFF_SOC * BATTERY_KWH
     charge_cutoff_energy = min(MAX_CUTOFF_SOC, max(MIN_SOC, cutoff_soc)) * BATTERY_KWH
-    night_load_from_battery = bool(cfg.get("night_load_from_battery", True))
+    night_load_from_battery = should_use_battery_for_offpeak_load(cfg)
 
     rows = []
     for ts in idx:
@@ -3063,7 +3077,10 @@ def simulate_full_day_soc(
             grid_export = min(pv_after_batt, export_limit)
             curtailed = max(0.0, pv_after_batt - grid_export)
 
-        if remaining_load > 0:
+        offpeak = in_any_window(ts.time(), get_offpeak_windows_for_date(ts.date(), cfg))
+        allow_batt_for_load = (not offpeak) or should_use_battery_for_offpeak_load(cfg)
+
+        if allow_batt_for_load and remaining_load > 0:
             available = max(0.0, energy - min_energy)
             discharge_power_limited = BATTERY_MAX_DISCHARGE_KW * step_h
             needed_from_batt = remaining_load / BATTERY_DISCHARGE_EFF if BATTERY_DISCHARGE_EFF > 0 else remaining_load
@@ -3073,7 +3090,6 @@ def simulate_full_day_soc(
             delivered = discharge * BATTERY_DISCHARGE_EFF
             remaining_load = max(0.0, remaining_load - delivered)
 
-        offpeak = in_any_window(ts.time(), get_offpeak_windows_for_date(ts.date(), cfg))
         if offpeak and energy < charge_cutoff_energy - 1e-9:
             charge_grid_kwh = min(charge_kw * step_h, BATTERY_MAX_CHARGE_KW * step_h)
             room = max(0.0, min(max_energy, charge_cutoff_energy) - energy)
