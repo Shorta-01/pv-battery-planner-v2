@@ -1493,6 +1493,8 @@ def render_pv_quality_widget(
     tomorrow_weather_code: int | float | str | None = None,
     tomorrow_source_label: str | None = None,
     tomorrow_source_days: int | float | str | None = None,
+    forecast_total_load_kwh: float | None = None,
+    est_export_curtail_kwh: float | None = None,
 ) -> None:
     _ = pv_df
 
@@ -1630,6 +1632,33 @@ def render_pv_quality_widget(
             "</div>"
         )
 
+    micro_metrics_parts: list[str] = []
+    if forecast_total_load_kwh is not None and not pd.isna(forecast_total_load_kwh):
+        micro_metrics_parts.append(
+            "<span title='Forecast total load (kWh) for tomorrow (00–24).' "
+            "style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
+            "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
+            "border-radius:999px;font-size:0.74rem;font-weight:650;'>"
+            f"<span>🧾</span><span>{float(forecast_total_load_kwh):.1f}</span>"
+            "</span>"
+        )
+    if est_export_curtail_kwh is not None and not pd.isna(est_export_curtail_kwh) and float(est_export_curtail_kwh) > 0.1:
+        micro_metrics_parts.append(
+            "<span title='Estimated export/curtailment (kWh) for tomorrow.' "
+            "style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
+            "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
+            "border-radius:999px;font-size:0.74rem;font-weight:650;'>"
+            f"<span>📤</span><span>{float(est_export_curtail_kwh):.1f}</span>"
+            "</span>"
+        )
+    micro_metrics_html = (
+        "<div style='margin-top:0.45rem;display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;'>"
+        + "".join(micro_metrics_parts)
+        + "</div>"
+        if micro_metrics_parts
+        else ""
+    )
+
     container.markdown(
         (
             "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.65rem 0.75rem;"
@@ -1656,6 +1685,7 @@ def render_pv_quality_widget(
             "Tariff timeline (00–24)"
             "</div>"
             + summary_html
+            + micro_metrics_html
             + savings_html
             + (
                 f"<div style='margin-top:0.30rem;font-size:0.68rem;opacity:0.78;'>"
@@ -1681,6 +1711,7 @@ def render_offpeak_plan_summary(
     hard_limit_kw: float,
     min_soc_pct: float,
     max_cutoff_soc_pct: float,
+    est_grid_import_expensive_kwh: float | None = None,
     detail_df: pd.DataFrame | None = None,
     soc_series: pd.Series | None = None,
 ) -> None:
@@ -1826,6 +1857,19 @@ def render_offpeak_plan_summary(
         marker2_tooltip=f"Target cutoff SOC: {cutoff_soc_label}",
     )
 
+    peak_import_micro_html = ""
+    if est_grid_import_expensive_kwh is not None and not pd.isna(est_grid_import_expensive_kwh):
+        peak_import_micro_html = (
+            "<div style='margin-top:0.28rem;display:flex;justify-content:flex-end;'>"
+            "<span title='Estimated grid import during expensive tariff hours (kWh). Lower is better.' "
+            "style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
+            "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
+            "border-radius:999px;font-size:0.74rem;font-weight:650;'>"
+            f"<span style='color:#ef4444;'>⚡</span><span>{float(est_grid_import_expensive_kwh):.1f}</span>"
+            "</span>"
+            "</div>"
+        )
+
     container.markdown(
         (
             "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.65rem 0.75rem;"
@@ -1853,6 +1897,7 @@ def render_offpeak_plan_summary(
             f"<div style='display:inline-flex;align-items:center;gap:0.28rem;font-size:0.95rem;font-weight:780;'><span title='Set as AC charge cutoff SOC in FusionSolar.'>🎯</span>{_esc_attr(cutoff_soc_label)}</div>"
             "</div>"
             "</div>"
+            f"{peak_import_micro_html}"
             "<div style='margin-top:0.30rem;display:flex;flex-direction:column;gap:0.18rem;'>"
             f"{gauge_ac_html}"
             f"{gauge_cutoff_html}"
@@ -3487,7 +3532,7 @@ with left:
                 format="%.4f",
                 value=cfg_offpeak_price,
                 key="tariff_offpeak_price",
-                help=get_help("peak_price"),
+                help=get_help("offpeak_price"),
             )
         with c3:
             cfg_injection_price_input = st.number_input(
@@ -4268,6 +4313,16 @@ if run_clicked:
                 tomorrow_p50_kwh=(pv_quality.get("pv_total_kwh") if isinstance(pv_quality, dict) else None),
             )
 
+            load_total_value = None
+            if "load_kwh" in pv.columns:
+                load_total_value = float(pd.to_numeric(pv["load_kwh"], errors="coerce").sum(min_count=1))
+            elif metrics.get("cons_forecast_kwh") is not None:
+                load_total_value = float(_safe_float(metrics.get("cons_forecast_kwh"), 0.0))
+
+            curtailed_total = float(pd.to_numeric(flows_df.get("curtailed_kwh", 0.0), errors="coerce").fillna(0.0).sum()) if flows_df is not None and not flows_df.empty else 0.0
+            export_total = float(pd.to_numeric(flows_df.get("grid_export_kwh", 0.0), errors="coerce").fillna(0.0).sum()) if flows_df is not None and not flows_df.empty else float(grid_export or 0.0)
+            export_curtail_total = export_total + curtailed_total
+
             weather_primary_model_id = result.get("weather_primary_model_id")
             weather_ensemble_table_payload = result.get("weather_ensemble_table")
             weather_by_model_payload = result.get("weather_by_model")
@@ -4299,6 +4354,7 @@ if run_clicked:
                     hard_limit_kw=float(effective_cfg["battery"].get("max_ac_charge_kw_hard_limit", core.MAX_AC_CHARGE_KW_HARD_LIMIT)),
                     min_soc_pct=float(effective_cfg["battery"].get("min_soc_percent", 0.0)),
                     max_cutoff_soc_pct=float(effective_cfg["battery"].get("max_cutoff_soc_percent", 100.0)),
+                    est_grid_import_expensive_kwh=grid_import,
                     detail_df=detail_df,
                     soc_series=soc_series,
                 )
@@ -4313,6 +4369,8 @@ if run_clicked:
                     tomorrow_weather_code=tomorrow_weather_code,
                     tomorrow_source_label=tomorrow_source_label,
                     tomorrow_source_days=tomorrow_source_days,
+                    forecast_total_load_kwh=load_total_value,
+                    est_export_curtail_kwh=export_curtail_total,
                     effective_cfg=effective_cfg,
                 )
 
@@ -4322,46 +4380,12 @@ if run_clicked:
             if charge_note.startswith("Warning"):
                 st.warning(charge_note)
 
-            st.markdown("### Forecast summary")
-            c1, c2, c3, c4 = st.columns(4)
-
-            pv_p50 = resolve_forecast_summary_pv_kwh(
-                pv_quality,
-                pv_week_ahead,
-                pv,
-                result,
-                metrics,
-                weather_ensemble,
-            )
-            metric_with_help(c1, "Forecast total PV (kWh)", f"{pv_p50:.2f}" if pv_p50 is not None else "—")
             if APP_DEBUG:
                 if pv_low is not None and pv_high is not None:
                     st.caption(f"DEBUG Tomorrow PV low/high from usable models: {pv_low:.2f}/{pv_high:.2f} kWh")
                 else:
                     st.caption("DEBUG Tomorrow PV low/high unavailable (<2 usable models)")
-            load_total_value = None
-            load_total_source = "missing"
-            if "load_kwh" in pv.columns:
-                load_total_value = float(pd.to_numeric(pv["load_kwh"], errors="coerce").sum(min_count=1))
-                load_total_source = "pv.load_kwh"
-            elif metrics.get("cons_forecast_kwh") is not None:
-                load_total_value = float(_safe_float(metrics.get("cons_forecast_kwh"), 0.0))
-                load_total_source = "metrics.cons_forecast_kwh"
 
-            metric_with_help(
-                c2,
-                "Forecast total load (kWh)",
-                f"{load_total_value:.2f}" if load_total_value is not None and not pd.isna(load_total_value) else "—",
-            )
-            if APP_DEBUG and load_total_source != "pv.load_kwh":
-                c2.caption(
-                    "DEBUG Forecast total load fallback: "
-                    f"source={load_total_source}; pv_has_load_kwh={'load_kwh' in pv.columns}"
-                )
-            metric_with_help(c3, "Estimated grid import (expensive h)", f"{grid_import:.2f}")
-            curtailed_total = float(pd.to_numeric(flows_df.get("curtailed_kwh", 0.0), errors="coerce").fillna(0.0).sum()) if flows_df is not None and not flows_df.empty else 0.0
-            export_total = float(pd.to_numeric(flows_df.get("grid_export_kwh", 0.0), errors="coerce").fillna(0.0).sum()) if flows_df is not None and not flows_df.empty else float(grid_export or 0.0)
-            metric_with_help(c4, "Estimated export/curtailment (kWh)", f"{(export_total + curtailed_total):.2f}")
             tooltip_heading("PV production vs Load (estimated) (hourly)", CHART_TOOLTIPS["PV production vs Load (estimated) (hourly)"])
             pv_load_fig = make_chart_pv_load(pv, soc_series, cutoff_soc, effective_cfg)
             add_tariff_and_sun_markers(pv_load_fig, tomorrow, sunrise, sunset)
