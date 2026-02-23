@@ -22,6 +22,11 @@ import planner_core as core
 from config_accessors import get_inverter_ac_kw_limit
 from error_logging import classify_exception, format_exception_body
 from tariff_time import compute_offpeak_segments, make_summary_lines, parse_hhmm
+from ui_utils import (
+    resolve_pv_outlook_savings,
+    weather_code_to_icon as ui_weather_code_to_icon,
+    weather_code_to_label as ui_weather_code_to_label,
+)
 from weather_ensemble import auto_select_models_for_location, should_use_satellite_nowcast_auto
 
 PLOTLY_DARK = "plotly_dark"
@@ -993,113 +998,11 @@ def get_preset_columns(columns: tuple[str, ...], preset: str, table_kind: str) -
 
 
 def weather_code_to_icon(weather_code: int | float | str | None) -> str:
-    """
-    Map Open-Meteo/WMO weather codes to clear, modern emojis.
-    Accepts int codes or string labels; returns an emoji.
-    """
-    if weather_code is None:
-        return "🌥️"
-
-    # Support string labels (defensive)
-    if isinstance(weather_code, str):
-        raw = weather_code.strip()
-        if raw.isdigit() or (raw.startswith('-') and raw[1:].isdigit()):
-            try:
-                return weather_code_to_icon(int(raw))
-            except Exception:
-                pass
-        key = raw.lower()
-        label_map = {
-            "clear": "☀️",
-            "sunny": "☀️",
-            "mainly_clear": "🌤️",
-            "partly_cloudy": "⛅",
-            "cloudy": "☁️",
-            "overcast": "☁️",
-            "fog": "🌫️",
-            "mist": "🌫️",
-            "drizzle": "🌦️",
-            "rain": "🌧️",
-            "showers": "🌦️",
-            "rain_showers": "🌦️",
-            "snow": "❄️",
-            "snowfall": "❄️",
-            "snow_showers": "🌨️",
-            "sleet": "🌨️",
-            "thunderstorm": "⛈️",
-        }
-        return label_map.get(key, "🌥️")
-
-    # Numeric WMO mapping
-    try:
-        code = int(weather_code)
-    except Exception:
-        return "🌥️"
-
-    if code == 0:
-        return "☀️"      # Clear sky
-    if code == 1:
-        return "🌤️"     # Mainly clear
-    if code == 2:
-        return "⛅"      # Partly cloudy
-    if code == 3:
-        return "☁️"      # Overcast
-
-    if code in (45, 48):
-        return "🌫️"     # Fog / depositing rime fog
-
-    if 51 <= code <= 57:
-        return "🌦️"     # Drizzle / freezing drizzle (light→dense)
-
-    if 61 <= code <= 67:
-        return "🌧️"     # Rain / freezing rain (light→heavy)
-
-    if 71 <= code <= 77:
-        return "❄️"     # Snow fall / snow grains
-
-    if 80 <= code <= 82:
-        return "🌦️"     # Rain showers (slight/moderate/violent)
-
-    if code in (85, 86):
-        return "🌨️"     # Snow showers
-
-    if code in (95, 96, 99):
-        return "⛈️"     # Thunderstorm (slight/heavy w hail)
-
-    return "🌥️"
+    return ui_weather_code_to_icon(weather_code)
 
 
 def weather_code_to_label(weather_code):
-    if weather_code is None:
-        return "Unknown"
-    try:
-        code = int(weather_code)
-    except Exception:
-        return str(weather_code)
-
-    if code == 0:
-        return "Clear sky"
-    if code == 1:
-        return "Mainly clear"
-    if code == 2:
-        return "Partly cloudy"
-    if code == 3:
-        return "Overcast"
-    if code in (45, 48):
-        return "Fog"
-    if 51 <= code <= 57:
-        return "Drizzle"
-    if 61 <= code <= 67:
-        return "Rain"
-    if 71 <= code <= 77:
-        return "Snow"
-    if 80 <= code <= 82:
-        return "Rain showers"
-    if code in (85, 86):
-        return "Snow showers"
-    if code in (95, 96, 99):
-        return "Thunderstorm"
-    return "Unknown"
+    return ui_weather_code_to_label(weather_code)
 
 
 def render_pv_week_ahead_widget(items: list[dict]) -> None:
@@ -1474,26 +1377,37 @@ def render_pv_quality_widget(
     summary_line = offpeak_summary if not peak_summary else f"{offpeak_summary} - {peak_summary}"
     summary_html = f"<div style='margin-top:0.30rem;font-size:0.70rem;opacity:0.92;'>{summary_line}</div>"
 
-    savings_total = pv_quality_dict.get("savings_eur_total")
-    hourly = pv_quality_dict.get("hourly_savings_eur_tomorrow")
-    base_cost = pv_quality_dict.get("baseline_cost_eur_total")
-    plan_cost = pv_quality_dict.get("plan_cost_eur_total")
-    if savings_total is not None and isinstance(hourly, list) and len(hourly) == 24 and base_cost is not None and plan_cost is not None:
-        s = float(savings_total)
+    sv = resolve_pv_outlook_savings(pv_quality_dict)
+    base_cost = sv["base_cost"]
+    plan_cost = sv["plan_cost"]
+    s = sv["savings"]
+    hourly = sv["hourly"]
+    footer = sv["note"]
+    if s is not None and base_cost is not None and plan_cost is not None:
+        s = float(s)
         pill_color = "#52b788" if s >= 0 else "#d62828"
         sign = "+" if s >= 0 else "−"
         pill = f"{sign}€{abs(s):.2f}"
-        max_abs = max(0.01, max(abs(float(x)) for x in hourly))
-        bars: list[str] = []
-        for i, val in enumerate(hourly):
-            v = float(val)
-            h_pct = (abs(v) / max_abs) * 100.0
-            col = "rgba(60,220,150,0.95)" if v >= 0 else "rgba(214,40,40,0.95)"
-            hh = f"{i:02d}:00"
-            tip = f"{hh}  {('+' if v >= 0 else '−')}€{abs(v):.2f}"
-            bars.append(
-                f"<div title='{tip}' style='flex:1;height:{h_pct:.1f}%;"
-                f"background:{col};border-radius:2px;'></div>"
+        bars_html = ""
+        if isinstance(hourly, list) and len(hourly) == 24:
+            max_abs = max(0.01, max(abs(float(x)) for x in hourly))
+            bars: list[str] = []
+            for i, val in enumerate(hourly):
+                v = float(val)
+                h_pct = (abs(v) / max_abs) * 100.0
+                col = "rgba(60,220,150,0.95)" if v >= 0 else "rgba(214,40,40,0.95)"
+                hh = f"{i:02d}:00"
+                tip = f"{hh}  {('+' if v >= 0 else '−')}€{abs(v):.2f}"
+                bars.append(
+                    f"<div title='{tip}' style='flex:1;height:{h_pct:.1f}%;"
+                    f"background:{col};border-radius:2px;'></div>"
+                )
+            bars_html = (
+                "<div style='margin-top:0.38rem;height:18px;display:flex;gap:1px;"
+                "align-items:flex-end;background:rgba(255,255,255,0.06);"
+                "border:1px solid rgba(255,255,255,0.10);border-radius:8px;padding:4px;'>"
+                + "".join(bars)
+                + "</div>"
             )
 
         savings_html = (
@@ -1507,13 +1421,9 @@ def render_pv_quality_widget(
             f"<div style='margin-top:0.22rem;font-size:0.70rem;opacity:0.80;'>"
             f"No battery: €{float(base_cost):.2f} · Battery plan: €{float(plan_cost):.2f}"
             "</div>"
-            "<div style='margin-top:0.38rem;height:18px;display:flex;gap:1px;"
-            "align-items:flex-end;background:rgba(255,255,255,0.06);"
-            "border:1px solid rgba(255,255,255,0.10);border-radius:8px;padding:4px;'>"
-            + "".join(bars)
-            + "</div>"
-            "<div style='margin-top:0.22rem;font-size:0.68rem;opacity:0.75;'>"
-            "Hourly savings (00–24). Total includes tonight 22–24 charging."
+            + bars_html
+            + "<div style='margin-top:0.22rem;font-size:0.68rem;opacity:0.75;'>"
+            f"{footer}"
             "</div>"
             "</div>"
         )
