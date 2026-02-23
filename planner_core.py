@@ -1348,14 +1348,7 @@ def compute_euro_savings_no_battery_vs_plan(
     tariff_cfg: dict,
 ) -> dict:
     """
-    Returns:
-      - baseline_cost_eur_total (includes configured pre-tomorrow off-peak charge session + tomorrow 00–24)
-      - plan_cost_eur_total     (includes configured pre-tomorrow off-peak charge session + tomorrow 00–24)
-      - savings_eur_total       (= baseline − plan)
-      - baseline_cost_eur_tomorrow (tomorrow 00–24 only)
-      - plan_cost_eur_tomorrow     (tomorrow 00–24 only)
-      - savings_eur_tomorrow       (tomorrow 00–24 only)
-      - hourly_savings_eur_tomorrow: list[24] aligned to 00:00..23:00
+    Returns cycle totals (off-peak start -> next off-peak start), plus tomorrow detail.
     """
     inj = float(tariff_cfg.get("injection_grid_price_eur_per_kwh", 0.0))
 
@@ -1364,39 +1357,31 @@ def compute_euro_savings_no_battery_vs_plan(
 
     idx_tomorrow = pd.date_range(tomorrow_start, tomorrow_end, freq="h", inclusive="left", tz=TIMEZONE)
     window_start, window_end = compute_charging_window_for_target_date(tomorrow_date, tariff_cfg)
-    charge_session_idx = get_charge_session_index_from_window(window_start, window_end)
-    idx_tonight = charge_session_idx[charge_session_idx < tomorrow_start]
+    next_window_start, _ = compute_charging_window_for_target_date(tomorrow_date + dt.timedelta(days=1), tariff_cfg)
+    cycle_start = window_start
+    cycle_end = next_window_start
+    if cycle_end <= cycle_start:
+        cycle_end = cycle_start + dt.timedelta(hours=24)
 
-    dt_h_tomorrow = timestep_hours(idx_tomorrow)
-    dt_h_tonight = timestep_hours(idx_tonight)
+    idx_cycle = pd.date_range(cycle_start, cycle_end, freq="h", inclusive="left", tz=TIMEZONE)
 
-    pv_tomorrow = pv_df["pv_total_kwh"].reindex(idx_tomorrow).fillna(0.0).astype(float)
-    load_tomorrow = pd.Series(
-        [load_kwh_at(ts, total_consumption_kwh, float(dt_h_tomorrow.loc[ts])) for ts in idx_tomorrow],
-        index=idx_tomorrow,
+    dt_h_cycle = timestep_hours(idx_cycle)
+    pv_cycle = pv_df["pv_total_kwh"].reindex(idx_cycle).fillna(0.0).astype(float)
+    load_cycle = pd.Series(
+        [load_kwh_at(ts, total_consumption_kwh, float(dt_h_cycle.loc[ts])) for ts in idx_cycle],
+        index=idx_cycle,
         dtype=float,
     )
-    load_tonight = pd.Series(
-        [load_kwh_at(ts, total_consumption_kwh, float(dt_h_tonight.loc[ts])) for ts in idx_tonight],
-        index=idx_tonight,
-        dtype=float,
-    )
+    base_import_cycle = (load_cycle - pv_cycle).clip(lower=0.0)
+    base_export_cycle = (pv_cycle - load_cycle).clip(lower=0.0)
+    base_price_cycle = pd.Series([import_price_eur_per_kwh(ts, tariff_cfg) for ts in idx_cycle], index=idx_cycle)
+    base_cost_cycle = base_import_cycle * base_price_cycle - base_export_cycle * inj
 
-    base_import_tom = (load_tomorrow - pv_tomorrow).clip(lower=0.0)
-    base_export_tom = (pv_tomorrow - load_tomorrow).clip(lower=0.0)
-    base_price_tom = pd.Series([import_price_eur_per_kwh(ts, tariff_cfg) for ts in idx_tomorrow], index=idx_tomorrow)
-    base_cost_tom = base_import_tom * base_price_tom - base_export_tom * inj
+    plan_import_cycle = pd.Series(0.0, index=idx_cycle, dtype=float)
+    plan_export_cycle = pd.Series(0.0, index=idx_cycle, dtype=float)
 
-    plan_import_raw = flows_df["grid_import_kwh"].reindex(idx_tomorrow).fillna(0.0).astype(float)
-    plan_export_raw = flows_df["grid_export_kwh"].reindex(idx_tomorrow).fillna(0.0).astype(float)
-    offpeak_tomorrow_mask = get_offpeak_mask(idx_tomorrow, tariff_cfg)
-
-    plan_import_tom = plan_import_raw.copy()
-    plan_export_tom = plan_export_raw.copy()
-    plan_import_tom[offpeak_tomorrow_mask] = base_import_tom[offpeak_tomorrow_mask] + plan_import_raw[offpeak_tomorrow_mask]
-    plan_export_tom[offpeak_tomorrow_mask] = base_export_tom[offpeak_tomorrow_mask]
-
-    plan_cost_tom = plan_import_tom * base_price_tom - plan_export_tom * inj
+    idx_pre = idx_cycle[idx_cycle < tomorrow_start]
+    idx_post = idx_cycle[idx_cycle >= tomorrow_start]
 
     night_df = simulate_night_charging_series(
         soc_at_22,
@@ -1407,26 +1392,61 @@ def compute_euro_savings_no_battery_vs_plan(
         total_consumption_kwh=total_consumption_kwh,
         tariff_cfg=tariff_cfg,
     )
-    plan_import_ton = night_df["grid_import_kwh"].reindex(idx_tonight).fillna(0.0).astype(float)
+    if len(idx_pre) > 0:
+        plan_import_cycle.loc[idx_pre] = night_df["grid_import_kwh"].reindex(idx_pre).fillna(0.0).astype(float)
+        if "grid_export_kwh" in night_df.columns:
+            plan_export_cycle.loc[idx_pre] = night_df["grid_export_kwh"].reindex(idx_pre).fillna(0.0).astype(float)
 
-    base_price_ton = pd.Series([import_price_eur_per_kwh(ts, tariff_cfg) for ts in idx_tonight], index=idx_tonight)
-    base_cost_ton = load_tonight * base_price_ton
-    plan_cost_ton = plan_import_ton * base_price_ton
+    if len(idx_post) > 0:
+        plan_import_cycle.loc[idx_post] = flows_df["grid_import_kwh"].reindex(idx_post).fillna(0.0).astype(float)
+        plan_export_cycle.loc[idx_post] = flows_df["grid_export_kwh"].reindex(idx_post).fillna(0.0).astype(float)
 
-    baseline_total = float(base_cost_ton.sum() + base_cost_tom.sum())
-    plan_total = float(plan_cost_ton.sum() + plan_cost_tom.sum())
-    baseline_tom = float(base_cost_tom.sum())
-    plan_tom = float(plan_cost_tom.sum())
+    plan_cost_cycle = plan_import_cycle * base_price_cycle - plan_export_cycle * inj
+
+    base_cost_tom = base_cost_cycle.reindex(idx_tomorrow).fillna(0.0)
+    plan_cost_tom = plan_cost_cycle.reindex(idx_tomorrow).fillna(0.0)
     hourly_savings = (base_cost_tom - plan_cost_tom).reindex(idx_tomorrow).fillna(0.0)
 
+    baseline_cycle = float(base_cost_cycle.sum())
+    plan_cycle = float(plan_cost_cycle.sum())
+    baseline_tom = float(base_cost_tom.sum())
+    plan_tom = float(plan_cost_tom.sum())
+    savings_cycle = baseline_cycle - plan_cycle
+
+    hourly_savings_list = [float(hourly_savings.loc[ts]) for ts in idx_tomorrow]
+    if len(hourly_savings_list) != 24:
+        hourly_savings_list = (hourly_savings_list + [0.0] * 24)[:24]
+
+    def _safe_numeric(value: float) -> float:
+        if isinstance(value, (int, float, np.floating)) and np.isfinite(value):
+            return float(value)
+        return 0.0
+
+    baseline_cycle = _safe_numeric(baseline_cycle)
+    plan_cycle = _safe_numeric(plan_cycle)
+    baseline_tom = _safe_numeric(baseline_tom)
+    plan_tom = _safe_numeric(plan_tom)
+    savings_cycle = _safe_numeric(savings_cycle)
+
     return {
-        "baseline_cost_eur_total": baseline_total,
-        "plan_cost_eur_total": plan_total,
-        "savings_eur_total": baseline_total - plan_total,
+        "baseline_cost_eur_total": baseline_cycle,
+        "plan_cost_eur_total": plan_cycle,
+        "savings_eur_total": savings_cycle,
+        "baseline_cost_eur_cycle": baseline_cycle,
+        "plan_cost_eur_cycle": plan_cycle,
+        "savings_eur_cycle": savings_cycle,
         "baseline_cost_eur_tomorrow": baseline_tom,
         "plan_cost_eur_tomorrow": plan_tom,
         "savings_eur_tomorrow": baseline_tom - plan_tom,
-        "hourly_savings_eur_tomorrow": [float(hourly_savings.loc[ts]) for ts in idx_tomorrow],
+        "hourly_savings_eur_tomorrow": hourly_savings_list,
+        "savings_horizon_kind": "offpeak_cycle",
+        "savings_horizon_start_iso": cycle_start.isoformat(),
+        "savings_horizon_end_iso": cycle_end.isoformat(),
+        "savings_horizon_label": (
+            "Cycle (off-peak start → next off-peak start): "
+            f"{cycle_start.strftime('%H:%M')} → {cycle_end.strftime('%H:%M')}"
+        ),
+        "savings_hourly_detail_scope": "tomorrow_00_24",
     }
 
 
