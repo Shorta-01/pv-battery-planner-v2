@@ -334,11 +334,10 @@ def _nan_safe_hourly_median(matrix: pd.DataFrame) -> pd.Series:
 
 
 def should_use_satellite_nowcast_auto(
-    *,
     latitude: float,
-    longitude: float,
-    timezone_name: str,
-    requested_days: int,
+    longitude: float | None = None,
+    timezone_name: str = "Europe/Brussels",
+    requested_days: int = 1,
     now_utc: dt.datetime | None = None,
 ) -> bool:
     if int(requested_days or 1) > 1:
@@ -412,6 +411,13 @@ IRRADIANCE_HOURLY_VARIABLES = [
     "direct_normal_irradiance",
     "diffuse_radiation",
     "direct_radiation",
+]
+
+INSTANT_IRRADIANCE_HOURLY_VARIABLES = [
+    "shortwave_radiation_instant",
+    "direct_normal_irradiance_instant",
+    "diffuse_radiation_instant",
+    "direct_radiation_instant",
 ]
 
 IRR_CRITICAL = {"shortwave_radiation", "direct_normal_irradiance", "diffuse_radiation", "direct_radiation"}
@@ -1105,6 +1111,32 @@ def _aggregate_minutely_15_to_hourly(minutely_payload: dict[str, Any], tz: str) 
     return hourly.groupby(hourly.index.ceil("h")).mean(numeric_only=True)
 
 
+def _parse_minutely_15_df(minutely_payload: dict[str, Any], tz: str) -> pd.DataFrame:
+    """
+    Return tz-aware index at 15-min timestamps with numeric columns:
+    ghi_wm2, dni_wm2, dhi_wm2.
+    """
+    times = pd.to_datetime(minutely_payload.get("time", []), errors="coerce")
+    if len(times) == 0:
+        return pd.DataFrame()
+    if getattr(times, "tz", None) is None:
+        times = times.tz_localize(tz)
+    else:
+        times = times.tz_convert(tz)
+
+    out = pd.DataFrame(index=times)
+    for src, dst in {
+        "shortwave_radiation": "ghi_wm2",
+        "direct_normal_irradiance": "dni_wm2",
+        "diffuse_radiation": "dhi_wm2",
+    }.items():
+        vals = minutely_payload.get(src)
+        if vals is None:
+            continue
+        out[dst] = pd.to_numeric(pd.Series(vals, index=times), errors="coerce")
+    return out
+
+
 def _align_backward_hourly_mean_to_hour_start(s: pd.Series) -> pd.Series:
     # Open-Meteo radiation series are preceding-hour means timestamped at hour-end.
     # We want hour-start labeling for planning tables and PV-per-hour.
@@ -1232,6 +1264,9 @@ def fetch_open_meteo_weather(
         }
 
     hourly_variables = BASE_HOURLY_VARIABLES[:] + IRRADIANCE_HOURLY_VARIABLES
+    include_instant_hourly = bool(accuracy_mode) and (not bool(fast_mode)) and int(requested_days_int) == 1
+    if include_instant_hourly:
+        hourly_variables += INSTANT_IRRADIANCE_HOURLY_VARIABLES
     location_bucket = _provider_cache_location_bucket(loc.latitude, loc.longitude, loc.elevation_m)
 
     params = {
@@ -1414,6 +1449,8 @@ def fetch_open_meteo_weather(
     fetch_meta["provider_payload"] = provider_payload
 
     hourly = data.get("hourly") if isinstance(data.get("hourly"), dict) else {}
+    instant_supported = any((hourly.get(k) is not None) for k in INSTANT_IRRADIANCE_HOURLY_VARIABLES)
+    fetch_meta["instant_irradiance_supported"] = bool(instant_supported)
     times = pd.to_datetime(hourly.get("time", []), errors="coerce")
     if len(times) == 0:
         raise RuntimeError(f"No hourly weather data for {model_id}")
@@ -1447,8 +1484,22 @@ def fetch_open_meteo_weather(
     dni_candidate = dni_api.copy()
     dhi_candidate = dhi_api.copy()
 
+    if instant_supported:
+        inst_map = {
+            "shortwave_radiation_instant": "ghi_inst_wm2",
+            "direct_normal_irradiance_instant": "dni_inst_wm2",
+            "diffuse_radiation_instant": "dhi_inst_wm2",
+            "direct_radiation_instant": "bhi_inst_wm2",
+        }
+        for src, dst in inst_map.items():
+            vals = hourly.get(src)
+            if vals is None:
+                continue
+            df[dst] = pd.to_numeric(pd.Series(vals, index=times), errors="coerce")
+
     minutely = data.get("minutely_15") if isinstance(data.get("minutely_15"), dict) else {}
     if use_icon15 and minutely:
+        min15_df = _parse_minutely_15_df(minutely, tz=tz)
         agg15 = _aggregate_minutely_15_to_hourly(minutely, tz=tz)
         if not agg15.empty:
             agg15 = agg15.reindex(df.index)
@@ -1459,6 +1510,8 @@ def fetch_open_meteo_weather(
             dhi_15 = pd.to_numeric(agg15["dhi_wm2"], errors="coerce") if "dhi_wm2" in agg15.columns else pd.Series(np.nan, index=df.index)
             dni_candidate = dni_15.combine_first(dni_candidate)
             dhi_candidate = dhi_15.combine_first(dhi_candidate)
+        if isinstance(min15_df, pd.DataFrame) and not min15_df.empty:
+            df.attrs["minutely_15_df"] = min15_df
 
     df["ghi_wm2"] = _align_backward_hourly_mean_to_hour_start(df["ghi_wm2"])
     dni_candidate = _align_backward_hourly_mean_to_hour_start(dni_candidate)
@@ -1514,7 +1567,9 @@ def fetch_open_meteo_weather(
     df["dni_wm2"] = pd.to_numeric(df["dni_wm2"], errors="coerce").fillna(0.0).clip(lower=0.0)
     df["dhi_wm2"] = pd.to_numeric(df["dhi_wm2"], errors="coerce").fillna(0.0).clip(lower=0.0)
 
-    df = df[["temp_air_c", "ghi_wm2", "dni_wm2", "dhi_wm2", "cloud_cover_pct", "wind_speed_ms"]]
+    base_cols = ["temp_air_c", "ghi_wm2", "dni_wm2", "dhi_wm2", "cloud_cover_pct", "wind_speed_ms"]
+    inst_cols = [c for c in ["ghi_inst_wm2", "dni_inst_wm2", "dhi_inst_wm2", "bhi_inst_wm2"] if c in df.columns]
+    df = df[base_cols + inst_cols]
     idx = pd.to_datetime(df.index, errors="coerce")
     if idx.isna().all():
         raise RuntimeError(f"Open-Meteo hourly forecast index invalid for {model_id}")
@@ -1844,7 +1899,7 @@ def build_ensemble_forecast(
         inclusive="left",
     )
 
-    def _fetch_and_prepare(model_id: str) -> tuple[str, core.ForecastResult, dict[str, pd.Series], float, list[str], bool, int, dict[str, Any]]:
+    def _fetch_and_prepare(model_id: str) -> tuple[str, core.ForecastResult, list[str], bool, int, dict[str, Any], int, int]:
         weather, missing_vars, derived_irradiance, fetch_meta = fetch_open_meteo_weather(
             model_id,
             loc,
@@ -1921,26 +1976,16 @@ def build_ensemble_forecast(
             model_weather_df["wind_speed_ms"] = pd.to_numeric(model_weather_df["wind_speed_ms"], errors="coerce").clip(lower=0.0)
         weather = core.ForecastResult(df=model_weather_df, sunrise=weather.sunrise, sunset=weather.sunset)
 
-        overlap_hours = int(min(requested_days_int, model_horizon_days) * 24)
-        overlap_index = canonical_index[:max(overlap_hours, 0)]
-        pv_input_df = model_weather_df.loc[overlap_index].copy() if len(overlap_index) else model_weather_df.iloc[:0].copy()
-        model_pv = core.build_pv_forecast(pv_input_df, loc, tz=tz).reindex(canonical_index)
-        for req in ["pv_total_kwh", "pv_total_unclipped_kwh", "pv_east_kwh", "pv_south_kwh", "pv_clipped_kwh"]:
-            if req not in model_pv.columns:
-                model_pv[req] = np.nan
-        pv_total = pd.to_numeric(model_pv["pv_total_kwh"], errors="coerce").where(lambda x: x >= 0)
-        pv_unclipped = pd.to_numeric(model_pv["pv_total_unclipped_kwh"], errors="coerce").where(lambda x: x >= 0)
-        pv_unclipped = pd.Series(np.maximum(pv_unclipped, pv_total), index=pv_total.index)
-        pv_east = pd.to_numeric(model_pv["pv_east_kwh"], errors="coerce").where(lambda x: x >= 0)
-        pv_south = pd.to_numeric(model_pv["pv_south_kwh"], errors="coerce").where(lambda x: x >= 0)
-        pv_clipped = pd.to_numeric(model_pv["pv_clipped_kwh"], errors="coerce").where(lambda x: x >= 0)
-        return model_id, weather, {
-            "pv_total_kwh": pv_total,
-            "pv_total_unclipped_kwh": pv_unclipped,
-            "pv_east_kwh": pv_east,
-            "pv_south_kwh": pv_south,
-            "pv_clipped_kwh": pv_clipped,
-        }, float(pv_total.sum()), missing_vars, bool(derived_irradiance), int(fetch_meta.get("derived_irradiance_hours", 0)), fetch_meta
+        return (
+            model_id,
+            weather,
+            missing_vars,
+            bool(derived_irradiance),
+            int(fetch_meta.get("derived_irradiance_hours", 0)),
+            fetch_meta,
+            int(requested_days_int),
+            int(model_horizon_days),
+        )
 
     max_workers = min(max(len(selected), 1), 5)
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -1948,11 +1993,16 @@ def build_ensemble_forecast(
         for fut in as_completed(future_map):
             model_id = future_map[fut]
             try:
-                model_id, weather, pv_cols, pv_total_sum, missing_vars, derived_irradiance, derived_irradiance_hours, fetch_meta = fut.result()
-                for col_name, series in pv_cols.items():
-                    per_model_pv_columns[col_name][model_id] = series
-                pv_by_model[model_id] = pd.DataFrame(pv_cols).reindex(canonical_index)
-                per_model_pv_totals[model_id] = pv_total_sum
+                (
+                    model_id,
+                    weather,
+                    missing_vars,
+                    derived_irradiance,
+                    derived_irradiance_hours,
+                    fetch_meta,
+                    requested_days_int,
+                    model_horizon_days,
+                ) = fut.result()
                 missing_vars_by_model[model_id] = missing_vars
                 derived_irradiance_by_model[model_id] = bool(derived_irradiance)
                 derived_weather_code_by_model[model_id] = bool(fetch_meta.get("derived_weather_code", False)) if isinstance(fetch_meta, dict) else False
@@ -2012,6 +2062,64 @@ def build_ensemble_forecast(
                     model_id,
                     exc,
                 )
+
+    any_native_ghi: pd.Series | None = None
+    overlap_hours_by_model: dict[str, int] = {}
+    for model_id, weather in weather_ok.items():
+        model_weather_df = weather.df.reindex(canonical_index)
+        ghi_series = pd.to_numeric(model_weather_df.get("ghi_wm2"), errors="coerce")
+        native_mask = ghi_series.notna()
+        any_native_ghi = native_mask if any_native_ghi is None else (any_native_ghi | native_mask)
+
+    if any_native_ghi is None:
+        allow_synth_mask = pd.Series(True, index=canonical_index, dtype=bool)
+    else:
+        allow_synth_mask = (~any_native_ghi).reindex(canonical_index).fillna(True).astype(bool)
+
+    for model_id, weather in weather_ok.items():
+        fetch_meta = fetch_meta_by_model.get(model_id, {})
+        requested_days_int = int(max(1, fetch_meta.get("requested_days", horizon_days)))
+        model_horizon_days = int(max(1, fetch_meta.get("horizon_days", requested_days_int)))
+        overlap_hours = int(min(requested_days_int, model_horizon_days) * 24)
+        overlap_hours_by_model[model_id] = overlap_hours
+        overlap_index = canonical_index[:max(overlap_hours, 0)]
+        model_weather_df = weather.df.reindex(canonical_index).copy()
+        pv_input_df = model_weather_df.loc[overlap_index].copy() if len(overlap_index) else model_weather_df.iloc[:0].copy()
+        allow_mask_for_model = allow_synth_mask.reindex(pv_input_df.index).fillna(True).astype(bool)
+        try:
+            model_pv = core.build_pv_forecast(
+                pv_input_df,
+                loc,
+                tz=tz,
+                allow_synthetic_ghi_mask=allow_mask_for_model,
+            ).reindex(canonical_index)
+        except TypeError:
+            model_pv = core.build_pv_forecast(pv_input_df, loc, tz=tz).reindex(canonical_index)
+        for req in ["pv_total_kwh", "pv_total_unclipped_kwh", "pv_east_kwh", "pv_south_kwh", "pv_clipped_kwh"]:
+            if req not in model_pv.columns:
+                model_pv[req] = np.nan
+        pv_total = pd.to_numeric(model_pv["pv_total_kwh"], errors="coerce").where(lambda x: x >= 0)
+        pv_unclipped = pd.to_numeric(model_pv["pv_total_unclipped_kwh"], errors="coerce").where(lambda x: x >= 0)
+        pv_unclipped = pd.Series(np.maximum(pv_unclipped, pv_total), index=pv_total.index)
+        pv_east = pd.to_numeric(model_pv["pv_east_kwh"], errors="coerce").where(lambda x: x >= 0)
+        pv_south = pd.to_numeric(model_pv["pv_south_kwh"], errors="coerce").where(lambda x: x >= 0)
+        pv_clipped = pd.to_numeric(model_pv["pv_clipped_kwh"], errors="coerce").where(lambda x: x >= 0)
+
+        per_model_pv_columns["pv_total_kwh"][model_id] = pv_total
+        per_model_pv_columns["pv_total_unclipped_kwh"][model_id] = pv_unclipped
+        per_model_pv_columns["pv_east_kwh"][model_id] = pv_east
+        per_model_pv_columns["pv_south_kwh"][model_id] = pv_south
+        per_model_pv_columns["pv_clipped_kwh"][model_id] = pv_clipped
+        pv_by_model[model_id] = pd.DataFrame(
+            {
+                "pv_total_kwh": pv_total,
+                "pv_total_unclipped_kwh": pv_unclipped,
+                "pv_east_kwh": pv_east,
+                "pv_south_kwh": pv_south,
+                "pv_clipped_kwh": pv_clipped,
+            }
+        ).reindex(canonical_index)
+        per_model_pv_totals[model_id] = float(pv_total.sum())
 
     satellite_nowcast_used = False
     satellite_nowcast_hours = 0

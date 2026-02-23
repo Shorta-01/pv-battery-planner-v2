@@ -1867,10 +1867,34 @@ def irradiance_sanity_warnings(
 
     return warnings_out
 
+def _integrate_hourly_power_trapezoid(power_kw: "pd.Series") -> "pd.Series":
+    """
+    Convert power at hour-start timestamps to hourly kWh using trapezoid:
+    e[t] = 0.5*(p[t] + p[t+1]) for all but last; last uses p[last].
+    Preserve NaN (if p[t] is NaN => e[t] NaN). Clamp negatives to 0.
+    """
+    p = pd.to_numeric(power_kw, errors="coerce")
+    next_p = p.shift(-1)
+    energy = 0.5 * (p + next_p)
+    if len(energy) > 0:
+        energy.iloc[-1] = p.iloc[-1]
+    energy = energy.where(p.notna(), np.nan)
+    return energy.clip(lower=0.0)
+
+
+def _apply_last_resort_ghi(provider_ghi: "pd.Series", ghi_candidate: "pd.Series", allow_mask: "pd.Series") -> "pd.Series":
+    provider = pd.to_numeric(provider_ghi, errors="coerce")
+    candidate = pd.to_numeric(ghi_candidate, errors="coerce")
+    mask = pd.to_numeric(allow_mask, errors="coerce").fillna(0).astype(bool)
+    return provider.where(provider.notna(), candidate.where(mask, np.nan))
+
+
 def estimate_pv_with_pvlib(
     df: "pd.DataFrame",
     loc: Location,
     tz: str | None = None,
+    *,
+    allow_synthetic_ghi_mask: "pd.Series | None" = None,
 ) -> Tuple["pd.Series", "pd.Series", "pd.Series", "pd.Series"]:
     tz_use = tz or TIMEZONE
     pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz_use)
@@ -1882,6 +1906,48 @@ def estimate_pv_with_pvlib(
     df_local = df.copy()
     df_local.index = times
     avail = df_local.notna().any(axis=1)
+
+    min15_attr = df_local.attrs.get("minutely_15_df") if hasattr(df_local, "attrs") else None
+    if isinstance(min15_attr, pd.DataFrame) and not min15_attr.empty:
+        try:
+            min15 = min15_attr.copy()
+            min15_idx = pd.to_datetime(min15.index, errors="coerce")
+            if min15_idx.tz is None:
+                min15_idx = min15_idx.tz_localize(tz_use)
+            else:
+                min15_idx = min15_idx.tz_convert(tz_use)
+            min15.index = min15_idx
+
+            min15_weather = pd.DataFrame(index=min15.index)
+            for col in ["ghi_wm2", "dni_wm2", "dhi_wm2"]:
+                if col in min15.columns:
+                    min15_weather[col] = pd.to_numeric(min15[col], errors="coerce")
+            hourly_temp = pd.to_numeric(df_local.get("temp_air_c"), errors="coerce") if "temp_air_c" in df_local.columns else pd.Series(10.0, index=df_local.index)
+            hourly_wind = pd.to_numeric(df_local.get("wind_speed_ms"), errors="coerce") if "wind_speed_ms" in df_local.columns else pd.Series(1.0, index=df_local.index)
+            hourly_cloud = pd.to_numeric(df_local.get("cloud_cover_pct"), errors="coerce") if "cloud_cover_pct" in df_local.columns else pd.Series(np.nan, index=df_local.index)
+            min15_weather["temp_air_c"] = hourly_temp.reindex(min15.index, method="ffill").bfill().fillna(10.0)
+            min15_weather["wind_speed_ms"] = hourly_wind.reindex(min15.index, method="ffill").bfill().fillna(1.0)
+            min15_weather["cloud_cover_pct"] = hourly_cloud.reindex(min15.index, method="ffill")
+
+            allow15 = None
+            if allow_synthetic_ghi_mask is not None:
+                allow15 = pd.to_numeric(allow_synthetic_ghi_mask.reindex(min15.index, method="ffill"), errors="coerce").fillna(False).astype(bool)
+
+            min15_weather.attrs = {}
+            e15, s15, t15u, t15c = estimate_pv_with_pvlib(
+                min15_weather,
+                loc,
+                tz=tz_use,
+                allow_synthetic_ghi_mask=allow15,
+            )
+
+            bucket = min15.index.ceil("h") - pd.Timedelta(hours=1)
+            def _agg_hour(x: pd.Series) -> pd.Series:
+                return pd.to_numeric(x, errors="coerce").groupby(bucket).sum(min_count=1).reindex(df_local.index)
+
+            return _agg_hour(e15), _agg_hour(s15), _agg_hour(t15u), _agg_hour(t15c)
+        except Exception as exc:
+            warnings.warn(f"15-min PV aggregation failed, falling back to hourly path: {exc}", RuntimeWarning)
 
     solpos = pvloc.get_solarposition(times)
     dni_extra = pvlib.irradiance.get_extra_radiation(times)
@@ -1916,17 +1982,33 @@ def estimate_pv_with_pvlib(
     cloud_cover = pd.to_numeric(df_local.get("cloud_cover_pct"), errors="coerce") if "cloud_cover_pct" in df_local.columns else pd.Series(np.nan, index=df_local.index)
     trans = cloud_transmittance_from_cover(cloud_cover) if "cloud_cover_pct" in df_local.columns else pd.Series(1.0, index=df_local.index)
     ghi_candidate = pd.to_numeric(cs.get("ghi"), errors="coerce").reindex(df_local.index) * trans
-    ghi_final = provider_ghi.where(provider_ghi.notna(), ghi_candidate.where(cloud_cover.notna(), np.nan))
+    if allow_synthetic_ghi_mask is None:
+        allow_mask = pd.Series(True, index=df_local.index)
+    else:
+        allow_mask = pd.to_numeric(allow_synthetic_ghi_mask.reindex(df_local.index), errors="coerce").fillna(False).astype(bool)
+    ghi_fallback = ghi_candidate.where(allow_mask, np.nan)
+    ghi_final = _apply_last_resort_ghi(provider_ghi, ghi_fallback.where(cloud_cover.notna(), np.nan), allow_mask)
     ghi_final = pd.to_numeric(ghi_final, errors="coerce").clip(lower=0.0)
 
-    if "dni_wm2" in df_local.columns and "dhi_wm2" in df_local.columns and provider_ghi.notna().any():
+    has_inst = ("ghi_inst_wm2" in df_local.columns) and pd.to_numeric(df_local.get("ghi_inst_wm2"), errors="coerce").notna().any()
+    if has_inst:
+        ghi = pd.to_numeric(df_local.get("ghi_inst_wm2"), errors="coerce").reindex(df_local.index).clip(lower=0.0)
+        dni_inst = pd.to_numeric(df_local.get("dni_inst_wm2"), errors="coerce") if "dni_inst_wm2" in df_local.columns else pd.Series(np.nan, index=df_local.index)
+        dhi_inst = pd.to_numeric(df_local.get("dhi_inst_wm2"), errors="coerce") if "dhi_inst_wm2" in df_local.columns else pd.Series(np.nan, index=df_local.index)
+        if dni_inst.notna().any() and dhi_inst.notna().any():
+            dni = dni_inst
+            dhi = dhi_inst
+        else:
+            ghi, dni, dhi = derive_irradiance_from_ghi(ghi)
+        missing_inputs = ghi.isna() & daylight
+    elif "dni_wm2" in df_local.columns and "dhi_wm2" in df_local.columns and provider_ghi.notna().any():
         dni = pd.to_numeric(df_local["dni_wm2"], errors="coerce")
         dhi = pd.to_numeric(df_local["dhi_wm2"], errors="coerce")
         ghi = ghi_final
+        missing_inputs = ghi_final.isna() & daylight
     else:
         ghi, dni, dhi = derive_irradiance_from_ghi(ghi_final)
-
-    missing_inputs = ghi_final.isna() & daylight
+        missing_inputs = ghi_final.isna() & daylight
 
     zenith = pd.to_numeric(solpos["apparent_zenith"], errors="coerce").reindex(df_local.index)
     cos_zenith = zenith.apply(lambda z: math.cos(math.radians(z)) if pd.notna(z) else 0.0)
@@ -2059,8 +2141,14 @@ def estimate_pv_with_pvlib(
 
     east_ac_kw_clipped = (total_ac_kw_clipped * east_share).fillna(0.0).clip(lower=0.0)
     south_ac_kw_clipped = (total_ac_kw_clipped * south_share).fillna(0.0).clip(lower=0.0)
-    east_ac_kwh_clipped = (east_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
-    south_ac_kwh_clipped = (south_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
+    if has_inst:
+        east_ac_kwh_clipped = _integrate_hourly_power_trapezoid(east_ac_kw_clipped)
+        south_ac_kwh_clipped = _integrate_hourly_power_trapezoid(south_ac_kw_clipped)
+        total_ac_kwh_unclipped = _integrate_hourly_power_trapezoid(total_ac_kw_unclipped)
+        total_ac_kwh_clipped = _integrate_hourly_power_trapezoid(total_ac_kw_clipped)
+    else:
+        east_ac_kwh_clipped = (east_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
+        south_ac_kwh_clipped = (south_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
 
     east_ac_kwh_clipped = east_ac_kwh_clipped.where(avail)
     south_ac_kwh_clipped = south_ac_kwh_clipped.where(avail)
@@ -2082,7 +2170,13 @@ def estimate_pv_with_pvlib(
         total_ac_kwh_clipped.astype(float),
     )
 
-def build_pv_forecast(df: "pd.DataFrame", loc: Location, tz: str | None = None) -> "pd.DataFrame":
+def build_pv_forecast(
+    df: "pd.DataFrame",
+    loc: Location,
+    tz: str | None = None,
+    *,
+    allow_synthetic_ghi_mask: "pd.Series | None" = None,
+) -> "pd.DataFrame":
     if not PVLIB_AVAILABLE:
         raise SystemExit("pvlib is required. Install with: pip install pvlib")
 
@@ -2091,7 +2185,12 @@ def build_pv_forecast(df: "pd.DataFrame", loc: Location, tz: str | None = None) 
         south_ac_kwh_clipped,
         total_ac_kwh_unclipped,
         total_ac_kwh_clipped,
-    ) = estimate_pv_with_pvlib(df, loc, tz=tz)
+    ) = estimate_pv_with_pvlib(
+        df,
+        loc,
+        tz=tz,
+        allow_synthetic_ghi_mask=allow_synthetic_ghi_mask,
+    )
 
     out = df.copy()
     dt_h = timestep_hours(out.index)
