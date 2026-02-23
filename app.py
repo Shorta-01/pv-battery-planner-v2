@@ -1274,6 +1274,108 @@ def _esc_attr(s: object) -> str:
     return html.escape("" if s is None else str(s), quote=True)
 
 
+def _chip_html(label: str, tooltip: str) -> str:
+    return (
+        f"<span title=\"{_esc_attr(tooltip)}\" "
+        "style=\"display:inline-flex;align-items:center;padding:0.16rem 0.50rem;"
+        "border-radius:999px;background:rgba(255,255,255,0.10);"
+        "border:1px solid rgba(255,255,255,0.14);font-size:0.70rem;font-weight:650;"
+        "letter-spacing:0.01em;opacity:0.93;\">"
+        f"{_esc_attr(label)}"
+        "</span>"
+    )
+
+
+def _icon_html(icon: str, tooltip: str, *, dim: bool = False) -> str:
+    opacity = "0.45" if dim else "1"
+    return (
+        f"<span title=\"{_esc_attr(tooltip)}\" "
+        "style=\"display:inline-block;line-height:1;"
+        f"opacity:{opacity};\">{_esc_attr(icon)}</span>"
+    )
+
+
+def _confidence_dot_html(conf: str, tooltip: str) -> str:
+    conf_norm = (conf or "").strip().lower()
+    color = {
+        "high": "#52b788",
+        "medium": "#f4a261",
+        "low": "#d62828",
+    }.get(conf_norm, "#94a3b8")
+    return (
+        f"<span title=\"{_esc_attr(tooltip)}\" "
+        "style=\"display:inline-block;width:8px;height:8px;border-radius:50%;"
+        f"background:{color};box-shadow:0 0 0 1px rgba(255,255,255,0.18) inset;\"></span>"
+    )
+
+
+def _limiter_icons_html(
+    user_cap_kw: float,
+    inverter_ac_kw_limit: float,
+    battery_max_charge_kw: float,
+    hard_limit_kw: float,
+    effective_limit: float,
+    limiter_reason: str,
+) -> str:
+    active = (limiter_reason or "").strip().lower()
+    icon_specs = [
+        ("user", "👤", f"User cap: {float(user_cap_kw):.2f} kW"),
+        ("inverter", "🔌", f"Inverter limit: {float(inverter_ac_kw_limit):.2f} kW"),
+        ("battery", "🔋", f"Battery limit: {float(battery_max_charge_kw):.2f} kW"),
+        ("hard limit", "🛡️", f"Hard limit: {float(hard_limit_kw):.2f} kW"),
+    ]
+    icons = [
+        _icon_html(icon, tip, dim=(active != key))
+        for key, icon, tip in icon_specs
+    ]
+    info_tip = f"Effective limit: {float(effective_limit):.2f} kW; Limiter: {limiter_reason or 'unknown'}"
+    icons.append(_icon_html("ℹ️", info_tip))
+    return (
+        "<div style='display:flex;align-items:center;gap:0.40rem;font-size:0.90rem;'>"
+        + "".join(icons)
+        + "</div>"
+    )
+
+
+def _soc_journey_bar_html(soc_est_percent: float | None, target_percent: float | None) -> str:
+    def _pct(v: float | None) -> float | None:
+        if v is None:
+            return None
+        try:
+            value = float(v)
+        except (TypeError, ValueError):
+            return None
+        if pd.isna(value):
+            return None
+        return max(0.0, min(100.0, value))
+
+    est_pct = _pct(soc_est_percent)
+    tgt_pct = _pct(target_percent)
+    est_label = f"{est_pct:.1f}%" if est_pct is not None else "—"
+    tgt_label = f"{tgt_pct:.1f}%" if tgt_pct is not None else "—"
+    tooltip = f"Estimated SOC at 22:00: {est_label}; Target SOC by morning: {tgt_label}"
+
+    markers: list[str] = []
+    if est_pct is not None:
+        markers.append(
+            "<span style='position:absolute;top:50%;left:{left:.3f}%;transform:translate(-50%,-50%);"
+            "width:8px;height:8px;border-radius:50%;background:#7dd3fc;"
+            "box-shadow:0 0 0 1px rgba(255,255,255,0.22) inset;'></span>".format(left=est_pct)
+        )
+    if tgt_pct is not None:
+        markers.append(
+            "<span style='position:absolute;top:50%;left:{left:.3f}%;transform:translate(-50%,-50%);"
+            "width:2px;height:12px;border-radius:2px;background:#f8fafc;'></span>".format(left=tgt_pct)
+        )
+
+    return (
+        f"<div title=\"{_esc_attr(tooltip)}\" style='margin-top:0.40rem;height:8px;position:relative;"
+        "border-radius:999px;overflow:visible;background:rgba(255,255,255,0.14);'>"
+        + "".join(markers)
+        + "</div>"
+    )
+
+
 def _pv_quality_flag_html(color: str, tooltip: str) -> str:
     col = (color or "").strip() or "#94a3b8"
     tip = _esc_attr(tooltip)
@@ -1521,12 +1623,8 @@ def render_offpeak_plan_summary(
     battery_max_charge_kw: float,
     hard_limit_kw: float,
 ) -> None:
-    container.markdown("### Off-peak Plan Summary")
-    chip_col_l, chip_col_r = container.columns([5, 2])
-    with chip_col_r:
-        soc_source = str((data_source or {}).get("soc") or "manual").lower()
-        source_label = "FusionSolar" if soc_source == "fusionsolar" else "Manual"
-        st.caption(f"Data source: {source_label}")
+    soc_source = str((data_source or {}).get("soc") or "manual").lower()
+    source_label = "FusionSolar" if soc_source == "fusionsolar" else "Manual"
 
     offpeak_start_raw = metrics.get("offpeak_start_local") if isinstance(metrics, dict) else None
     offpeak_start_ts = pd.to_datetime(offpeak_start_raw, errors="coerce")
@@ -1537,24 +1635,13 @@ def render_offpeak_plan_summary(
             offpeak_label = offpeak_start_ts.strftime("%Y-%m-%d %H:%M")
 
     conf = str((metrics or {}).get("soc_offpeak_start_confidence") or "")
-    icon = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}.get(conf, "⚪")
     soc_est = _safe_float((metrics or {}).get("soc_offpeak_start_estimated_percent"), float("nan"))
-    soc_label = f"{soc_est:.1f}% {icon}" if pd.notna(soc_est) else f"— {icon}"
-
-    c1, c2 = container.columns(2)
-    c1.metric("Off-peak starts", offpeak_label)
-    c2.metric("Estimated SOC at off-peak start", soc_label)
+    soc_label = f"{soc_est:.1f}%" if pd.notna(soc_est) else "—"
 
     delta_h = _safe_float((metrics or {}).get("soc_offpeak_start_hours_until"), float("nan"))
     load_kwh = _safe_float((metrics or {}).get("soc_offpeak_start_load_kwh_window"), float("nan"))
     pv_credit = _safe_float((metrics or {}).get("soc_offpeak_start_pv_credit_kwh"), float("nan"))
     used_history = bool((metrics or {}).get("soc_offpeak_start_used_history"))
-    if pd.notna(delta_h) and pd.notna(load_kwh) and pd.notna(pv_credit):
-        container.caption(
-            f"Δh={delta_h:.1f} · Load≈{load_kwh:.1f} kWh · PV credit≈{pv_credit:.1f} kWh · History: {'yes' if used_history else 'no'}"
-        )
-
-    container.divider()
 
     effective_limit = min(float(user_cap_kw), float(inverter_ac_kw_limit), float(battery_max_charge_kw), float(hard_limit_kw))
     limiter_reason = "hard limit"
@@ -1569,11 +1656,65 @@ def render_offpeak_plan_summary(
 
     charge_kw = _safe_float((metrics or {}).get("charge_kw"), 0.0)
     cutoff_soc = _safe_float((metrics or {}).get("cutoff_soc"), 0.0)
-    t1, t2 = container.columns(2)
-    t1.metric("Planned grid charge power (kW)", f"{charge_kw:.2f}")
-    t1.caption(f"Effective limit: {effective_limit:.2f} kW (limited by {limiter_reason})")
-    t2.metric("Minimum morning SOC target (%)", f"{cutoff_soc * 100.0:.1f}%")
-    t2.caption("Set as AC charge cutoff SOC in FusionSolar")
+    cutoff_soc_pct = cutoff_soc * 100.0 if pd.notna(cutoff_soc) else float("nan")
+    cutoff_soc_label = f"{cutoff_soc_pct:.1f}%" if pd.notna(cutoff_soc_pct) else "—"
+
+    details_parts: list[str] = []
+    details_parts.append(f"Δh={delta_h:.1f}" if pd.notna(delta_h) else "Δh=—")
+    details_parts.append(f"Load≈{load_kwh:.1f} kWh" if pd.notna(load_kwh) else "Load≈— kWh")
+    details_parts.append(f"PV credit≈{pv_credit:.1f} kWh" if pd.notna(pv_credit) else "PV credit≈— kWh")
+    details_parts.append(f"History: {'yes' if used_history else 'no'}")
+    details_tip = "; ".join(details_parts)
+
+    source_chip_html = _chip_html(source_label, "SOC data source used for planning.")
+    conf_tip = f"SOC estimate confidence: {conf or 'Unknown'}"
+    conf_dot_html = _confidence_dot_html(conf, conf_tip)
+    soc_journey_html = _soc_journey_bar_html(soc_est if pd.notna(soc_est) else None, cutoff_soc_pct if pd.notna(cutoff_soc_pct) else None)
+    limiter_html = _limiter_icons_html(
+        user_cap_kw,
+        inverter_ac_kw_limit,
+        battery_max_charge_kw,
+        hard_limit_kw,
+        effective_limit,
+        limiter_reason,
+    )
+
+    charge_label = f"{charge_kw:.2f} kW" if pd.notna(charge_kw) else "—"
+
+    container.markdown(
+        (
+            "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.65rem 0.75rem;"
+            "background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));min-width:245px;'>"
+            "<div style='display:flex;flex-direction:column;gap:0.40rem;'>"
+            "<div style='display:flex;align-items:center;justify-content:space-between;gap:10px;'>"
+            "<div style='font-weight:700;letter-spacing:0.03em;opacity:0.92;'>OFF-PEAK PLAN</div>"
+            f"{source_chip_html}"
+            "</div>"
+            "<div style='display:flex;align-items:center;justify-content:space-between;gap:0.6rem;'>"
+            "<div style='display:flex;align-items:center;gap:0.65rem;flex-wrap:wrap;'>"
+            f"<span style='display:inline-flex;align-items:center;gap:0.28rem;font-size:0.88rem;'><span title='Off-peak starts (local time).'>🕙</span><span style='font-weight:650;'>{_esc_attr(offpeak_label)}</span></span>"
+            f"<span style='display:inline-flex;align-items:center;gap:0.28rem;font-size:0.88rem;'><span title='Estimated SOC at off-peak start.'>🔋</span><span style='font-weight:650;'>{_esc_attr(soc_label)}</span>{conf_dot_html}</span>"
+            "</div>"
+            f"<span style='font-size:0.92rem;' title='{_esc_attr(details_tip)}'>ℹ️</span>"
+            "</div>"
+            f"{soc_journey_html}"
+            "<div style='margin-top:0.52rem;padding-top:0.55rem;border-top:1px solid rgba(255,255,255,0.10);'>"
+            "<div style='font-size:0.72rem;opacity:0.85;text-transform:uppercase;letter-spacing:0.06em;'>TARGETS</div>"
+            "<div style='margin-top:0.30rem;display:flex;align-items:flex-start;justify-content:space-between;gap:0.65rem;'>"
+            "<div style='min-width:0;'>"
+            f"<div style='display:inline-flex;align-items:center;gap:0.28rem;font-size:0.95rem;font-weight:780;'><span title='Set this power in FusionSolar for AC charging.'>⚡</span>{_esc_attr(charge_label)}</div>"
+            f"<div style='margin-top:0.22rem;'>{limiter_html}</div>"
+            "</div>"
+            "<div style='text-align:right;white-space:nowrap;'>"
+            f"<div style='display:inline-flex;align-items:center;gap:0.28rem;font-size:0.95rem;font-weight:780;'><span title='Set as AC charge cutoff SOC in FusionSolar.'>🎯</span>{_esc_attr(cutoff_soc_label)}</div>"
+            "</div>"
+            "</div>"
+            "</div>"
+            "</div>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
 
 
 def windows_to_segments(windows: list[tuple[str, str]]) -> list[tuple[int, int]]:
