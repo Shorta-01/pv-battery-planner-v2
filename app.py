@@ -1811,6 +1811,10 @@ def api_delete(path: str, *, params: dict | None = None) -> dict:
     return {}
 
 
+def _on_toggle_fixed(error_id: str, key: str) -> None:
+    api_post(f"/v1/errors/{error_id}/fixed", {"fixed": bool(st.session_state.get(key, False))})
+
+
 def append_ui_error_buffer(payload: dict) -> None:
     try:
         LOCAL_STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -3929,72 +3933,101 @@ with left:
                 st.session_state["confirm_reset_repo_defaults_open"] = False
                 st.rerun()
 
-    with st.expander("Error logging", expanded=False):
-        errors_include_fixed = st.checkbox("Show fixed", value=False, key="errors_include_fixed")
-        errors_limit = st.selectbox("Limit", options=[50, 100, 200, 500], index=2, key="errors_limit")
-        refresh_errors = st.button("Refresh errors", key="errors_refresh")
-        _ = refresh_errors
+    unresolved_count = 0
+    try:
+        unresolved = api_get("/v1/errors?limit=0&include_fixed=false").get("items", [])
+        unresolved_count = len(unresolved)
+    except Exception:
+        unresolved_count = 0
+
+    error_logging_label = f"Error logging 🔴{unresolved_count}" if unresolved_count > 0 else "Error logging"
+    with st.expander(error_logging_label, expanded=False):
+        refresh_errors = st.button("Refresh errors", key="refresh_errors_btn")
+        if refresh_errors:
+            st.session_state["err_delete_arm"] = None
+
         error_items: list[dict] = []
-        errors_unreachable = False
         try:
-            error_items = api_get(f"/v1/errors?limit={int(errors_limit)}&include_fixed={str(bool(errors_include_fixed)).lower()}").get("items", [])
+            error_items = api_get("/v1/errors?limit=0&include_fixed=true").get("items", [])
         except Exception:
-            errors_unreachable = True
             st.info("Error logging is currently unreachable.")
+            error_items = []
 
         if error_items:
-            table_rows = []
+            st.session_state.setdefault("err_delete_arm", None)
+            detail_cols = [1.6, 0.9, 1.6, 2.8, 0.7, 0.7]
+            hdr = st.columns(detail_cols)
+            hdr[0].caption("Time")
+            hdr[1].caption("Source")
+            hdr[2].caption("Where")
+            hdr[3].caption("Title")
+            hdr[4].caption(" ")
+            hdr[5].caption(" ")
+
             for item in error_items:
+                error_id = str(item.get("error_id", ""))
                 ts_raw = str(item.get("created_at_utc", ""))
-                table_rows.append({
-                    "Date/time": ts_raw.replace("T", " ").replace("Z", " UTC"),
-                    "Source": item.get("source", ""),
-                    "Error type": item.get("error_type", ""),
-                    "Where": item.get("where", ""),
-                    "Title": item.get("title", ""),
-                    "Fixed": bool(item.get("fixed", 0)),
-                })
-            st.data_editor(pd.DataFrame(table_rows), disabled=True, hide_index=True, use_container_width=True)
+                ts_compact = ts_raw.replace("T", " ").replace("Z", " UTC")
+                source_txt = str(item.get("source", ""))
+                where_txt = str(item.get("where", ""))
+                title_txt = str(item.get("title", ""))
+                fixed_val = bool(item.get("fixed", 0))
 
-            labels = [f"{r.get('created_at_utc','')} · {r.get('title','')}" for r in error_items]
-            selected_label = st.selectbox("Select error", options=labels, key="error_selected_label")
-            selected_index = labels.index(selected_label)
-            selected = error_items[selected_index]
-            selected_id = str(selected.get("error_id"))
+                row = st.columns(detail_cols)
+                render_text = row[0].caption if fixed_val else row[0].write
+                render_text(ts_compact)
+                render_text = row[1].caption if fixed_val else row[1].write
+                render_text(source_txt)
+                render_text = row[2].caption if fixed_val else row[2].write
+                render_text(where_txt)
+                render_text = row[3].caption if fixed_val else row[3].write
+                render_text(title_txt)
 
-            fixed_value = st.checkbox("Fixed", value=bool(selected.get("fixed", 0)), key=f"error_fixed_{selected_id}")
-            if st.button("Save fixed state", key=f"save_fixed_{selected_id}"):
+                checkbox_key = f"err_fixed_{error_id}"
+                row[4].checkbox(
+                    label="",
+                    value=fixed_val,
+                    key=checkbox_key,
+                    help="Mark as fixed",
+                    label_visibility="collapsed",
+                    on_change=_on_toggle_fixed,
+                    args=(error_id, checkbox_key),
+                )
+
+                armed_id = st.session_state.get("err_delete_arm")
+                with row[5]:
+                    if armed_id != error_id:
+                        if st.button("🗑", key=f"err_del_arm_{error_id}", help="Delete"):
+                            st.session_state["err_delete_arm"] = error_id
+                            st.rerun()
+                    else:
+                        confirm_col, cancel_col = st.columns(2)
+                        with confirm_col:
+                            if st.button("✅", key=f"err_del_confirm_{error_id}", help="Confirm delete"):
+                                api_delete(f"/v1/errors/{error_id}")
+                                st.session_state["err_delete_arm"] = None
+                                if st.session_state.get("err_detail_id") == error_id:
+                                    st.session_state["err_detail_id"] = None
+                                st.rerun()
+                        with cancel_col:
+                            if st.button("✖", key=f"err_del_cancel_{error_id}", help="Cancel"):
+                                st.session_state["err_delete_arm"] = None
+                                st.rerun()
+
+                detail_key = f"err_detail_btn_{error_id}"
+                if row[3].button("🔍", key=detail_key, help="Details"):
+                    st.session_state["err_detail_id"] = error_id
+
+            detail_id = st.session_state.get("err_detail_id")
+            if isinstance(detail_id, str) and detail_id:
                 try:
-                    api_post(f"/v1/errors/{selected_id}/fixed", {"fixed": bool(fixed_value)})
-                    st.success("Updated fixed state")
-                except Exception as exc:
-                    st.error(f"Could not update fixed state: {exc}")
+                    detail = api_get(f"/v1/errors/{detail_id}")
+                    st.code(str(detail.get("body", "")), language="text")
+                    with st.expander("Context"):
+                        st.code(str(detail.get("context_json", "")), language="json")
+                except Exception:
+                    pass
 
-            try:
-                detail = api_get(f"/v1/errors/{selected_id}")
-                st.code(str(detail.get("body", "")), language="text")
-                with st.expander("Context"):
-                    st.code(str(detail.get("context_json", "")), language="json")
-            except Exception as exc:
-                st.error(f"Could not load error detail: {exc}")
-
-            st.markdown("**Danger zone**")
-            confirm_delete = st.checkbox("I understand this will delete logs", key="confirm_error_delete")
-            delete_fixed_only = st.checkbox("Delete fixed only", value=False, key="delete_fixed_only")
-            if st.button("Delete selected error", key="delete_selected_error", disabled=not confirm_delete):
-                try:
-                    api_delete(f"/v1/errors/{selected_id}")
-                    st.success("Deleted selected error")
-                except Exception as exc:
-                    st.error(f"Could not delete selected error: {exc}")
-            if st.button("Delete all errors", key="delete_all_errors", disabled=not confirm_delete):
-                try:
-                    payload = api_delete("/v1/errors", params={"only_fixed": str(bool(delete_fixed_only)).lower()})
-                    st.success(f"Deleted {int(payload.get('deleted', 0))} errors")
-                except Exception as exc:
-                    st.error(f"Could not delete all errors: {exc}")
-        elif not errors_unreachable:
-            st.caption("No errors logged.")
 
     flash = st.session_state.pop("_settings_flash", None)
     if flash:

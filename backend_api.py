@@ -1961,8 +1961,13 @@ def get_errors(
     authorization: str | None = Header(default=None),
 ) -> dict:
     _require_token(authorization)
-    limit = max(1, min(1000, int(limit)))
-    return {"items": fetch_error_events(str(SQLITE_PATH), limit=limit, include_fixed=bool(include_fixed))}
+    parsed_limit = int(limit)
+    limit_arg: int | None
+    if parsed_limit <= 0:
+        limit_arg = None
+    else:
+        limit_arg = max(1, min(10000, parsed_limit))
+    return {"items": fetch_error_events(str(SQLITE_PATH), limit=limit_arg, include_fixed=bool(include_fixed))}
 
 
 @app.get("/v1/errors/{error_id}")
