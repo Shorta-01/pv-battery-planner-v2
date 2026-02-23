@@ -87,7 +87,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
     "ecmwf_aifs": {
         "label": "ECMWF AIFS 0.25° Single",
         "endpoint": "https://api.open-meteo.com/v1/ecmwf",
-        "params": {"models": "ecmwf_aifs"},
+        "params": {"models": "ecmwf_aifs025"},
         "badges": ["", "", "☀️"],
         "recommended_for_be": True,
         "max_days": 15,
@@ -345,8 +345,8 @@ WEATHER_MODEL_ALIASES: dict[str, str] = {
 HISTORICAL_FORECAST_MODEL_PARAMS: dict[str, str] = {
     "knmi_harmonie_arome": "knmi_harmonie_arome_netherlands",
     "dwd_icon_d2": "icon_d2",
-    "ecmwf_ifs": "ecmwf_ifs",
-    "ecmwf_aifs": "ecmwf_aifs",
+    "ecmwf_ifs": "ecmwf_ifs025",
+    "ecmwf_aifs": "ecmwf_aifs025",
     "dwd_icon_eu": "icon_eu",
     "meteofrance_seamless": "meteofrance_seamless",
     "gfs": "gfs_seamless",
