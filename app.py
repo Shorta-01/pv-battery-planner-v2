@@ -1376,6 +1376,63 @@ def _soc_journey_bar_html(soc_est_percent: float | None, target_percent: float |
     )
 
 
+def _gauge_html(
+    *,
+    icon: str,
+    label: str,
+    value_text: str,
+    tooltip: str,
+    frac: float | None,
+    min_text: str,
+    max_text: str,
+    marker2_frac: float | None = None,
+    marker2_tooltip: str | None = None,
+) -> str:
+    def _norm_fraction(raw: float | None) -> float | None:
+        if raw is None:
+            return None
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if pd.isna(val):
+            return None
+        return max(0.0, min(1.0, val))
+
+    primary_frac = _norm_fraction(frac)
+    secondary_frac = _norm_fraction(marker2_frac)
+    primary_marker = ""
+    if primary_frac is not None:
+        primary_marker = (
+            "<span style='position:absolute;top:50%;left:{left:.3f}%;transform:translate(-50%,-50%);"
+            "width:9px;height:9px;border-radius:50%;background:#7dd3fc;"
+            "box-shadow:0 0 0 1px rgba(255,255,255,0.24) inset;'></span>"
+        ).format(left=(primary_frac * 100.0))
+
+    secondary_marker = ""
+    if secondary_frac is not None:
+        secondary_marker = (
+            "<span title=\"{tip}\" style='position:absolute;top:50%;left:{left:.3f}%;"
+            "transform:translate(-50%,-50%);width:3px;height:11px;border-radius:2px;"
+            "background:rgba(248,250,252,0.95);border:1px solid rgba(15,23,42,0.65);'></span>"
+        ).format(tip=_esc_attr(marker2_tooltip or "Secondary marker"), left=(secondary_frac * 100.0))
+
+    return (
+        f"<div title=\"{_esc_attr(tooltip)}\" style='display:flex;flex-direction:column;gap:0.18rem;padding:0.22rem 0;'>"
+        "<div style='display:flex;align-items:center;justify-content:space-between;gap:0.45rem;'>"
+        f"<span style='display:inline-flex;align-items:center;gap:0.30rem;font-size:0.78rem;opacity:0.9;'><span>{_esc_attr(icon)}</span><span>{_esc_attr(label)}</span></span>"
+        f"<span style='font-size:0.82rem;font-weight:700;white-space:nowrap;'>{_esc_attr(value_text)}</span>"
+        "</div>"
+        "<div style='height:6px;border-radius:999px;position:relative;background:rgba(255,255,255,0.14);overflow:visible;'>"
+        f"{primary_marker}{secondary_marker}"
+        "</div>"
+        "<div style='display:flex;align-items:center;justify-content:space-between;font-size:0.64rem;opacity:0.72;'>"
+        f"<span>{_esc_attr(min_text)}</span><span>{_esc_attr(max_text)}</span>"
+        "</div>"
+        "</div>"
+    )
+
+
 def _pv_quality_flag_html(color: str, tooltip: str) -> str:
     col = (color or "").strip() or "#94a3b8"
     tip = _esc_attr(tooltip)
@@ -1622,6 +1679,10 @@ def render_offpeak_plan_summary(
     inverter_ac_kw_limit: float,
     battery_max_charge_kw: float,
     hard_limit_kw: float,
+    min_soc_pct: float,
+    max_cutoff_soc_pct: float,
+    detail_df: pd.DataFrame | None = None,
+    soc_series: pd.Series | None = None,
 ) -> None:
     soc_source = str((data_source or {}).get("soc") or "manual").lower()
     source_label = "FusionSolar" if soc_source == "fusionsolar" else "Manual"
@@ -1659,6 +1720,60 @@ def render_offpeak_plan_summary(
     cutoff_soc_pct = cutoff_soc * 100.0 if pd.notna(cutoff_soc) else float("nan")
     cutoff_soc_label = f"{cutoff_soc_pct:.1f}%" if pd.notna(cutoff_soc_pct) else "—"
 
+    ac_gauge_max = effective_limit if pd.notna(effective_limit) and float(effective_limit) > 0 else (float(user_cap_kw) if float(user_cap_kw) > 0 else 5.0)
+    ac_frac = None
+    if pd.notna(charge_kw) and pd.notna(ac_gauge_max) and float(ac_gauge_max) > 0:
+        ac_frac = float(charge_kw) / float(ac_gauge_max)
+    ac_tooltip = (
+        "Set this in FusionSolar as AC charge power. "
+        f"Planned: {charge_kw:.2f} kW; Effective limit: {effective_limit:.2f} kW; Limiter: {limiter_reason}."
+    )
+
+    cutoff_min = float(min_soc_pct) if pd.notna(min_soc_pct) else 0.0
+    cutoff_max = float(max_cutoff_soc_pct) if pd.notna(max_cutoff_soc_pct) else 100.0
+    cutoff_frac = None
+    if pd.notna(cutoff_soc_pct) and cutoff_max > cutoff_min:
+        cutoff_frac = (float(cutoff_soc_pct) - cutoff_min) / (cutoff_max - cutoff_min)
+    cutoff_tooltip = (
+        "Set this in FusionSolar as AC charge cutoff SOC. "
+        f"Target: {cutoff_soc_pct:.1f}%; Range: Min SOC {cutoff_min:.1f}% → Max cutoff {cutoff_max:.1f}%."
+        if pd.notna(cutoff_soc_pct)
+        else f"Set this in FusionSolar as AC charge cutoff SOC. Range: Min SOC {cutoff_min:.1f}% → Max cutoff {cutoff_max:.1f}%."
+    )
+
+    soc_end_pct = _safe_float((metrics or {}).get("soc_end_offpeak_pct"), float("nan"))
+    if pd.isna(soc_end_pct):
+        soc_end_pct = _safe_float((metrics or {}).get("soc_at_offpeak_end_pct"), float("nan"))
+    if pd.isna(soc_end_pct) and isinstance(detail_df, pd.DataFrame) and not detail_df.empty and isinstance(soc_series, pd.Series):
+        try:
+            idx = pd.to_datetime(detail_df.index, errors="coerce")
+            soc_pct_series = pd.to_numeric(soc_series, errors="coerce") * 100.0
+            aligned = pd.DataFrame({"ts_local": idx, "soc_end_pct": soc_pct_series.values}).dropna(subset=["ts_local"])
+            if not aligned.empty:
+                offpeak_end_raw = (metrics or {}).get("offpeak_end_local")
+                offpeak_end_ts = pd.to_datetime(offpeak_end_raw, errors="coerce")
+                if pd.isna(offpeak_end_ts):
+                    if pd.notna(offpeak_start_ts):
+                        offpeak_end_ts = offpeak_start_ts + pd.Timedelta(hours=9)
+                    else:
+                        first_ts = pd.to_datetime(aligned["ts_local"].iloc[0], errors="coerce")
+                        if pd.notna(first_ts):
+                            offpeak_end_ts = first_ts.normalize() + pd.Timedelta(hours=7)
+                if pd.notna(offpeak_end_ts):
+                    nearest_idx = (aligned["ts_local"] - offpeak_end_ts).abs().idxmin()
+                    soc_end_pct = _safe_float(aligned.loc[nearest_idx, "soc_end_pct"], float("nan"))
+        except Exception:
+            soc_end_pct = float("nan")
+
+    end_soc_tooltip = "End SOC estimate not available."
+    if pd.notna(soc_end_pct):
+        end_soc_tooltip = (
+            "Predicted SOC from off-peak start to end. "
+            f"Start (22:00): {soc_est:.1f}%; End (07:00): {soc_end_pct:.1f}%; Target: {cutoff_soc_pct:.1f}%."
+            if pd.notna(soc_est) and pd.notna(cutoff_soc_pct)
+            else "Predicted SOC from off-peak start to end."
+        )
+
     details_parts: list[str] = []
     details_parts.append(f"Δh={delta_h:.1f}" if pd.notna(delta_h) else "Δh=—")
     details_parts.append(f"Load≈{load_kwh:.1f} kWh" if pd.notna(load_kwh) else "Load≈— kWh")
@@ -1680,6 +1795,36 @@ def render_offpeak_plan_summary(
     )
 
     charge_label = f"{charge_kw:.2f} kW" if pd.notna(charge_kw) else "—"
+    end_soc_value_text = f"{soc_end_pct:.1f}%" if pd.notna(soc_end_pct) else "—"
+    gauge_ac_html = _gauge_html(
+        icon="⚡",
+        label="AC power",
+        value_text=charge_label,
+        tooltip=ac_tooltip,
+        frac=ac_frac,
+        min_text="0",
+        max_text=f"{ac_gauge_max:.2f} kW",
+    )
+    gauge_cutoff_html = _gauge_html(
+        icon="🎯",
+        label="Cutoff SOC",
+        value_text=cutoff_soc_label,
+        tooltip=cutoff_tooltip,
+        frac=cutoff_frac,
+        min_text=f"{cutoff_min:.0f}%",
+        max_text=f"{cutoff_max:.0f}%",
+    )
+    gauge_end_html = _gauge_html(
+        icon="🕖",
+        label="End SOC",
+        value_text=end_soc_value_text,
+        tooltip=end_soc_tooltip,
+        frac=(soc_end_pct / 100.0) if pd.notna(soc_end_pct) else None,
+        min_text="0%",
+        max_text="100%",
+        marker2_frac=(cutoff_soc_pct / 100.0) if pd.notna(cutoff_soc_pct) else None,
+        marker2_tooltip=f"Target cutoff SOC: {cutoff_soc_label}",
+    )
 
     container.markdown(
         (
@@ -1699,7 +1844,6 @@ def render_offpeak_plan_summary(
             "</div>"
             f"{soc_journey_html}"
             "<div style='margin-top:0.52rem;padding-top:0.55rem;border-top:1px solid rgba(255,255,255,0.10);'>"
-            "<div style='font-size:0.72rem;opacity:0.85;text-transform:uppercase;letter-spacing:0.06em;'>TARGETS</div>"
             "<div style='margin-top:0.30rem;display:flex;align-items:flex-start;justify-content:space-between;gap:0.65rem;'>"
             "<div style='min-width:0;'>"
             f"<div style='display:inline-flex;align-items:center;gap:0.28rem;font-size:0.95rem;font-weight:780;'><span title='Set this power in FusionSolar for AC charging.'>⚡</span>{_esc_attr(charge_label)}</div>"
@@ -1708,6 +1852,11 @@ def render_offpeak_plan_summary(
             "<div style='text-align:right;white-space:nowrap;'>"
             f"<div style='display:inline-flex;align-items:center;gap:0.28rem;font-size:0.95rem;font-weight:780;'><span title='Set as AC charge cutoff SOC in FusionSolar.'>🎯</span>{_esc_attr(cutoff_soc_label)}</div>"
             "</div>"
+            "</div>"
+            "<div style='margin-top:0.30rem;display:flex;flex-direction:column;gap:0.18rem;'>"
+            f"{gauge_ac_html}"
+            f"{gauge_cutoff_html}"
+            f"{gauge_end_html}"
             "</div>"
             "</div>"
             "</div>"
@@ -4148,6 +4297,10 @@ if run_clicked:
                     inverter_ac_kw_limit=get_inverter_ac_kw_limit(effective_cfg),
                     battery_max_charge_kw=float(effective_cfg["battery"]["battery_max_charge_kw"]),
                     hard_limit_kw=float(effective_cfg["battery"].get("max_ac_charge_kw_hard_limit", core.MAX_AC_CHARGE_KW_HARD_LIMIT)),
+                    min_soc_pct=float(effective_cfg["battery"].get("min_soc_percent", 0.0)),
+                    max_cutoff_soc_pct=float(effective_cfg["battery"].get("max_cutoff_soc_percent", 100.0)),
+                    detail_df=detail_df,
+                    soc_series=soc_series,
                 )
             with top_right:
                 render_pv_quality_widget(
