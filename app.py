@@ -19,6 +19,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 import planner_core as core
+from config_accessors import get_inverter_ac_kw_limit
 from error_logging import classify_exception, format_exception_body
 from tariff_time import compute_offpeak_segments, make_summary_lines, parse_hhmm
 from weather_ensemble import auto_select_models_for_location, should_use_satellite_nowcast_auto
@@ -4063,7 +4064,7 @@ if run_clicked:
                     metrics=metrics,
                     data_source=result.get("data_source", {}),
                     user_cap_kw=float(user_max_ac_kw),
-                    inverter_ac_kw_limit=float(effective_cfg["inverter"]["ac_limit_kw"]),
+                    inverter_ac_kw_limit=get_inverter_ac_kw_limit(effective_cfg),
                     battery_max_charge_kw=float(effective_cfg["battery"]["battery_max_charge_kw"]),
                     hard_limit_kw=float(effective_cfg["battery"].get("max_ac_charge_kw_hard_limit", core.MAX_AC_CHARGE_KW_HARD_LIMIT)),
                 )
