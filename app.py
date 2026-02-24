@@ -3548,7 +3548,7 @@ with left:
 
     with st.expander("Settings", expanded=False):
         st.markdown("#### Location")
-        addr_col, status_col, btn_col = st.columns([6, 1, 2], vertical_alignment="bottom")
+        addr_col, status_col, btn_col = st.columns([5.6, 1.2, 2.2], vertical_alignment="bottom")
         with addr_col:
             st.text_input(
                 "Address",
@@ -3579,7 +3579,7 @@ with left:
                 )
         with btn_col:
             btn_label = "Change address" if has_lookup_details else "Search address"
-            if st.button(btn_label, type="primary", key="btn_open_lookup"):
+            if st.button(btn_label, type="primary", key="btn_open_lookup", width="stretch"):
                 open_lookup(loc_cfg)
                 st.rerun()
 
@@ -3715,7 +3715,7 @@ with left:
 
         row2_col1, row2_col2, row2_col3, row2_col4 = st.columns(4)
         with row2_col1:
-            cfg_array_east_panels = st.number_input("East array panels", min_value=0, value=int(cfg_pv["array_east_panels"]), step=1, help=get_help("array_panels"))
+            cfg_array_east_panels = st.number_input("East panels", min_value=0, value=int(cfg_pv["array_east_panels"]), step=1, help=get_help("array_panels"))
         with row2_col2:
             cfg_tilt_east_deg = st.number_input(
                 "Tilt East (deg)",
@@ -3736,7 +3736,7 @@ with left:
             )
         with row2_col4:
             cfg_pv_calibration_factor_east = st.number_input(
-                "PV calibration factor East",
+                "Cal factor East",
                 min_value=0.70,
                 max_value=1.30,
                 value=float(cfg_pv.get("pv_calibration_factor_east", 1.0)),
@@ -3748,7 +3748,7 @@ with left:
 
         row3_col1, row3_col2, row3_col3, row3_col4 = st.columns(4)
         with row3_col1:
-            cfg_array_south_panels = st.number_input("South array panels", min_value=0, value=int(cfg_pv["array_south_panels"]), step=1, help=get_help("array_panels"))
+            cfg_array_south_panels = st.number_input("South panels", min_value=0, value=int(cfg_pv["array_south_panels"]), step=1, help=get_help("array_panels"))
         with row3_col2:
             cfg_tilt_south_deg = st.number_input(
                 "Tilt South (deg)",
@@ -3769,7 +3769,7 @@ with left:
             )
         with row3_col4:
             cfg_pv_calibration_factor_south = st.number_input(
-                "PV calibration factor South",
+                "Cal factor South",
                 min_value=0.70,
                 max_value=1.30,
                 value=float(cfg_pv.get("pv_calibration_factor_south", 1.0)),
@@ -3787,6 +3787,7 @@ with left:
         with bat_col_left:
             cfg_battery_kwh = st.number_input("Capacity (kWh)", min_value=0.0, value=float(effective_cfg["battery"]["battery_kwh"]), step=0.1, help=get_help("battery_kwh"))
             cfg_min_soc_percent = st.number_input("Min SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["min_soc_percent"]), step=0.5, help=get_help("min_soc"))
+            cfg_max_cutoff_soc_percent = st.number_input("Cutoff SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["max_cutoff_soc_percent"]), step=0.5, help=get_help("cutoff_soc"))
 
         with bat_col_right:
             cfg_max_grid_charge_power_kw = st.number_input(
@@ -3805,46 +3806,13 @@ with left:
                 help=get_help("battery_max_charge_kw"),
                 key="battery_max_charge_hw_display",
             )
-            cfg_max_cutoff_soc_percent = st.number_input("Cutoff SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["max_cutoff_soc_percent"]), step=0.5, help=get_help("cutoff_soc"))
         user_max_ac_kw = float(cfg_max_grid_charge_power_kw)
 
         cfg_battery_max_charge_kw = float(effective_cfg["battery"].get("battery_max_charge_kw", core.BATTERY_MAX_CHARGE_KW))
         cfg_battery_max_discharge_kw = float(effective_cfg["battery"].get("battery_max_discharge_kw", core.BATTERY_MAX_DISCHARGE_KW))
         cfg_max_ac_charge_kw_hard_limit = float(effective_cfg["battery"].get("max_ac_charge_kw_hard_limit", core.MAX_AC_CHARGE_KW_HARD_LIMIT))
 
-        with st.expander("Advanced", expanded=False):
-            st.markdown("##### Scheduler & Safety")
-            buffer_percent = st.number_input(
-                "Extra cutoff buffer (%)",
-                min_value=0.0,
-                max_value=10.0,
-                value=0.0,
-                step=0.5,
-                format="%.1f",
-                help=get_help("buffer_percent"),
-                key="extra_cutoff_buffer_percent",
-            )
-
-            st.markdown("##### PV modelling")
-            history_debug_mode = st.session_state.get("history_mode", "Simple") == "Debug"
-            if history_debug_mode:
-                st.caption("Debug: PV modelling defaults are enforced internally.")
-                st.code(
-                    "\n".join([
-                        "loss_model=split",
-                        "inverter_ac_model=pvwatts",
-                        "iam_model=ashrae (b=0.05)",
-                        "albedo=0.20",
-                        "temperature_model=faiman (u0=25.0, u1=6.84)",
-                        "inverter_eff=0.97",
-                    ]),
-                    language="text",
-                )
-            else:
-                st.caption(
-                    "PV modelling is automatic: split losses, pvwatts inverter, "
-                    "ASHRAE IAM (b=0.05), albedo 0.20, Faiman temperature model."
-                )
+        buffer_percent = 0.0
 
 
         st.markdown("#### Car Charger")
@@ -4031,7 +3999,7 @@ with left:
     def render_car_charger_panel() -> None:
         # Renders in the placeholder created above (between Weather models and Settings)
         with car_charger_box.container():
-            with st.expander("Car charger", expanded=True):
+            with st.expander("Car charger", expanded=False):
                 evse = get_evse_status()
 
                 enabled = bool(evse.get("enabled", False))
@@ -4064,7 +4032,7 @@ with left:
                 # Control only when feature enabled + connected + plugged
                 can_control = bool(enabled and connected and plugged)
 
-                btn_cols = st.columns([1.4, 1.4, 3.2], vertical_alignment="center")
+                btn_cols = st.columns([1.7, 1.7, 2.6], vertical_alignment="center")
 
                 if charging:
                     stop_clicked = btn_cols[0].button(
@@ -4111,21 +4079,15 @@ with left:
                     m1.metric("Power (kW)", f"{float(power_kw):.2f}" if power_kw is not None else "—")
                     m2.metric("Session energy (kWh)", f"{float(session_kwh):.2f}" if session_kwh is not None else "—")
                     m3.metric("Total energy (kWh)", f"{float(total_kwh):.2f}" if total_kwh is not None else "—")
-                else:
-                    st.info(
-                        "Charger is not connected to OCPP. OCPP must be enabled in FusionSolar installer mode and pointed to this PC (Domain/Port/Path)."
-                    )
-
-                # --- Technical details (collapsed by default) ---
-                with st.expander("Technical details", expanded=False):
-                    st.markdown(f"**Enabled:** {enabled}")
-                    st.markdown(f"**Auth mode:** {auth_mode}")
-                    if evse.get("ws_path"):
-                        st.markdown(f"**WS path:** {evse.get('ws_path')}")
-                    if evse.get("transaction_id") is not None:
-                        st.markdown(f"**Transaction ID:** {evse.get('transaction_id')}")
-                    # Keep raw keys minimal; no JSON dump unless APP_DEBUG is on
-                    if APP_DEBUG:
+                if APP_DEBUG:
+                    # --- Technical details (debug only) ---
+                    with st.expander("Technical details", expanded=False):
+                        st.markdown(f"**Enabled:** {enabled}")
+                        st.markdown(f"**Auth mode:** {auth_mode}")
+                        if evse.get("ws_path"):
+                            st.markdown(f"**WS path:** {evse.get('ws_path')}")
+                        if evse.get("transaction_id") is not None:
+                            st.markdown(f"**Transaction ID:** {evse.get('transaction_id')}")
                         st.code(evse)
 
     forecast_mode, selected_models, sat_nowcast_for_run = render_weather_models_panel()
@@ -4143,31 +4105,41 @@ with left:
     weather_valid = not readiness_issues["Weather"]
     run_allowed = settings_valid and inputs_valid and weather_valid
 
+    if settings_dirty:
+        st.session_state["_settings_saved_inline"] = False
+
     summary_parts = []
     for key in ["Inputs", "Location", "Tariffs", "PV", "Battery", "Weather"]:
         if readiness_issues[key]:
             summary_parts.append(f"⚠ {key}: {readiness_issues[key][0]}")
         else:
             summary_parts.append(f"✅ {key}")
-    st.caption(" | ".join(summary_parts))
+    summary_col, save_status_col = st.columns([9, 2], vertical_alignment="center")
+    with summary_col:
+        st.caption(" | ".join(summary_parts))
+    with save_status_col:
+        if st.session_state.get("_settings_saved_inline"):
+            st.caption("✅ Settings saved")
 
     ensemble_method = "weighted"
-    spacer, col_reset, col_save, col_run = st.columns([4.2, 2.6, 2.2, 2.2])
-    with col_reset:
-        reset_clicked = st.button(
-            "Factory settings",
-            type="secondary",
-            key="btn_reset_defaults",
-            width="stretch",
-        )
-    with col_save:
-        save_clicked = st.button(
-            "Save settings",
-            type="secondary",
-            disabled=(not settings_valid) or (not settings_dirty),
-            key="btn_save_settings_top",
-            width="stretch",
-        )
+    left_actions_col, _, col_run = st.columns([4.6, 4.0, 2.4], vertical_alignment="bottom")
+    with left_actions_col:
+        left_btn_reset, left_btn_save = st.columns(2, gap="small")
+        with left_btn_reset:
+            reset_clicked = st.button(
+                "Factory settings",
+                type="secondary",
+                key="btn_reset_defaults",
+                width="stretch",
+            )
+        with left_btn_save:
+            save_clicked = st.button(
+                "Save settings",
+                type="secondary",
+                disabled=(not settings_valid) or (not settings_dirty),
+                key="btn_save_settings_top",
+                width="stretch",
+            )
 
     with col_run:
         run_clicked = st.button(
@@ -4330,7 +4302,9 @@ with left:
 
 
     flash = st.session_state.pop("_settings_flash", None)
-    if flash:
+    if flash == "Saved settings to backend":
+        st.session_state["_settings_saved_inline"] = True
+    elif flash:
         st.success(flash)
 
     if save_clicked:
