@@ -4040,27 +4040,14 @@ with left:
             summary_parts.append(f"⚠ {key}: {readiness_issues[key][0]}")
         else:
             summary_parts.append(f"✅ {key}")
-    summary_col, save_status_col = st.columns([8.6, 2.4], vertical_alignment="center")
-    with summary_col:
-        summary_text = " | ".join(summary_parts)
-        st.markdown(
-            (
-                '<div style="font-size:0.78rem; line-height:1.25; white-space:nowrap; overflow:hidden; '
-                f'text-overflow:ellipsis;" title="{html.escape(summary_text)}">{html.escape(summary_text)}</div>'
-            ),
-            unsafe_allow_html=True,
-        )
-    with save_status_col:
-        save_status_visibility = "visible" if save_label_active else "hidden"
-        st.markdown(
-            (
-                '<div style="display:flex; justify-content:flex-end; align-items:center; min-height:1.45rem;">'
-                '<span style="white-space:nowrap; font-size:0.82rem; line-height:1.2; '
-                f'color:#2e7d32; visibility:{save_status_visibility};">✅ Settings saved</span>'
-                '</div>'
-            ),
-            unsafe_allow_html=True,
-        )
+    summary_text = " | ".join(summary_parts)
+    st.markdown(
+        (
+            '<div style="font-size:0.78rem; line-height:1.25; white-space:nowrap; overflow:hidden; '
+            f'text-overflow:ellipsis;" title="{html.escape(summary_text)}">{html.escape(summary_text)}</div>'
+        ),
+        unsafe_allow_html=True,
+    )
 
     ensemble_method = "weighted"
     top_action_reset, top_action_save, top_action_run = st.columns([1.25, 1.1, 1.0], vertical_alignment="center")
@@ -4086,6 +4073,31 @@ with left:
             disabled=(not run_allowed),
             key="btn_run_forecast",
             width="stretch",
+        )
+
+    save_badge_visibility = "visible" if save_label_active else "hidden"
+    save_badge_opacity = "1" if save_label_active else "0"
+    save_badge_id = "top-save-feedback-badge"
+    st.markdown(
+        (
+            '<div style="display:flex; justify-content:flex-end; align-items:center; min-height:1.3rem; margin-top:0.1rem;">'
+            f'<span id="{save_badge_id}" style="white-space:nowrap; font-size:0.8rem; line-height:1.15; '
+            'padding:0.08rem 0.38rem; border-radius:999px; background:rgba(46,125,50,0.10); '
+            f'color:#2e7d32; visibility:{save_badge_visibility}; opacity:{save_badge_opacity};">✅ Settings saved</span>'
+            '</div>'
+        ),
+        unsafe_allow_html=True,
+    )
+    if save_label_active:
+        remaining_ms = max(150, int((save_label_until - time.time()) * 1000))
+        st.markdown(
+            (
+                "<script>"
+                "const saveBadge = window.parent.document.getElementById('top-save-feedback-badge');"
+                f"if (saveBadge) {{ setTimeout(() => {{ saveBadge.style.opacity='0'; saveBadge.style.visibility='hidden'; }}, {remaining_ms}); }}"
+                "</script>"
+            ),
+            unsafe_allow_html=True,
         )
 
     if reset_clicked:
