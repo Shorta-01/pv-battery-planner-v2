@@ -1262,6 +1262,30 @@ def build_hourly_load_series(index: "pd.DatetimeIndex", total_kwh: float) -> "pd
     return weighted * (total_kwh / wsum)
 
 
+def build_cycle_hourly_load_series(
+    target_date: dt.date,
+    total_consumption_kwh: float,
+    tariff_cfg: Optional[dict] = None,
+) -> "pd.Series":
+    cfg = tariff_cfg or DEFAULT_CONFIG["tariff"]
+    cycle_start, _ = compute_charging_window_for_target_date(target_date, cfg)
+    next_cycle_start, _ = compute_charging_window_for_target_date(target_date + dt.timedelta(days=1), cfg)
+    if next_cycle_start <= cycle_start:
+        next_cycle_start = cycle_start + dt.timedelta(hours=24)
+
+    cycle_idx = pd.date_range(cycle_start, next_cycle_start, freq="h", inclusive="left", tz=TIMEZONE)
+    cycle_loads = build_hourly_load_series(cycle_idx, total_consumption_kwh)
+
+    if ENABLE_INVARIANT_CHECKS:
+        cycle_total = float(cycle_loads.sum())
+        if abs(cycle_total - float(total_consumption_kwh)) > 1e-6:
+            raise ValueError(
+                "Cycle load normalization mismatch: "
+                f"sum={cycle_total:.9f} expected={float(total_consumption_kwh):.9f}"
+            )
+    return cycle_loads
+
+
 def load_consumption_profile_kwh_per_hour() -> list[float]:
     """Return a normalized 24h load profile for backward compatibility."""
     if len(LOAD_PROFILE) != 24:
@@ -3022,6 +3046,7 @@ def simulate_night_charging_series(
     total_consumption_kwh: float = 0.0,
     tariff_cfg: Optional[dict] = None,
     tomorrow_date: Optional[dt.date] = None,
+    precomputed_loads: Optional[pd.Series] = None,
 ) -> "pd.DataFrame":
     cfg = tariff_cfg or DEFAULT_CONFIG["tariff"]
     if session_start is None or session_end is None:
@@ -3029,7 +3054,13 @@ def simulate_night_charging_series(
             raise ValueError("tomorrow_date is required when session_start/session_end are not provided.")
         session_start, session_end = compute_charging_window_for_target_date(tomorrow_date, cfg)
     idx = pd.date_range(session_start, session_end, freq="h", inclusive="left", tz=TIMEZONE)
-    loads = build_hourly_load_series(idx, total_consumption_kwh)
+    if precomputed_loads is not None:
+        loads = pd.to_numeric(precomputed_loads.reindex(idx), errors="coerce").fillna(0.0).astype(float)
+    else:
+        if tomorrow_date is None:
+            tomorrow_date = session_end.date()
+        cycle_loads = build_cycle_hourly_load_series(tomorrow_date, total_consumption_kwh, tariff_cfg=cfg)
+        loads = pd.to_numeric(cycle_loads.reindex(idx), errors="coerce").fillna(0.0).astype(float)
     energy = max(0.0, min(1.0, soc_at_22)) * BATTERY_KWH
     min_energy = MIN_SOC * BATTERY_KWH
     max_energy = MAX_CUTOFF_SOC * BATTERY_KWH
@@ -3101,6 +3132,10 @@ def simulate_full_day_soc(
 
     cfg = tariff_cfg or DEFAULT_CONFIG["tariff"]
     window_start, window_end = compute_charging_window_for_target_date(tomorrow_date, cfg)
+
+    cycle_loads = build_cycle_hourly_load_series(tomorrow_date, total_consumption_kwh, tariff_cfg=cfg)
+    night_loads = pd.to_numeric(cycle_loads.reindex(pd.date_range(window_start, window_end, freq="h", inclusive="left", tz=TIMEZONE)), errors="coerce").fillna(0.0).astype(float)
+
     night_df = simulate_night_charging_series(
         soc_at_22,
         charge_kw,
@@ -3109,16 +3144,26 @@ def simulate_full_day_soc(
         session_end=window_end,
         total_consumption_kwh=total_consumption_kwh,
         tariff_cfg=cfg,
+        precomputed_loads=night_loads,
     )
     day_start_ts = window_end
     soc_day_start = float(night_df.iloc[-1]["soc_end_pct"]) / 100.0 if not night_df.empty else soc_at_22
 
     day_idx = pd.date_range(day_start_ts, tomorrow_end, freq="h", inclusive="left", tz=TIMEZONE)
     dt_h = timestep_hours(day_idx)
-    loads = build_hourly_load_series(day_idx, total_consumption_kwh)
+    loads = pd.to_numeric(cycle_loads.reindex(day_idx), errors="coerce").fillna(0.0).astype(float)
     pv_total = pd.to_numeric(df.get("pv_total_kwh", pd.Series(0.0, index=day_idx)).reindex(day_idx), errors="coerce").fillna(0.0)
     pv_unclipped = pd.to_numeric(df.get("pv_total_unclipped_kwh", pv_total).reindex(day_idx), errors="coerce")
     pv_unclipped = pv_unclipped.combine_first(pv_total).fillna(0.0)
+
+    if ENABLE_INVARIANT_CHECKS:
+        load_cycle_total_kwh = float(cycle_loads.sum())
+        load_night_kwh = float(night_loads.sum())
+        load_day_kwh = float(loads.sum())
+        if abs(load_cycle_total_kwh - float(total_consumption_kwh)) > 1e-6:
+            raise ValueError("Cycle load total does not match target consumption.")
+        if abs((load_night_kwh + load_day_kwh) - float(total_consumption_kwh)) > 1e-6:
+            raise ValueError("Night + day load total does not match target consumption.")
 
     energy = max(0.0, min(1.0, soc_day_start)) * BATTERY_KWH
     min_energy = MIN_SOC * BATTERY_KWH
@@ -3197,7 +3242,11 @@ def simulate_full_day_soc(
 
     day_flows_df = pd.DataFrame(rows).set_index("time")
     night_tomorrow_df = night_df[(night_df.index >= tomorrow_start) & (night_df.index < day_start_ts)]
-    flows_df = pd.concat([night_tomorrow_df, day_flows_df]).sort_index().reindex(tomorrow_idx).fillna(0.0)
+    flows_df = pd.concat([night_tomorrow_df, day_flows_df]).sort_index()
+    flows_df = flows_df[~flows_df.index.duplicated(keep="last")]
+    flows_df = flows_df.reindex(tomorrow_idx).fillna(0.0)
+    if ENABLE_INVARIANT_CHECKS and not flows_df.index.is_unique:
+        raise ValueError("full_day flows contains duplicate timestamps")
     soc_series = pd.Series(pd.to_numeric(flows_df["soc_end_pct"], errors="coerce").fillna(0.0).values, index=tomorrow_idx, name="soc_percent")
     if ENABLE_INVARIANT_CHECKS:
         validate_flow_invariants(flows_df, "full_day")
