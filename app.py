@@ -4109,7 +4109,20 @@ with left:
     weather_valid = not readiness_issues["Weather"]
     run_allowed = settings_valid and inputs_valid and weather_valid
 
+    flash = st.session_state.pop("_settings_flash", None)
+    if flash == "Saved settings to backend":
+        st.session_state["_settings_saved_inline"] = True
+        st.session_state["_settings_saved_inline_until"] = time.time() + 3.0
+    elif flash:
+        st.success(flash)
+
     if settings_dirty:
+        st.session_state["_settings_saved_inline"] = False
+        st.session_state["_settings_saved_inline_until"] = 0.0
+
+    save_label_until = float(st.session_state.get("_settings_saved_inline_until", 0.0) or 0.0)
+    save_label_active = bool(st.session_state.get("_settings_saved_inline")) and (time.time() < save_label_until)
+    if not save_label_active:
         st.session_state["_settings_saved_inline"] = False
 
     summary_parts = []
@@ -4118,12 +4131,19 @@ with left:
             summary_parts.append(f"⚠ {key}: {readiness_issues[key][0]}")
         else:
             summary_parts.append(f"✅ {key}")
-    summary_col, save_status_col = st.columns([9, 2], vertical_alignment="center")
+    summary_col, save_status_col = st.columns([8, 3], vertical_alignment="center")
     with summary_col:
         st.caption(" | ".join(summary_parts))
     with save_status_col:
-        if st.session_state.get("_settings_saved_inline"):
-            st.caption("✅ Settings saved")
+        visibility = "visible" if save_label_active else "hidden"
+        st.markdown(
+            (
+                "<div style=\"text-align:right; white-space:nowrap; "
+                "font-size:0.875rem; line-height:1.4; min-height:1.4rem; "
+                f"color:#2e7d32; visibility:{visibility};\">✅ Settings saved</div>"
+            ),
+            unsafe_allow_html=True,
+        )
 
     ensemble_method = "weighted"
     left_actions_col, _, col_run = st.columns([4.6, 4.0, 2.4], vertical_alignment="bottom")
@@ -4303,14 +4323,6 @@ with left:
                         st.code(str(detail.get("context_json", "")), language="json")
                 except Exception:
                     pass
-
-
-    flash = st.session_state.pop("_settings_flash", None)
-    if flash == "Saved settings to backend":
-        st.session_state["_settings_saved_inline"] = True
-    elif flash:
-        st.success(flash)
-
     if save_clicked:
         if not settings_valid:
             st.error(settings_error or "Could not save settings.")
