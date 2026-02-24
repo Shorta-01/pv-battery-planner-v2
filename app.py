@@ -1493,63 +1493,11 @@ def _pv_quality_signal_html(label: str, color: str, tooltip: str) -> str:
     )
 
 
-def render_pv_quality_widget(
-    container,
-    pv_df: pd.DataFrame,
-    pv_quality_dict: dict,
-    tomorrow_date: dt.date,
-    effective_cfg: dict | None = None,
-    pv_tomorrow_low_kwh: float | None = None,
-    pv_tomorrow_high_kwh: float | None = None,
-    tomorrow_weather_code: int | float | str | None = None,
-    tomorrow_source_label: str | None = None,
-    tomorrow_source_days: int | float | str | None = None,
-    forecast_total_load_kwh: float | None = None,
-    est_export_curtail_kwh: float | None = None,
+def _build_cycle_savings_html(
+    pv_quality_dict: dict | None,
     planning_metrics: dict | None = None,
-) -> None:
-    _ = pv_df
-
-    score = int(_safe_float((pv_quality_dict or {}).get("score"), 0.0))
-    score = min(100, max(0, score))
-    ratio_percent = max(0.0, min(_safe_float((pv_quality_dict or {}).get("ratio"), 0.0) * 100.0, 100.0))
-
-    pv_label = str((pv_quality_dict or {}).get("label") or "Mixed")
-    pv_color = str((pv_quality_dict or {}).get("color") or "#94a3b8")
-    tariff_cfg = (effective_cfg or {}).get("tariff", effective_cfg or {}) if isinstance(effective_cfg, dict) else {}
-    offpeak_windows = core.get_offpeak_windows_for_date(tomorrow_date, tariff_cfg)
-    expensive_windows = core.get_expensive_windows(tomorrow_date, tariff_cfg)
-    offpeak_segments = windows_to_segments(offpeak_windows)
-
-    if not offpeak_windows and not expensive_windows:
-        timeline_base = "background:rgba(148,163,184,0.30);"
-    else:
-        timeline_base = "background:rgba(214,40,40,0.85);"
-
-    overlays: list[str] = []
-    for start_min, end_min in offpeak_segments:
-        left_pct = clamp_pct((start_min / 1440.0) * 100.0)
-        width_pct = clamp_pct(((end_min - start_min) / 1440.0) * 100.0)
-        radius_bits: list[str] = []
-        if start_min == 0:
-            radius_bits.append("border-top-left-radius:999px;border-bottom-left-radius:999px;")
-        if end_min == 1440:
-            radius_bits.append("border-top-right-radius:999px;border-bottom-right-radius:999px;")
-        radius_css = "".join(radius_bits)
-        overlays.append(
-            "<div style='position:absolute;top:0;bottom:0;left:{left:.5f}%;width:{width:.5f}%;"
-            "background:#52b788;{radius}'></div>".format(
-                left=left_pct,
-                width=width_pct,
-                radius=radius_css,
-            )
-        )
-
-    summary_start, summary_end = (offpeak_windows[0] if offpeak_windows else ("00:00", "24:00"))
-    offpeak_summary, peak_summary = make_summary_lines(summary_start, summary_end)
-    summary_line = offpeak_summary if not peak_summary else f"{offpeak_summary} - {peak_summary}"
-    summary_html = f"<div style='margin-top:0.30rem;font-size:0.70rem;opacity:0.92;'>{summary_line}</div>"
-
+    show_savings_diagnostics: bool | None = None,
+) -> str:
     sv = resolve_pv_outlook_savings(pv_quality_dict)
     base_cost = sv["base_cost"]
     plan_cost = sv["plan_cost"]
@@ -1562,8 +1510,9 @@ def render_pv_quality_widget(
     resolver_note = str(sv.get("note") or "").strip()
     resolver_detail_note = str(sv.get("detail_note") or "").strip()
 
-    history_debug_mode = st.session_state.get("history_mode", "Simple") == "Debug"
-    show_savings_diagnostics = bool(APP_DEBUG or history_debug_mode)
+    if show_savings_diagnostics is None:
+        history_debug_mode = st.session_state.get("history_mode", "Simple") == "Debug"
+        show_savings_diagnostics = bool(APP_DEBUG or history_debug_mode)
 
     diag_baseline_cycle = _safe_float((pv_quality_dict or {}).get("baseline_cost_eur_cycle"), 0.0)
     diag_plan_cash_cycle = _safe_float((pv_quality_dict or {}).get("plan_cost_eur_cycle_cash"), 0.0)
@@ -1682,6 +1631,66 @@ def render_pv_quality_widget(
         )
     else:
         savings_html = "<div style='margin-top:0.50rem;font-size:0.70rem;opacity:0.78;'>Run forecast to see € savings.</div>"
+    return savings_html
+
+
+def render_pv_quality_widget(
+    container,
+    pv_df: pd.DataFrame,
+    pv_quality_dict: dict,
+    tomorrow_date: dt.date,
+    effective_cfg: dict | None = None,
+    pv_tomorrow_low_kwh: float | None = None,
+    pv_tomorrow_high_kwh: float | None = None,
+    tomorrow_weather_code: int | float | str | None = None,
+    tomorrow_source_label: str | None = None,
+    tomorrow_source_days: int | float | str | None = None,
+    forecast_total_load_kwh: float | None = None,
+    est_export_curtail_kwh: float | None = None,
+    planning_metrics: dict | None = None,
+) -> None:
+    _ = pv_df
+
+    score = int(_safe_float((pv_quality_dict or {}).get("score"), 0.0))
+    score = min(100, max(0, score))
+    ratio_percent = max(0.0, min(_safe_float((pv_quality_dict or {}).get("ratio"), 0.0) * 100.0, 100.0))
+
+    pv_label = str((pv_quality_dict or {}).get("label") or "Mixed")
+    pv_color = str((pv_quality_dict or {}).get("color") or "#94a3b8")
+    tariff_cfg = (effective_cfg or {}).get("tariff", effective_cfg or {}) if isinstance(effective_cfg, dict) else {}
+    offpeak_windows = core.get_offpeak_windows_for_date(tomorrow_date, tariff_cfg)
+    expensive_windows = core.get_expensive_windows(tomorrow_date, tariff_cfg)
+    offpeak_segments = windows_to_segments(offpeak_windows)
+
+    if not offpeak_windows and not expensive_windows:
+        timeline_base = "background:rgba(148,163,184,0.30);"
+    else:
+        timeline_base = "background:rgba(214,40,40,0.85);"
+
+    overlays: list[str] = []
+    for start_min, end_min in offpeak_segments:
+        left_pct = clamp_pct((start_min / 1440.0) * 100.0)
+        width_pct = clamp_pct(((end_min - start_min) / 1440.0) * 100.0)
+        radius_bits: list[str] = []
+        if start_min == 0:
+            radius_bits.append("border-top-left-radius:999px;border-bottom-left-radius:999px;")
+        if end_min == 1440:
+            radius_bits.append("border-top-right-radius:999px;border-bottom-right-radius:999px;")
+        radius_css = "".join(radius_bits)
+        overlays.append(
+            "<div style='position:absolute;top:0;bottom:0;left:{left:.5f}%;width:{width:.5f}%;"
+            "background:#52b788;{radius}'></div>".format(
+                left=left_pct,
+                width=width_pct,
+                radius=radius_css,
+            )
+        )
+
+    summary_start, summary_end = (offpeak_windows[0] if offpeak_windows else ("00:00", "24:00"))
+    offpeak_summary, peak_summary = make_summary_lines(summary_start, summary_end)
+    summary_line = offpeak_summary if not peak_summary else f"{offpeak_summary} - {peak_summary}"
+    summary_html = f"<div style='margin-top:0.30rem;font-size:0.70rem;opacity:0.92;'>{summary_line}</div>"
+
 
     weather_icon = weather_code_to_icon(tomorrow_weather_code)
     weather_label = weather_code_to_label(tomorrow_weather_code)
@@ -1778,7 +1787,6 @@ def render_pv_quality_widget(
             "</div>"
             + summary_html
             + micro_metrics_html
-            + savings_html
             + (
                 f"<div style='margin-top:0.30rem;font-size:0.68rem;opacity:0.78;'>"
                 f"DEBUG PV score: {score} label: {pv_label} ratio: {ratio_percent:.1f}%"
@@ -1838,44 +1846,35 @@ def render_offpeak_plan_summary(
             level = "low"
 
     tooltip_map = {
-        "high": "Forecast confidence is high. These settings are likely reliable for tonight.",
-        "medium": "Forecast confidence is medium. The values are usable, but real PV may vary.",
-        "low": "Forecast confidence is low. Use extra caution, as real PV may differ more than usual.",
-        None: "Forecast confidence: Unavailable. Confidence could not be determined for this run.",
+        "high": "High forecast confidence for tonight’s recommended Fusion Solar settings.",
+        "medium": "Medium forecast confidence. Recommended values are usable, but real PV may vary.",
+        "low": "Low forecast confidence. Use extra caution, as real PV may differ more than usual.",
+        None: "Forecast confidence unavailable for this run.",
     }
     confidence_tooltip = tooltip_map.get(level, tooltip_map[None])
 
-    def _bar_segment(label: str, seg_level: str) -> str:
-        active = level == seg_level
-        active_style = (
-            "background:linear-gradient(140deg, rgba(82,183,136,0.42), rgba(42,157,143,0.42));"
-            "border-color:rgba(82,183,136,0.78);color:rgba(244,255,250,0.98);"
-            if active
-            else "background:rgba(255,255,255,0.06);border-color:rgba(255,255,255,0.14);color:rgba(228,233,240,0.76);"
-        )
-        return (
-            "<div style='flex:1;min-width:0;text-align:center;padding:0.28rem 0.24rem;"
-            "border-radius:8px;border:1px solid;letter-spacing:0.01em;font-size:0.72rem;font-weight:640;"
-            f"{active_style}'>"
-            f"{_esc_attr(label)}"
-            "</div>"
-        )
+    confidence_icon_color = {
+        "high": "#52b788",
+        "medium": "#f4a261",
+        "low": "#d62828",
+    }.get(level, "#94a3b8")
+    confidence_icon_label = {
+        "high": "Good",
+        "medium": "Mixed",
+        "low": "Poor",
+    }.get(level, "Mixed")
+    confidence_icon_html = _pv_quality_signal_html(confidence_icon_label, confidence_icon_color, confidence_tooltip)
+    savings_html = _build_cycle_savings_html(pv_quality_dict=pv_quality_dict, planning_metrics=metrics)
 
-    confidence_bar_html = (
-        f"<div title='{_esc_attr(confidence_tooltip)}' style='display:flex;align-items:center;gap:0.28rem;'>"
-        f"{_bar_segment('Low', 'low')}"
-        f"{_bar_segment('Medium', 'medium')}"
-        f"{_bar_segment('High', 'high')}"
-        "</div>"
-    )
 
     container.markdown(
         (
             "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.78rem 0.82rem;"
             "background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));min-width:245px;'>"
             "<div style='display:flex;flex-direction:column;gap:0.56rem;'>"
-            "<div style='font-size:0.90rem;font-weight:760;letter-spacing:0.01em;opacity:0.96;'>"
-            "Set These Values in Fusion Solar Now"
+            "<div style='display:flex;align-items:center;justify-content:space-between;gap:0.45rem;'>"
+            "<div style='font-size:0.90rem;font-weight:760;letter-spacing:0.01em;opacity:0.96;'>Set These Values in Fusion Solar Now</div>"
+            f"<div style='display:inline-flex;align-items:center;'>{confidence_icon_html}</div>"
             "</div>"
             "<div style='display:grid;grid-template-columns:1fr 1fr;gap:0.60rem;'>"
             "<div style='border:1px solid rgba(255,255,255,0.10);border-radius:12px;padding:0.54rem 0.58rem;"
@@ -1889,11 +1888,9 @@ def render_offpeak_plan_summary(
             f"<div style='margin-top:0.16rem;font-size:1.24rem;font-weight:790;line-height:1.1;'>{_esc_attr(charge_label)}</div>"
             "</div>"
             "</div>"
-            "<div style='margin-top:0.08rem;'>"
-            f"{confidence_bar_html}"
-            "</div>"
-            "</div>"
-            "</div>"
+            + savings_html
+            + "</div>"
+            + "</div>"
         ),
         unsafe_allow_html=True,
     )
