@@ -1428,8 +1428,8 @@ class BackendState:
                     requested_days=1,
                     use_satellite_nowcast_0_6h=use_nowcast,
                 )
-                start_h = pd.Timestamp(now_local).ceil("h")
-                end_h = pd.Timestamp(offpeak_start).floor("h")
+                start_h = core._to_local_ts(now_local, tz).ceil("h")
+                end_h = core._to_local_ts(offpeak_start, tz).floor("h")
                 today_remaining_pv_kwh = 0.0
                 if end_h > start_h:
                     pv_window = pd.to_numeric(
