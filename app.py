@@ -1544,6 +1544,9 @@ def render_pv_quality_widget(
     plan_cost = sv["plan_cost"]
     s = sv["savings"]
     hourly = sv["hourly"]
+    hourly_labels = sv.get("hourly_labels") or [f"{h:02d}:00" for h in range(24)]
+    bars_scope = str(sv.get("bars_scope") or "tomorrow")
+    terminal_cycle_value = _safe_float(sv.get("terminal_battery_value_eur_cycle"), 0.0)
     scope = str(sv.get("display_scope") or "cycle")
     if s is not None and base_cost is not None and plan_cost is not None:
         s = float(s)
@@ -1558,7 +1561,7 @@ def render_pv_quality_widget(
                 v = float(val)
                 h_pct = (abs(v) / max_abs) * 100.0
                 col = "rgba(60,220,150,0.95)" if v >= 0 else "rgba(214,40,40,0.95)"
-                hh = f"{i:02d}:00"
+                hh = str(hourly_labels[i]) if i < len(hourly_labels) else f"{i:02d}:00"
                 tip = f"{hh}  {('+' if v >= 0 else '−')}€{abs(v):.2f}"
                 bars.append(
                     f"<div title='{tip}' style='flex:1;height:{h_pct:.1f}%;"
@@ -1574,6 +1577,32 @@ def render_pv_quality_widget(
 
         scope_suffix = "(tomorrow)" if scope == "tomorrow" else "(cycle)"
         headline_label = "SAVINGS" if scope == "tomorrow" else "CYCLE SAVINGS"
+        inventory_chip = ""
+        if abs(terminal_cycle_value) >= 0.01:
+            chip_col = "#52b788" if terminal_cycle_value >= 0 else "#d62828"
+            chip_sign = "+" if terminal_cycle_value >= 0 else "−"
+            chip_tip = (
+                "Cycle result includes battery inventory adjustment. End-of-cycle battery energy is carried "
+                "forward and valued at conservative off-peak replacement cost."
+            )
+            inventory_chip = (
+                "<div style='margin-top:0.20rem;'>"
+                f"<span class='pvbp-tip' tabindex='0' style='display:inline-flex;align-items:center;gap:0.25rem;"
+                f"padding:0.10rem 0.38rem;border-radius:999px;border:1px solid rgba(255,255,255,0.16);"
+                f"font-size:0.66rem;color:{chip_col};font-weight:700;'>"
+                f"🔋 {chip_sign}€{abs(terminal_cycle_value):.2f} end SOC value"
+                f"<span class='pvbp-tiptext'>{_esc_attr(chip_tip)}</span>"
+                "</span></div>"
+            )
+
+        bars_note = ""
+        if bars_scope != "cycle":
+            bars_note = (
+                "<div style='margin-top:0.12rem;font-size:0.68rem;opacity:0.75;'>"
+                "⏱️ Bars: tomorrow (00–24)"
+                "</div>"
+            )
+
         savings_html = (
             "<div style='margin-top:0.65rem;padding-top:0.55rem;border-top:1px solid rgba(255,255,255,0.10);'>"
             "<div style='display:flex;align-items:center;justify-content:space-between;'>"
@@ -1585,19 +1614,9 @@ def render_pv_quality_widget(
             f"<div style='margin-top:0.22rem;font-size:0.70rem;opacity:0.80;'>"
             f"No battery {scope_suffix}: €{float(base_cost):.2f} · Battery plan {scope_suffix}: €{float(plan_cost):.2f}"
             "</div>"
+            + inventory_chip
             + bars_html
-            + (
-                "<div style='margin-top:0.22rem;font-size:0.68rem;opacity:0.75;'>"
-                "🔁 Cycle = off-peak start → next off-peak start"
-                "</div>"
-                if scope != "tomorrow"
-                else ""
-            )
-            + (
-                "<div style='margin-top:0.12rem;font-size:0.68rem;opacity:0.75;'>"
-                "⏱️ Hourly bars = tomorrow (00–24)"
-                "</div>"
-            )
+            + bars_note
             + "</div>"
         )
     else:
