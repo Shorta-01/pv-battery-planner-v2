@@ -465,6 +465,106 @@ def _pick_week_ahead_weather_code(
     return best_code, best_model_id, best_max_days
 
 
+def _pick_week_ahead_weather_code_vote(
+    day_offset: int,
+    *,
+    target_date: dt.date,
+    tz: str,
+    weather_by_model: dict[str, object],
+    weights_used: dict[str, float] | None,
+    primary_id: str | None,
+    derived_weather_code_by_model: dict[str, bool] | None = None,
+) -> tuple[int | None, dict[str, object] | None]:
+    day = target_date + dt.timedelta(days=day_offset)
+    day_start = pd.Timestamp(dt.datetime.combine(day, dt.time(0, 0)), tz=tz)
+    day_end = day_start + pd.Timedelta(days=1)
+
+    code_votes: dict[int, float] = {}
+    code_model_counts: dict[int, int] = {}
+    code_derived_counts: dict[int, int] = {}
+    vote_breakdown: dict[str, dict[str, float | int | bool]] = {}
+    models_considered = 0
+    models_used = 0
+
+    for model_id in sorted((weather_by_model or {}).keys()):
+        models_considered += 1
+        fr = (weather_by_model or {}).get(model_id)
+        df = getattr(fr, "df", None)
+        if not isinstance(df, pd.DataFrame) or "weather_code" not in df.columns:
+            continue
+
+        idx = df.index
+        if isinstance(idx, pd.DatetimeIndex):
+            if idx.tz is None:
+                df = df.copy()
+                df.index = df.index.tz_localize(tz)
+            else:
+                df = df.tz_convert(tz)
+
+        day_df = df.loc[(df.index >= day_start) & (df.index < day_end), ["weather_code"]].copy()
+        if day_df.empty:
+            continue
+
+        wc = pd.to_numeric(day_df["weather_code"], errors="coerce")
+        coverage = int(wc.notna().sum())
+        if coverage <= 0:
+            continue
+
+        midday = day_start + pd.Timedelta(hours=12)
+        midday_code = pd.to_numeric(pd.Series([day_df["weather_code"].get(midday)]), errors="coerce").dropna()
+        if not midday_code.empty:
+            code = int(midday_code.iloc[0])
+        else:
+            mode_vals = wc.dropna().mode()
+            if mode_vals.empty:
+                continue
+            code = int(mode_vals.iloc[0])
+
+        base_weight = float((weights_used or {}).get(model_id, 1.0) or 1.0)
+        coverage_factor = max(0.0, min(1.0, coverage / 24.0))
+        derived = bool((derived_weather_code_by_model or {}).get(model_id, False))
+        derived_penalty_factor = 0.75 if derived else 1.0
+        primary_bonus_factor = 1.05 if (primary_id and model_id == primary_id) else 1.0
+        final_weight = base_weight * coverage_factor * derived_penalty_factor * primary_bonus_factor
+        if final_weight <= 0:
+            continue
+
+        models_used += 1
+        code_votes[code] = code_votes.get(code, 0.0) + final_weight
+        code_model_counts[code] = code_model_counts.get(code, 0) + 1
+        if derived:
+            code_derived_counts[code] = code_derived_counts.get(code, 0) + 1
+
+        vote_breakdown[model_id] = {
+            "code": int(code),
+            "vote": float(final_weight),
+            "coverage": int(coverage),
+            "derived": bool(derived),
+        }
+
+    if not code_votes:
+        return None, None
+
+    def _code_sort_key(code: int) -> tuple[float, int, float, int, int]:
+        total_vote = float(code_votes.get(code, 0.0))
+        model_count = int(code_model_counts.get(code, 0))
+        derived_count = int(code_derived_counts.get(code, 0))
+        derived_ratio = (derived_count / model_count) if model_count > 0 else 1.0
+        severity = _wmo_severity(int(code))
+        return (-total_vote, -model_count, derived_ratio, -severity, int(code))
+
+    best_code = sorted(code_votes.keys(), key=_code_sort_key)[0]
+    diagnostics: dict[str, object] = {
+        "selection_policy": "multi_model_weighted_vote",
+        "models_considered_count": int(models_considered),
+        "models_used_count": int(models_used),
+        "top_code_vote": float(code_votes.get(best_code, 0.0)),
+        "vote_breakdown": vote_breakdown,
+        "code_votes": {str(k): float(v) for k, v in sorted(code_votes.items(), key=lambda kv: int(kv[0]))},
+    }
+    return int(best_code), diagnostics
+
+
 def _build_pv_week_ahead(
     *,
     target_date: dt.date,
@@ -512,6 +612,10 @@ def _build_pv_week_ahead(
         code: int | None = None
         source_model_id: str | None = None
         source_max_days: int | None = None
+        weather_icon_models_considered: int | None = None
+        weather_icon_models_used: int | None = None
+        weather_icon_vote_weight: float | None = None
+        weather_icon_vote_breakdown: dict[str, object] | None = None
 
         day_start = pd.Timestamp(dt.datetime.combine(day, dt.time(0, 0)), tz=tz)
         day_end = day_start + pd.Timedelta(days=1)
@@ -530,9 +634,9 @@ def _build_pv_week_ahead(
             source_max_days = None
             selection_policy = selection_policy or "ensemble_best_of_day"
         else:
-            picker = globals().get("_pick_week_ahead_weather_code")
-            if callable(picker):
-                code, source_model_id, source_max_days = picker(
+            vote_picker = globals().get("_pick_week_ahead_weather_code_vote")
+            if callable(vote_picker):
+                vote_code, vote_diag = vote_picker(
                     i,
                     target_date=target_date,
                     tz=tz,
@@ -541,8 +645,33 @@ def _build_pv_week_ahead(
                     primary_id=weather_primary_model_id,
                     derived_weather_code_by_model=derived_weather_code_by_model,
                 )
-            if code is not None:
-                selection_policy = selection_policy or "source_model_best_of_day"
+                if vote_code is not None:
+                    code = int(vote_code)
+                    source_model_id = "multi_model_vote"
+                    source_max_days = None
+                    if isinstance(vote_diag, dict):
+                        weather_icon_models_considered = int(vote_diag.get("models_considered_count", 0) or 0)
+                        weather_icon_models_used = int(vote_diag.get("models_used_count", 0) or 0)
+                        vote_weight_raw = vote_diag.get("top_code_vote")
+                        weather_icon_vote_weight = float(vote_weight_raw) if vote_weight_raw is not None else None
+                        vb = vote_diag.get("vote_breakdown")
+                        weather_icon_vote_breakdown = vb if isinstance(vb, dict) else None
+                    selection_policy = selection_policy or "multi_model_weighted_vote"
+
+            picker = globals().get("_pick_week_ahead_weather_code")
+            if callable(picker):
+                if code is None:
+                    code, source_model_id, source_max_days = picker(
+                        i,
+                        target_date=target_date,
+                        tz=tz,
+                        weather_by_model=weather_by_model or {},
+                        weights_used=weights_used,
+                        primary_id=weather_primary_model_id,
+                        derived_weather_code_by_model=derived_weather_code_by_model,
+                    )
+                if code is not None and selection_policy is None:
+                    selection_policy = "source_model_best_of_day"
 
         if code is None and isinstance(weather_code_series, pd.Series):
             s = pd.to_numeric(weather_code_series, errors="coerce")
@@ -590,6 +719,10 @@ def _build_pv_week_ahead(
                 "icon_key": None,
                 "weather_code_fallback_used": bool(fallback_used),
                 "weather_code_selection_policy": selection_policy,
+                "weather_icon_models_considered": weather_icon_models_considered,
+                "weather_icon_models_used": weather_icon_models_used,
+                "weather_icon_vote_weight": weather_icon_vote_weight,
+                "weather_icon_vote_breakdown": weather_icon_vote_breakdown,
             }
         )
 

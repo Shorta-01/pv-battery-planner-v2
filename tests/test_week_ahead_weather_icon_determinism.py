@@ -71,7 +71,8 @@ def test_build_pv_week_ahead_falls_back_to_source_model_picker_when_ensemble_mis
     )
 
     assert out[0]["weather_code"] == 2
-    assert out[0]["weather_code_source_model_id"] == "ecmwf_ifs"
+    assert out[0]["weather_code_source_model_id"] == "multi_model_vote"
+    assert out[0]["weather_code_selection_policy"] == "multi_model_weighted_vote"
 
 
 def test_pick_week_ahead_weather_code_is_order_independent_for_equal_candidates() -> None:
