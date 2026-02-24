@@ -1219,7 +1219,7 @@ def render_modern_table(df: pd.DataFrame, column_config: dict | None = None) -> 
 
     st.dataframe(
         df,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config=column_config,
     )
@@ -1242,7 +1242,7 @@ def render_selectable_table(
         column_config = {k: v for k, v in column_config.items() if k in df.columns}
 
     dataframe_kwargs = {
-        "use_container_width": True,
+        "width": "stretch",
         "hide_index": True,
         "column_config": column_config,
         "key": key,
@@ -1284,7 +1284,10 @@ def metric_with_help(container, label: str, value: str) -> None:
         f'**{label}** <span class="info-tooltip" title="{safe_help}">ⓘ</span>',
         unsafe_allow_html=True,
     )
-    container.metric(label="", value=value)
+    metric_kwargs = {"label": "Metric", "value": value}
+    if "label_visibility" in inspect.signature(st.metric).parameters:
+        metric_kwargs["label_visibility"] = "collapsed"
+    container.metric(**metric_kwargs)
 
 
 def _esc_attr(s: object) -> str:
@@ -2772,7 +2775,7 @@ def _render_compare_runs_block(filtered_df: pd.DataFrame) -> None:
                 yaxis=dict(title="PV (kWh)"),
                 yaxis2=dict(title="SOC (%)", overlaying="y", side="right"),
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         else:
             st.info("Hourly overlays unavailable for one or both runs.")
 
@@ -2795,7 +2798,7 @@ def _render_compare_runs_block(filtered_df: pd.DataFrame) -> None:
             if weather_diff_df.empty:
                 st.success("No weather ensemble differences found.")
             else:
-                st.dataframe(weather_diff_df, use_container_width=True, hide_index=True)
+                st.dataframe(weather_diff_df, width="stretch", hide_index=True)
         with diffs_tabs[1]:
             inputs_a = detail_a.get("inputs_used") if isinstance(detail_a.get("inputs_used"), dict) else {}
             inputs_b = detail_b.get("inputs_used") if isinstance(detail_b.get("inputs_used"), dict) else {}
@@ -2803,7 +2806,7 @@ def _render_compare_runs_block(filtered_df: pd.DataFrame) -> None:
             if inputs_diff_df.empty:
                 st.success("No input differences found.")
             else:
-                st.dataframe(inputs_diff_df, use_container_width=True, hide_index=True)
+                st.dataframe(inputs_diff_df, width="stretch", hide_index=True)
         include_noisy_settings = False
         with diffs_tabs[2]:
             include_noisy_settings = st.toggle(
@@ -2818,7 +2821,7 @@ def _render_compare_runs_block(filtered_df: pd.DataFrame) -> None:
             if settings_diff_df.empty:
                 st.success("No settings differences found.")
             else:
-                st.dataframe(settings_diff_df, use_container_width=True, hide_index=True)
+                st.dataframe(settings_diff_df, width="stretch", hide_index=True)
         with diffs_tabs[3]:
             compare_bundle = {
                 "run_a": {"label": run_a_label, "run_id": run_id_a, "summary": {"pv_p50": pv_a, "pv_range_width_kwh": pv_width_a, "load": load_a, "charge_kw": charge_a, "cutoff_soc_pct": cutoff_a, "warnings_count": warn_a}},
@@ -4453,7 +4456,7 @@ if run_clicked:
             normalized_pv = normalize_detail_df_for_ui(pv, effective_cfg)
             pv_load_fig = make_chart_pv_load(normalized_pv, soc_series, cutoff_soc, effective_cfg)
             add_tariff_and_sun_markers(pv_load_fig, tomorrow, sunrise, sunset)
-            st.plotly_chart(pv_load_fig, use_container_width=True)
+            st.plotly_chart(pv_load_fig, width="stretch")
             if normalized_pv.attrs.get("synthetic_pv_split_used", False):
                 st.caption("East/South split estimated by panel ratio (fallback visualization). Total PV remains unchanged.")
 
@@ -4462,13 +4465,13 @@ if run_clicked:
                 tooltip_heading("Surplus vs Deficit (hourly)", CHART_TOOLTIPS["Surplus vs Deficit (hourly)"])
                 surplus_fig = make_chart_surplus(pv)
                 add_tariff_and_sun_markers(surplus_fig, tomorrow, sunrise, sunset)
-                st.plotly_chart(surplus_fig, use_container_width=True)
+                st.plotly_chart(surplus_fig, width="stretch")
 
             with chart_right:
                 tooltip_heading("Grid import/export + curtailment", CHART_TOOLTIPS["Grid import/export + curtailment"])
                 grid_fig = make_chart_grid(flows_df)
                 add_tariff_and_sun_markers(grid_fig, tomorrow, sunrise, sunset)
-                st.plotly_chart(grid_fig, use_container_width=True)
+                st.plotly_chart(grid_fig, width="stretch")
 
             run_inspector_debug_mode = st.session_state.get("history_mode", "Simple") == "Debug"
             if run_inspector_debug_mode:
@@ -4633,7 +4636,7 @@ if run_clicked:
                             for ts in worst.index:
                                 worst_rows.append({"timestamp": str(ts), "residual_kwh": float(residual_series.loc[ts])})
                             st.caption("Top 3 residual hours")
-                            st.dataframe(pd.DataFrame(worst_rows), use_container_width=True, hide_index=True)
+                            st.dataframe(pd.DataFrame(worst_rows), width="stretch", hide_index=True)
                     render_modern_table(planning_visible, make_column_config(planning_visible, planning_units_help_map))
                     planning_csv = planning_visible.to_csv(index=False)
                     planning_json = json.dumps({
