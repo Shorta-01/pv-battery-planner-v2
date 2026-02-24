@@ -1806,195 +1806,91 @@ def render_offpeak_plan_summary(
     est_grid_import_expensive_kwh: float | None = None,
     detail_df: pd.DataFrame | None = None,
     soc_series: pd.Series | None = None,
+    pv_quality_dict: dict | None = None,
 ) -> None:
-    soc_source = str((data_source or {}).get("soc") or "manual").lower()
-    source_label = "FusionSolar" if soc_source == "fusionsolar" else "Manual"
+    del data_source, user_cap_kw, inverter_ac_kw_limit, battery_max_charge_kw, hard_limit_kw
+    del min_soc_pct, max_cutoff_soc_pct, est_grid_import_expensive_kwh, detail_df, soc_series
 
-    offpeak_start_raw = metrics.get("offpeak_start_local") if isinstance(metrics, dict) else None
-    offpeak_start_ts = pd.to_datetime(offpeak_start_raw, errors="coerce")
-    offpeak_label = "—"
-    if pd.notna(offpeak_start_ts):
-        offpeak_label = offpeak_start_ts.strftime("%H:%M")
-        if offpeak_start_ts.date() != dt.datetime.now(offpeak_start_ts.tzinfo).date():
-            offpeak_label = offpeak_start_ts.strftime("%Y-%m-%d %H:%M")
-
-    conf = str((metrics or {}).get("soc_offpeak_start_confidence") or "")
-    soc_est = _safe_float((metrics or {}).get("soc_offpeak_start_estimated_percent"), float("nan"))
-    soc_label = f"{soc_est:.1f}%" if pd.notna(soc_est) else "—"
-
-    delta_h = _safe_float((metrics or {}).get("soc_offpeak_start_hours_until"), float("nan"))
-    load_kwh = _safe_float((metrics or {}).get("soc_offpeak_start_load_kwh_window"), float("nan"))
-    pv_credit = _safe_float((metrics or {}).get("soc_offpeak_start_pv_credit_kwh"), float("nan"))
-    used_history = bool((metrics or {}).get("soc_offpeak_start_used_history"))
-
-    effective_limit = min(float(user_cap_kw), float(inverter_ac_kw_limit), float(battery_max_charge_kw), float(hard_limit_kw))
-    limiter_reason = "hard limit"
-    if abs(effective_limit - float(hard_limit_kw)) < 1e-9:
-        limiter_reason = "hard limit"
-    elif abs(effective_limit - float(user_cap_kw)) < 1e-9:
-        limiter_reason = "user"
-    elif abs(effective_limit - float(inverter_ac_kw_limit)) < 1e-9:
-        limiter_reason = "inverter"
-    elif abs(effective_limit - float(battery_max_charge_kw)) < 1e-9:
-        limiter_reason = "battery"
-
-    charge_kw = _safe_float((metrics or {}).get("charge_kw"), 0.0)
-    cutoff_soc = _safe_float((metrics or {}).get("cutoff_soc"), 0.0)
+    charge_kw = _safe_float((metrics or {}).get("charge_kw"), float("nan"))
+    cutoff_soc = _safe_float((metrics or {}).get("cutoff_soc"), float("nan"))
     cutoff_soc_pct = cutoff_soc * 100.0 if pd.notna(cutoff_soc) else float("nan")
-    cutoff_soc_label = f"{cutoff_soc_pct:.1f}%" if pd.notna(cutoff_soc_pct) else "—"
-
-    ac_gauge_max = effective_limit if pd.notna(effective_limit) and float(effective_limit) > 0 else (float(user_cap_kw) if float(user_cap_kw) > 0 else 5.0)
-    ac_frac = None
-    if pd.notna(charge_kw) and pd.notna(ac_gauge_max) and float(ac_gauge_max) > 0:
-        ac_frac = float(charge_kw) / float(ac_gauge_max)
-    ac_tooltip = (
-        "Set this in FusionSolar as AC charge power. "
-        f"Planned: {charge_kw:.2f} kW; Effective limit: {effective_limit:.2f} kW; Limiter: {limiter_reason}."
-    )
-
-    cutoff_min = float(min_soc_pct) if pd.notna(min_soc_pct) else 0.0
-    cutoff_max = float(max_cutoff_soc_pct) if pd.notna(max_cutoff_soc_pct) else 100.0
-    cutoff_frac = None
-    if pd.notna(cutoff_soc_pct) and cutoff_max > cutoff_min:
-        cutoff_frac = (float(cutoff_soc_pct) - cutoff_min) / (cutoff_max - cutoff_min)
-    cutoff_tooltip = (
-        "Set this in FusionSolar as AC charge cutoff SOC. "
-        f"Target: {cutoff_soc_pct:.1f}%; Range: Min SOC {cutoff_min:.1f}% → Max cutoff {cutoff_max:.1f}%."
-        if pd.notna(cutoff_soc_pct)
-        else f"Set this in FusionSolar as AC charge cutoff SOC. Range: Min SOC {cutoff_min:.1f}% → Max cutoff {cutoff_max:.1f}%."
-    )
-
-    soc_end_pct = _safe_float((metrics or {}).get("soc_end_offpeak_pct"), float("nan"))
-    if pd.isna(soc_end_pct):
-        soc_end_pct = _safe_float((metrics or {}).get("soc_at_offpeak_end_pct"), float("nan"))
-    if pd.isna(soc_end_pct) and isinstance(detail_df, pd.DataFrame) and not detail_df.empty and isinstance(soc_series, pd.Series):
-        try:
-            idx = pd.to_datetime(detail_df.index, errors="coerce")
-            soc_pct_series = pd.to_numeric(soc_series, errors="coerce") * 100.0
-            aligned = pd.DataFrame({"ts_local": idx, "soc_end_pct": soc_pct_series.values}).dropna(subset=["ts_local"])
-            if not aligned.empty:
-                offpeak_end_raw = (metrics or {}).get("offpeak_end_local")
-                offpeak_end_ts = pd.to_datetime(offpeak_end_raw, errors="coerce")
-                if pd.isna(offpeak_end_ts):
-                    if pd.notna(offpeak_start_ts):
-                        offpeak_end_ts = offpeak_start_ts + pd.Timedelta(hours=9)
-                    else:
-                        first_ts = pd.to_datetime(aligned["ts_local"].iloc[0], errors="coerce")
-                        if pd.notna(first_ts):
-                            offpeak_end_ts = first_ts.normalize() + pd.Timedelta(hours=7)
-                if pd.notna(offpeak_end_ts):
-                    nearest_idx = (aligned["ts_local"] - offpeak_end_ts).abs().idxmin()
-                    soc_end_pct = _safe_float(aligned.loc[nearest_idx, "soc_end_pct"], float("nan"))
-        except Exception:
-            soc_end_pct = float("nan")
-
-    end_soc_tooltip = "End SOC estimate not available."
-    if pd.notna(soc_end_pct):
-        end_soc_tooltip = (
-            "Predicted SOC from off-peak start to end. "
-            f"Start (22:00): {soc_est:.1f}%; End (07:00): {soc_end_pct:.1f}%; Target: {cutoff_soc_pct:.1f}%."
-            if pd.notna(soc_est) and pd.notna(cutoff_soc_pct)
-            else "Predicted SOC from off-peak start to end."
-        )
-
-    details_parts: list[str] = []
-    details_parts.append(f"Δh={delta_h:.1f}" if pd.notna(delta_h) else "Δh=—")
-    details_parts.append(f"Load≈{load_kwh:.1f} kWh" if pd.notna(load_kwh) else "Load≈— kWh")
-    details_parts.append(f"PV credit≈{pv_credit:.1f} kWh" if pd.notna(pv_credit) else "PV credit≈— kWh")
-    details_parts.append(f"History: {'yes' if used_history else 'no'}")
-    details_tip = "; ".join(details_parts)
-
-    source_chip_html = _chip_html(source_label, "SOC data source used for planning.")
-    conf_tip = f"SOC estimate confidence: {conf or 'Unknown'}"
-    conf_dot_html = _confidence_dot_html(conf, conf_tip)
-    soc_journey_html = _soc_journey_bar_html(soc_est if pd.notna(soc_est) else None, cutoff_soc_pct if pd.notna(cutoff_soc_pct) else None)
-    limiter_html = _limiter_icons_html(
-        user_cap_kw,
-        inverter_ac_kw_limit,
-        battery_max_charge_kw,
-        hard_limit_kw,
-        effective_limit,
-        limiter_reason,
-    )
 
     charge_label = f"{charge_kw:.2f} kW" if pd.notna(charge_kw) else "—"
-    end_soc_value_text = f"{soc_end_pct:.1f}%" if pd.notna(soc_end_pct) else "—"
-    gauge_ac_html = _gauge_html(
-        icon="⚡",
-        label="AC power",
-        value_text=charge_label,
-        tooltip=ac_tooltip,
-        frac=ac_frac,
-        min_text="0",
-        max_text=f"{ac_gauge_max:.2f} kW",
-    )
-    gauge_cutoff_html = _gauge_html(
-        icon="🎯",
-        label="Cutoff SOC",
-        value_text=cutoff_soc_label,
-        tooltip=cutoff_tooltip,
-        frac=cutoff_frac,
-        min_text=f"{cutoff_min:.0f}%",
-        max_text=f"{cutoff_max:.0f}%",
-    )
-    gauge_end_html = _gauge_html(
-        icon="🕖",
-        label="End SOC",
-        value_text=end_soc_value_text,
-        tooltip=end_soc_tooltip,
-        frac=(soc_end_pct / 100.0) if pd.notna(soc_end_pct) else None,
-        min_text="0%",
-        max_text="100%",
-        marker2_frac=(cutoff_soc_pct / 100.0) if pd.notna(cutoff_soc_pct) else None,
-        marker2_tooltip=f"Target cutoff SOC: {cutoff_soc_label}",
-    )
+    cutoff_soc_label = f"{cutoff_soc_pct:.1f}%" if pd.notna(cutoff_soc_pct) else "—"
 
-    peak_import_micro_html = ""
-    if est_grid_import_expensive_kwh is not None and not pd.isna(est_grid_import_expensive_kwh):
-        peak_import_micro_html = (
-            "<div style='margin-top:0.28rem;display:flex;justify-content:flex-end;'>"
-            "<span title='Estimated grid import during expensive tariff hours (kWh). Lower is better.' "
-            "style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
-            "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
-            "border-radius:999px;font-size:0.74rem;font-weight:650;'>"
-            f"<span style='color:#ef4444;'>⚡</span><span>{float(est_grid_import_expensive_kwh):.1f}</span>"
-            "</span>"
+    score_raw = (pv_quality_dict or {}).get("score") if isinstance(pv_quality_dict, dict) else None
+    score = _safe_float(score_raw, float("nan"))
+    level: str | None = None
+    if pd.notna(score):
+        if score >= 67:
+            level = "high"
+        elif score >= 34:
+            level = "medium"
+        else:
+            level = "low"
+    else:
+        label_raw = str((pv_quality_dict or {}).get("label") or "").strip().lower()
+        if label_raw in {"excellent", "good"}:
+            level = "high"
+        elif label_raw == "mixed":
+            level = "medium"
+        elif label_raw in {"poor", "very low"}:
+            level = "low"
+
+    tooltip_map = {
+        "high": "Forecast confidence is high. These settings are likely reliable for tonight.",
+        "medium": "Forecast confidence is medium. The values are usable, but real PV may vary.",
+        "low": "Forecast confidence is low. Use extra caution, as real PV may differ more than usual.",
+        None: "Forecast confidence: Unavailable. Confidence could not be determined for this run.",
+    }
+    confidence_tooltip = tooltip_map.get(level, tooltip_map[None])
+
+    def _bar_segment(label: str, seg_level: str) -> str:
+        active = level == seg_level
+        active_style = (
+            "background:linear-gradient(140deg, rgba(82,183,136,0.42), rgba(42,157,143,0.42));"
+            "border-color:rgba(82,183,136,0.78);color:rgba(244,255,250,0.98);"
+            if active
+            else "background:rgba(255,255,255,0.06);border-color:rgba(255,255,255,0.14);color:rgba(228,233,240,0.76);"
+        )
+        return (
+            "<div style='flex:1;min-width:0;text-align:center;padding:0.28rem 0.24rem;"
+            "border-radius:8px;border:1px solid;letter-spacing:0.01em;font-size:0.72rem;font-weight:640;"
+            f"{active_style}'>"
+            f"{_esc_attr(label)}"
             "</div>"
         )
+
+    confidence_bar_html = (
+        f"<div title='{_esc_attr(confidence_tooltip)}' style='display:flex;align-items:center;gap:0.28rem;'>"
+        f"{_bar_segment('Low', 'low')}"
+        f"{_bar_segment('Medium', 'medium')}"
+        f"{_bar_segment('High', 'high')}"
+        "</div>"
+    )
 
     container.markdown(
         (
-            "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.65rem 0.75rem;"
+            "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.78rem 0.82rem;"
             "background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));min-width:245px;'>"
-            "<div style='display:flex;flex-direction:column;gap:0.40rem;'>"
-            "<div style='display:flex;align-items:center;justify-content:space-between;gap:10px;'>"
-            "<div style='font-weight:700;letter-spacing:0.03em;opacity:0.92;'>OFF-PEAK PLAN</div>"
-            f"{source_chip_html}"
+            "<div style='display:flex;flex-direction:column;gap:0.56rem;'>"
+            "<div style='font-size:0.90rem;font-weight:760;letter-spacing:0.01em;opacity:0.96;'>"
+            "Set These Values in Fusion Solar Now"
             "</div>"
-            "<div style='display:flex;align-items:center;justify-content:space-between;gap:0.6rem;'>"
-            "<div style='display:flex;align-items:center;gap:0.65rem;flex-wrap:wrap;'>"
-            f"<span style='display:inline-flex;align-items:center;gap:0.28rem;font-size:0.88rem;'><span title='Off-peak starts (local time).'>🕙</span><span style='font-weight:650;'>{_esc_attr(offpeak_label)}</span></span>"
-            f"<span style='display:inline-flex;align-items:center;gap:0.28rem;font-size:0.88rem;'><span title='Estimated SOC at off-peak start.'>🔋</span><span style='font-weight:650;'>{_esc_attr(soc_label)}</span>{conf_dot_html}</span>"
+            "<div style='display:grid;grid-template-columns:1fr 1fr;gap:0.60rem;'>"
+            "<div style='border:1px solid rgba(255,255,255,0.10);border-radius:12px;padding:0.54rem 0.58rem;"
+            "background:rgba(255,255,255,0.03);'>"
+            "<div style='font-size:0.70rem;font-weight:600;opacity:0.74;letter-spacing:0.01em;'>AC charge cutoff SOC (%)</div>"
+            f"<div style='margin-top:0.16rem;font-size:1.24rem;font-weight:790;line-height:1.1;'>{_esc_attr(cutoff_soc_label)}</div>"
             "</div>"
-            f"<span style='font-size:0.92rem;' title='{_esc_attr(details_tip)}'>ℹ️</span>"
-            "</div>"
-            f"{soc_journey_html}"
-            "<div style='margin-top:0.52rem;padding-top:0.55rem;border-top:1px solid rgba(255,255,255,0.10);'>"
-            "<div style='margin-top:0.30rem;display:flex;align-items:flex-start;justify-content:space-between;gap:0.65rem;'>"
-            "<div style='min-width:0;'>"
-            f"<div style='display:inline-flex;align-items:center;gap:0.28rem;font-size:0.95rem;font-weight:780;'><span title='Set this power in FusionSolar for AC charging.'>⚡</span>{_esc_attr(charge_label)}</div>"
-            f"<div style='margin-top:0.22rem;'>{limiter_html}</div>"
-            "</div>"
-            "<div style='text-align:right;white-space:nowrap;'>"
-            f"<div style='display:inline-flex;align-items:center;gap:0.28rem;font-size:0.95rem;font-weight:780;'><span title='Set as AC charge cutoff SOC in FusionSolar.'>🎯</span>{_esc_attr(cutoff_soc_label)}</div>"
+            "<div style='border:1px solid rgba(255,255,255,0.10);border-radius:12px;padding:0.54rem 0.58rem;"
+            "background:rgba(255,255,255,0.03);'>"
+            "<div style='font-size:0.70rem;font-weight:600;opacity:0.74;letter-spacing:0.01em;'>Allowed AC charge power (kW)</div>"
+            f"<div style='margin-top:0.16rem;font-size:1.24rem;font-weight:790;line-height:1.1;'>{_esc_attr(charge_label)}</div>"
             "</div>"
             "</div>"
-            f"{peak_import_micro_html}"
-            "<div style='margin-top:0.30rem;display:flex;flex-direction:column;gap:0.18rem;'>"
-            f"{gauge_ac_html}"
-            f"{gauge_cutoff_html}"
-            f"{gauge_end_html}"
-            "</div>"
+            "<div style='margin-top:0.08rem;'>"
+            f"{confidence_bar_html}"
             "</div>"
             "</div>"
             "</div>"
@@ -4463,6 +4359,7 @@ if run_clicked:
                     est_grid_import_expensive_kwh=grid_import,
                     detail_df=detail_df,
                     soc_series=soc_series,
+                    pv_quality_dict=pv_quality,
                 )
             with top_right:
                 render_pv_quality_widget(
