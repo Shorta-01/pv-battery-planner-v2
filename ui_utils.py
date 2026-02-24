@@ -186,23 +186,41 @@ def resolve_pv_outlook_savings(pv_quality_dict: dict | None) -> dict[str, Any]:
     else:
         savings = reported_savings
 
-    hourly_raw = data.get("hourly_savings_eur_tomorrow")
-    hourly: list[float] | None = None
-    if isinstance(hourly_raw, list) and len(hourly_raw) == 24:
+    def _convert_hourly(raw: Any) -> list[float] | None:
+        if not (isinstance(raw, list) and len(raw) == 24):
+            return None
         converted: list[float] = []
-        valid = True
-        for val in hourly_raw:
+        for val in raw:
             num = _to_float_or_none(val)
             if num is None:
-                valid = False
-                break
+                return None
             converted.append(num)
-        if valid:
-            hourly = converted
+        return converted
+
+    hourly_cycle = _convert_hourly(data.get("hourly_savings_eur_cycle"))
+    hourly_tomorrow = _convert_hourly(data.get("hourly_savings_eur_tomorrow"))
+    hourly_labels_raw = data.get("hourly_savings_cycle_hour_labels")
+    hourly_cycle_labels = (
+        [str(x) for x in hourly_labels_raw]
+        if isinstance(hourly_labels_raw, list) and len(hourly_labels_raw) == 24
+        else None
+    )
+
+    bars_scope = "tomorrow"
+    hourly: list[float] | None = hourly_tomorrow
+    hourly_labels = [f"{h:02d}:00" for h in range(24)]
+    if display_scope == "cycle" and hourly_cycle is not None:
+        bars_scope = "cycle"
+        hourly = hourly_cycle
+        if hourly_cycle_labels is not None:
+            hourly_labels = hourly_cycle_labels
 
     horizon_label = str(data.get("savings_horizon_label") or "").strip() or None
     detail_note = "Hourly bars show tomorrow (00–24) detail."
-    if display_scope in {"cycle", "total"} and hourly is not None:
+    if display_scope == "cycle" and bars_scope == "cycle":
+        note = "Cycle savings shown (off-peak start → next off-peak start). Hourly bars align to cycle hours."
+        detail_note = "Hourly bars show cycle hours (off-peak start → next off-peak start)."
+    elif display_scope in {"cycle", "total"} and hourly is not None:
         note = "Cycle savings shown (off-peak start → next off-peak start). Hourly bars show tomorrow (00–24)."
     elif display_scope in {"cycle", "total"}:
         note = "Cycle savings shown (off-peak start → next off-peak start)."
@@ -214,7 +232,14 @@ def resolve_pv_outlook_savings(pv_quality_dict: dict | None) -> dict[str, Any]:
         "plan_cost": plan_cost,
         "savings": savings,
         "hourly": hourly,
+        "hourly_labels": hourly_labels,
+        "bars_scope": bars_scope,
         "display_scope": display_scope,
+        "terminal_battery_value_eur_cycle": _to_float_or_none(data.get("terminal_battery_value_eur_cycle")),
+        "plan_cost_eur_cycle_cash": _to_float_or_none(data.get("plan_cost_eur_cycle_cash")),
+        "cycle_start_soc_pct": _to_float_or_none(data.get("cycle_start_soc_pct")),
+        "cycle_end_soc_pct": _to_float_or_none(data.get("cycle_end_soc_pct")),
+        "savings_cycle_terminal_value_applied": bool(data.get("savings_cycle_terminal_value_applied", False)),
         "horizon_label": horizon_label,
         "detail_note": detail_note,
         "note": note,

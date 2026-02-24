@@ -1389,6 +1389,7 @@ def compute_euro_savings_no_battery_vs_plan(
 
     plan_import_cycle = pd.Series(0.0, index=idx_cycle, dtype=float)
     plan_export_cycle = pd.Series(0.0, index=idx_cycle, dtype=float)
+    plan_soc_end_cycle = pd.Series(np.nan, index=idx_cycle, dtype=float)
 
     idx_pre = idx_cycle[idx_cycle < tomorrow_start]
     idx_post = idx_cycle[idx_cycle >= tomorrow_start]
@@ -1406,12 +1407,21 @@ def compute_euro_savings_no_battery_vs_plan(
         plan_import_cycle.loc[idx_pre] = night_df["grid_import_kwh"].reindex(idx_pre).fillna(0.0).astype(float)
         if "grid_export_kwh" in night_df.columns:
             plan_export_cycle.loc[idx_pre] = night_df["grid_export_kwh"].reindex(idx_pre).fillna(0.0).astype(float)
+        if "soc_end_pct" in night_df.columns:
+            plan_soc_end_cycle.loc[idx_pre] = pd.to_numeric(
+                night_df["soc_end_pct"].reindex(idx_pre), errors="coerce"
+            )
 
     if len(idx_post) > 0:
         plan_import_cycle.loc[idx_post] = flows_df["grid_import_kwh"].reindex(idx_post).fillna(0.0).astype(float)
         plan_export_cycle.loc[idx_post] = flows_df["grid_export_kwh"].reindex(idx_post).fillna(0.0).astype(float)
+        if "soc_end_pct" in flows_df.columns:
+            plan_soc_end_cycle.loc[idx_post] = pd.to_numeric(
+                flows_df["soc_end_pct"].reindex(idx_post), errors="coerce"
+            )
 
-    plan_cost_cycle = plan_import_cycle * base_price_cycle - plan_export_cycle * inj
+    plan_cost_cycle_cash = plan_import_cycle * base_price_cycle - plan_export_cycle * inj
+    hourly_savings_cycle = (base_cost_cycle - plan_cost_cycle_cash).reindex(idx_cycle).fillna(0.0)
 
     dt_h_tom = timestep_hours(idx_tomorrow)
     pv_tom = pv_df["pv_total_kwh"].reindex(idx_tomorrow).fillna(0.0).astype(float)
@@ -1432,9 +1442,35 @@ def compute_euro_savings_no_battery_vs_plan(
     hourly_savings = (base_cost_tom - plan_cost_tom).reindex(idx_tomorrow).fillna(0.0)
 
     baseline_cycle = float(base_cost_cycle.sum())
-    plan_cycle = float(plan_cost_cycle.sum())
+    plan_cycle_cash = float(plan_cost_cycle_cash.sum())
     baseline_tom = float(base_cost_tom.sum())
     plan_tom = float(plan_cost_tom.sum())
+
+    cycle_start_soc = max(0.0, min(1.0, float(soc_at_22)))
+    cycle_end_soc: float | None = None
+    cycle_terminal_row_ts = cycle_end - dt.timedelta(hours=1)
+    if cycle_terminal_row_ts in plan_soc_end_cycle.index:
+        try:
+            soc_pct = float(plan_soc_end_cycle.loc[cycle_terminal_row_ts])
+        except Exception:
+            soc_pct = float("nan")
+        if np.isfinite(soc_pct):
+            cycle_end_soc = max(0.0, min(1.0, soc_pct / 100.0))
+
+    terminal_battery_value_eur_cycle = 0.0
+    savings_cycle_terminal_value_applied = False
+    cycle_stored_energy_delta_kwh = 0.0
+    cycle_soc_delta_pct = 0.0
+    if cycle_end_soc is not None:
+        cycle_stored_energy_delta_kwh = (cycle_end_soc - cycle_start_soc) * BATTERY_KWH
+        cycle_soc_delta_pct = (cycle_end_soc - cycle_start_soc) * 100.0
+        replacement_price = float(import_price_eur_per_kwh(cycle_end, tariff_cfg))
+        charge_eff = float(BATTERY_AC_CHARGE_EFF)
+        replacement_cost_per_stored_kwh = replacement_price / charge_eff if charge_eff > 1e-9 else 0.0
+        terminal_battery_value_eur_cycle = cycle_stored_energy_delta_kwh * replacement_cost_per_stored_kwh
+        savings_cycle_terminal_value_applied = True
+
+    plan_cycle = plan_cycle_cash - terminal_battery_value_eur_cycle
     savings_cycle = baseline_cycle - plan_cycle
 
     hourly_savings_list = [float(hourly_savings.loc[ts]) for ts in idx_tomorrow]
@@ -1447,11 +1483,23 @@ def compute_euro_savings_no_battery_vs_plan(
         return 0.0
 
     baseline_cycle = _safe_numeric(baseline_cycle)
+    plan_cycle_cash = _safe_numeric(plan_cycle_cash)
     plan_cycle = _safe_numeric(plan_cycle)
     baseline_tom = _safe_numeric(baseline_tom)
     plan_tom = _safe_numeric(plan_tom)
+    terminal_battery_value_eur_cycle = _safe_numeric(terminal_battery_value_eur_cycle)
+    cycle_stored_energy_delta_kwh = _safe_numeric(cycle_stored_energy_delta_kwh)
+    cycle_soc_delta_pct = _safe_numeric(cycle_soc_delta_pct)
+    cycle_start_soc_pct = _safe_numeric(cycle_start_soc * 100.0)
+    cycle_end_soc_pct = _safe_numeric((cycle_end_soc if cycle_end_soc is not None else cycle_start_soc) * 100.0)
     savings_cycle = _safe_numeric(savings_cycle)
     savings_tom = _safe_numeric(float(baseline_tom - plan_tom))
+    hourly_savings_cycle_list = [float(hourly_savings_cycle.loc[ts]) for ts in idx_cycle]
+    if len(hourly_savings_cycle_list) != 24:
+        hourly_savings_cycle_list = (hourly_savings_cycle_list + [0.0] * 24)[:24]
+    hourly_savings_cycle_hour_labels = [ts.strftime("%H:%M") for ts in idx_cycle][:24]
+    if len(hourly_savings_cycle_hour_labels) != 24:
+        hourly_savings_cycle_hour_labels = [f"{h:02d}:00" for h in range(24)]
 
     return {
         "baseline_cost_eur_total": baseline_cycle,
@@ -1460,19 +1508,34 @@ def compute_euro_savings_no_battery_vs_plan(
         "baseline_cost_eur_cycle": baseline_cycle,
         "plan_cost_eur_cycle": plan_cycle,
         "savings_eur_cycle": savings_cycle,
+        "baseline_cost_eur_cycle_cash": baseline_cycle,
+        "plan_cost_eur_cycle_cash": plan_cycle_cash,
+        "terminal_battery_value_eur_cycle": terminal_battery_value_eur_cycle,
+        "plan_cost_eur_cycle_adjusted": plan_cycle,
         "baseline_cost_eur_tomorrow": baseline_tom,
         "plan_cost_eur_tomorrow": plan_tom,
         "savings_eur_tomorrow": savings_tom,
+        "hourly_savings_eur_cycle": hourly_savings_cycle_list,
+        "hourly_savings_cycle_hour_labels": hourly_savings_cycle_hour_labels,
         "hourly_savings_eur_tomorrow": hourly_savings_list,
         "savings_horizon_kind": "offpeak_cycle",
         "savings_horizon_start_iso": cycle_start.isoformat(),
         "savings_horizon_end_iso": cycle_end.isoformat(),
+        "savings_cycle_inventory_adjusted": True,
+        "savings_cycle_terminal_value_applied": bool(savings_cycle_terminal_value_applied),
         "savings_horizon_label": (
+            "off-peak start -> next off-peak start"
+        ),
+        "savings_horizon_detail": (
             "Cycle (off-peak start → next off-peak start): "
             f"{cycle_start.strftime('%H:%M')} → {cycle_end.strftime('%H:%M')}"
         ),
         "savings_hourly_detail_scope": "tomorrow_00_24",
         "savings_cycle_start_soc_percent_used": float(soc_at_22 * 100.0),
+        "cycle_start_soc_pct": cycle_start_soc_pct,
+        "cycle_end_soc_pct": cycle_end_soc_pct,
+        "cycle_soc_delta_pct": cycle_soc_delta_pct,
+        "cycle_stored_energy_delta_kwh": cycle_stored_energy_delta_kwh,
         "savings_night_load_from_battery_used": bool(should_use_battery_for_offpeak_load(tariff_cfg)),
         "savings_cycle_window_start_local": cycle_start.isoformat(),
         "savings_cycle_window_end_local": cycle_end.isoformat(),
