@@ -667,8 +667,8 @@ def inject_tooltip_css() -> None:
             padding: 0.45rem 0.8rem;
             line-height: 1.15;
             white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            overflow: visible;
+            text-overflow: clip;
         }
         .stButton>button:disabled {
             min-height: 2.5rem;
@@ -4040,44 +4040,46 @@ with left:
             summary_parts.append(f"⚠ {key}: {readiness_issues[key][0]}")
         else:
             summary_parts.append(f"✅ {key}")
-    summary_col, save_status_col = st.columns([7.8, 3.2], vertical_alignment="center")
+    summary_col, save_status_col = st.columns([8.6, 2.4], vertical_alignment="center")
     with summary_col:
-        st.caption(" | ".join(summary_parts))
+        summary_text = " | ".join(summary_parts)
+        st.markdown(
+            (
+                '<div style="font-size:0.78rem; line-height:1.25; white-space:nowrap; overflow:hidden; '
+                f'text-overflow:ellipsis;" title="{html.escape(summary_text)}">{html.escape(summary_text)}</div>'
+            ),
+            unsafe_allow_html=True,
+        )
     with save_status_col:
         save_status_visibility = "visible" if save_label_active else "hidden"
         st.markdown(
             (
-                '<div style="display:flex; justify-content:flex-end; align-items:center; '
-                'min-width:12.5rem; min-height:1.45rem;">'
-                '<span style="white-space:nowrap; font-size:0.875rem; line-height:1.35; '
+                '<div style="display:flex; justify-content:flex-end; align-items:center; min-height:1.45rem;">'
+                '<span style="white-space:nowrap; font-size:0.82rem; line-height:1.2; '
                 f'color:#2e7d32; visibility:{save_status_visibility};">✅ Settings saved</span>'
-                '</div>' 
+                '</div>'
             ),
             unsafe_allow_html=True,
         )
 
-
     ensemble_method = "weighted"
-    left_actions_col, _, col_run = st.columns([4.6, 4.0, 2.4], vertical_alignment="bottom")
-    with left_actions_col:
-        left_btn_reset, left_btn_save = st.columns(2, gap="small")
-        with left_btn_reset:
-            reset_clicked = st.button(
-                "Factory settings",
-                type="secondary",
-                key="btn_reset_defaults",
-                width="stretch",
-            )
-        with left_btn_save:
-            save_clicked = st.button(
-                "Save settings",
-                type="secondary",
-                disabled=(not settings_valid) or (not settings_dirty),
-                key="btn_save_settings_top",
-                width="stretch",
-            )
-
-    with col_run:
+    top_action_reset, top_action_save, top_action_run = st.columns([1.25, 1.1, 1.0], vertical_alignment="center")
+    with top_action_reset:
+        reset_clicked = st.button(
+            "Factory settings",
+            type="secondary",
+            key="btn_reset_defaults",
+            width="stretch",
+        )
+    with top_action_save:
+        save_clicked = st.button(
+            "Save settings",
+            type="secondary",
+            disabled=(not settings_valid) or (not settings_dirty),
+            key="btn_save_settings_top",
+            width="stretch",
+        )
+    with top_action_run:
         run_clicked = st.button(
             "Run forecast",
             type="primary",
@@ -4150,10 +4152,6 @@ with left:
 
     error_logging_label = f"Error logging 🔴{unresolved_count}" if unresolved_count > 0 else "Error logging"
     with st.expander(error_logging_label, expanded=False):
-        refresh_errors = st.button("Refresh errors", key="refresh_errors_btn")
-        if refresh_errors:
-            st.session_state["err_delete_arm"] = None
-
         error_items: list[dict] = []
         try:
             error_items = api_get("/v1/errors?limit=0&include_fixed=true").get("items", [])
@@ -4169,14 +4167,20 @@ with left:
 
             sorted_items = sorted(error_items, key=_error_sort_key, reverse=True)
 
-            filter_label = st.radio(
-                "Show",
-                options=["Open", "Resolved", "All"],
-                horizontal=True,
-                key="error_filter_mode",
-                index=0,
-                label_visibility="collapsed",
-            )
+            header_refresh_col, header_filter_col, header_count_col = st.columns([1.2, 2.1, 1.2], vertical_alignment="center")
+            with header_refresh_col:
+                refresh_errors = st.button("Refresh errors", key="refresh_errors_btn", width="stretch")
+            with header_filter_col:
+                filter_label = st.radio(
+                    "Show",
+                    options=["Open", "Resolved", "All"],
+                    horizontal=True,
+                    key="error_filter_mode",
+                    index=0,
+                    label_visibility="collapsed",
+                )
+            if refresh_errors:
+                st.session_state["err_delete_arm"] = None
 
             if filter_label == "Open":
                 filtered_items = [item for item in sorted_items if not bool(item.get("fixed", 0))]
@@ -4187,12 +4191,13 @@ with left:
 
             open_count = sum(1 for item in sorted_items if not bool(item.get("fixed", 0)))
             resolved_count = sum(1 for item in sorted_items if bool(item.get("fixed", 0)))
-            if filter_label == "Open":
-                st.caption(f"{open_count} open")
-            elif filter_label == "Resolved":
-                st.caption(f"{resolved_count} resolved")
-            else:
-                st.caption(f"{len(sorted_items)} total")
+            with header_count_col:
+                if filter_label == "Open":
+                    st.caption(f"{open_count} open")
+                elif filter_label == "Resolved":
+                    st.caption(f"{resolved_count} resolved")
+                else:
+                    st.caption(f"{len(sorted_items)} total")
 
             if not filtered_items:
                 if filter_label == "Open":
@@ -4214,19 +4219,52 @@ with left:
                 st.session_state.setdefault(detail_open_key, False)
 
                 with st.container(border=True):
-                    title_col, badge_col = st.columns([8, 2], vertical_alignment="center")
+                    title_col, badge_col = st.columns([7.4, 2.6], vertical_alignment="center")
+                    title_col.markdown(f"**{title_txt or 'Untitled error'}**")
                     if fixed_val:
-                        title_col.caption(f"**{title_txt or 'Untitled error'}**")
                         badge_col.caption("Resolved ✅")
                     else:
-                        title_col.markdown(f"**{title_txt or 'Untitled error'}**")
                         badge_col.write("")
 
                     meta_line = f"{ts_compact or '—'} · {source_txt or '—'} · {where_txt or '—'}"
-                    if fixed_val:
-                        st.caption(meta_line)
-                    else:
-                        st.caption(meta_line)
+                    st.caption(meta_line)
+
+                    action_view, action_fixed, action_delete = st.columns([1.25, 1.25, 1.0], gap="small")
+                    with action_view:
+                        if st.button(
+                            "🔎 View details",
+                            key=f"err_detail_toggle_{error_id}",
+                            width="stretch",
+                        ):
+                            st.session_state[detail_open_key] = not st.session_state.get(detail_open_key, False)
+                            st.rerun()
+
+                    with action_fixed:
+                        fixed_target = not fixed_val
+                        fixed_label = "↩ Mark open" if fixed_val else "✅ Mark resolved"
+                        if st.button(fixed_label, key=f"err_fixed_btn_{error_id}", width="stretch"):
+                            api_post(f"/v1/errors/{error_id}/fixed", {"fixed": fixed_target})
+                            st.session_state["err_delete_arm"] = None
+                            st.rerun()
+
+                    armed_id = st.session_state.get("err_delete_arm")
+                    with action_delete:
+                        if armed_id != error_id:
+                            if st.button("❌ Dismiss", key=f"err_del_arm_{error_id}", width="stretch"):
+                                st.session_state["err_delete_arm"] = error_id
+                                st.rerun()
+                        else:
+                            confirm_col, cancel_col = st.columns(2, gap="small")
+                            with confirm_col:
+                                if st.button("Confirm", key=f"err_del_confirm_{error_id}", type="primary", width="stretch"):
+                                    api_delete(f"/v1/errors/{error_id}")
+                                    st.session_state["err_delete_arm"] = None
+                                    st.session_state[detail_open_key] = False
+                                    st.rerun()
+                            with cancel_col:
+                                if st.button("Cancel", key=f"err_del_cancel_{error_id}", width="stretch"):
+                                    st.session_state["err_delete_arm"] = None
+                                    st.rerun()
 
                     if st.session_state.get(detail_open_key):
                         try:
@@ -4252,40 +4290,6 @@ with left:
                                     st.code(str(context_json), language="json")
                         except Exception as exc:
                             st.caption(f"Could not load details: {exc}")
-
-                    action_spacer, action_view, action_fixed, action_delete = st.columns([5.4, 1.5, 1.8, 1.3])
-                    with action_view:
-                        if st.button(
-                            "🔎 View details",
-                            key=f"err_detail_toggle_{error_id}",
-                            width="stretch",
-                        ):
-                            st.session_state[detail_open_key] = not st.session_state.get(detail_open_key, False)
-                            st.rerun()
-
-                    with action_fixed:
-                        fixed_target = not fixed_val
-                        fixed_label = "↩ Mark open" if fixed_val else "✅ Mark resolved"
-                        if st.button(fixed_label, key=f"err_fixed_btn_{error_id}", width="stretch"):
-                            api_post(f"/v1/errors/{error_id}/fixed", {"fixed": fixed_target})
-                            st.session_state["err_delete_arm"] = None
-                            st.rerun()
-
-                    armed_id = st.session_state.get("err_delete_arm")
-                    with action_delete:
-                        if armed_id != error_id:
-                            if st.button("❌ Dismiss", key=f"err_del_arm_{error_id}", width="stretch"):
-                                st.session_state["err_delete_arm"] = error_id
-                                st.rerun()
-                        else:
-                            if st.button("Confirm", key=f"err_del_confirm_{error_id}", type="primary", width="stretch"):
-                                api_delete(f"/v1/errors/{error_id}")
-                                st.session_state["err_delete_arm"] = None
-                                st.session_state[detail_open_key] = False
-                                st.rerun()
-                            if st.button("Cancel", key=f"err_del_cancel_{error_id}", width="stretch"):
-                                st.session_state["err_delete_arm"] = None
-                                st.rerun()
     if save_clicked:
         if not settings_valid:
             st.error(settings_error or "Could not save settings.")
