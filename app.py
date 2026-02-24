@@ -3458,14 +3458,22 @@ with left:
         has_lookup_details = bool(st.session_state.get("loc_lookup_validated")) and isinstance(st.session_state.get("loc_latitude"), (float, int)) and isinstance(
             st.session_state.get("loc_longitude"), (float, int)
         ) and bool(str(st.session_state.get("loc_timezone", "")).strip())
-        location_status_icon = "✅" if has_lookup_details else "⚪"
+        location_status_icon_symbol = "✓" if has_lookup_details else "✕"
+        location_status_icon_bg = "#15803d" if has_lookup_details else "#b91c1c"
         location_status_tooltip = (
             "Geolocation resolved: latitude, longitude, and timezone found."
             if has_lookup_details
-            else "Geolocation not resolved yet. Use Search address to resolve latitude, longitude, and timezone."
+            else "Geolocation not resolved yet. Use Lookup to resolve latitude, longitude, and timezone."
         )
         st.markdown(
-            f"#### Location <span title=\"{location_status_tooltip}\" style='font-size:0.95rem;vertical-align:middle'>{location_status_icon}</span>",
+            (
+                "#### Location "
+                f"<span title=\"{location_status_tooltip}\" "
+                "style='display:inline-flex;align-items:center;justify-content:center;width:0.95rem;height:0.95rem;"
+                f"margin-left:0.35rem;border-radius:0.18rem;background:{location_status_icon_bg};"
+                "color:#fff;font-size:0.68rem;font-weight:700;vertical-align:baseline;line-height:1'>"
+                f"{location_status_icon_symbol}</span>"
+            ),
             unsafe_allow_html=True,
         )
         addr_col, btn_col = st.columns([7.0, 2.0], vertical_alignment="bottom")
@@ -3479,7 +3487,7 @@ with left:
                 help=get_help("address_query"),
             )
         with btn_col:
-            if st.button("Search address", type="primary", key="btn_open_lookup", width="stretch"):
+            if st.button("Lookup", type="primary", key="btn_open_lookup", width="stretch"):
                 open_lookup(loc_cfg)
                 st.rerun()
 
