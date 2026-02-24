@@ -1039,6 +1039,8 @@ def render_pv_week_ahead_widget(items: list[dict]) -> None:
         source_label = item.get("weather_code_source_model_label")
         source_days = item.get("weather_code_source_max_days")
         best_of_day = item.get("weather_best_of_day")
+        selection_policy = item.get("weather_code_selection_policy")
+        models_used = item.get("weather_icon_models_used")
 
         label_txt = weather_code_to_label(code_value)
         icon = weather_code_to_icon(code_value) or "❔"
@@ -1048,6 +1050,8 @@ def render_pv_week_ahead_widget(items: list[dict]) -> None:
             + (f" | Source: {source_label}" if source_label else " | Source: n/a")
             + (f" ({source_days}d)" if source_days else "")
             + (" | Best-of-day (08–18)" if best_of_day else "")
+            + (f" | Policy: {selection_policy}" if selection_policy else "")
+            + (f" | Models used: {models_used}" if models_used is not None else "")
         )
         icon_tooltip = html.escape(icon_tooltip, quote=True)
 
