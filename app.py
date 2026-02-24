@@ -3816,14 +3816,11 @@ with left:
 
 
         st.markdown("#### Car Charger")
-        cc_col1, cc_col2 = st.columns(2, vertical_alignment="bottom")
-        with cc_col1:
-            cfg_cc_enabled = st.checkbox(
-                "Enable car charger control (OCPP)",
-                value=bool((effective_cfg.get("car_charger", {}) or {}).get("enabled", False)),
-            )
-        with cc_col2:
-            st.caption("OCPP endpoint is hosted by the backend at /ocpp (same port as backend).")
+        cfg_cc_enabled = st.checkbox(
+            "Enable car charger control (OCPP)",
+            value=bool((effective_cfg.get("car_charger", {}) or {}).get("enabled", False)),
+            help="The OCPP server runs inside the backend. Use the same IP and port as the backend, with path /ocpp.",
+        )
 
         cc_col3, cc_col4 = st.columns(2, vertical_alignment="bottom")
         with cc_col3:
@@ -3835,11 +3832,18 @@ with left:
                 type="password",
             )
 
-        st.info(
-            "FusionSolar OCPP settings: Domain Name = your laptop LAN IP, Port = backend port (default 8787), "
-            "Path = /ocpp. If username+password are empty, OCPP runs with NO AUTH (LAN mode). "
-            "If you set credentials here, set the same credentials in FusionSolar."
+        fs_tip = (
+            "Domain Name = your laptop LAN IP\n"
+            "Port = backend port (default 8787)\n"
+            "Path = /ocpp\n"
+            "If username+password are empty, OCPP runs with NO AUTH (LAN mode)\n"
+            "If you set credentials here, set the same credentials in FusionSolar"
         )
+        fs_label_col, fs_icon_col = st.columns([20, 1], vertical_alignment="center")
+        with fs_label_col:
+            st.caption("FusionSolar setup")
+        with fs_icon_col:
+            st.markdown(f"<span title='{_esc(fs_tip)}'>ℹ️</span>", unsafe_allow_html=True)
 
         if cfg_cc_enabled and (cfg_cc_user.strip() == "") and (cfg_cc_pass == ""):
             st.warning("OCPP authentication is disabled (username/password empty). This is OK on a private LAN only.")
