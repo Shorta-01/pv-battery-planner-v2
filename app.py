@@ -660,6 +660,12 @@ def inject_tooltip_css() -> None:
         }
         .pvbp-tip:hover .pvbp-tiptext, .pvbp-tip:focus .pvbp-tiptext { display:block; }
         .stButton>button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 2.35rem;
+            padding: 0.35rem 0.75rem;
+            line-height: 1.2;
             white-space: nowrap;
         }
         .stApp [data-testid="stAppViewContainer"] .main .block-container {
