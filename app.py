@@ -3455,8 +3455,20 @@ with left:
     car_charger_box = st.empty()
 
     with st.expander("Settings", expanded=False):
-        st.markdown("#### Location")
-        addr_col, status_col, btn_col = st.columns([5.6, 1.2, 2.2], vertical_alignment="bottom")
+        has_lookup_details = bool(st.session_state.get("loc_lookup_validated")) and isinstance(st.session_state.get("loc_latitude"), (float, int)) and isinstance(
+            st.session_state.get("loc_longitude"), (float, int)
+        ) and bool(str(st.session_state.get("loc_timezone", "")).strip())
+        location_status_icon = "✅" if has_lookup_details else "⚪"
+        location_status_tooltip = (
+            "Geolocation resolved: latitude, longitude, and timezone found."
+            if has_lookup_details
+            else "Geolocation not resolved yet. Use Search address to resolve latitude, longitude, and timezone."
+        )
+        st.markdown(
+            f"#### Location <span title=\"{location_status_tooltip}\" style='font-size:0.95rem;vertical-align:middle'>{location_status_icon}</span>",
+            unsafe_allow_html=True,
+        )
+        addr_col, btn_col = st.columns([7.0, 2.0], vertical_alignment="bottom")
         with addr_col:
             st.text_input(
                 "Address",
@@ -3466,54 +3478,30 @@ with left:
                 disabled=True,
                 help=get_help("address_query"),
             )
-        with status_col:
-            has_lookup_details = bool(st.session_state.get("loc_lookup_validated")) and isinstance(st.session_state.get("loc_latitude"), (float, int)) and isinstance(
-                st.session_state.get("loc_longitude"), (float, int)
-            ) and bool(str(st.session_state.get("loc_timezone", "")).strip())
-            if has_lookup_details:
-                st.markdown(
-                    f"<div title=\"Address validated | Latitude: {float(st.session_state['loc_latitude']):.5f} | "
-                    f"Longitude: {float(st.session_state['loc_longitude']):.5f} | "
-                    f"Timezone: {str(st.session_state['loc_timezone'])}\" "
-                    "style='font-size:1.15rem;line-height:2.2rem;text-align:center'>✅</div>",
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.markdown(
-                    "<div style='line-height:2.2rem;text-align:center'>"
-                    "<span title=\"Click Search address to set your location.\" style='color:#9aa0a6; font-size:0.9rem;'>Not set</span>"
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
         with btn_col:
-            btn_label = "Change address" if has_lookup_details else "Search address"
-            if st.button(btn_label, type="primary", key="btn_open_lookup", width="stretch"):
+            if st.button("Search address", type="primary", key="btn_open_lookup", width="stretch"):
                 open_lookup(loc_cfg)
                 st.rerun()
 
         if st.session_state.get("loc_lookup_open"):
             lookup_location_dialog()
 
+        lat_display = "" if st.session_state.get("loc_latitude") is None else f"{float(st.session_state['loc_latitude']):.5f}"
+        lon_display = "" if st.session_state.get("loc_longitude") is None else f"{float(st.session_state['loc_longitude']):.5f}"
         loc_col1, loc_col2, loc_col3 = st.columns([1, 1, 2], vertical_alignment="bottom")
         with loc_col1:
-            cfg_latitude = st.number_input(
+            cfg_latitude = st.text_input(
                 "Latitude",
-                min_value=-90.0,
-                max_value=90.0,
-                step=0.00001,
-                format="%.5f",
-                key="loc_latitude",
+                value=lat_display,
+                key="loc_latitude_display",
                 disabled=True,
                 help=get_help("latitude"),
             )
         with loc_col2:
-            cfg_longitude = st.number_input(
+            cfg_longitude = st.text_input(
                 "Longitude",
-                min_value=-180.0,
-                max_value=180.0,
-                step=0.00001,
-                format="%.5f",
-                key="loc_longitude",
+                value=lon_display,
+                key="loc_longitude_display",
                 disabled=True,
                 help=get_help("longitude"),
             )
