@@ -1143,6 +1143,13 @@ def import_price_eur_per_kwh(ts: pd.Timestamp, tariff_cfg: dict) -> float:
     return offpeak if in_any_window(ts.time(), windows) else peak
 
 
+def tariff_has_meaningful_spread(tariff_cfg: Optional[dict], eps: float = 1e-4) -> bool:
+    cfg = tariff_cfg or {}
+    peak = float(cfg.get("peak_grid_price_eur_per_kwh", PEAK_GRID_PRICE_EUR_PER_KWH))
+    offpeak = float(cfg.get("offpeak_grid_price_eur_per_kwh", OFFPEAK_GRID_PRICE_EUR_PER_KWH))
+    return abs(peak - offpeak) > float(eps)
+
+
 def should_use_battery_for_offpeak_load(tariff_cfg: Optional[dict]) -> bool:
     cfg = tariff_cfg or {}
     mode = str(cfg.get("optimization_mode", "window_only") or "window_only").strip().lower()
@@ -2656,7 +2663,7 @@ def run_forecast_pipeline(
             sunrise=weather.sunrise,
             sunset=weather.sunset,
         )
-        cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high)
+        cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high, tariff_cfg=tariff_cfg)
         cutoff_soc = cutoff_soc_raw + (float(buffer_percent) / 100.0)
 
         old_cutoff_soc = cutoff_soc
@@ -2716,7 +2723,7 @@ def run_detailed_plan(
     soc_at_22_percent: float,
     buffer_percent: float,
     max_ac_charge_power_kw: float,
-) -> tuple["pd.DataFrame", "pd.DataFrame", "pd.Series", float, float, str]:
+) -> tuple["pd.DataFrame", "pd.DataFrame", "pd.Series", float, float, str, str, bool, str]:
     """Legacy backend API entrypoint retained for compatibility."""
     total_consumption_kwh = float(pd.to_numeric(consumption_kwh, errors="coerce").fillna(0.0).sum())
 
@@ -2734,11 +2741,11 @@ def run_detailed_plan(
         sunrise=weather.sunrise,
         sunset=weather.sunset,
     )
-    cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high)
+    cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high, tariff_cfg=tariff_cfg)
     cutoff_soc = min(max(cutoff_soc_raw + (float(buffer_percent) / 100.0), MIN_SOC), MAX_CUTOFF_SOC)
 
     charge_date = target_date - dt.timedelta(days=1)
-    _, charge_kw, _charge_note, achieved_soc_start = plan_charge_power(
+    _, charge_kw, charge_note, achieved_soc_start = plan_charge_power(
         soc_at_22_percent / 100.0,
         cutoff_soc,
         charge_date,
@@ -2762,7 +2769,9 @@ def run_detailed_plan(
         target_date,
         tariff_cfg=tariff_cfg,
     )
-    return detail_df, flows_df, soc_series, float(charge_kw), float(cutoff_soc), str(cutoff_reason)
+    charge_warning_text = str(charge_note) if str(charge_note).startswith("Warning") else ""
+    charge_target_reachable = not bool(charge_warning_text)
+    return detail_df, flows_df, soc_series, float(charge_kw), float(cutoff_soc), str(cutoff_reason), str(charge_note), bool(charge_target_reachable), str(charge_warning_text)
 
 def compute_soc_high_headroom(
     df: "pd.DataFrame",
@@ -2804,8 +2813,11 @@ def compute_soc_high_headroom(
     return surplus_sum_ac, soc_high
 
 
-def choose_cutoff_soc(for_date: dt.date, soc_low: float, soc_high: float) -> Tuple[float, str]:
-    expensive_windows = get_expensive_windows(for_date)
+def choose_cutoff_soc(for_date: dt.date, soc_low: float, soc_high: float, tariff_cfg: Optional[dict] = None) -> Tuple[float, str]:
+    if not tariff_has_meaningful_spread(tariff_cfg or DEFAULT_CONFIG["tariff"]):
+        return MIN_SOC, "No active arbitrage target: flat tariff / no meaningful spread; keep cutoff at MIN_SOC for PV headroom."
+
+    expensive_windows = get_expensive_windows(for_date, tariff_cfg)
     if not expensive_windows:
         return MIN_SOC, "No expensive hours (all off-peak): keep cutoff low for maximum headroom."
 
@@ -2837,6 +2849,9 @@ def plan_charge_power(
 
     if soc_cutoff <= soc_start + 1e-9:
         return 0.0, 0.0, "No AC charging needed (cutoff already reached).", soc_start
+
+    if not tariff_has_meaningful_spread(cfg):
+        return 0.0, 0.0, "No active arbitrage AC charging: flat tariff / no meaningful spread.", soc_start
 
     soc_at_22_kwh = soc_start * BATTERY_KWH
     target_soc_kwh = soc_cutoff * BATTERY_KWH

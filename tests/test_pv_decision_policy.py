@@ -82,7 +82,11 @@ def test_compute_soc_high_headroom_uses_expected_p50() -> None:
     assert soc_high_1 == soc_high_2
 
 
-def test_pick_decision_quantile_switches_on_confidence() -> None:
-    assert pick_decision_quantile("Low") == ("p10", "low_confidence")
-    assert pick_decision_quantile("Medium") == ("p25", "normal")
-    assert pick_decision_quantile("High") == ("p25", "normal")
+def test_pick_decision_quantile_is_fixed_when_uncertainty_enabled() -> None:
+    assert pick_decision_quantile("Low", uncertainty_enabled=True) == ("p25", "fixed")
+    assert pick_decision_quantile("Medium", uncertainty_enabled=True) == ("p25", "fixed")
+    assert pick_decision_quantile("High", uncertainty_enabled=True) == ("p25", "fixed")
+
+
+def test_pick_decision_quantile_uses_p50_when_uncertainty_disabled() -> None:
+    assert pick_decision_quantile("Low", uncertainty_enabled=False) == ("p50", "uncertainty_disabled")
