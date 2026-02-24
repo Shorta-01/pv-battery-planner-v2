@@ -1293,6 +1293,16 @@ class BackendState:
             buffer_percent=buffer_percent,
             max_ac_charge_power_kw=user_max_ac_kw,
         )
+        cutoff_adjusted_for_pv_headroom = str(cutoff_reason).startswith("CONFLICT")
+        cutoff_adjustment_reason = (
+            "Cutoff lowered to preserve PV headroom for daytime surplus handling."
+            if cutoff_adjusted_for_pv_headroom
+            else ""
+        )
+        pv_surplus_store_econ_enabled = bool(flows_df.attrs.get("pv_surplus_store_econ_enabled", False))
+        pv_surplus_export_preferred_kwh = float(flows_df.attrs.get("pv_surplus_export_preferred_kwh", 0.0))
+        pv_surplus_store_preferred_kwh = float(flows_df.attrs.get("pv_surplus_store_preferred_kwh", 0.0))
+        pv_store_vs_export_decisions_count = int(flows_df.attrs.get("pv_store_vs_export_decisions_count", 0))
         grid_import = float(flows_df.get("grid_import_kwh", pd.Series(dtype=float)).sum())
         grid_export = float(flows_df.get("grid_export_kwh", pd.Series(dtype=float)).sum())
         canonical_tomorrow_total_kwh = (float(pd.to_numeric(pv["pv_total_kwh"], errors="coerce").sum(min_count=1)) if "pv_total_kwh" in pv.columns else None)
@@ -1447,6 +1457,12 @@ class BackendState:
                 "decision_quantile_used": decision_quantile,
                 "decision_quantile_policy": decision_reason,
                 "confidence_influences_planning": False,
+                "cutoff_adjusted_for_pv_headroom": bool(cutoff_adjusted_for_pv_headroom),
+                "cutoff_adjustment_reason": str(cutoff_adjustment_reason),
+                "pv_surplus_store_econ_enabled": bool(pv_surplus_store_econ_enabled),
+                "pv_surplus_export_preferred_kwh": float(pv_surplus_export_preferred_kwh),
+                "pv_surplus_store_preferred_kwh": float(pv_surplus_store_preferred_kwh),
+                "pv_store_vs_export_decisions_count": int(pv_store_vs_export_decisions_count),
                 "week_models_used": list(week_models),
                 "week_models_count": int(len(week_models)),
                 "pv_week_models_used_count_per_hour": self._serialize_series(week_models_used_count_per_hour) if isinstance(week_models_used_count_per_hour, pd.Series) else None,

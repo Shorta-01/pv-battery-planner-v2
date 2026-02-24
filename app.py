@@ -1496,6 +1496,7 @@ def render_pv_quality_widget(
     tomorrow_source_days: int | float | str | None = None,
     forecast_total_load_kwh: float | None = None,
     est_export_curtail_kwh: float | None = None,
+    planning_metrics: dict | None = None,
 ) -> None:
     _ = pv_df
 
@@ -1548,6 +1549,8 @@ def render_pv_quality_widget(
     bars_scope = str(sv.get("bars_scope") or "tomorrow")
     terminal_cycle_value = _safe_float(sv.get("terminal_battery_value_eur_cycle"), 0.0)
     scope = str(sv.get("display_scope") or "cycle")
+    resolver_note = str(sv.get("note") or "").strip()
+    resolver_detail_note = str(sv.get("detail_note") or "").strip()
 
     history_debug_mode = st.session_state.get("history_mode", "Simple") == "Debug"
     show_savings_diagnostics = bool(APP_DEBUG or history_debug_mode)
@@ -1622,12 +1625,30 @@ def render_pv_quality_widget(
                 "</span></div>"
             )
 
-        bars_note = ""
-        if bars_scope != "cycle":
-            bars_note = (
-                "<div style='margin-top:0.12rem;font-size:0.68rem;opacity:0.75;'>"
-                "⏱️ Bars: tomorrow (00–24)"
-                "</div>"
+        bars_note_text = resolver_detail_note or ("⏱️ Bars: tomorrow (00–24)" if bars_scope != "cycle" else "")
+        bars_note = (
+            "<div style='margin-top:0.12rem;font-size:0.68rem;opacity:0.75;'>"
+            f"{_esc_attr(bars_note_text)}"
+            "</div>"
+        ) if bars_note_text else ""
+        scope_note = (
+            "<div style='margin-top:0.10rem;font-size:0.67rem;opacity:0.72;'>"
+            f"{_esc_attr(resolver_note)}"
+            "</div>"
+        ) if resolver_note else ""
+        cutoff_chip = ""
+        cutoff_adjusted = bool((planning_metrics or {}).get("cutoff_adjusted_for_pv_headroom", False))
+        cutoff_reason = str((planning_metrics or {}).get("cutoff_adjustment_reason", "") or "").strip()
+        if cutoff_adjusted:
+            cutoff_tip = cutoff_reason or "Cutoff was lowered to preserve PV headroom."
+            cutoff_chip = (
+                "<div style='margin-top:0.18rem;'>"
+                "<span class='pvbp-tip' tabindex='0' style='display:inline-flex;align-items:center;gap:0.24rem;"
+                "padding:0.10rem 0.38rem;border-radius:999px;border:1px solid rgba(255,255,255,0.16);"
+                "font-size:0.66rem;color:#9bd4ff;font-weight:700;'>"
+                "🧠 target adjusted for PV headroom"
+                f"<span class='pvbp-tiptext'>{_esc_attr(cutoff_tip)}</span>"
+                "</span></div>"
             )
 
         savings_html = (
@@ -1644,6 +1665,8 @@ def render_pv_quality_widget(
             + inventory_chip
             + bars_html
             + bars_note
+            + scope_note
+            + cutoff_chip
             + savings_diag_html
             + "</div>"
         )
@@ -4454,6 +4477,7 @@ if run_clicked:
                     forecast_total_load_kwh=load_total_value,
                     est_export_curtail_kwh=export_curtail_total,
                     effective_cfg=effective_cfg,
+                    planning_metrics=metrics,
                 )
 
             pv_week_ahead_display = (pv_week_ahead or [])[:6]

@@ -3186,6 +3186,33 @@ def simulate_full_day_soc(
     charge_cutoff_energy = min(MAX_CUTOFF_SOC, max(MIN_SOC, cutoff_soc)) * BATTERY_KWH
 
     rows = []
+    econ_eps = 1e-6
+    econ_cfg = cfg if isinstance(cfg, dict) else {}
+    inj_raw = econ_cfg.get("injection_grid_price_eur_per_kwh")
+    peak_raw = econ_cfg.get("peak_grid_price_eur_per_kwh")
+    offpeak_raw = econ_cfg.get("offpeak_grid_price_eur_per_kwh")
+    try:
+        export_price_now = float(inj_raw)
+        peak_price = float(peak_raw)
+        offpeak_price = float(offpeak_raw)
+        pv_surplus_store_econ_enabled = True
+    except Exception:
+        export_price_now = 0.0
+        peak_price = 0.0
+        offpeak_price = 0.0
+        pv_surplus_store_econ_enabled = False
+
+    use_battery_for_offpeak_load = should_use_battery_for_offpeak_load(cfg)
+    future_expensive_exists: dict[pd.Timestamp, bool] = {}
+    has_future_expensive = False
+    for ts in reversed(day_idx):
+        is_expensive = in_any_window(ts.time(), get_expensive_windows(ts.date(), cfg))
+        has_future_expensive = bool(has_future_expensive or is_expensive)
+        future_expensive_exists[ts] = has_future_expensive
+
+    pv_surplus_export_preferred_kwh = 0.0
+    pv_surplus_store_preferred_kwh = 0.0
+    pv_store_vs_export_decisions_count = 0
     for ts in day_idx:
         step_h = float(dt_h.loc[ts])
         pv_ac_limited = float(pv_total.loc[ts])
@@ -3203,17 +3230,43 @@ def simulate_full_day_soc(
         charging_grid_import = 0.0
         grid_export = 0.0
         curtailed = 0.0
+        pv_export_preferred_kwh = 0.0
+        pv_store_preferred_kwh = 0.0
 
         pv_for_storage = pv_after_load + overflow
         if pv_for_storage > 0:
             room = max(0.0, max_energy - energy)
             charge_power_limited = BATTERY_MAX_CHARGE_KW * step_h
-            pv_limited_store = pv_for_storage * BATTERY_PV_CHARGE_EFF
-            store = min(room, pv_limited_store, charge_power_limited)
-            energy += store
-            batt_charge_kwh += store
-            pv_used_for_batt = store / BATTERY_PV_CHARGE_EFF if BATTERY_PV_CHARGE_EFF > 0 else 0.0
-            pv_after_batt = max(0.0, pv_for_storage - pv_used_for_batt)
+            pv_storage_headroom = room / BATTERY_PV_CHARGE_EFF if BATTERY_PV_CHARGE_EFF > 0 else 0.0
+            pv_charge_power_cap = charge_power_limited / BATTERY_PV_CHARGE_EFF if BATTERY_PV_CHARGE_EFF > 0 else 0.0
+            max_pv_to_store = max(0.0, min(pv_for_storage, pv_storage_headroom, pv_charge_power_cap))
+
+            prefer_export = False
+            if pv_surplus_store_econ_enabled and max_pv_to_store > 0:
+                expected_displacement_price = peak_price if future_expensive_exists.get(ts, False) else (
+                    offpeak_price if use_battery_for_offpeak_load else 0.0
+                )
+                stored_value_per_kwh_pv = expected_displacement_price * BATTERY_PV_CHARGE_EFF * BATTERY_DISCHARGE_EFF
+                prefer_export = export_price_now >= (stored_value_per_kwh_pv + econ_eps)
+                pv_store_vs_export_decisions_count += 1
+                if prefer_export:
+                    pv_export_preferred_kwh = max_pv_to_store
+                    pv_surplus_export_preferred_kwh += max_pv_to_store
+                else:
+                    pv_store_preferred_kwh = max_pv_to_store
+                    pv_surplus_store_preferred_kwh += max_pv_to_store
+
+            if prefer_export:
+                store = 0.0
+                pv_after_batt = pv_for_storage
+            else:
+                pv_limited_store = pv_for_storage * BATTERY_PV_CHARGE_EFF
+                store = min(room, pv_limited_store, charge_power_limited)
+                energy += store
+                batt_charge_kwh += store
+                pv_used_for_batt = store / BATTERY_PV_CHARGE_EFF if BATTERY_PV_CHARGE_EFF > 0 else 0.0
+                pv_after_batt = max(0.0, pv_for_storage - pv_used_for_batt)
+
             export_limit = max(0.0, (INVERTER_AC_KW_LIMIT * step_h) - pv_to_load)
             grid_export = min(pv_after_batt, export_limit)
             curtailed = max(0.0, pv_after_batt - grid_export)
@@ -3251,6 +3304,8 @@ def simulate_full_day_soc(
             "grid_import_kwh": grid_import,
             "grid_export_kwh": grid_export,
             "curtailed_kwh": curtailed,
+            "pv_export_preferred_kwh": pv_export_preferred_kwh,
+            "pv_store_preferred_kwh": pv_store_preferred_kwh,
             "soc_start_pct": soc_start_pct,
             "soc_end_pct": soc_end_pct,
         })
@@ -3262,6 +3317,10 @@ def simulate_full_day_soc(
     flows_df = flows_df.reindex(tomorrow_idx).fillna(0.0)
     if ENABLE_INVARIANT_CHECKS and not flows_df.index.is_unique:
         raise ValueError("full_day flows contains duplicate timestamps")
+    flows_df.attrs["pv_surplus_store_econ_enabled"] = bool(pv_surplus_store_econ_enabled)
+    flows_df.attrs["pv_surplus_export_preferred_kwh"] = float(pv_surplus_export_preferred_kwh)
+    flows_df.attrs["pv_surplus_store_preferred_kwh"] = float(pv_surplus_store_preferred_kwh)
+    flows_df.attrs["pv_store_vs_export_decisions_count"] = int(pv_store_vs_export_decisions_count)
     soc_series = pd.Series(pd.to_numeric(flows_df["soc_end_pct"], errors="coerce").fillna(0.0).values, index=tomorrow_idx, name="soc_percent")
     if ENABLE_INVARIANT_CHECKS:
         validate_flow_invariants(flows_df, "full_day")
