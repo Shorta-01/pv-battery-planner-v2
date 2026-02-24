@@ -1548,6 +1548,33 @@ def render_pv_quality_widget(
     bars_scope = str(sv.get("bars_scope") or "tomorrow")
     terminal_cycle_value = _safe_float(sv.get("terminal_battery_value_eur_cycle"), 0.0)
     scope = str(sv.get("display_scope") or "cycle")
+
+    history_debug_mode = st.session_state.get("history_mode", "Simple") == "Debug"
+    show_savings_diagnostics = bool(APP_DEBUG or history_debug_mode)
+
+    diag_baseline_cycle = _safe_float((pv_quality_dict or {}).get("baseline_cost_eur_cycle"), 0.0)
+    diag_plan_cash_cycle = _safe_float((pv_quality_dict or {}).get("plan_cost_eur_cycle_cash"), 0.0)
+    diag_terminal_cycle = _safe_float((pv_quality_dict or {}).get("terminal_battery_value_eur_cycle"), 0.0)
+    diag_plan_adjusted_cycle = _safe_float((pv_quality_dict or {}).get("plan_cost_eur_cycle"), 0.0)
+    diag_savings_cycle = _safe_float((pv_quality_dict or {}).get("savings_eur_cycle"), 0.0)
+    diag_cycle_start_soc = _safe_float((pv_quality_dict or {}).get("cycle_start_soc_pct"), 0.0)
+    diag_cycle_end_soc = _safe_float((pv_quality_dict or {}).get("cycle_end_soc_pct"), 0.0)
+    diag_cycle_delta_soc = _safe_float((pv_quality_dict or {}).get("cycle_soc_delta_pct"), 0.0)
+    savings_diag_html = ""
+    if show_savings_diagnostics:
+        savings_diag_html = (
+            "<details style='margin-top:0.35rem;'>"
+            "<summary style='font-size:0.70rem;cursor:pointer;opacity:0.86;'>€ Savings diagnostics</summary>"
+            "<div style='margin-top:0.25rem;font-size:0.68rem;opacity:0.82;line-height:1.35;'>"
+            f"<div>Baseline (cycle): €{diag_baseline_cycle:.2f}</div>"
+            f"<div>Plan cash (cycle): €{diag_plan_cash_cycle:.2f}</div>"
+            f"<div>Terminal battery value: €{diag_terminal_cycle:.2f}</div>"
+            f"<div>Plan adjusted (cycle): €{diag_plan_adjusted_cycle:.2f}</div>"
+            f"<div>Savings (cycle): €{diag_savings_cycle:.2f}</div>"
+            f"<div>Start SOC / End SOC / ΔSOC: {diag_cycle_start_soc:.1f}% / {diag_cycle_end_soc:.1f}% / {diag_cycle_delta_soc:+.1f}%</div>"
+            "</div>"
+            "</details>"
+        )
     if s is not None and base_cost is not None and plan_cost is not None:
         s = float(s)
         pill_color = "#52b788" if s >= 0 else "#d62828"
@@ -1617,6 +1644,7 @@ def render_pv_quality_widget(
             + inventory_chip
             + bars_html
             + bars_note
+            + savings_diag_html
             + "</div>"
         )
     else:
