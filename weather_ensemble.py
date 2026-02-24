@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import hashlib
 import json
 import logging
 import math
+import os
+import tempfile
 import time
 from pathlib import Path
-from threading import Lock
+from threading import RLock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
@@ -460,7 +463,7 @@ CIRCUIT_BREAKER_FAILURE_THRESHOLD = 3
 CIRCUIT_BREAKER_OPEN_SECONDS = 10 * 60
 
 _CIRCUIT_BREAKER_STATE: dict[str, dict[str, float]] = {}
-_CIRCUIT_BREAKER_LOCK = Lock()
+_CIRCUIT_BREAKER_LOCK = RLock()
 _CIRCUIT_BREAKER_LOADED = False
 
 IRRADIANCE_HOURLY_MAX_WM2 = 1400.0
@@ -701,9 +704,27 @@ def _read_json_file(path: Path, default: Any) -> Any:
 
 def _write_json_file(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, sort_keys=True, indent=2, default=_json_default), encoding="utf-8")
-    tmp.replace(path)
+    data = json.dumps(payload, sort_keys=True, indent=2, default=_json_default)
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f"{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp_file:
+            tmp_file.write(data)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+            tmp_path = tmp_file.name
+        os.replace(tmp_path, path)
+    except Exception:
+        if tmp_path:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+        raise
 
 
 def _load_circuit_breaker_state() -> None:
@@ -735,7 +756,7 @@ def _persist_circuit_breaker_state() -> None:
             }
             for model_id, state in _CIRCUIT_BREAKER_STATE.items()
         }
-    _write_json_file(PROVIDER_CIRCUIT_STATE_PATH, payload)
+        _write_json_file(PROVIDER_CIRCUIT_STATE_PATH, payload)
 
 
 def _is_circuit_open(model_id: str) -> tuple[bool, int]:
@@ -750,38 +771,43 @@ def _is_circuit_open(model_id: str) -> tuple[bool, int]:
 
 
 def _mark_provider_success(model_id: str) -> None:
-    _load_circuit_breaker_state()
-    changed = False
-    with _CIRCUIT_BREAKER_LOCK:
-        state = _CIRCUIT_BREAKER_STATE.get(model_id)
-        if not isinstance(state, dict):
-            return
-        if int(state.get("consecutive_failures", 0) or 0) != 0 or float(state.get("circuit_open_until_ts", 0) or 0) != 0.0:
-            state["consecutive_failures"] = 0
-            state["circuit_open_until_ts"] = 0.0
-            _CIRCUIT_BREAKER_STATE[model_id] = state
-            changed = True
-    if changed:
-        _persist_circuit_breaker_state()
+    try:
+        with _CIRCUIT_BREAKER_LOCK:
+            _load_circuit_breaker_state()
+            state = _CIRCUIT_BREAKER_STATE.get(model_id)
+            if not isinstance(state, dict):
+                return
+            if int(state.get("consecutive_failures", 0) or 0) != 0 or float(state.get("circuit_open_until_ts", 0) or 0) != 0.0:
+                state["consecutive_failures"] = 0
+                state["circuit_open_until_ts"] = 0.0
+                _CIRCUIT_BREAKER_STATE[model_id] = state
+                _persist_circuit_breaker_state()
+    except (OSError, json.JSONDecodeError) as exc:
+        _LOGGER.warning("[weather_ensemble][circuit_breaker] failed to persist success state for model=%s err=%s", model_id, exc)
 
 
 def _mark_provider_failure(model_id: str) -> dict[str, Any]:
-    _load_circuit_breaker_state()
     now_ts = time.time()
-    with _CIRCUIT_BREAKER_LOCK:
-        state = _CIRCUIT_BREAKER_STATE.setdefault(model_id, {
-            "consecutive_failures": 0.0,
-            "last_failure_ts": 0.0,
-            "circuit_open_until_ts": 0.0,
-        })
-        failures = int(state.get("consecutive_failures", 0) or 0) + 1
-        state["consecutive_failures"] = float(failures)
-        state["last_failure_ts"] = now_ts
-        if failures >= CIRCUIT_BREAKER_FAILURE_THRESHOLD:
-            state["circuit_open_until_ts"] = now_ts + float(CIRCUIT_BREAKER_OPEN_SECONDS)
-        open_until = float(state.get("circuit_open_until_ts", 0) or 0)
-        _CIRCUIT_BREAKER_STATE[model_id] = state
-    _persist_circuit_breaker_state()
+    failures = 0
+    open_until = 0.0
+    try:
+        with _CIRCUIT_BREAKER_LOCK:
+            _load_circuit_breaker_state()
+            state = _CIRCUIT_BREAKER_STATE.setdefault(model_id, {
+                "consecutive_failures": 0.0,
+                "last_failure_ts": 0.0,
+                "circuit_open_until_ts": 0.0,
+            })
+            failures = int(state.get("consecutive_failures", 0) or 0) + 1
+            state["consecutive_failures"] = float(failures)
+            state["last_failure_ts"] = now_ts
+            if failures >= CIRCUIT_BREAKER_FAILURE_THRESHOLD:
+                state["circuit_open_until_ts"] = now_ts + float(CIRCUIT_BREAKER_OPEN_SECONDS)
+            open_until = float(state.get("circuit_open_until_ts", 0) or 0)
+            _CIRCUIT_BREAKER_STATE[model_id] = state
+            _persist_circuit_breaker_state()
+    except (OSError, json.JSONDecodeError) as exc:
+        _LOGGER.warning("[weather_ensemble][circuit_breaker] failed to persist failure state for model=%s err=%s", model_id, exc)
     return {
         "consecutive_failures": failures,
         "circuit_open_until_ts": open_until,
