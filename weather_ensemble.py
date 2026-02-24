@@ -222,6 +222,17 @@ def get_model_caps(model_id: str) -> dict[str, Any]:
     return dict(caps)
 
 
+def _stable_available_model_order(selected: list[str], mapping: dict[str, Any]) -> list[str]:
+    selected_present = [model_id for model_id in selected if model_id in mapping]
+    extras = sorted(model_id for model_id in mapping if model_id not in selected_present)
+    return selected_present + extras
+
+
+def _stable_first_available_model(selected: list[str], mapping: dict[str, Any]) -> str | None:
+    ordered = _stable_available_model_order(selected, mapping)
+    return ordered[0] if ordered else None
+
+
 def auto_select_models_for_location(lat: float | object, lon: float | None = None, requested_days: int = 1) -> list[str]:
     lat_valid = True
     if lon is None and hasattr(lat, "latitude") and hasattr(lat, "longitude"):
@@ -2076,6 +2087,20 @@ def build_ensemble_forecast(
                     exc,
                 )
 
+    stable_models = _stable_available_model_order(selected, weather_ok)
+
+    def _reorder_by_stable_models(mapping: dict[str, Any]) -> dict[str, Any]:
+        return {model_id: mapping[model_id] for model_id in stable_models if model_id in mapping}
+
+    weather_ok = _reorder_by_stable_models(weather_ok)
+    missing_vars_by_model = _reorder_by_stable_models(missing_vars_by_model)
+    derived_irradiance_by_model = _reorder_by_stable_models(derived_irradiance_by_model)
+    derived_weather_code_by_model = _reorder_by_stable_models(derived_weather_code_by_model)
+    derived_irradiance_hours_by_model = _reorder_by_stable_models(derived_irradiance_hours_by_model)
+    fetch_meta_by_model = _reorder_by_stable_models(fetch_meta_by_model)
+    model_live_failed_used_cached = _reorder_by_stable_models(model_live_failed_used_cached)
+    provider_payloads_by_model = _reorder_by_stable_models(provider_payloads_by_model)
+
     overlap_hours_by_model: dict[str, int] = {}
     allow_synth_mask = _compute_allow_synth_mask(weather_ok, canonical_index)
 
@@ -2143,7 +2168,12 @@ def build_ensemble_forecast(
         if len(sat_index) == 0:
             satellite_nowcast_reason = "skipped (no overlap)"
         else:
-            primary_weather = weather_ok[next(iter(weather_ok.keys()))].df.reindex(sat_index)
+            probe_model_id = _stable_first_available_model(selected, weather_ok)
+            if probe_model_id:
+                _LOGGER.debug("[weather_ensemble] satellite_nowcast_probe_model=%s", probe_model_id)
+                primary_weather = weather_ok[probe_model_id].df.reindex(sat_index)
+            else:
+                primary_weather = pd.DataFrame(index=sat_index)
             ghi_probe = pd.to_numeric(primary_weather.get("ghi_wm2"), errors="coerce") if "ghi_wm2" in primary_weather.columns else pd.Series(np.nan, index=sat_index)
             if ghi_probe.fillna(0.0).max() <= 5.0:
                 satellite_nowcast_reason = "skipped (night)"
@@ -2253,7 +2283,9 @@ def build_ensemble_forecast(
     p25 = matrix.quantile(0.25, axis=1)
     p90 = matrix.quantile(0.90, axis=1)
 
-    primary_model = next((m for m in selected if m in weather_ok), next(iter(weather_ok.keys())))
+    primary_model = _stable_first_available_model(selected, weather_ok)
+    if primary_model is None:
+        raise RuntimeError("All weather model requests failed.")
     weather_index = canonical_index
     ensemble_weather_df = build_weather_ensemble_table(
         weather_ok=weather_ok,

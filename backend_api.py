@@ -378,6 +378,26 @@ def _best_of_day_from_model(
     return _best_of_day_weather_code(day_df)
 
 
+def _best_of_day_from_ensemble_weather_table(
+    weather_ensemble_df: pd.DataFrame | None,
+    day_start: pd.Timestamp,
+    day_end: pd.Timestamp,
+    tz: str,
+) -> int | None:
+    if not isinstance(weather_ensemble_df, pd.DataFrame) or "weather_code" not in weather_ensemble_df.columns:
+        return None
+    df = weather_ensemble_df
+    idx = df.index
+    if isinstance(idx, pd.DatetimeIndex):
+        if idx.tz is None:
+            df = df.copy()
+            df.index = df.index.tz_localize(tz)
+        else:
+            df = df.tz_convert(tz)
+    day_df = df.loc[(df.index >= day_start) & (df.index < day_end), ["weather_code"]]
+    return _best_of_day_weather_code(day_df)
+
+
 def _pick_week_ahead_weather_code(
     day_offset: int,
     *,
@@ -461,6 +481,8 @@ def _build_pv_week_ahead(
     hourly_pv_p10: pd.Series | None = None,
     hourly_pv_p90: pd.Series | None = None,
     weather_code_series: pd.Series | None = None,
+    weather_ensemble_df: pd.DataFrame | None = None,
+    week_weather_code_policy: str | None = None,
 ) -> list[dict[str, object]]:
     if pv_totals_p50 is None:
         def _daily_totals(series: pd.Series | None) -> list[float | None]:
@@ -491,17 +513,36 @@ def _build_pv_week_ahead(
         source_model_id: str | None = None
         source_max_days: int | None = None
 
-        picker = globals().get("_pick_week_ahead_weather_code")
-        if callable(picker):
-            code, source_model_id, source_max_days = picker(
-                i,
-                target_date=target_date,
-                tz=tz,
-                weather_by_model=weather_by_model or {},
-                weights_used=weights_used,
-                primary_id=weather_primary_model_id,
-                derived_weather_code_by_model=derived_weather_code_by_model,
-            )
+        day_start = pd.Timestamp(dt.datetime.combine(day, dt.time(0, 0)), tz=tz)
+        day_end = day_start + pd.Timedelta(days=1)
+        selection_policy = week_weather_code_policy
+
+        ensemble_picker = globals().get("_best_of_day_from_ensemble_weather_table")
+        if callable(ensemble_picker):
+            ensemble_code = ensemble_picker(weather_ensemble_df, day_start, day_end, tz)
+        else:
+            ensemble_code = _best_of_day_weather_code(
+                weather_ensemble_df.loc[(weather_ensemble_df.index >= day_start) & (weather_ensemble_df.index < day_end), ["weather_code"]]
+            ) if isinstance(weather_ensemble_df, pd.DataFrame) and "weather_code" in weather_ensemble_df.columns and isinstance(weather_ensemble_df.index, pd.DatetimeIndex) else None
+        if ensemble_code is not None:
+            code = int(ensemble_code)
+            source_model_id = "ensemble_weather"
+            source_max_days = None
+            selection_policy = selection_policy or "ensemble_best_of_day"
+        else:
+            picker = globals().get("_pick_week_ahead_weather_code")
+            if callable(picker):
+                code, source_model_id, source_max_days = picker(
+                    i,
+                    target_date=target_date,
+                    tz=tz,
+                    weather_by_model=weather_by_model or {},
+                    weights_used=weights_used,
+                    primary_id=weather_primary_model_id,
+                    derived_weather_code_by_model=derived_weather_code_by_model,
+                )
+            if code is not None:
+                selection_policy = selection_policy or "source_model_best_of_day"
 
         if code is None and isinstance(weather_code_series, pd.Series):
             s = pd.to_numeric(weather_code_series, errors="coerce")
@@ -521,12 +562,14 @@ def _build_pv_week_ahead(
                     mode_vals = day_series.dropna().mode()
                     if not mode_vals.empty:
                         code = int(mode_vals.iloc[0])
+                        selection_policy = selection_policy or "legacy_series"
 
         fallback_used = code is None
         if fallback_used:
             code = 3
             source_model_id = None
             source_max_days = None
+            selection_policy = selection_policy or "hard_fallback"
 
         model_labels = globals().get("WEATHER_MODELS", {}) if isinstance(globals().get("WEATHER_MODELS", {}), dict) else {}
         out.append(
@@ -538,10 +581,15 @@ def _build_pv_week_ahead(
                 "weather_code": int(code),
                 "weather_best_of_day": not fallback_used,
                 "weather_code_source_model_id": source_model_id,
-                "weather_code_source_model_label": ((model_labels.get(source_model_id) or {}).get("label") if source_model_id else None),
+                "weather_code_source_model_label": (
+                    "Ensemble weather"
+                    if source_model_id == "ensemble_weather"
+                    else ((model_labels.get(source_model_id) or {}).get("label") if source_model_id else None)
+                ),
                 "weather_code_source_max_days": int(source_max_days) if source_max_days is not None else None,
                 "icon_key": None,
                 "weather_code_fallback_used": bool(fallback_used),
+                "weather_code_selection_policy": selection_policy,
             }
         )
 
@@ -1166,6 +1214,7 @@ class BackendState:
             weights_used=weights_used_week,
             weather_primary_model_id=primary_id,
             derived_weather_code_by_model=derived_weather_code_by_model_week,
+            weather_ensemble_df=getattr(getattr(ensemble_week, "weather_ensemble_table", None), "df", None),
         )
         pv_week_ahead = pv_week_ahead_all[1:7]
 
