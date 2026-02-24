@@ -1501,7 +1501,7 @@ def compute_euro_savings_no_battery_vs_plan(
     if len(hourly_savings_cycle_hour_labels) != 24:
         hourly_savings_cycle_hour_labels = [f"{h:02d}:00" for h in range(24)]
 
-    return {
+    result = {
         "baseline_cost_eur_total": baseline_cycle,
         "plan_cost_eur_total": plan_cycle,
         "savings_eur_total": savings_cycle,
@@ -1540,6 +1540,24 @@ def compute_euro_savings_no_battery_vs_plan(
         "savings_cycle_window_start_local": cycle_start.isoformat(),
         "savings_cycle_window_end_local": cycle_end.isoformat(),
     }
+
+    diagnostics_defaults = {
+        "baseline_cost_eur_cycle": 0.0,
+        "plan_cost_eur_cycle_cash": 0.0,
+        "terminal_battery_value_eur_cycle": 0.0,
+        "plan_cost_eur_cycle": 0.0,
+        "savings_eur_cycle": 0.0,
+        "cycle_start_soc_pct": 0.0,
+        "cycle_end_soc_pct": 0.0,
+        "cycle_soc_delta_pct": 0.0,
+        "cycle_stored_energy_delta_kwh": 0.0,
+        "savings_cycle_terminal_value_applied": False,
+        "savings_horizon_label": "off-peak start -> next off-peak start",
+    }
+    for key, default_value in diagnostics_defaults.items():
+        if key not in result or result[key] is None:
+            result[key] = default_value
+    return result
 
 
 def quick_sanity_checks() -> None:

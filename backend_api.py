@@ -182,6 +182,17 @@ def _to_history_summary(payload: dict) -> dict:
         "ratio": pv_quality.get("ratio"),
         "color": pv_quality.get("color"),
         "is_fallback": pv_quality.get("is_fallback"),
+        "baseline_cost_eur_cycle": pv_quality.get("baseline_cost_eur_cycle"),
+        "plan_cost_eur_cycle_cash": pv_quality.get("plan_cost_eur_cycle_cash"),
+        "terminal_battery_value_eur_cycle": pv_quality.get("terminal_battery_value_eur_cycle"),
+        "plan_cost_eur_cycle": pv_quality.get("plan_cost_eur_cycle"),
+        "savings_eur_cycle": pv_quality.get("savings_eur_cycle"),
+        "cycle_start_soc_pct": pv_quality.get("cycle_start_soc_pct"),
+        "cycle_end_soc_pct": pv_quality.get("cycle_end_soc_pct"),
+        "cycle_soc_delta_pct": pv_quality.get("cycle_soc_delta_pct"),
+        "cycle_stored_energy_delta_kwh": pv_quality.get("cycle_stored_energy_delta_kwh"),
+        "savings_cycle_terminal_value_applied": pv_quality.get("savings_cycle_terminal_value_applied"),
+        "savings_horizon_label": pv_quality.get("savings_horizon_label"),
     }
     return {
         "target_date": payload.get("target_date"),
