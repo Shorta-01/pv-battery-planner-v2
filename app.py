@@ -4375,6 +4375,9 @@ if run_clicked:
             cutoff_soc = _safe_float(metrics.get("cutoff_soc"), 0.0)
             charge_kw = _safe_float(metrics.get("charge_kw"), 0.0)
             charge_note = str(metrics.get("charge_note", ""))
+            charge_target_reachable_raw = metrics.get("charge_target_reachable")
+            charge_target_reachable = bool(charge_target_reachable_raw) if charge_target_reachable_raw is not None else None
+            charge_warning_text = str(metrics.get("charge_warning_text", "") or "")
             grid_import = _safe_float(metrics.get("grid_import"), 0.0)
             grid_export = _safe_float(metrics.get("grid_export"), 0.0)
             weather_ensemble = result.get("weather_ensemble", {}) if isinstance(result.get("weather_ensemble"), dict) else {}
@@ -4456,7 +4459,9 @@ if run_clicked:
             pv_week_ahead_display = (pv_week_ahead or [])[:6]
             render_pv_week_ahead_widget(pv_week_ahead_display)
 
-            if charge_note.startswith("Warning"):
+            if charge_target_reachable is False and charge_warning_text:
+                st.warning(charge_warning_text)
+            elif charge_note.startswith("Warning"):
                 st.warning(charge_note)
 
             if APP_DEBUG:

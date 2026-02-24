@@ -165,11 +165,11 @@ def _fetch_elevation_m(lat: float, lon: float) -> float | None:
         return None
 
 
-def pick_decision_quantile(soc_offpeak_confidence: str) -> tuple[str, str]:
-    confidence = str(soc_offpeak_confidence or "").strip()
-    if confidence == "Low":
-        return "p10", "low_confidence"
-    return "p25", "normal"
+def pick_decision_quantile(soc_offpeak_confidence: str, uncertainty_enabled: bool = True) -> tuple[str, str]:
+    _ = str(soc_offpeak_confidence or "").strip()
+    if not bool(uncertainty_enabled):
+        return "p50", "uncertainty_disabled"
+    return "p25", "fixed"
 
 
 def _to_history_summary(payload: dict) -> dict:
@@ -1273,22 +1273,18 @@ class BackendState:
             used_history=bool(used_history),
             pv_credit_available=bool(pv_credit_available),
         )
-        decision_quantile, decision_reason = pick_decision_quantile(soc_offpeak_confidence)
-        if decision_quantile == "p10":
-            decision_series = ensemble_tomorrow.pv_ensemble_p10
+        decision_quantile, decision_reason = pick_decision_quantile(soc_offpeak_confidence, uncertainty_enabled=bool(pv_uncertainty))
+        if decision_quantile == "p50":
+            decision_series = ensemble_tomorrow.pv_ensemble_p50
         else:
             decision_series = getattr(ensemble_tomorrow, "pv_ensemble_p25", None)
         if decision_series is None:
-            decision_series = (
-                ensemble_tomorrow.pv_ensemble_p10
-                if decision_quantile == "p25"
-                else ensemble_tomorrow.pv_ensemble_p50
-            )
+            decision_series = ensemble_tomorrow.pv_ensemble_p50
         if decision_series is None:
             decision_series = ensemble_tomorrow.pv_ensemble_p50
         pv["pv_total_decision_kwh"] = pd.to_numeric(decision_series.reindex(pv.index), errors="coerce")
 
-        detail_df, flows_df, soc_series, charge_kw, cutoff_soc, cutoff_reason = core.run_detailed_plan(
+        detail_df, flows_df, soc_series, charge_kw, cutoff_soc, cutoff_reason, charge_note, charge_target_reachable, charge_warning_text = core.run_detailed_plan(
             target_date=target_date,
             weather=weather,
             pv_df=pv,
@@ -1297,7 +1293,6 @@ class BackendState:
             buffer_percent=buffer_percent,
             max_ac_charge_power_kw=user_max_ac_kw,
         )
-        charge_note = f"{cutoff_reason}."
         grid_import = float(flows_df.get("grid_import_kwh", pd.Series(dtype=float)).sum())
         grid_export = float(flows_df.get("grid_export_kwh", pd.Series(dtype=float)).sum())
         canonical_tomorrow_total_kwh = (float(pd.to_numeric(pv["pv_total_kwh"], errors="coerce").sum(min_count=1)) if "pv_total_kwh" in pv.columns else None)
@@ -1428,6 +1423,8 @@ class BackendState:
                 "cutoff_soc": float(cutoff_soc),
                 "cutoff_reason": cutoff_reason,
                 "charge_note": charge_note,
+                "charge_target_reachable": bool(charge_target_reachable),
+                "charge_warning_text": str(charge_warning_text or ""),
                 "grid_import": float(grid_import),
                 "grid_export": float(grid_export),
                 "pv_forecast_kwh": pv_forecast_kwh,
@@ -1447,6 +1444,9 @@ class BackendState:
                 "soc_offpeak_start_peak_overlap": bool(soc_offpeak_debug.get("peak_overlap", False)),
                 "pv_decision_scenario": decision_quantile,
                 "pv_decision_reason": decision_reason,
+                "decision_quantile_used": decision_quantile,
+                "decision_quantile_policy": decision_reason,
+                "confidence_influences_planning": False,
                 "week_models_used": list(week_models),
                 "week_models_count": int(len(week_models)),
                 "pv_week_models_used_count_per_hour": self._serialize_series(week_models_used_count_per_hour) if isinstance(week_models_used_count_per_hour, pd.Series) else None,
