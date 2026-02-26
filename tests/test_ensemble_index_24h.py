@@ -48,12 +48,22 @@ def test_ensemble_output_matches_local_day_index(monkeypatch, target_date, expec
             index=idx_short,
         )
         fetch_meta = {
+            "source": "test_mock",
+            "cache_hit": False,
             "requested_days": 1,
             "horizon_days": 1,
             "model_max_days": 1,
             "derived_irradiance_hours": 0,
         }
-        return core.ForecastResult(df=df, sunrise=idx_short[7].to_pydatetime(), sunset=idx_short[17].to_pydatetime()), [], False, fetch_meta
+
+        forecast = core.ForecastResult(
+            df=df,
+            sunrise=idx_short[7].to_pydatetime(),
+            sunset=idx_short[17].to_pydatetime(),
+        )
+        missing_vars: list[str] = []
+        derived_irradiance = False
+        return forecast, missing_vars, derived_irradiance, fetch_meta
 
     def fake_build_pv(df, _loc, tz=None):
         s = pd.Series([1.0] * len(df.index), index=df.index)
