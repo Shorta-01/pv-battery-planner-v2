@@ -2287,31 +2287,31 @@ def estimate_pv_with_pvlib(
     east_dc_kw = (east_dc_kwh / dt_h.replace(0.0, float("nan"))).fillna(0).clip(lower=0)
     south_dc_kw = (south_dc_kwh / dt_h.replace(0.0, float("nan"))).fillna(0).clip(lower=0)
 
-    total_dc_kw = (east_dc_kw + south_dc_kw).fillna(0).clip(lower=0)
+    total_dc_kw_unclipped = (east_dc_kw + south_dc_kw).fillna(0).clip(lower=0)
     if INVERTER_AC_MODEL == "pvwatts":
         total_pdc0_w = (
             dc_kwp(ARRAY_EAST_PANELS) + dc_kwp(ARRAY_SOUTH_PANELS)
         ) * 1000.0
         total_ac_kw_unclipped = pd.Series(
             pvlib.inverter.pvwatts(
-                pdc=total_dc_kw * 1000.0,
+                pdc=total_dc_kw_unclipped * 1000.0,
                 pdc0=total_pdc0_w,
                 eta_inv_nom=ac_inv_eff_multiplier,
             ),
-            index=total_dc_kw.index,
+            index=total_dc_kw_unclipped.index,
             dtype=float,
         ) / 1000.0
         total_ac_kw_unclipped = total_ac_kw_unclipped.fillna(0.0).clip(lower=0.0)
     else:
-        total_ac_kw_unclipped = (total_dc_kw * ac_inv_eff_multiplier).fillna(0).clip(lower=0)
+        total_ac_kw_unclipped = (total_dc_kw_unclipped * ac_inv_eff_multiplier).fillna(0).clip(lower=0)
 
     total_ac_kwh_unclipped = (total_ac_kw_unclipped * dt_h).fillna(0.0).clip(lower=0.0)
     total_ac_kw_clipped = total_ac_kw_unclipped.clip(lower=0.0, upper=INVERTER_AC_KW_LIMIT)
     total_ac_kwh_clipped = (total_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
 
     dc_eps = 1e-9
-    east_share = (east_dc_kw / total_dc_kw.clip(lower=dc_eps)).fillna(0.0).clip(lower=0.0, upper=1.0)
-    south_share = (south_dc_kw / total_dc_kw.clip(lower=dc_eps)).fillna(0.0).clip(lower=0.0, upper=1.0)
+    east_share = (east_dc_kw / total_dc_kw_unclipped.clip(lower=dc_eps)).fillna(0.0).clip(lower=0.0, upper=1.0)
+    south_share = (south_dc_kw / total_dc_kw_unclipped.clip(lower=dc_eps)).fillna(0.0).clip(lower=0.0, upper=1.0)
     share_sum = (east_share + south_share).replace(0.0, float("nan"))
     east_share = (east_share / share_sum).fillna(0.0)
     south_share = (south_share / share_sum).fillna(0.0)
