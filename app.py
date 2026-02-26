@@ -4394,9 +4394,16 @@ if run_clicked:
             hard_stop, hard_stop_message, hard_stop_warnings = should_hard_stop(result)
             status = str(result.get("status") or "").strip().lower()
             if hard_stop:
-                st.session_state["last_weather_ensemble_debug"] = {}
-                st.session_state["last_weather_ensemble_debug_at"] = None
-                st.session_state["last_weather_ensemble_models_used"] = []
+                dbg = result.get("weather_ensemble")
+                st.session_state["last_weather_ensemble_debug"] = dbg if isinstance(dbg, dict) else {}
+                st.session_state["last_weather_ensemble_debug_at"] = dt.datetime.now(dt.UTC).isoformat()
+                models_used = (
+                    result.get("tomorrow_models_used")
+                    or result.get("weather_ensemble", {}).get("selected_models")
+                    or result.get("weather_ensemble", {}).get("models_used")
+                    or []
+                )
+                st.session_state["last_weather_ensemble_models_used"] = list(models_used)
 
                 failure_lines = [hard_stop_message]
                 if hard_stop_warnings:

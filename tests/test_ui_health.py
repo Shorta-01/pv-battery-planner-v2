@@ -57,7 +57,7 @@ def test_model_indicators_failed() -> None:
     indicators = model_indicators("a", weather_ensemble)
 
     assert indicators["fetch"] == "fail"
-    assert indicators["data"] == "fail"
+    assert indicators["data"] == "na"
 
 
 def test_model_indicators_failed_even_if_not_selected() -> None:
@@ -69,7 +69,7 @@ def test_model_indicators_failed_even_if_not_selected() -> None:
     indicators = model_indicators("dwd_icon_d2", weather_ensemble)
 
     assert indicators["fetch"] == "fail"
-    assert indicators["data"] == "fail"
+    assert indicators["data"] == "na"
 
 
 def test_model_indicators_data_ok_strict() -> None:
