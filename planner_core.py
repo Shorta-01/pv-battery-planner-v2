@@ -2289,7 +2289,9 @@ def estimate_pv_with_pvlib(
 
     total_dc_kw = (east_dc_kw + south_dc_kw).fillna(0).clip(lower=0)
     if INVERTER_AC_MODEL == "pvwatts":
-        total_pdc0_w = (INVERTER_AC_KW_LIMIT * 1000.0) / max(ac_inv_eff_multiplier, 1e-6)
+        total_pdc0_w = (
+            dc_kwp(ARRAY_EAST_PANELS) + dc_kwp(ARRAY_SOUTH_PANELS)
+        ) * 1000.0
         total_ac_kw_unclipped = pd.Series(
             pvlib.inverter.pvwatts(
                 pdc=total_dc_kw * 1000.0,
