@@ -782,6 +782,68 @@ def last_run_status_badge(model_id: str) -> tuple[str | None, str]:
     return (None, "")
 
 
+PV_CRITICAL_MISSING_VARS = {
+    "shortwave_radiation",
+    "direct_normal_irradiance",
+    "diffuse_radiation",
+}
+
+
+def weather_model_fetch_data_status(model_id: str) -> tuple[str, str, str, str]:
+    no_diag_tip = "No diagnostics available (run failed before ensemble metadata was produced)."
+    dbg = st.session_state.get("last_weather_ensemble_debug")
+    if not isinstance(dbg, dict) or not dbg:
+        return ("—", no_diag_tip, "—", no_diag_tip)
+
+    selected_raw = dbg.get("selected_models")
+    failed_reasons = dbg.get("failed_model_reasons")
+    missing_vars_by_model = dbg.get("missing_vars_by_model")
+    fetch_meta_by_model = dbg.get("fetch_meta_by_model")
+    if (
+        not isinstance(selected_raw, list)
+        or not isinstance(failed_reasons, dict)
+        or not isinstance(missing_vars_by_model, dict)
+        or not isinstance(fetch_meta_by_model, dict)
+    ):
+        return ("—", no_diag_tip, "—", no_diag_tip)
+
+    selected_models = {str(model).strip() for model in selected_raw if str(model).strip()}
+    if model_id not in selected_models:
+        tip = "Model was not selected by the ensemble in the last run."
+        return ("—", tip, "—", tip)
+
+    fail_raw = failed_reasons.get(model_id)
+    if fail_raw is not None:
+        if isinstance(fail_raw, dict):
+            reason = str(fail_raw.get("message") or fail_raw.get("reason") or "Unknown failure").strip()
+        else:
+            reason = str(fail_raw or "Unknown failure").strip()
+        tip = f"Fetch failed: {reason}"
+        return ("❌", tip, "❌", tip)
+
+    fetch_tip = "Fetched and parsed successfully."
+    missing_vars_raw = missing_vars_by_model.get(model_id)
+    missing_vars = [str(v) for v in (missing_vars_raw if isinstance(missing_vars_raw, list) else []) if str(v).strip()]
+    missing_pv_critical = sorted([v for v in missing_vars if v in PV_CRITICAL_MISSING_VARS])
+
+    model_fetch_meta = fetch_meta_by_model.get(model_id)
+    missing_hours_overlap = 0
+    if isinstance(model_fetch_meta, dict):
+        overlap_raw = pd.to_numeric(pd.Series([model_fetch_meta.get("missing_hours_overlap")]), errors="coerce").iloc[0]
+        missing_hours_overlap = int(overlap_raw) if not pd.isna(overlap_raw) else 0
+
+    if missing_hours_overlap == 0 and not missing_pv_critical:
+        return ("✅", fetch_tip, "✅", "PV-critical inputs and overlap coverage look good.")
+
+    data_issues: list[str] = []
+    if missing_hours_overlap > 0:
+        data_issues.append(f"Missing overlap hours: {missing_hours_overlap}")
+    if missing_pv_critical:
+        data_issues.append("Missing PV-critical vars: " + ", ".join(missing_pv_critical))
+    data_tip = "Data quality warning. " + " | ".join(data_issues)
+    return ("✅", fetch_tip, "⚠️", data_tip)
+
+
 def render_weather_models(
     weather_models_catalog: list[dict],
     default_selected: set[str],
@@ -798,7 +860,7 @@ def render_weather_models(
     selected_models: list[str] = []
 
     st.markdown(
-        "<style>.wm-name{cursor:help}.wm-left{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.wm-badges{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;row-gap:4px}.pvbp-text-chip{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;padding:1px 8px;font-size:.72rem;font-weight:700;line-height:1.45;border:1px solid transparent;letter-spacing:.01em}.pvbp-text-chip-auto{background:#e8f0ff;border-color:#bfd5ff;color:#1f4ea3}.pvbp-text-chip-last-ok{background:#e9f8ee;border-color:#b9e8c5;color:#1f7a3d}.pvbp-text-chip-last-warn{background:#fff7e6;border-color:#ffe2ad;color:#8a6200}.pvbp-text-chip-last-fail{background:#fdeaea;border-color:#f6c0c0;color:#9e2c2c}.pvbp-icon-chip{background:transparent;border:none;padding:0;margin:0;font-size:1em;line-height:1;cursor:help;display:inline-block}.pvbp-icon-chip-auto{color:#1f4ea3}.pvbp-icon-chip-last-ok{color:#1f7a3d}.pvbp-icon-chip-last-warn{color:#8a6200}.pvbp-icon-chip-last-fail{color:#9e2c2c}</style>",
+        "<style>.wm-name{cursor:help}.wm-left{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.wm-badges{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;row-gap:4px}.wm-diag{font-size:.75rem;white-space:nowrap;color:#3a3a3a}.wm-diag .wm-pipe{opacity:.55}.wm-diag .wm-status{cursor:help}.pvbp-text-chip{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;padding:1px 8px;font-size:.72rem;font-weight:700;line-height:1.45;border:1px solid transparent;letter-spacing:.01em}.pvbp-text-chip-auto{background:#e8f0ff;border-color:#bfd5ff;color:#1f4ea3}.pvbp-text-chip-last-ok{background:#e9f8ee;border-color:#b9e8c5;color:#1f7a3d}.pvbp-text-chip-last-warn{background:#fff7e6;border-color:#ffe2ad;color:#8a6200}.pvbp-text-chip-last-fail{background:#fdeaea;border-color:#f6c0c0;color:#9e2c2c}.pvbp-icon-chip{background:transparent;border:none;padding:0;margin:0;font-size:1em;line-height:1;cursor:help;display:inline-block}.pvbp-icon-chip-auto{color:#1f4ea3}.pvbp-icon-chip-last-ok{color:#1f7a3d}.pvbp-icon-chip-last-warn{color:#8a6200}.pvbp-icon-chip-last-fail{color:#9e2c2c}</style>",
         unsafe_allow_html=True,
     )
 
@@ -857,6 +919,14 @@ def render_weather_models(
 
         with cols[2]:
             static_badges = list(model.get("badges") or [])
+            fetch_status, fetch_tip, data_status, data_tip = weather_model_fetch_data_status(model_id)
+            diagnostics_html = (
+                "<span class='wm-diag'>"
+                f"Fetch <span class='wm-status' title='{_esc(fetch_tip)}'>{_esc(fetch_status)}</span> "
+                "<span class='wm-pipe'>|</span> "
+                f"Data <span class='wm-status' title='{_esc(data_tip)}'>{_esc(data_status)}</span>"
+                "</span>"
+            )
 
             badge_html: list[str] = []
             if show_capability_badges:
@@ -867,7 +937,7 @@ def render_weather_models(
                         continue
                     badge_html.append(badge_chip(icon=icon, tip=str(meta.get("tip") or "")))
 
-            st.markdown(f"<div class='wm-badges'>{''.join(badge_html)}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='wm-badges'>{diagnostics_html}{''.join(badge_html)}</div>", unsafe_allow_html=True)
 
         if checked:
             selected_models.append(model_id)
