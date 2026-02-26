@@ -509,9 +509,23 @@ class EnsembleWeatherResult:
     deduped_models_dropped: list[str] | None = None
 
 
+def local_day_hourly_index(target_date: dt.date, tzname: str) -> pd.DatetimeIndex:
+    """Return the canonical tz-aware hourly index for a local day."""
+    start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tzname)
+    end = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=1), dt.time(0, 0)), tz=tzname)
+    return pd.date_range(start=start, end=end, freq="h", inclusive="left")
+
+
+def local_horizon_hourly_index(target_date: dt.date, tzname: str, horizon_days: int = 1) -> pd.DatetimeIndex:
+    start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tzname)
+    end = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=max(1, int(horizon_days))), dt.time(0, 0)), tz=tzname)
+    return pd.date_range(start=start, end=end, freq="h", inclusive="left")
+
+
 def _local_day_window(target_date: dt.date, tz: str) -> tuple[pd.Timestamp, pd.Timestamp]:
     start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz)
-    return start, start + pd.Timedelta(days=1)
+    end = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=1), dt.time(0, 0)), tz=tz)
+    return start, end
 
 
 def _sum_pv_kwh_for_local_day(pv_df: pd.DataFrame, target_date: dt.date, tz: str) -> tuple[float | None, int]:
@@ -1647,9 +1661,7 @@ def fetch_open_meteo_weather(
     df = df[~df.index.isna()]
     df = df[~df.index.duplicated(keep="last")].sort_index()
 
-    range_start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz)
-    range_end = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=horizon_days), dt.time(0, 0)), tz=tz)
-    expected_index = pd.date_range(range_start, range_end, freq="h", inclusive="left")
+    expected_index = local_horizon_hourly_index(target_date, tz, horizon_days)
     df = df.reindex(expected_index)
 
     availability = availability.reindex(df.index).fillna(False).astype(bool)
@@ -1958,12 +1970,7 @@ def build_ensemble_forecast(
     fetch_meta_by_model: dict[str, dict[str, Any]] = {}
 
     horizon_days = max(1, int(requested_days))
-    canonical_index = pd.date_range(
-        pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz),
-        pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=horizon_days), dt.time(0, 0)), tz=tz),
-        freq="h",
-        inclusive="left",
-    )
+    canonical_index = local_horizon_hourly_index(target_date, tz, horizon_days)
 
     def _fetch_and_prepare(model_id: str) -> tuple[str, core.ForecastResult, list[str], bool, int, dict[str, Any], int, int]:
         weather, missing_vars, derived_irradiance, fetch_meta = fetch_open_meteo_weather(
@@ -1977,10 +1984,16 @@ def build_ensemble_forecast(
         )
         requested_days_int = int(max(1, fetch_meta.get("requested_days", horizon_days)))
         model_horizon_days = int(max(1, fetch_meta.get("horizon_days", requested_days_int)))
-        overlap_hours = int(min(requested_days_int, model_horizon_days) * 24)
-        tail_hours_expected = int(max(0, (requested_days_int - model_horizon_days) * 24))
-        overlap_index = canonical_index[:overlap_hours] if overlap_hours > 0 else canonical_index[:0]
-        tail_index = canonical_index[overlap_hours: overlap_hours + tail_hours_expected] if tail_hours_expected > 0 else canonical_index[:0]
+
+        overlap_days = int(min(requested_days_int, model_horizon_days))
+        overlap_end = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=overlap_days), dt.time(0, 0)), tz=tz)
+        overlap_index = canonical_index[canonical_index < overlap_end]
+
+        tail_days = int(max(0, requested_days_int - model_horizon_days))
+        tail_start = overlap_end
+        tail_end = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=overlap_days + tail_days), dt.time(0, 0)), tz=tz)
+        tail_index = canonical_index[(canonical_index >= tail_start) & (canonical_index < tail_end)]
+        tail_hours_expected = int(len(tail_index))
         missing_overlap = int(weather.df.reindex(overlap_index).isna().all(axis=1).sum()) if len(overlap_index) else 0
         missing_tail = int(weather.df.reindex(tail_index).isna().all(axis=1).sum()) if len(tail_index) else 0
         missing_total = int(weather.df.reindex(canonical_index).isna().all(axis=1).sum())
@@ -2150,9 +2163,10 @@ def build_ensemble_forecast(
         fetch_meta = fetch_meta_by_model.get(model_id, {})
         requested_days_int = int(max(1, fetch_meta.get("requested_days", horizon_days)))
         model_horizon_days = int(max(1, fetch_meta.get("horizon_days", requested_days_int)))
-        overlap_hours = int(min(requested_days_int, model_horizon_days) * 24)
-        overlap_hours_by_model[model_id] = overlap_hours
-        overlap_index = canonical_index[:max(overlap_hours, 0)]
+        overlap_days = int(min(requested_days_int, model_horizon_days))
+        overlap_end = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=overlap_days), dt.time(0, 0)), tz=tz)
+        overlap_index = canonical_index[canonical_index < overlap_end]
+        overlap_hours_by_model[model_id] = int(len(overlap_index))
         model_weather_df = weather.df.reindex(canonical_index).copy()
         pv_input_df = model_weather_df.loc[overlap_index].copy() if len(overlap_index) else model_weather_df.iloc[:0].copy()
         allow_mask_for_model = allow_synth_mask.reindex(pv_input_df.index).fillna(False).astype(bool)

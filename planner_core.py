@@ -1929,33 +1929,22 @@ def fetch_tomorrow_weather(loc: Location, tz: str | None = None) -> ForecastResu
     return fetch_weather_for_date(loc, tomorrow, tz=tz_use)
 
 
-def build_local_day_hour_index(day: dt.date, tz: str) -> tuple[pd.DatetimeIndex, bool]:
-    """Return exactly 24 monotonic tz-aware hourly slots for a local day.
+def local_day_hourly_index(target_date: dt.date, tzname: str) -> pd.DatetimeIndex:
+    """Return the canonical tz-aware hourly index for a local calendar day.
 
-    On DST transition days we preserve 24 slots by smoothing missing/duplicate local
-    hours into a monotonic hourly sequence and return ``dst_adjusted=True``.
+    The returned index naturally contains 23/24/25 rows on DST start/normal/end
+    days and preserves duplicate wall-clock hours on fall-back days via timezone-
+    aware timestamps.
     """
-    naive_hours = pd.DatetimeIndex([pd.Timestamp(dt.datetime.combine(day, dt.time(hour=h))) for h in range(24)])
-    localized = naive_hours.tz_localize(tz, ambiguous=False, nonexistent="NaT")
+    day_start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tzname)
+    next_day = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=1), dt.time(0, 0)), tz=tzname)
+    return pd.date_range(start=day_start, end=next_day, freq="h", inclusive="left")
 
-    adjusted = False
-    out: list[pd.Timestamp] = []
-    prev: pd.Timestamp | None = None
-    for ts in localized:
-        current = ts
-        if pd.isna(current):
-            adjusted = True
-            current = prev + pd.Timedelta(hours=1) if prev is not None else pd.Timestamp(dt.datetime.combine(day, dt.time(0, 0)), tz=tz)
-        if prev is not None and current <= prev:
-            adjusted = True
-            current = prev + pd.Timedelta(hours=1)
-        out.append(current)
-        prev = current
 
-    idx = pd.DatetimeIndex(out)
-    if len(idx) != 24 or idx.has_duplicates:
-        raise RuntimeError(f"Failed to build 24 unique hourly slots for {day.isoformat()} in {tz}")
-    return idx, adjusted
+def build_local_day_hour_index(day: dt.date, tz: str) -> tuple[pd.DatetimeIndex, bool]:
+    """Backward-compatible wrapper around :func:`local_day_hourly_index`."""
+    idx = local_day_hourly_index(day, tz)
+    return idx, len(idx) != 24
 
 
 def normalize_hourly_forecast_index(df: "pd.DataFrame", date: dt.date, tz: str) -> "pd.DataFrame":
@@ -1975,9 +1964,7 @@ def normalize_hourly_forecast_index(df: "pd.DataFrame", date: dt.date, tz: str) 
     out = out[~out.index.isna()]
     out = out[~out.index.duplicated(keep="last")].sort_index()
 
-    day_start = pd.Timestamp(dt.datetime.combine(date, dt.time(0, 0)), tz=tz)
-    next_day = pd.Timestamp(dt.datetime.combine(date + dt.timedelta(days=1), dt.time(0, 0)), tz=tz)
-    expected_index = pd.date_range(day_start, next_day, freq="h", inclusive="left")
+    expected_index = local_day_hourly_index(date, tz)
     out = out.reindex(expected_index)
 
     irr_cols = [c for c in ["ghi_wm2", "dni_wm2", "dhi_wm2", "cloud_cover_pct"] if c in out.columns]
