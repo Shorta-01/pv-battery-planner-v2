@@ -25,7 +25,7 @@ def model_indicators(model_id: str, weather_ensemble: dict | None) -> dict:
     if model_id in failed:
         return {
             "fetch": "fail",
-            "data": "fail",
+            "data": "na",
             "tooltip": str(failed[model_id]),
         }
 
