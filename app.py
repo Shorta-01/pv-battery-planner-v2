@@ -3899,8 +3899,13 @@ with left:
                 auto_selected = set(auto_select_models_for_location(wm_latitude, wm_longitude, requested_days=1)) & available_ids
                 if not auto_selected:
                     auto_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
-                last_run_used = set(st.session_state.get("last_weather_ensemble_models_used", []) or [])
-                has_last_run = bool(st.session_state.get("last_weather_ensemble_debug") or last_run_used)
+                fresh_dbg = st.session_state.get("_fresh_weather_ensemble_debug") or {}
+                fresh_used = set(st.session_state.get("_fresh_weather_ensemble_models_used", []) or [])
+                dbg = fresh_dbg if fresh_dbg else (st.session_state.get("last_weather_ensemble_debug") or {})
+                used = fresh_used if fresh_used else set(st.session_state.get("last_weather_ensemble_models_used", []) or [])
+                has_last_run = bool(dbg or used)
+                weather_ensemble = dbg if has_last_run else None
+                used_models = used if has_last_run else set()
 
                 if forecast_mode == "auto":
                     _ = render_weather_models(
@@ -3908,12 +3913,12 @@ with left:
                         auto_selected,
                         widget_key_prefix="wm_auto",
                         disabled=True,
-                        used_models=(last_run_used if has_last_run else set()),
+                        used_models=used_models,
                         auto_selected_models=auto_selected,
                         show_auto_chips=True,
                         show_checkboxes=False,
                         show_capability_badges=True,
-                        weather_ensemble=(st.session_state.get("last_weather_ensemble_debug") if has_last_run else None),
+                        weather_ensemble=weather_ensemble,
                     )
                     selected_models = []
                     sat_nowcast_for_run = should_use_satellite_nowcast_auto(
@@ -3937,11 +3942,11 @@ with left:
                         weather_models_catalog,
                         initial_selected,
                         widget_key_prefix="wm",
-                        used_models=(last_run_used if has_last_run else set()),
+                        used_models=used_models,
                         show_auto_chips=False,
                         show_checkboxes=True,
                         show_capability_badges=True,
-                        weather_ensemble=(st.session_state.get("last_weather_ensemble_debug") if has_last_run else None),
+                        weather_ensemble=weather_ensemble,
                     )
                     sat_nowcast_ui = st.checkbox(
                         "Use satellite nowcast for the next 0–6 hours",
@@ -3950,6 +3955,9 @@ with left:
                         help=get_help("sat_nowcast"),
                     )
                     sat_nowcast_for_run = bool(sat_nowcast_ui)
+
+                st.session_state.pop("_fresh_weather_ensemble_debug", None)
+                st.session_state.pop("_fresh_weather_ensemble_models_used", None)
 
         return forecast_mode, selected_models, sat_nowcast_for_run
 
@@ -4404,6 +4412,8 @@ if run_clicked:
                     or []
                 )
                 st.session_state["last_weather_ensemble_models_used"] = list(models_used)
+                st.session_state["_fresh_weather_ensemble_debug"] = dbg if isinstance(dbg, dict) else {}
+                st.session_state["_fresh_weather_ensemble_models_used"] = list(models_used)
 
                 failure_lines = [hard_stop_message, "Please verify your weather configuration and retry the forecast."]
                 if hard_stop_warnings:
@@ -4428,6 +4438,8 @@ if run_clicked:
             )
             st.session_state["last_forecast_mode"] = forecast_mode
             st.session_state["last_weather_ensemble_models_used"] = list(models_used)
+            st.session_state["_fresh_weather_ensemble_debug"] = dbg if isinstance(dbg, dict) else {}
+            st.session_state["_fresh_weather_ensemble_models_used"] = list(models_used)
             tomorrow = dt.date.fromisoformat(result["target_date"])
             weather_df = df_from_split(result["weather"])
             pv = df_from_split(result["pv"])
