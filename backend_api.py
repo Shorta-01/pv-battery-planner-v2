@@ -1485,6 +1485,13 @@ class BackendState:
         pv_surplus_export_preferred_kwh = float(flows_df.attrs.get("pv_surplus_export_preferred_kwh", 0.0))
         pv_surplus_store_preferred_kwh = float(flows_df.attrs.get("pv_surplus_store_preferred_kwh", 0.0))
         pv_store_vs_export_decisions_count = int(flows_df.attrs.get("pv_store_vs_export_decisions_count", 0))
+        allow_injection_to_grid = bool(flows_df.attrs.get("allow_injection_to_grid", cfg.get("tariff", {}).get("allow_injection_to_grid", True)))
+        export_blocked_by_policy = bool(flows_df.attrs.get("export_blocked_by_policy", not allow_injection_to_grid))
+        blocked_export_kwh_total = float(flows_df.attrs.get("blocked_export_kwh_total", 0.0))
+        if not allow_injection_to_grid:
+            warnings.append(
+                "Grid injection is disabled by settings. Excess PV will be curtailed when battery storage is not available."
+            )
         grid_import = float(flows_df.get("grid_import_kwh", pd.Series(dtype=float)).sum())
         grid_export = float(flows_df.get("grid_export_kwh", pd.Series(dtype=float)).sum())
         canonical_tomorrow_total_kwh = (float(pd.to_numeric(pv["pv_total_kwh"], errors="coerce").sum(min_count=1)) if "pv_total_kwh" in pv.columns else None)
@@ -1645,6 +1652,9 @@ class BackendState:
                 "pv_surplus_export_preferred_kwh": float(pv_surplus_export_preferred_kwh),
                 "pv_surplus_store_preferred_kwh": float(pv_surplus_store_preferred_kwh),
                 "pv_store_vs_export_decisions_count": int(pv_store_vs_export_decisions_count),
+                "allow_injection_to_grid": bool(allow_injection_to_grid),
+                "export_blocked_by_policy": bool(export_blocked_by_policy),
+                "blocked_export_kwh_total": float(blocked_export_kwh_total),
                 "week_models_used": list(week_models),
                 "week_models_count": int(len(week_models)),
                 "pv_week_models_used_count_per_hour": self._serialize_series(week_models_used_count_per_hour) if isinstance(week_models_used_count_per_hour, pd.Series) else None,

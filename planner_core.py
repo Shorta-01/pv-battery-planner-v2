@@ -192,6 +192,7 @@ DEFAULT_CONFIG = {
         "peak_grid_price_eur_per_kwh": PEAK_GRID_PRICE_EUR_PER_KWH,
         "offpeak_grid_price_eur_per_kwh": OFFPEAK_GRID_PRICE_EUR_PER_KWH,
         "injection_grid_price_eur_per_kwh": INJECTION_GRID_PRICE_EUR_PER_KWH,
+        "allow_injection_to_grid": True,
         "optimization_mode": "window_only",
         "night_load_from_battery": False,
         "offpeak_windows_by_dow": [
@@ -430,6 +431,10 @@ def validate_config(cfg: dict) -> None:
     optimization_mode = str(tariff.get("optimization_mode", "window_only")).strip().lower()
     if optimization_mode not in {"window_only", "price_aware"}:
         raise ValueError("tariff.optimization_mode must be 'window_only' or 'price_aware'.")
+
+    allow_injection_to_grid = tariff.get("allow_injection_to_grid", True)
+    if not isinstance(allow_injection_to_grid, bool):
+        raise ValueError("tariff.allow_injection_to_grid must be a boolean.")
 
     parse_offpeak_windows_by_dow(tariff["offpeak_windows_by_dow"])
 
@@ -2904,6 +2909,8 @@ def simulate_expensive_hours_detailed(
     grid_export_total = 0.0
     hit_min = False
     import_with_high_soc_due_to_power_limit = False
+    allow_injection = bool((tariff_cfg or {}).get("allow_injection_to_grid", True))
+    blocked_export_kwh_total = 0.0
 
     def _get_float(frame: "pd.DataFrame", ts: pd.Timestamp, col: str, default: float = 0.0) -> float:
         if col in frame.columns:
@@ -2959,7 +2966,10 @@ def simulate_expensive_hours_detailed(
             pv_after_batt = max(0.0, pv_for_storage - pv_used_for_batt)
 
             export_limit = max(0.0, (INVERTER_AC_KW_LIMIT * step_h) - pv_to_load)
-            grid_export = min(pv_after_batt, export_limit)
+            effective_export_limit = export_limit if allow_injection else 0.0
+            grid_export = min(pv_after_batt, effective_export_limit)
+            if not allow_injection:
+                blocked_export_kwh_total += min(pv_after_batt, export_limit)
             curtailed = max(0.0, pv_after_batt - grid_export)
             grid_export_total += grid_export
 
@@ -3042,6 +3052,9 @@ def simulate_expensive_hours_detailed(
         detail_df["pv_south_kwh"] = detail_df["pv_total_kwh"] * south_ratio
     if ENABLE_INVARIANT_CHECKS:
         validate_flow_invariants(detail_df, "expensive_hours")
+    detail_df.attrs["allow_injection_to_grid"] = allow_injection
+    detail_df.attrs["export_blocked_by_policy"] = bool(not allow_injection)
+    detail_df.attrs["blocked_export_kwh_total"] = float(blocked_export_kwh_total)
     if import_with_high_soc_due_to_power_limit:
         print(
             "Warning: expensive-hour imports occurred while SOC was high due to battery power limits "
@@ -3213,6 +3226,8 @@ def simulate_full_day_soc(
     pv_surplus_export_preferred_kwh = 0.0
     pv_surplus_store_preferred_kwh = 0.0
     pv_store_vs_export_decisions_count = 0
+    allow_injection = bool(econ_cfg.get("allow_injection_to_grid", True))
+    blocked_export_kwh_total = 0.0
     for ts in day_idx:
         step_h = float(dt_h.loc[ts])
         pv_ac_limited = float(pv_total.loc[ts])
@@ -3242,7 +3257,7 @@ def simulate_full_day_soc(
             max_pv_to_store = max(0.0, min(pv_for_storage, pv_storage_headroom, pv_charge_power_cap))
 
             prefer_export = False
-            if pv_surplus_store_econ_enabled and max_pv_to_store > 0:
+            if allow_injection and pv_surplus_store_econ_enabled and max_pv_to_store > 0:
                 expected_displacement_price = peak_price if future_expensive_exists.get(ts, False) else (
                     offpeak_price if use_battery_for_offpeak_load else 0.0
                 )
@@ -3268,7 +3283,10 @@ def simulate_full_day_soc(
                 pv_after_batt = max(0.0, pv_for_storage - pv_used_for_batt)
 
             export_limit = max(0.0, (INVERTER_AC_KW_LIMIT * step_h) - pv_to_load)
-            grid_export = min(pv_after_batt, export_limit)
+            effective_export_limit = export_limit if allow_injection else 0.0
+            grid_export = min(pv_after_batt, effective_export_limit)
+            if not allow_injection:
+                blocked_export_kwh_total += min(pv_after_batt, export_limit)
             curtailed = max(0.0, pv_after_batt - grid_export)
 
         offpeak = in_any_window(ts.time(), get_offpeak_windows_for_date(ts.date(), cfg))
@@ -3321,6 +3339,9 @@ def simulate_full_day_soc(
     flows_df.attrs["pv_surplus_export_preferred_kwh"] = float(pv_surplus_export_preferred_kwh)
     flows_df.attrs["pv_surplus_store_preferred_kwh"] = float(pv_surplus_store_preferred_kwh)
     flows_df.attrs["pv_store_vs_export_decisions_count"] = int(pv_store_vs_export_decisions_count)
+    flows_df.attrs["allow_injection_to_grid"] = allow_injection
+    flows_df.attrs["export_blocked_by_policy"] = bool(not allow_injection)
+    flows_df.attrs["blocked_export_kwh_total"] = float(blocked_export_kwh_total)
     soc_series = pd.Series(pd.to_numeric(flows_df["soc_end_pct"], errors="coerce").fillna(0.0).values, index=tomorrow_idx, name="soc_percent")
     if ENABLE_INVARIANT_CHECKS:
         validate_flow_invariants(flows_df, "full_day")
