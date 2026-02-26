@@ -1555,8 +1555,39 @@ class BackendState:
                 else (float(ensemble_tomorrow.pv_ensemble_p90.sum(min_count=1)) if ensemble_tomorrow.pv_ensemble_p90 is not None else None)
             ),
         }
-        pv_low_high = getattr(ensemble_tomorrow, "pv_tomorrow_low_high_kwh", None)
-        pv_tomorrow_low_high_kwh = dict(pv_low_high) if isinstance(pv_low_high, dict) else {"low": None, "high": None, "valid_models": 0}
+        pv_model_spread = getattr(ensemble_tomorrow, "pv_tomorrow_model_spread_kwh", None)
+        if not isinstance(pv_model_spread, dict):
+            legacy_pv_low_high = getattr(ensemble_tomorrow, "pv_tomorrow_low_high_kwh", None)
+            pv_model_spread = legacy_pv_low_high if isinstance(legacy_pv_low_high, dict) else None
+
+        selected_models = [str(m) for m in getattr(ensemble_tomorrow, "selected_models", []) if isinstance(m, str)]
+        failed_models = {str(m) for m in getattr(ensemble_tomorrow, "failed_models", []) if isinstance(m, str)}
+        per_model_pv_totals = getattr(ensemble_tomorrow, "per_model_pv_totals_kwh", {})
+        quantile_contributors = [
+            model_id
+            for model_id in selected_models
+            if model_id not in failed_models and pd.notna(pd.to_numeric(pd.Series([per_model_pv_totals.get(model_id)]), errors="coerce").iloc[0])
+        ]
+        fallback_valid_models = int(len(quantile_contributors))
+        spread_valid_models_raw = (pv_model_spread or {}).get("valid_models") if isinstance(pv_model_spread, dict) else None
+        spread_valid_models_num = pd.to_numeric(pd.Series([spread_valid_models_raw]), errors="coerce").iloc[0]
+        spread_valid_models = int(spread_valid_models_num) if not pd.isna(spread_valid_models_num) else 0
+        valid_models_for_range = spread_valid_models if spread_valid_models > 0 else fallback_valid_models
+
+        p10_num = pd.to_numeric(pd.Series([pv_totals_kwh.get("p10")]), errors="coerce").iloc[0]
+        p90_num = pd.to_numeric(pd.Series([pv_totals_kwh.get("p90")]), errors="coerce").iloc[0]
+        if not pd.isna(p10_num) and not pd.isna(p90_num):
+            pv_tomorrow_low_high_kwh = {
+                "low": float(p10_num),
+                "high": float(p90_num),
+                "valid_models": int(valid_models_for_range),
+            }
+        else:
+            pv_tomorrow_low_high_kwh = {
+                "low": None,
+                "high": None,
+                "valid_models": int(valid_models_for_range),
+            }
 
         tomorrow_weather_code = _best_of_day_weather_code(weather.df.reindex(pv.index)[["weather_code"]]) if "weather_code" in weather.df.columns else None
         if tomorrow_weather_code is None and "weather_code" in weather.df.columns:
@@ -1728,6 +1759,7 @@ class BackendState:
                 "per_model_pv_totals_kwh": getattr(ensemble_tomorrow, "per_model_pv_totals_kwh", {}),
                 "pv_totals_kwh": pv_totals_kwh if pv_uncertainty else None,
                 "pv_tomorrow_low_high_kwh": pv_tomorrow_low_high_kwh,
+                "pv_tomorrow_model_spread_kwh": pv_model_spread,
                 "pv_week_ahead": pv_week_ahead,
                 "ensemble_method_week_ahead": ensemble_method_week,
                 "missing_vars_by_model": getattr(ensemble_tomorrow, "missing_vars_by_model", {}),

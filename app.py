@@ -1154,9 +1154,8 @@ def resolve_tomorrow_pv_low_high_kwh(
     weather_ensemble: dict | None,
     tomorrow_p50_kwh: float | None = None,
 ) -> tuple[float | None, float | None]:
+    _ = weather_ensemble
     range_payload = result.get("pv_tomorrow_low_high_kwh") if isinstance(result, dict) else None
-    if not isinstance(range_payload, dict) and isinstance(weather_ensemble, dict):
-        range_payload = weather_ensemble.get("pv_tomorrow_low_high_kwh")
 
     if isinstance(range_payload, dict):
         low_raw = pd.to_numeric(pd.Series([range_payload.get("low")]), errors="coerce").iloc[0]
@@ -1764,8 +1763,9 @@ def render_pv_quality_widget(
     pv_range_html = ""
     if pv_tomorrow_low_kwh is not None and pv_tomorrow_high_kwh is not None:
         pv_range_html = (
-            "<div style='margin-top:0.20rem;font-size:0.74rem;opacity:0.82;'>"
-            f"Low {pv_tomorrow_low_kwh:.2f} kWh - High {pv_tomorrow_high_kwh:.2f} kWh"
+            "<div style='margin-top:0.20rem;font-size:0.74rem;opacity:0.82;' "
+            "title='p10 = voorzichtig, p90 = optimistisch.'>"
+            f"Range (p10–p90): {pv_tomorrow_low_kwh:.2f}–{pv_tomorrow_high_kwh:.2f} kWh"
             "</div>"
         )
 
