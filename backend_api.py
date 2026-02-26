@@ -1488,10 +1488,23 @@ class BackendState:
         allow_injection_to_grid = bool(flows_df.attrs.get("allow_injection_to_grid", cfg.get("tariff", {}).get("allow_injection_to_grid", True)))
         export_blocked_by_policy = bool(flows_df.attrs.get("export_blocked_by_policy", not allow_injection_to_grid))
         blocked_export_kwh_total = float(flows_df.attrs.get("blocked_export_kwh_total", 0.0))
+        max_grid_import_kw = float(flows_df.attrs.get("max_grid_import_kw", cfg.get("tariff", {}).get("max_grid_import_kw", 0.0)))
+        grid_import_cap_active = bool(flows_df.attrs.get("grid_import_cap_active", max_grid_import_kw > 0.0))
+        grid_import_cap_binding_events = int(flows_df.attrs.get("grid_import_cap_binding_events", 0))
+        grid_import_cap_load_exceeds_events = int(flows_df.attrs.get("grid_import_cap_load_exceeds_events", 0))
+        grid_import_cap_limited_charge_kwh_total = float(flows_df.attrs.get("grid_import_cap_limited_charge_kwh_total", 0.0))
         if not allow_injection_to_grid:
             warnings.append(
                 "Grid injection is disabled by settings. Excess PV will be curtailed when battery storage is not available."
             )
+        if grid_import_cap_active:
+            warnings.append(
+                f"Grid import cap is enabled: {max_grid_import_kw:g} kW. Battery grid charging may be limited to respect the cap."
+            )
+        if grid_import_cap_load_exceeds_events > 0:
+            warnings.append("Grid import cap exceeded by household load in some hours (cannot be enforced).")
+        if grid_import_cap_binding_events > 0:
+            warnings.append("Grid import cap limited battery charging; target may be unreachable.")
         grid_import = float(flows_df.get("grid_import_kwh", pd.Series(dtype=float)).sum())
         grid_export = float(flows_df.get("grid_export_kwh", pd.Series(dtype=float)).sum())
         canonical_tomorrow_total_kwh = (float(pd.to_numeric(pv["pv_total_kwh"], errors="coerce").sum(min_count=1)) if "pv_total_kwh" in pv.columns else None)
@@ -1655,6 +1668,12 @@ class BackendState:
                 "allow_injection_to_grid": bool(allow_injection_to_grid),
                 "export_blocked_by_policy": bool(export_blocked_by_policy),
                 "blocked_export_kwh_total": float(blocked_export_kwh_total),
+                "max_grid_import_kw": float(max_grid_import_kw),
+                "grid_import_cap_active": bool(grid_import_cap_active),
+                "grid_import_cap_binding": bool(grid_import_cap_binding_events > 0),
+                "grid_import_cap_limited_charge_kwh": float(grid_import_cap_limited_charge_kwh_total),
+                "grid_import_cap_hours_binding": int(grid_import_cap_binding_events),
+                "grid_import_cap_load_exceeds_hours": int(grid_import_cap_load_exceeds_events),
                 "week_models_used": list(week_models),
                 "week_models_count": int(len(week_models)),
                 "pv_week_models_used_count_per_hour": self._serialize_series(week_models_used_count_per_hour) if isinstance(week_models_used_count_per_hour, pd.Series) else None,

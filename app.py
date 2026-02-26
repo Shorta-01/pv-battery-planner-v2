@@ -225,6 +225,7 @@ def normalize_effective_cfg_to_payload(effective_cfg: dict, valid_model_ids: set
             "offpeak_grid_price_eur_per_kwh": float(tariff_cfg.get("offpeak_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["offpeak_grid_price_eur_per_kwh"])),
             "injection_grid_price_eur_per_kwh": float(tariff_cfg.get("injection_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["injection_grid_price_eur_per_kwh"])),
             "allow_injection_to_grid": bool(tariff_cfg.get("allow_injection_to_grid", core.DEFAULT_CONFIG["tariff"].get("allow_injection_to_grid", True))),
+            "max_grid_import_kw": float(tariff_cfg.get("max_grid_import_kw", core.DEFAULT_CONFIG["tariff"].get("max_grid_import_kw", 0.0))),
             "offpeak_windows_by_dow": tariff_cfg.get("offpeak_windows_by_dow", core.DEFAULT_CONFIG["tariff"]["offpeak_windows_by_dow"]),
         },
         "pv": dict(pv_cfg),
@@ -294,6 +295,7 @@ def build_settings_payload(effective_cfg: dict, valid_model_ids: set[str]) -> tu
             "offpeak_grid_price_eur_per_kwh": float(ui["cfg_offpeak_price_input"]),
             "injection_grid_price_eur_per_kwh": float(ui["cfg_injection_price_input"]),
             "allow_injection_to_grid": bool(ui.get("cfg_allow_injection_to_grid", effective_cfg.get("tariff", {}).get("allow_injection_to_grid", True))),
+            "max_grid_import_kw": float(ui.get("cfg_max_grid_import_kw", effective_cfg.get("tariff", {}).get("max_grid_import_kw", 0.0))),
             "offpeak_windows_by_dow": [
                 [[from_value, to_value], *[[w_start, w_end] for (w_start, w_end) in ui["tariff_by_day"].get(day_idx, [])[1:]]] if ui["tariff_by_day"].get(day_idx) else [[from_value, to_value]]
                 for day_idx, (from_value, to_value) in enumerate(ui["tariff_inputs"])
@@ -3524,6 +3526,7 @@ with left:
         cfg_offpeak_price = float(tariff_cfg.get("offpeak_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["offpeak_grid_price_eur_per_kwh"]))
         cfg_injection_price = float(tariff_cfg.get("injection_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["injection_grid_price_eur_per_kwh"]))
         cfg_allow_injection_to_grid = bool(tariff_cfg.get("allow_injection_to_grid", core.DEFAULT_CONFIG["tariff"].get("allow_injection_to_grid", True)))
+        cfg_max_grid_import_kw = float(tariff_cfg.get("max_grid_import_kw", core.DEFAULT_CONFIG["tariff"].get("max_grid_import_kw", 0.0)))
 
         st.markdown("#### Energy prices")
         c1, c2, c3 = st.columns(3)
@@ -3565,6 +3568,16 @@ with left:
             help="If off, the planner will not export energy to the grid. Extra PV will be stored in the battery when possible, otherwise curtailed.",
         )
         st.caption(f"Injection policy: {'Allowed' if cfg_allow_injection_to_grid else 'Disabled'}")
+
+        cfg_max_grid_import_kw = st.number_input(
+            "Max grid import (kW)",
+            min_value=0.0,
+            step=0.1,
+            format="%.2f",
+            value=cfg_max_grid_import_kw,
+            key="tariff_max_grid_import_kw",
+            help="Limits the total power drawn from the grid. If 0, the planner uses purely economic behavior. If set, the planner will reduce battery grid charging to stay under the cap when possible.",
+        )
 
         st.markdown("#### Off-peak hours")
         tariff_source = tariff_cfg.get("offpeak_windows_by_dow", core.DEFAULT_CONFIG["tariff"]["offpeak_windows_by_dow"])
@@ -3782,6 +3795,7 @@ with left:
             "cfg_offpeak_price_input": cfg_offpeak_price_input,
             "cfg_injection_price_input": cfg_injection_price_input,
             "cfg_allow_injection_to_grid": cfg_allow_injection_to_grid,
+            "cfg_max_grid_import_kw": cfg_max_grid_import_kw,
             "cfg_panel_wp": cfg_panel_wp,
             "cfg_array_south_panels": cfg_array_south_panels,
             "cfg_array_east_panels": cfg_array_east_panels,
