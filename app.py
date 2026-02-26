@@ -4406,7 +4406,7 @@ if run_clicked:
                 )
                 st.session_state["last_weather_ensemble_models_used"] = list(models_used)
 
-                failure_lines = [hard_stop_message]
+                failure_lines = [hard_stop_message, "Please verify your weather configuration and retry the forecast."]
                 if hard_stop_warnings:
                     failure_lines.append("Warnings:")
                     failure_lines.extend([f"- {str(warning)}" for warning in hard_stop_warnings if str(warning).strip()])

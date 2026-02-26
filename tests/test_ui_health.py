@@ -32,6 +32,14 @@ def test_should_hard_stop_degraded() -> None:
     assert title
     assert "x" in warnings
 
+
+def test_should_hard_stop_degraded_status_only() -> None:
+    result = {"status": "degraded", "warnings_count": 0}
+
+    hard_stop, _, _ = should_hard_stop(result)
+
+    assert hard_stop is False
+
 def test_should_hard_stop_ok() -> None:
     result = {"status": "ok", "warnings": [], "warnings_count": 0}
 

@@ -8,7 +8,9 @@ def should_hard_stop(result: dict) -> tuple[bool, str, list[str]]:
     warnings_count = int(result.get("warnings_count") or 0)
     fallback = [f"{warnings_count} warning(s) recorded"] if warnings_count else []
 
-    if status in {"error", "failed"}:
+    hard_stop_statuses = {"error", "failed"}
+
+    if status in hard_stop_statuses:
         return True, "Forecast failed", (warnings or fallback)
 
     if status == "degraded":
