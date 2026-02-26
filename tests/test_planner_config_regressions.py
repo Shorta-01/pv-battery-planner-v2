@@ -109,6 +109,23 @@ def test_parse_offpeak_windows_supports_multi_window_roundtrip() -> None:
     assert parsed[0][1] == ("13:00", "14:00")
 
 
+def test_allow_injection_to_grid_defaults_true_for_legacy_config() -> None:
+    cfg = copy.deepcopy(core.DEFAULT_CONFIG)
+    cfg["tariff"].pop("allow_injection_to_grid", None)
+
+    effective = core.build_effective_config(cfg)
+
+    assert bool(effective["tariff"].get("allow_injection_to_grid", False)) is True
+
+
+def test_allow_injection_to_grid_requires_bool() -> None:
+    cfg = copy.deepcopy(core.DEFAULT_CONFIG)
+    cfg["tariff"]["allow_injection_to_grid"] = "no"
+
+    with pytest.raises(ValueError, match="allow_injection_to_grid"):
+        core.build_effective_config(cfg)
+
+
 
 
 def _uniform_offpeak_windows(start: str, end: str) -> list[list[list[str]]]:
