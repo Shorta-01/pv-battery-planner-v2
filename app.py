@@ -4355,7 +4355,6 @@ with left:
             save_settings_payload(current_settings_payload)
 
 if run_clicked:
-    st.session_state["_rerun_after_forecast_done"] = False
     if settings_dirty:
         if not settings_valid:
             st.error(settings_error or "Could not save settings.")
@@ -4429,9 +4428,6 @@ if run_clicked:
             )
             st.session_state["last_forecast_mode"] = forecast_mode
             st.session_state["last_weather_ensemble_models_used"] = list(models_used)
-            if not st.session_state.get("_rerun_after_forecast_done", False):
-                st.session_state["_rerun_after_forecast_done"] = True
-                st.rerun()
             tomorrow = dt.date.fromisoformat(result["target_date"])
             weather_df = df_from_split(result["weather"])
             pv = df_from_split(result["pv"])
