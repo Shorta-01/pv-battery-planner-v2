@@ -1936,8 +1936,9 @@ def local_day_hourly_index(target_date: dt.date, tzname: str) -> pd.DatetimeInde
     days and preserves duplicate wall-clock hours on fall-back days via timezone-
     aware timestamps.
     """
-    day_start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tzname)
-    next_day = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=1), dt.time(0, 0)), tz=tzname)
+    tz = ZoneInfo(str(tzname))
+    day_start = dt.datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0, tzinfo=tz)
+    next_day = day_start + dt.timedelta(days=1)
     return pd.date_range(start=day_start, end=next_day, freq="h", inclusive="left")
 
 
