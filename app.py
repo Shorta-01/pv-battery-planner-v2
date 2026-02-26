@@ -23,6 +23,7 @@ import planner_core as core
 from config_accessors import get_inverter_ac_kw_limit
 from error_logging import classify_exception, format_exception_body
 from tariff_time import compute_offpeak_segments, make_summary_lines, parse_hhmm
+from ui_health import model_indicators, should_hard_stop
 from ui_utils import (
     resolve_pv_outlook_savings,
     weather_code_to_icon as ui_weather_code_to_icon,
@@ -782,66 +783,17 @@ def last_run_status_badge(model_id: str) -> tuple[str | None, str]:
     return (None, "")
 
 
-PV_CRITICAL_MISSING_VARS = {
-    "shortwave_radiation",
-    "direct_normal_irradiance",
-    "diffuse_radiation",
-}
-
-
-def weather_model_fetch_data_status(model_id: str) -> tuple[str, str, str, str]:
-    no_diag_tip = "No diagnostics available (run failed before ensemble metadata was produced)."
-    dbg = st.session_state.get("last_weather_ensemble_debug")
-    if not isinstance(dbg, dict) or not dbg:
-        return ("—", no_diag_tip, "—", no_diag_tip)
-
-    selected_raw = dbg.get("selected_models")
-    failed_reasons = dbg.get("failed_model_reasons")
-    missing_vars_by_model = dbg.get("missing_vars_by_model")
-    fetch_meta_by_model = dbg.get("fetch_meta_by_model")
-    if (
-        not isinstance(selected_raw, list)
-        or not isinstance(failed_reasons, dict)
-        or not isinstance(missing_vars_by_model, dict)
-        or not isinstance(fetch_meta_by_model, dict)
-    ):
-        return ("—", no_diag_tip, "—", no_diag_tip)
-
-    selected_models = {str(model).strip() for model in selected_raw if str(model).strip()}
-    if model_id not in selected_models:
-        tip = "Model was not selected by the ensemble in the last run."
-        return ("—", tip, "—", tip)
-
-    fail_raw = failed_reasons.get(model_id)
-    if fail_raw is not None:
-        if isinstance(fail_raw, dict):
-            reason = str(fail_raw.get("message") or fail_raw.get("reason") or "Unknown failure").strip()
-        else:
-            reason = str(fail_raw or "Unknown failure").strip()
-        tip = f"Fetch failed: {reason}"
-        return ("❌", tip, "❌", tip)
-
-    fetch_tip = "Fetched and parsed successfully."
-    missing_vars_raw = missing_vars_by_model.get(model_id)
-    missing_vars = [str(v) for v in (missing_vars_raw if isinstance(missing_vars_raw, list) else []) if str(v).strip()]
-    missing_pv_critical = sorted([v for v in missing_vars if v in PV_CRITICAL_MISSING_VARS])
-
-    model_fetch_meta = fetch_meta_by_model.get(model_id)
-    missing_hours_overlap = 0
-    if isinstance(model_fetch_meta, dict):
-        overlap_raw = pd.to_numeric(pd.Series([model_fetch_meta.get("missing_hours_overlap")]), errors="coerce").iloc[0]
-        missing_hours_overlap = int(overlap_raw) if not pd.isna(overlap_raw) else 0
-
-    if missing_hours_overlap == 0 and not missing_pv_critical:
-        return ("✅", fetch_tip, "✅", "PV-critical inputs and overlap coverage look good.")
-
-    data_issues: list[str] = []
-    if missing_hours_overlap > 0:
-        data_issues.append(f"Missing overlap hours: {missing_hours_overlap}")
-    if missing_pv_critical:
-        data_issues.append("Missing PV-critical vars: " + ", ".join(missing_pv_critical))
-    data_tip = "Data quality warning. " + " | ".join(data_issues)
-    return ("✅", fetch_tip, "⚠️", data_tip)
+def weather_model_fetch_data_status(model_id: str, weather_ensemble: dict | None) -> tuple[str, str, str, str]:
+    indicators = model_indicators(model_id, weather_ensemble)
+    tooltip = str(indicators.get("tooltip") or "")
+    fetch_map = {"ok": "✅", "fail": "❌", "na": "—"}
+    data_map = {"ok": "✅", "warn": "⚠️", "fail": "❌", "na": "—"}
+    return (
+        fetch_map.get(str(indicators.get("fetch") or "na"), "—"),
+        tooltip,
+        data_map.get(str(indicators.get("data") or "na"), "—"),
+        tooltip,
+    )
 
 
 def render_weather_models(
@@ -855,6 +807,7 @@ def render_weather_models(
     show_auto_chips: bool = False,
     show_checkboxes: bool = True,
     show_capability_badges: bool = True,
+    weather_ensemble: dict | None = None,
 ) -> list[str]:
     model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
     selected_models: list[str] = []
@@ -919,7 +872,7 @@ def render_weather_models(
 
         with cols[2]:
             static_badges = list(model.get("badges") or [])
-            fetch_status, fetch_tip, data_status, data_tip = weather_model_fetch_data_status(model_id)
+            fetch_status, fetch_tip, data_status, data_tip = weather_model_fetch_data_status(model_id, weather_ensemble)
             diagnostics_html = (
                 "<span class='wm-diag'>"
                 f"Fetch <span class='wm-status' title='{_esc(fetch_tip)}'>{_esc(fetch_status)}</span> "
@@ -3961,6 +3914,7 @@ with left:
                         show_auto_chips=True,
                         show_checkboxes=False,
                         show_capability_badges=True,
+                        weather_ensemble=(st.session_state.get("last_weather_ensemble_debug") if has_last_run else None),
                     )
                     selected_models = []
                     sat_nowcast_for_run = should_use_satellite_nowcast_auto(
@@ -3988,6 +3942,7 @@ with left:
                         show_auto_chips=False,
                         show_checkboxes=True,
                         show_capability_badges=True,
+                        weather_ensemble=(st.session_state.get("last_weather_ensemble_debug") if has_last_run else None),
                     )
                     sat_nowcast_ui = st.checkbox(
                         "Use satellite nowcast for the next 0–6 hours",
@@ -4437,40 +4392,18 @@ if run_clicked:
             )
             flush_ui_error_buffer()
             result = (run_response or {}).get("result") or {}
-            status = str(result.get("status") or "").strip().lower()
-            warnings_raw = result.get("warnings")
-            warnings = [str(w).strip() for w in warnings_raw if str(w).strip()] if isinstance(warnings_raw, list) else []
-            try:
-                warnings_count = int(result.get("warnings_count") or 0)
-            except (TypeError, ValueError):
-                warnings_count = 0
-
-            if status and status not in {"ok", "degraded"}:
-                failure_lines = [
-                    "Forecast run failed.",
-                    "The backend returned a non-success status, so planning results were not rendered.",
-                ]
-                if warnings:
-                    failure_lines.append("Warnings:")
-                    failure_lines.extend([f"- {warning}" for warning in warnings])
-                elif warnings_count > 0:
-                    failure_lines.append(f"{warnings_count} warning(s) recorded.")
-
+            hard_stop, hard_stop_message, hard_stop_warnings = should_hard_stop(result)
+            if hard_stop:
                 st.session_state["last_weather_ensemble_debug"] = {}
                 st.session_state["last_weather_ensemble_debug_at"] = None
                 st.session_state["last_weather_ensemble_models_used"] = []
 
+                failure_lines = [hard_stop_message]
+                if hard_stop_warnings:
+                    failure_lines.append("Warnings:")
+                    failure_lines.extend([f"- {str(warning)}" for warning in hard_stop_warnings if str(warning).strip()])
                 st.error("\n".join(failure_lines))
                 st.stop()
-
-            if status == "degraded":
-                degraded_lines = ["Forecast completed with degraded quality."]
-                if warnings:
-                    degraded_lines.append("Warnings:")
-                    degraded_lines.extend([f"- {warning}" for warning in warnings])
-                elif warnings_count > 0:
-                    degraded_lines.append(f"{warnings_count} warning(s) recorded.")
-                st.warning("\n".join(degraded_lines))
 
             dbg = result.get("weather_ensemble")
             st.session_state["last_weather_ensemble_debug"] = dbg if isinstance(dbg, dict) else {}
