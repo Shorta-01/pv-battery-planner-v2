@@ -504,7 +504,7 @@ class EnsembleWeatherResult:
     satellite_nowcast_hours: int = 0
     satellite_nowcast_weight_factor: float | None = None
     satellite_nowcast_reason: str | None = None
-    pv_tomorrow_low_high_kwh: dict[str, float | int | None] | None = None
+    pv_tomorrow_model_spread_kwh: dict[str, float | int | None] | None = None
     pv_models_used_count_per_hour: pd.Series | None = None
     deduped_models_dropped: list[str] | None = None
 
@@ -548,7 +548,7 @@ def _sum_pv_kwh_for_local_day(pv_df: pd.DataFrame, target_date: dt.date, tz: str
     return total_kwh, hours_count
 
 
-def compute_pv_tomorrow_low_high_kwh(
+def compute_pv_tomorrow_model_spread_kwh(
     pv_by_model: dict[str, pd.DataFrame],
     target_date: dt.date,
     tz: str,
@@ -575,6 +575,22 @@ def compute_pv_tomorrow_low_high_kwh(
         "high": None,
         "valid_models": int(valid_models),
     }
+
+
+def compute_pv_tomorrow_low_high_kwh(
+    pv_by_model: dict[str, pd.DataFrame],
+    target_date: dt.date,
+    tz: str,
+    *,
+    min_hours: int = 18,
+) -> dict[str, float | int | None]:
+    """Backward-compatible alias for model-spread range."""
+    return compute_pv_tomorrow_model_spread_kwh(
+        pv_by_model=pv_by_model,
+        target_date=target_date,
+        tz=tz,
+        min_hours=min_hours,
+    )
 
 
 class WeatherProviderError(RuntimeError):
@@ -2324,7 +2340,7 @@ def build_ensemble_forecast(
         sunrise=weather_ok[primary_model].sunrise,
         sunset=weather_ok[primary_model].sunset,
     )
-    pv_tomorrow_low_high_kwh = compute_pv_tomorrow_low_high_kwh(
+    pv_tomorrow_model_spread_kwh = compute_pv_tomorrow_model_spread_kwh(
         pv_by_model=pv_by_model,
         target_date=target_date,
         tz=tz,
@@ -2357,7 +2373,7 @@ def build_ensemble_forecast(
         weather_ensemble_table=ensemble_weather,
         provider_payloads_by_model=provider_payloads_by_model,
         fetch_meta_by_model=fetch_meta_by_model,
-        pv_tomorrow_low_high_kwh=pv_tomorrow_low_high_kwh,
+        pv_tomorrow_model_spread_kwh=pv_tomorrow_model_spread_kwh,
         pv_models_used_count_per_hour=pv_models_used_count,
         satellite_nowcast_used=bool(satellite_nowcast_used),
         satellite_nowcast_hours=int(satellite_nowcast_hours),

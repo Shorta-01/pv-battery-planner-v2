@@ -47,7 +47,7 @@ def test_tomorrow_low_high_uses_tomorrow_window_not_horizon_totals() -> None:
     model_a = _hourly_df("2026-01-10 00:00:00", 48, 0.1)  # tomorrow total 2.4
     model_b = _hourly_df("2026-01-10 00:00:00", 168, 0.3)  # tomorrow total 7.2
 
-    out = we.compute_pv_tomorrow_low_high_kwh(
+    out = we.compute_pv_tomorrow_model_spread_kwh(
         pv_by_model={"a": model_a, "b": model_b},
         target_date=TARGET_DATE,
         tz=TZ,
@@ -62,7 +62,7 @@ def test_tomorrow_low_high_excludes_partial_day_models() -> None:
     model_a = _hourly_df("2026-01-10 00:00:00", 6, 0.2)
     model_b = _hourly_df("2026-01-10 00:00:00", 24, 0.25)
 
-    out = we.compute_pv_tomorrow_low_high_kwh(
+    out = we.compute_pv_tomorrow_model_spread_kwh(
         pv_by_model={"a": model_a, "b": model_b},
         target_date=TARGET_DATE,
         tz=TZ,
@@ -87,3 +87,33 @@ def test_ui_resolver_rejects_non_bracketing_ranges() -> None:
 
     assert low is None
     assert high is None
+
+
+
+def test_unified_low_high_matches_p10_p90_from_quantiles() -> None:
+    idx = pd.date_range(pd.Timestamp("2026-01-10 00:00:00", tz=TZ), periods=24, freq="h")
+    matrix = pd.DataFrame(
+        {
+            "a": [0.10] * 24,
+            "b": [0.20] * 24,
+            "c": [0.40] * 24,
+        },
+        index=idx,
+    )
+    p10 = float(matrix.quantile(0.10, axis=1).sum())
+    p50 = float(matrix.quantile(0.50, axis=1).sum())
+    p90 = float(matrix.quantile(0.90, axis=1).sum())
+
+    result = {
+        "pv_totals_kwh": {"p10": p10, "p50": p50, "p90": p90},
+        "pv_tomorrow_low_high_kwh": {"low": p10, "high": p90, "valid_models": 3},
+    }
+
+    low, high = RESOLVE_TOMORROW_PV_LOW_HIGH_KWH(result, weather_ensemble={}, tomorrow_p50_kwh=p50)
+
+    assert result["pv_totals_kwh"]["p10"] is not None
+    assert result["pv_totals_kwh"]["p50"] is not None
+    assert result["pv_totals_kwh"]["p90"] is not None
+    assert low == pytest.approx(result["pv_totals_kwh"]["p10"])
+    assert high == pytest.approx(result["pv_totals_kwh"]["p90"])
+    assert result["pv_tomorrow_low_high_kwh"]["valid_models"] >= 2
