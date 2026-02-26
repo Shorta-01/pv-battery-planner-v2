@@ -6,10 +6,13 @@ def should_hard_stop(result: dict) -> tuple[bool, str, list[str]]:
     warnings_raw = result.get("warnings")
     warnings = warnings_raw if isinstance(warnings_raw, list) else []
     warnings_count = int(result.get("warnings_count") or 0)
+    fallback = [f"{warnings_count} warning(s) recorded"] if warnings_count else []
 
-    if status and status != "ok":
-        fallback = [f"{warnings_count} warning(s) recorded"] if warnings_count else []
-        return True, f"Forecast failed (status={status})", (warnings or fallback)
+    if status in {"error", "failed"}:
+        return True, "Forecast failed", (warnings or fallback)
+
+    if status == "degraded":
+        return False, "Forecast completed with warnings", (warnings or fallback)
 
     return False, "", warnings
 

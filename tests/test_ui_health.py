@@ -19,6 +19,19 @@ def test_should_hard_stop_error() -> None:
     assert "all weather model requests failed" in warnings
 
 
+def test_should_hard_stop_degraded() -> None:
+    result = {
+        "status": "degraded",
+        "warnings": ["x"],
+        "warnings_count": 1,
+    }
+
+    hard_stop, title, warnings = should_hard_stop(result)
+
+    assert hard_stop is False
+    assert title
+    assert "x" in warnings
+
 def test_should_hard_stop_ok() -> None:
     result = {"status": "ok", "warnings": [], "warnings_count": 0}
 
