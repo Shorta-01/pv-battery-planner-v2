@@ -35,6 +35,64 @@ DEFAULT_WEIGHTED_BELGIUM = {
     "gfs": 0.05,
 }
 
+DAY_TYPE_CLEAR_WEATHER_CODES = {0, 1}
+DAY_TYPE_PRECIP_WEATHER_CODES = {
+    51,
+    53,
+    55,
+    56,
+    57,
+    61,
+    63,
+    65,
+    66,
+    67,
+    71,
+    73,
+    75,
+    77,
+    80,
+    81,
+    82,
+    85,
+    86,
+    95,
+    96,
+    99,
+}
+DAY_TYPE_LOW_STD_THRESHOLD = 12.0
+DAY_TYPE_LOW_MEAN_DELTA_THRESHOLD = 9.0
+DAY_TYPE_HIGH_STD_THRESHOLD = 25.0
+DAY_TYPE_HIGH_MEAN_DELTA_THRESHOLD = 18.0
+DAY_TYPE_CLEAR_RATIO_THRESHOLD = 0.45
+DAY_TYPE_PRECIP_RATIO_THRESHOLD = 0.30
+DAY_TYPE_MOSTLY_OVERCAST_THRESHOLD = 85.0
+DAY_TYPE_MOSTLY_OVERCAST_RATIO_THRESHOLD = 0.60
+
+DAY_TYPE_WEIGHT_FACTORS: dict[str, dict[str, float]] = {
+    "stable_clear": {
+        "accuracy_model_boost": 1.25,
+        "non_accuracy_penalty": 0.85,
+        "median_blend": 0.0,
+    },
+    "variable_cloudy": {
+        "accuracy_model_boost": 1.0,
+        "non_accuracy_penalty": 1.0,
+        "median_blend": 0.35,
+    },
+    "fronty_wet": {
+        "accuracy_model_boost": 0.95,
+        "non_accuracy_penalty": 1.0,
+        "median_blend": 0.55,
+    },
+}
+
+UNCERTAINTY_SCALER_BY_DAY_TYPE = {
+    "stable_clear": 0.85,
+    "variable_cloudy": 1.15,
+    "fronty_wet": 1.20,
+}
+
 WEATHER_MODELS: dict[str, dict[str, Any]] = {
     "knmi_harmonie_arome": {
         "label": "KNMI HARMONIE-AROME",
@@ -504,6 +562,11 @@ class EnsembleWeatherResult:
     satellite_nowcast_hours: int = 0
     satellite_nowcast_weight_factor: float | None = None
     satellite_nowcast_reason: str | None = None
+    day_type: str | None = None
+    weights_by_model: dict[str, float] | None = None
+    nowcast_available: bool = False
+    nowcast_used_hours: int = 0
+    nowcast_blend_hours: int = 0
     pv_tomorrow_model_spread_kwh: dict[str, float | int | None] | None = None
     pv_models_used_count_per_hour: pd.Series | None = None
     deduped_models_dropped: list[str] | None = None
@@ -1740,6 +1803,131 @@ def fetch_open_meteo_weather(
     return forecast, list(set(missing_vars)), bool(derived_irradiance), fetch_meta
 
 
+
+
+def classify_day_type(
+    hourly_cloud_cover_series: pd.Series | None,
+    hourly_weather_code_series: pd.Series | None,
+) -> str:
+    cloud = pd.to_numeric(hourly_cloud_cover_series, errors="coerce") if hourly_cloud_cover_series is not None else pd.Series(dtype=float)
+    cloud = cloud.dropna()
+    cloud_std = float(cloud.std()) if not cloud.empty else 0.0
+    cloud_delta = float(cloud.diff().abs().dropna().mean()) if len(cloud) > 1 else 0.0
+
+    weather_code = pd.to_numeric(hourly_weather_code_series, errors="coerce") if hourly_weather_code_series is not None else pd.Series(dtype=float)
+    weather_code = weather_code.dropna().astype(int) if not weather_code.empty else pd.Series(dtype=int)
+    clear_ratio = float(weather_code.isin(DAY_TYPE_CLEAR_WEATHER_CODES).mean()) if len(weather_code) else 0.0
+    precip_ratio = float(weather_code.isin(DAY_TYPE_PRECIP_WEATHER_CODES).mean()) if len(weather_code) else 0.0
+    overcast_ratio = float((cloud >= DAY_TYPE_MOSTLY_OVERCAST_THRESHOLD).mean()) if len(cloud) else 0.0
+
+    if precip_ratio >= DAY_TYPE_PRECIP_RATIO_THRESHOLD or overcast_ratio >= DAY_TYPE_MOSTLY_OVERCAST_RATIO_THRESHOLD:
+        return "fronty_wet"
+    if (
+        cloud_std <= DAY_TYPE_LOW_STD_THRESHOLD
+        and cloud_delta <= DAY_TYPE_LOW_MEAN_DELTA_THRESHOLD
+        and clear_ratio >= DAY_TYPE_CLEAR_RATIO_THRESHOLD
+    ):
+        return "stable_clear"
+    if cloud_std >= DAY_TYPE_HIGH_STD_THRESHOLD or cloud_delta >= DAY_TYPE_HIGH_MEAN_DELTA_THRESHOLD:
+        return "variable_cloudy"
+    return "variable_cloudy"
+
+
+def _weights_for_day_type(
+    base_weights: dict[str, float] | None,
+    model_ids: list[str],
+    day_type: str,
+    expert_mode: bool,
+) -> dict[str, float]:
+    base = {m: float((base_weights or {}).get(m, 0.0) or 0.0) for m in model_ids}
+    if not base:
+        base = {m: float(DEFAULT_WEIGHTED_BELGIUM.get(m, 1.0)) for m in model_ids}
+
+    if expert_mode:
+        total = float(sum(v for v in base.values() if v > 0.0))
+        if total <= 0:
+            return {m: 1.0 / max(1, len(model_ids)) for m in model_ids}
+        return {m: max(0.0, v) / total for m, v in base.items()}
+
+    settings = DAY_TYPE_WEIGHT_FACTORS.get(day_type, DAY_TYPE_WEIGHT_FACTORS["variable_cloudy"])
+    adjusted: dict[str, float] = {}
+    for model_id in model_ids:
+        w = max(0.0, float(base.get(model_id, 0.0)))
+        if model_id in DEFAULT_ACCURACY_MODELS:
+            w *= float(settings.get("accuracy_model_boost", 1.0))
+        else:
+            w *= float(settings.get("non_accuracy_penalty", 1.0))
+        adjusted[model_id] = w
+
+    total_adjusted = float(sum(adjusted.values()))
+    if total_adjusted <= 0:
+        adjusted = {m: 1.0 / max(1, len(model_ids)) for m in model_ids}
+    else:
+        adjusted = {m: w / total_adjusted for m, w in adjusted.items()}
+
+    blend = float(settings.get("median_blend", 0.0))
+    if blend > 0.0 and model_ids:
+        uniform = 1.0 / float(len(model_ids))
+        adjusted = {m: ((1.0 - blend) * adjusted[m]) + (blend * uniform) for m in model_ids}
+        renorm = float(sum(adjusted.values()))
+        if renorm > 0.0:
+            adjusted = {m: w / renorm for m, w in adjusted.items()}
+
+    return adjusted
+
+
+def _apply_uncertainty_day_type_scaling(
+    p10: pd.Series,
+    p50: pd.Series,
+    p90: pd.Series,
+    day_type: str,
+) -> tuple[pd.Series, pd.Series]:
+    scaler = float(UNCERTAINTY_SCALER_BY_DAY_TYPE.get(day_type, 1.0))
+    new_p10 = (p50 - scaler * (p50 - p10)).clip(lower=0.0)
+    new_p90 = (p50 + scaler * (p90 - p50)).clip(lower=0.0)
+    new_p10 = pd.concat([new_p10, p50], axis=1).min(axis=1)
+    new_p90 = pd.concat([new_p90, p50], axis=1).max(axis=1)
+    return new_p10.astype(float), new_p90.astype(float)
+
+
+def blend_nowcast_with_nwp(
+    nowcast_df: pd.DataFrame,
+    nwp_df: pd.DataFrame,
+    horizon_hours: int = 6,
+    blend_hours: int = 2,
+) -> pd.DataFrame:
+    if not isinstance(nwp_df, pd.DataFrame) or nwp_df.empty:
+        return pd.DataFrame() if not isinstance(nwp_df, pd.DataFrame) else nwp_df.copy()
+    if not isinstance(nowcast_df, pd.DataFrame) or nowcast_df.empty:
+        return nwp_df.copy()
+
+    out = nwp_df.copy()
+    cols = [c for c in ["shortwave_radiation", "direct_normal_irradiance", "diffuse_radiation", "cloud_cover"] if c in out.columns]
+    if not cols:
+        return out
+
+    now = nowcast_df.reindex(out.index)
+    horizon_hours = int(max(0, horizon_hours))
+    blend_hours = int(max(0, min(blend_hours, horizon_hours)))
+    for hour_idx, ts in enumerate(out.index):
+        if hour_idx >= horizon_hours:
+            continue
+        for col in cols:
+            nwp_val = pd.to_numeric(pd.Series([out.at[ts, col]]), errors="coerce").iloc[0]
+            now_val = pd.to_numeric(pd.Series([now.at[ts, col] if col in now.columns else np.nan]), errors="coerce").iloc[0]
+            if pd.isna(now_val):
+                continue
+            if hour_idx < (horizon_hours - blend_hours):
+                out.at[ts, col] = float(now_val)
+            else:
+                if blend_hours <= 0 or pd.isna(nwp_val):
+                    out.at[ts, col] = float(now_val) if pd.isna(nwp_val) else float(nwp_val)
+                else:
+                    step = hour_idx - (horizon_hours - blend_hours) + 1
+                    alpha = min(1.0, max(0.0, step / float(blend_hours + 1)))
+                    out.at[ts, col] = float((1.0 - alpha) * now_val + alpha * nwp_val)
+    return out
+
 def _dynamic_weight_settings() -> dict[str, Any]:
     cfg = core.get_effective_config()
     weather_cfg = cfg.get("weather") if isinstance(cfg, dict) else {}
@@ -1935,6 +2123,7 @@ def build_ensemble_forecast(
     fast_mode: bool = False,
     requested_days: int = 1,
     use_satellite_nowcast_0_6h: bool = False,
+    expert_mode: bool = False,
 ) -> EnsembleWeatherResult:
     selected = weather_models[:] if weather_models else DEFAULT_ACCURACY_MODELS[:]
     selected = [m for m in selected if m in WEATHER_MODELS]
@@ -1972,6 +2161,7 @@ def build_ensemble_forecast(
 
     horizon_days = max(1, int(requested_days))
     canonical_index = local_horizon_hourly_index(target_date, tz, horizon_days)
+    day_type = "variable_cloudy"
 
     def _fetch_and_prepare(model_id: str) -> tuple[str, core.ForecastResult, list[str], bool, int, dict[str, Any], int, int]:
         weather, missing_vars, derived_irradiance, fetch_meta = fetch_open_meteo_weather(
@@ -2249,29 +2439,47 @@ def build_ensemble_forecast(
                         pseudo["dni_wm2"] = pd.to_numeric(sat_df["direct_normal_irradiance"], errors="coerce")
                         pseudo["dhi_wm2"] = pd.to_numeric(sat_df["diffuse_radiation"], errors="coerce")
                         sat_pv = core.build_pv_forecast(pseudo, loc, tz=tz).reindex(canonical_index)
-                        for req in ["pv_total_kwh", "pv_total_unclipped_kwh", "pv_east_kwh", "pv_south_kwh", "pv_clipped_kwh"]:
-                            if req not in sat_pv.columns:
-                                sat_pv[req] = np.nan
-                        model_id = "sat_nowcast"
+                        blend_hours = 2
+                        horizon = min(6, len(canonical_index))
+                        used_hours = 0
                         for col_name in per_model_pv_columns:
-                            series = pd.Series(np.nan, index=canonical_index, dtype=float)
-                            series.loc[sat_index] = pd.to_numeric(sat_pv[col_name].reindex(sat_index), errors="coerce")
-                            per_model_pv_columns[col_name][model_id] = series
-                        pv_by_model[model_id] = sat_pv
-                        per_model_pv_totals[model_id] = float(pd.to_numeric(sat_pv["pv_total_kwh"], errors="coerce").sum(min_count=1))
-                        missing_vars_by_model[model_id] = []
-                        derived_irradiance_by_model[model_id] = False
-                        derived_weather_code_by_model[model_id] = False
-                        quality_weight_factors_by_model[model_id] = 1.0
-                        satellite_nowcast_used = True
-                        satellite_nowcast_hours = int(len(sat_index))
-                        satellite_nowcast_reason = "used"
+                            sat_series = pd.to_numeric(sat_pv.get(col_name), errors="coerce").reindex(canonical_index)
+                            for model_id, model_series in list(per_model_pv_columns[col_name].items()):
+                                nwp_series = pd.to_numeric(model_series, errors="coerce").reindex(canonical_index)
+                                blended = nwp_series.copy()
+                                for h, ts in enumerate(canonical_index[:horizon]):
+                                    now_v = sat_series.get(ts)
+                                    nwp_v = nwp_series.get(ts)
+                                    if pd.isna(now_v):
+                                        continue
+                                    used_hours += 1
+                                    if h < (horizon - blend_hours):
+                                        blended.at[ts] = float(now_v)
+                                    else:
+                                        if pd.isna(nwp_v):
+                                            blended.at[ts] = float(now_v)
+                                        else:
+                                            step = h - (horizon - blend_hours) + 1
+                                            alpha = min(1.0, max(0.0, step / float(blend_hours + 1)))
+                                            blended.at[ts] = float((1.0 - alpha) * now_v + alpha * nwp_v)
+                                per_model_pv_columns[col_name][model_id] = blended
+                        satellite_nowcast_used = used_hours > 0
+                        satellite_nowcast_hours = int(min(horizon, used_hours // max(1, len(per_model_pv_columns))))
+                        satellite_nowcast_reason = "used" if satellite_nowcast_used else "skipped (no overlap values)"
                     else:
                         satellite_nowcast_reason = "skipped (no satellite data)"
                 except Exception as exc:
                     satellite_nowcast_reason = f"skipped ({type(exc).__name__})"
     elif use_satellite_nowcast_0_6h and requested_days > 1:
         satellite_nowcast_reason = "skipped (week-ahead horizon)"
+
+    primary_for_day_type = _stable_first_available_model(selected, weather_ok)
+    if primary_for_day_type and primary_for_day_type in weather_ok:
+        primary_df = weather_ok[primary_for_day_type].df.reindex(canonical_index)
+        day_type = classify_day_type(
+            hourly_cloud_cover_series=pd.to_numeric(primary_df.get("cloud_cover_pct"), errors="coerce") if "cloud_cover_pct" in primary_df.columns else None,
+            hourly_weather_code_series=pd.to_numeric(primary_df.get("weather_code"), errors="coerce") if "weather_code" in primary_df.columns else None,
+        )
 
     def _ensemble_column(column_name: str) -> tuple[pd.Series, dict[str, float] | None, dict[str, float]]:
         model_series = per_model_pv_columns[column_name]
@@ -2282,8 +2490,14 @@ def build_ensemble_forecast(
             return matrix.mean(axis=1, skipna=True), None, {}
         model_keys = list(model_series.keys())
         dynamic_weights = _load_dynamic_weights(model_keys) or {}
-        if satellite_nowcast_used and "sat_nowcast" in model_series:
-            dynamic_weights["sat_nowcast"] = max(float(dynamic_weights.get("sat_nowcast", 1.0)), float(satellite_nowcast_weight_factor))
+        if not dynamic_weights:
+            dynamic_weights = {m: float(DEFAULT_WEIGHTED_BELGIUM.get(m, 1.0)) for m in model_keys}
+        dynamic_weights = _weights_for_day_type(
+            base_weights=dynamic_weights,
+            model_ids=model_keys,
+            day_type=day_type,
+            expert_mode=expert_mode,
+        )
         return _weighted_ensemble(
             model_series,
             model_keys,
@@ -2339,6 +2553,8 @@ def build_ensemble_forecast(
     p10 = matrix.quantile(0.10, axis=1)
     p25 = matrix.quantile(0.25, axis=1)
     p90 = matrix.quantile(0.90, axis=1)
+    if not expert_mode:
+        p10, p90 = _apply_uncertainty_day_type_scaling(p10, ensemble_ac_p50, p90, day_type=day_type)
 
     primary_model = _stable_first_available_model(selected, weather_ok)
     if primary_model is None:
@@ -2394,5 +2610,10 @@ def build_ensemble_forecast(
         satellite_nowcast_hours=int(satellite_nowcast_hours),
         satellite_nowcast_weight_factor=float(satellite_nowcast_weight_factor) if satellite_nowcast_used else None,
         satellite_nowcast_reason=satellite_nowcast_reason,
+        day_type=day_type,
+        weights_by_model=weights_used,
+        nowcast_available=bool(satellite_nowcast_used),
+        nowcast_used_hours=int(satellite_nowcast_hours),
+        nowcast_blend_hours=2,
         deduped_models_dropped=deduped_models_dropped,
     )
