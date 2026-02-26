@@ -785,14 +785,35 @@ def last_run_status_badge(model_id: str) -> tuple[str | None, str]:
 
 def weather_model_fetch_data_status(model_id: str, weather_ensemble: dict | None) -> tuple[str, str, str, str]:
     indicators = model_indicators(model_id, weather_ensemble)
-    tooltip = str(indicators.get("tooltip") or "")
     fetch_map = {"ok": "✅", "fail": "❌", "na": "—"}
     data_map = {"ok": "✅", "warn": "⚠️", "fail": "❌", "na": "—"}
+    fetch_state = str(indicators.get("fetch") or "na")
+    data_state = str(indicators.get("data") or "na")
+    default_tip = str(indicators.get("tooltip") or "")
+
+    fetch_tip = default_tip
+    if fetch_state == "fail" and weather_ensemble:
+        failed = weather_ensemble.get("failed_model_reasons") or {}
+        fetch_tip = str(failed.get(model_id) or default_tip)
+
+    data_tip = default_tip
+    if data_state == "warn" and weather_ensemble:
+        meta = (weather_ensemble.get("fetch_meta_by_model") or {}).get(model_id) or {}
+        missing_overlap = int(meta.get("missing_hours_overlap") or 0)
+        missing_vars = (weather_ensemble.get("missing_vars_by_model") or {}).get(model_id) or []
+        pv_critical = {
+            "shortwave_radiation",
+            "direct_normal_irradiance",
+            "diffuse_radiation",
+        }
+        pv_missing = [v for v in missing_vars if v in pv_critical]
+        data_tip = f"missing_hours_overlap={missing_overlap}; pv_missing={pv_missing}"
+
     return (
-        fetch_map.get(str(indicators.get("fetch") or "na"), "—"),
-        tooltip,
-        data_map.get(str(indicators.get("data") or "na"), "—"),
-        tooltip,
+        fetch_map.get(fetch_state, "—"),
+        fetch_tip,
+        data_map.get(data_state, "—"),
+        data_tip,
     )
 
 
@@ -813,7 +834,7 @@ def render_weather_models(
     selected_models: list[str] = []
 
     st.markdown(
-        "<style>.wm-name{cursor:help}.wm-left{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.wm-badges{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;row-gap:4px}.wm-diag{font-size:.75rem;white-space:nowrap;color:#3a3a3a}.wm-diag .wm-pipe{opacity:.55}.wm-diag .wm-status{cursor:help}.pvbp-text-chip{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;padding:1px 8px;font-size:.72rem;font-weight:700;line-height:1.45;border:1px solid transparent;letter-spacing:.01em}.pvbp-text-chip-auto{background:#e8f0ff;border-color:#bfd5ff;color:#1f4ea3}.pvbp-text-chip-last-ok{background:#e9f8ee;border-color:#b9e8c5;color:#1f7a3d}.pvbp-text-chip-last-warn{background:#fff7e6;border-color:#ffe2ad;color:#8a6200}.pvbp-text-chip-last-fail{background:#fdeaea;border-color:#f6c0c0;color:#9e2c2c}.pvbp-icon-chip{background:transparent;border:none;padding:0;margin:0;font-size:1em;line-height:1;cursor:help;display:inline-block}.pvbp-icon-chip-auto{color:#1f4ea3}.pvbp-icon-chip-last-ok{color:#1f7a3d}.pvbp-icon-chip-last-warn{color:#8a6200}.pvbp-icon-chip-last-fail{color:#9e2c2c}</style>",
+        "<style>.wm-name{cursor:help}.wm-left{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.wm-badges{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;row-gap:4px}.wm-diag{font-size:.75rem;white-space:nowrap;color:#3a3a3a}.wm-diag .wm-pipe{opacity:.55}.wm-diag .wm-status{cursor:help}.pvbp-text-chip{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;padding:1px 8px;font-size:.72rem;font-weight:700;line-height:1.45;border:1px solid transparent;letter-spacing:.01em}.pvbp-text-chip-auto{background:#e8f0ff;border-color:#bfd5ff;color:#1f4ea3}.pvbp-text-chip-last-ok{background:#e9f8ee;border-color:#b9e8c5;color:#1f7a3d}.pvbp-text-chip-last-warn{background:#fff7e6;border-color:#ffe2ad;color:#8a6200}.pvbp-text-chip-last-fail{background:#fdeaea;border-color:#f6c0c0;color:#9e2c2c}</style>",
         unsafe_allow_html=True,
     )
 
@@ -836,31 +857,15 @@ def render_weather_models(
             else:
                 checked = bool(auto_selected_models and model_id in auto_selected_models)
 
-            status_icon, status_tip = last_run_status_badge(model_id)
-            chip_html: list[str] = []
-            if show_auto_chips and auto_selected_models and model_id in auto_selected_models:
-                chip_html.append(
-                    icon_chip(
-                        "✨",
-                        "Auto mode will try this model for your location and forecast horizon.",
-                        kind="auto",
-                    )
-                )
-            if used_models and model_id in used_models:
-                if status_icon == "❌":
-                    last_label = "❌"
-                    last_kind = "last-fail"
-                    status_tip = status_tip or "Model failed in the last run."
-                elif status_icon == "⚠":
-                    last_label = "⚠"
-                    last_kind = "last-warn"
-                    status_tip = status_tip or "Worked in the last run, but some PV inputs were missing or estimated."
-                else:
-                    last_label = "✅"
-                    last_kind = "last-ok"
-                    status_tip = status_tip or "Used successfully in the last run."
-                chip_html.append(icon_chip(last_label, status_tip, kind=last_kind))
-            st.markdown(f"<div class='wm-left'>{''.join(chip_html)}</div>", unsafe_allow_html=True)
+            fetch_status, fetch_tip, data_status, data_tip = weather_model_fetch_data_status(model_id, weather_ensemble)
+            diagnostics_html = (
+                "<span class='wm-diag'>"
+                f"Fetch <span class='wm-status' title='{_esc(fetch_tip)}'>{_esc(fetch_status)}</span> "
+                "<span class='wm-pipe'>|</span> "
+                f"Data <span class='wm-status' title='{_esc(data_tip)}'>{_esc(data_status)}</span>"
+                "</span>"
+            )
+            st.markdown(f"<div class='wm-left'>{diagnostics_html}</div>", unsafe_allow_html=True)
 
         with cols[1]:
             label = str(model.get("label") or model_id)
@@ -872,15 +877,6 @@ def render_weather_models(
 
         with cols[2]:
             static_badges = list(model.get("badges") or [])
-            fetch_status, fetch_tip, data_status, data_tip = weather_model_fetch_data_status(model_id, weather_ensemble)
-            diagnostics_html = (
-                "<span class='wm-diag'>"
-                f"Fetch <span class='wm-status' title='{_esc(fetch_tip)}'>{_esc(fetch_status)}</span> "
-                "<span class='wm-pipe'>|</span> "
-                f"Data <span class='wm-status' title='{_esc(data_tip)}'>{_esc(data_status)}</span>"
-                "</span>"
-            )
-
             badge_html: list[str] = []
             if show_capability_badges:
                 for badge in static_badges:
@@ -890,7 +886,7 @@ def render_weather_models(
                         continue
                     badge_html.append(badge_chip(icon=icon, tip=str(meta.get("tip") or "")))
 
-            st.markdown(f"<div class='wm-badges'>{diagnostics_html}{''.join(badge_html)}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='wm-badges'>{''.join(badge_html)}</div>", unsafe_allow_html=True)
 
         if checked:
             selected_models.append(model_id)
