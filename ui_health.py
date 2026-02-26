@@ -21,10 +21,6 @@ def model_indicators(model_id: str, weather_ensemble: dict | None) -> dict:
     if not weather_ensemble:
         return {"fetch": "na", "data": "na", "tooltip": "No diagnostics available."}
 
-    selected = set(weather_ensemble.get("selected_models") or [])
-    if model_id not in selected:
-        return {"fetch": "na", "data": "na", "tooltip": "Not selected for this run."}
-
     failed = weather_ensemble.get("failed_model_reasons") or {}
     if model_id in failed:
         return {
@@ -32,6 +28,10 @@ def model_indicators(model_id: str, weather_ensemble: dict | None) -> dict:
             "data": "fail",
             "tooltip": str(failed[model_id]),
         }
+
+    selected = set(weather_ensemble.get("selected_models") or [])
+    if model_id not in selected:
+        return {"fetch": "na", "data": "na", "tooltip": "Not selected for this run."}
 
     meta = (weather_ensemble.get("fetch_meta_by_model") or {}).get(model_id) or {}
     missing_overlap = int(meta.get("missing_hours_overlap") or 0)
