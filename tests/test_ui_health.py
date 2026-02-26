@@ -60,6 +60,18 @@ def test_model_indicators_failed() -> None:
     assert indicators["data"] == "fail"
 
 
+def test_model_indicators_failed_even_if_not_selected() -> None:
+    weather_ensemble = {
+        "selected_models": ["ecmwf_ifs"],
+        "failed_model_reasons": {"dwd_icon_d2": "403 Forbidden"},
+    }
+
+    indicators = model_indicators("dwd_icon_d2", weather_ensemble)
+
+    assert indicators["fetch"] == "fail"
+    assert indicators["data"] == "fail"
+
+
 def test_model_indicators_data_ok_strict() -> None:
     weather_ensemble = {
         "selected_models": ["a"],
