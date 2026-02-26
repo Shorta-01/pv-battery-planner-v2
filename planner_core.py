@@ -193,6 +193,7 @@ DEFAULT_CONFIG = {
         "offpeak_grid_price_eur_per_kwh": OFFPEAK_GRID_PRICE_EUR_PER_KWH,
         "injection_grid_price_eur_per_kwh": INJECTION_GRID_PRICE_EUR_PER_KWH,
         "allow_injection_to_grid": True,
+        "max_grid_import_kw": 0.0,
         "optimization_mode": "window_only",
         "night_load_from_battery": False,
         "offpeak_windows_by_dow": [
@@ -435,6 +436,14 @@ def validate_config(cfg: dict) -> None:
     allow_injection_to_grid = tariff.get("allow_injection_to_grid", True)
     if not isinstance(allow_injection_to_grid, bool):
         raise ValueError("tariff.allow_injection_to_grid must be a boolean.")
+
+    max_grid_import_kw_raw = tariff.get("max_grid_import_kw", 0.0)
+    try:
+        max_grid_import_kw = float(max_grid_import_kw_raw)
+    except (TypeError, ValueError):
+        raise ValueError("tariff.max_grid_import_kw must be a finite number >= 0.") from None
+    if not math.isfinite(max_grid_import_kw) or max_grid_import_kw < 0.0:
+        raise ValueError("tariff.max_grid_import_kw must be a finite number >= 0.")
 
     parse_offpeak_windows_by_dow(tariff["offpeak_windows_by_dow"])
 
@@ -3094,6 +3103,11 @@ def simulate_night_charging_series(
     max_energy = MAX_CUTOFF_SOC * BATTERY_KWH
     charge_cutoff_energy = min(MAX_CUTOFF_SOC, max(MIN_SOC, cutoff_soc)) * BATTERY_KWH
     night_load_from_battery = should_use_battery_for_offpeak_load(cfg)
+    max_grid_import_kw = float((cfg or {}).get("max_grid_import_kw", 0.0))
+    grid_import_cap_active = max_grid_import_kw > 0.0
+    grid_import_cap_binding_events = 0
+    grid_import_cap_load_exceeds_events = 0
+    grid_import_cap_limited_charge_kwh_total = 0.0
 
     rows = []
     for ts in idx:
@@ -3119,6 +3133,18 @@ def simulate_night_charging_series(
             charge_grid_kwh = min(charge_kw * step_h, BATTERY_MAX_CHARGE_KW * step_h)
             room = max(0.0, min(max_energy, charge_cutoff_energy) - energy)
             charge_to_battery = min(room, charge_grid_kwh * BATTERY_AC_CHARGE_EFF)
+            if grid_import_cap_active:
+                cap_import_kwh = max_grid_import_kw * step_h
+                load_import_kwh = remaining_load
+                if load_import_kwh > cap_import_kwh + 1e-9:
+                    grid_import_cap_load_exceeds_events += 1
+                charge_import_headroom_kwh = max(0.0, cap_import_kwh - load_import_kwh)
+                max_charge_to_battery_by_gridcap = charge_import_headroom_kwh * BATTERY_AC_CHARGE_EFF
+                unclamped_charge_to_battery = charge_to_battery
+                charge_to_battery = min(charge_to_battery, max_charge_to_battery_by_gridcap)
+                if unclamped_charge_to_battery - charge_to_battery > 1e-9:
+                    grid_import_cap_binding_events += 1
+                    grid_import_cap_limited_charge_kwh_total += (unclamped_charge_to_battery - charge_to_battery)
             if charge_to_battery > 0:
                 charging_grid_import = charge_to_battery / BATTERY_AC_CHARGE_EFF if BATTERY_AC_CHARGE_EFF > 0 else 0.0
                 energy = min(max_energy, energy + charge_to_battery)
@@ -3140,6 +3166,10 @@ def simulate_night_charging_series(
         })
 
     night_df = pd.DataFrame(rows).set_index("ts_local")
+    night_df.attrs["grid_import_cap_active"] = bool(grid_import_cap_active)
+    night_df.attrs["grid_import_cap_binding_events"] = int(grid_import_cap_binding_events)
+    night_df.attrs["grid_import_cap_load_exceeds_events"] = int(grid_import_cap_load_exceeds_events)
+    night_df.attrs["grid_import_cap_limited_charge_kwh_total"] = float(grid_import_cap_limited_charge_kwh_total)
     if ENABLE_INVARIANT_CHECKS:
         validate_flow_invariants(night_df, "night")
     return night_df
@@ -3228,6 +3258,11 @@ def simulate_full_day_soc(
     pv_store_vs_export_decisions_count = 0
     allow_injection = bool(econ_cfg.get("allow_injection_to_grid", True))
     blocked_export_kwh_total = 0.0
+    max_grid_import_kw = float((cfg or {}).get("max_grid_import_kw", 0.0))
+    grid_import_cap_active = max_grid_import_kw > 0.0
+    grid_import_cap_binding_events = int(night_df.attrs.get("grid_import_cap_binding_events", 0))
+    grid_import_cap_load_exceeds_events = int(night_df.attrs.get("grid_import_cap_load_exceeds_events", 0))
+    grid_import_cap_limited_charge_kwh_total = float(night_df.attrs.get("grid_import_cap_limited_charge_kwh_total", 0.0))
     for ts in day_idx:
         step_h = float(dt_h.loc[ts])
         pv_ac_limited = float(pv_total.loc[ts])
@@ -3306,6 +3341,18 @@ def simulate_full_day_soc(
             charge_grid_kwh = min(charge_kw * step_h, BATTERY_MAX_CHARGE_KW * step_h)
             room = max(0.0, min(max_energy, charge_cutoff_energy) - energy)
             charge_to_battery = min(room, charge_grid_kwh * BATTERY_AC_CHARGE_EFF)
+            if grid_import_cap_active:
+                cap_import_kwh = max_grid_import_kw * step_h
+                load_import_kwh = remaining_load
+                if load_import_kwh > cap_import_kwh + 1e-9:
+                    grid_import_cap_load_exceeds_events += 1
+                charge_import_headroom_kwh = max(0.0, cap_import_kwh - load_import_kwh)
+                max_charge_to_battery_by_gridcap = charge_import_headroom_kwh * BATTERY_AC_CHARGE_EFF
+                unclamped_charge_to_battery = charge_to_battery
+                charge_to_battery = min(charge_to_battery, max_charge_to_battery_by_gridcap)
+                if unclamped_charge_to_battery - charge_to_battery > 1e-9:
+                    grid_import_cap_binding_events += 1
+                    grid_import_cap_limited_charge_kwh_total += (unclamped_charge_to_battery - charge_to_battery)
             if charge_to_battery > 0:
                 charging_grid_import = charge_to_battery / BATTERY_AC_CHARGE_EFF if BATTERY_AC_CHARGE_EFF > 0 else 0.0
                 energy = min(max_energy, energy + charge_to_battery)
@@ -3342,6 +3389,11 @@ def simulate_full_day_soc(
     flows_df.attrs["allow_injection_to_grid"] = allow_injection
     flows_df.attrs["export_blocked_by_policy"] = bool(not allow_injection)
     flows_df.attrs["blocked_export_kwh_total"] = float(blocked_export_kwh_total)
+    flows_df.attrs["max_grid_import_kw"] = float(max_grid_import_kw)
+    flows_df.attrs["grid_import_cap_active"] = bool(grid_import_cap_active)
+    flows_df.attrs["grid_import_cap_binding_events"] = int(grid_import_cap_binding_events)
+    flows_df.attrs["grid_import_cap_load_exceeds_events"] = int(grid_import_cap_load_exceeds_events)
+    flows_df.attrs["grid_import_cap_limited_charge_kwh_total"] = float(grid_import_cap_limited_charge_kwh_total)
     soc_series = pd.Series(pd.to_numeric(flows_df["soc_end_pct"], errors="coerce").fillna(0.0).values, index=tomorrow_idx, name="soc_percent")
     if ENABLE_INVARIANT_CHECKS:
         validate_flow_invariants(flows_df, "full_day")
