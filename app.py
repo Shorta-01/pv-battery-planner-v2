@@ -4363,6 +4363,7 @@ with left:
             save_settings_payload(current_settings_payload)
 
 if run_clicked:
+    st.session_state["_post_run_rerun_pending"] = False
     if settings_dirty:
         if not settings_valid:
             st.error(settings_error or "Could not save settings.")
@@ -4440,6 +4441,7 @@ if run_clicked:
             st.session_state["last_weather_ensemble_models_used"] = list(models_used)
             st.session_state["_fresh_weather_ensemble_debug"] = dbg if isinstance(dbg, dict) else {}
             st.session_state["_fresh_weather_ensemble_models_used"] = list(models_used)
+            st.session_state["_post_run_rerun_pending"] = True
             tomorrow = dt.date.fromisoformat(result["target_date"])
             weather_df = df_from_split(result["weather"])
             pv = df_from_split(result["pv"])
@@ -4779,3 +4781,7 @@ if run_clicked:
         if APP_DEBUG:
             with st.expander("Debug traceback", expanded=False):
                 st.code(traceback.format_exc())
+
+if st.session_state.get("_post_run_rerun_pending", False):
+    st.session_state["_post_run_rerun_pending"] = False
+    st.rerun()
