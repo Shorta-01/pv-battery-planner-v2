@@ -4366,7 +4366,42 @@ if run_clicked:
                 },
             )
             flush_ui_error_buffer()
-            result = run_response["result"]
+            result = (run_response or {}).get("result") or {}
+            status = str(result.get("status") or "").strip().lower()
+            warnings_raw = result.get("warnings")
+            warnings = [str(w).strip() for w in warnings_raw if str(w).strip()] if isinstance(warnings_raw, list) else []
+            try:
+                warnings_count = int(result.get("warnings_count") or 0)
+            except (TypeError, ValueError):
+                warnings_count = 0
+
+            if status and status not in {"ok", "degraded"}:
+                failure_lines = [
+                    "Forecast run failed.",
+                    "The backend returned a non-success status, so planning results were not rendered.",
+                ]
+                if warnings:
+                    failure_lines.append("Warnings:")
+                    failure_lines.extend([f"- {warning}" for warning in warnings])
+                elif warnings_count > 0:
+                    failure_lines.append(f"{warnings_count} warning(s) recorded.")
+
+                st.session_state["last_weather_ensemble_debug"] = {}
+                st.session_state["last_weather_ensemble_debug_at"] = None
+                st.session_state["last_weather_ensemble_models_used"] = []
+
+                st.error("\n".join(failure_lines))
+                st.stop()
+
+            if status == "degraded":
+                degraded_lines = ["Forecast completed with degraded quality."]
+                if warnings:
+                    degraded_lines.append("Warnings:")
+                    degraded_lines.extend([f"- {warning}" for warning in warnings])
+                elif warnings_count > 0:
+                    degraded_lines.append(f"{warnings_count} warning(s) recorded.")
+                st.warning("\n".join(degraded_lines))
+
             dbg = result.get("weather_ensemble")
             st.session_state["last_weather_ensemble_debug"] = dbg if isinstance(dbg, dict) else {}
             st.session_state["last_weather_ensemble_debug_at"] = dt.datetime.now(dt.UTC).isoformat()
