@@ -4393,6 +4393,7 @@ if run_clicked:
             flush_ui_error_buffer()
             result = (run_response or {}).get("result") or {}
             hard_stop, hard_stop_message, hard_stop_warnings = should_hard_stop(result)
+            status = str(result.get("status") or "").strip().lower()
             if hard_stop:
                 st.session_state["last_weather_ensemble_debug"] = {}
                 st.session_state["last_weather_ensemble_debug_at"] = None
@@ -4404,6 +4405,11 @@ if run_clicked:
                     failure_lines.extend([f"- {str(warning)}" for warning in hard_stop_warnings if str(warning).strip()])
                 st.error("\n".join(failure_lines))
                 st.stop()
+            elif hard_stop_message or status == "degraded":
+                warning_lines = [hard_stop_message] if hard_stop_message else ["Forecast completed with warnings"]
+                if hard_stop_warnings:
+                    warning_lines.extend([f"- {str(warning)}" for warning in hard_stop_warnings if str(warning).strip()])
+                st.warning("\n".join(warning_lines))
 
             dbg = result.get("weather_ensemble")
             st.session_state["last_weather_ensemble_debug"] = dbg if isinstance(dbg, dict) else {}
