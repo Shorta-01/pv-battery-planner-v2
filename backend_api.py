@@ -1137,6 +1137,7 @@ class BackendState:
                 fast_mode=bool(fast_mode),
                 requested_days=1,
                 use_satellite_nowcast_0_6h=effective_use_sat,
+                expert_mode=(mode == "expert"),
             )
         except RuntimeError as exc:
             if "All weather model requests failed" not in str(exc):
@@ -1222,6 +1223,7 @@ class BackendState:
                 fast_mode=False,
                 requested_days=7,
                 use_satellite_nowcast_0_6h=False,
+                expert_mode=False,
             )
         except Exception as exc:
             ensemble_week = None
@@ -1427,6 +1429,7 @@ class BackendState:
                     pv_uncertainty=False,
                     requested_days=1,
                     use_satellite_nowcast_0_6h=use_nowcast,
+                    expert_mode=False,
                 )
                 start_h = core._to_local_ts(now_local, tz).ceil("h")
                 end_h = core._to_local_ts(offpeak_start, tz).floor("h")
@@ -1781,6 +1784,11 @@ class BackendState:
                 "satellite_nowcast_hours": int(getattr(ensemble_tomorrow, "satellite_nowcast_hours", 0) or 0),
                 "satellite_nowcast_weight_factor": getattr(ensemble_tomorrow, "satellite_nowcast_weight_factor", None),
                 "satellite_nowcast_reason": getattr(ensemble_tomorrow, "satellite_nowcast_reason", None),
+                "day_type": getattr(ensemble_tomorrow, "day_type", None),
+                "weights_by_model": getattr(ensemble_tomorrow, "weights_by_model", None),
+                "nowcast_available": bool(getattr(ensemble_tomorrow, "nowcast_available", False)),
+                "nowcast_used_hours": int(getattr(ensemble_tomorrow, "nowcast_used_hours", 0) or 0),
+                "nowcast_blend_hours": int(getattr(ensemble_tomorrow, "nowcast_blend_hours", 0) or 0),
             },
             "provider_payloads_by_model": ((getattr(ensemble_tomorrow, "provider_payloads_by_model", {}) or {}) if store_provider_payloads else {}),
         }

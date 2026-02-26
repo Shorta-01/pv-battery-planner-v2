@@ -2249,12 +2249,14 @@ def estimate_pv_with_pvlib(
             )
             iam_modifier = pvlib.iam.ashrae(aoi, b=PV_IAM_ASHRAE_B)
             poa = (poa * pd.to_numeric(iam_modifier, errors="coerce").fillna(0.0).clip(lower=0.0, upper=1.0)).fillna(0.0)
-        temp_cell = pvlib.temperature.faiman(
+        temp_model_params = pvlib.temperature.TEMPERATURE_MODEL_PARAMETERS["sapm"]["close_mount_glass_glass"]
+        temp_cell = pvlib.temperature.sapm_cell(
             poa_global=poa,
             temp_air=temp_air,
             wind_speed=wind_speed,
-            u0=25.0,
-            u1=6.84,
+            a=float(temp_model_params["a"]),
+            b=float(temp_model_params["b"]),
+            deltaT=float(temp_model_params["deltaT"]),
         )
         dc_w = pvlib.pvsystem.pvwatts_dc(
             poa, pdc0=pdc0_kw * 1000.0, gamma_pdc=PV_GAMMA_PDC, temp_cell=temp_cell
