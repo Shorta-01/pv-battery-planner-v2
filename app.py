@@ -834,7 +834,7 @@ def render_weather_models(
     selected_models: list[str] = []
 
     st.markdown(
-        "<style>.wm-name{cursor:help}.wm-left{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.wm-badges{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;row-gap:4px}.wm-diag{font-size:.75rem;white-space:nowrap;color:#3a3a3a}.wm-diag .wm-pipe{opacity:.55}.wm-diag .wm-status{cursor:help}.pvbp-text-chip{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;padding:1px 8px;font-size:.72rem;font-weight:700;line-height:1.45;border:1px solid transparent;letter-spacing:.01em}.pvbp-text-chip-auto{background:#e8f0ff;border-color:#bfd5ff;color:#1f4ea3}.pvbp-text-chip-last-ok{background:#e9f8ee;border-color:#b9e8c5;color:#1f7a3d}.pvbp-text-chip-last-warn{background:#fff7e6;border-color:#ffe2ad;color:#8a6200}.pvbp-text-chip-last-fail{background:#fdeaea;border-color:#f6c0c0;color:#9e2c2c}</style>",
+        "<style>.wm-name{cursor:help}.wm-badges{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;row-gap:4px}.wm-health{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;margin-left:10px}.wm-health-badge{display:inline-flex;align-items:center;border:1px solid #d0d7de;border-radius:999px;padding:1px 7px;font-size:.70rem;font-weight:700;line-height:1.35;white-space:nowrap;background:#fff;color:#2f363d;cursor:help}.wm-health-label{margin-right:4px;opacity:.8}.pvbp-text-chip{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;padding:1px 8px;font-size:.72rem;font-weight:700;line-height:1.45;border:1px solid transparent;letter-spacing:.01em}.pvbp-text-chip-auto{background:#e8f0ff;border-color:#bfd5ff;color:#1f4ea3}.pvbp-text-chip-last-ok{background:#e9f8ee;border-color:#b9e8c5;color:#1f7a3d}.pvbp-text-chip-last-warn{background:#fff7e6;border-color:#ffe2ad;color:#8a6200}.pvbp-text-chip-last-fail{background:#fdeaea;border-color:#f6c0c0;color:#9e2c2c}</style>",
         unsafe_allow_html=True,
     )
 
@@ -843,7 +843,7 @@ def render_weather_models(
         if not model:
             continue
 
-        cols = st.columns([0.7, 3.0, 1.5], vertical_alignment="center")
+        cols = st.columns([0.7, 3.7, 1.5], vertical_alignment="center")
 
         with cols[0]:
             if show_checkboxes:
@@ -858,20 +858,23 @@ def render_weather_models(
                 checked = bool(auto_selected_models and model_id in auto_selected_models)
 
             fetch_status, fetch_tip, data_status, data_tip = weather_model_fetch_data_status(model_id, weather_ensemble)
-            diagnostics_html = (
-                "<span class='wm-diag'>"
-                f"Fetch <span class='wm-status' title='{_esc(fetch_tip)}'>{_esc(fetch_status)}</span> "
-                "<span class='wm-pipe'>|</span> "
-                f"Data <span class='wm-status' title='{_esc(data_tip)}'>{_esc(data_status)}</span>"
+            fetch_badge_html = (
+                f"<span class='wm-health-badge' title='{_esc(fetch_tip)}'>"
+                f"<span class='wm-health-label'>Fetch</span>{_esc(fetch_status)}"
                 "</span>"
             )
-            st.markdown(f"<div class='wm-left'>{diagnostics_html}</div>", unsafe_allow_html=True)
+            data_badge_html = (
+                f"<span class='wm-health-badge' title='{_esc(data_tip)}'>"
+                f"<span class='wm-health-label'>Data</span>{_esc(data_status)}"
+                "</span>"
+            )
 
         with cols[1]:
             label = str(model.get("label") or model_id)
             tip = WEATHER_MODEL_HOVERTEXT.get(model_id, "")
             st.markdown(
-                f"<span class='wm-name' title='{_esc(tip)}'><b>{_esc(label)}</b></span>",
+                f"<span class='wm-name' title='{_esc(tip)}'><b>{_esc(label)}</b></span>"
+                f"<span class='wm-health'>{fetch_badge_html}{data_badge_html}</span>",
                 unsafe_allow_html=True,
             )
 
