@@ -12,14 +12,14 @@ import weather_ensemble as we
 
 
 @pytest.mark.parametrize(
-    ("target_date", "expected_len"),
+    "target_date",
     [
-        (dt.date(2026, 3, 29), 23),
-        (dt.date(2026, 10, 25), 25),
-        (dt.date(2026, 6, 21), 24),
+        dt.date(2026, 3, 29),
+        dt.date(2026, 10, 25),
+        dt.date(2026, 6, 21),
     ],
 )
-def test_ensemble_output_matches_local_day_index(monkeypatch, target_date, expected_len):
+def test_ensemble_output_matches_local_day_index(monkeypatch, target_date):
     loc = core.Location(name="x", latitude=50.8, longitude=4.3)
     tz = "Europe/Brussels"
 
@@ -29,7 +29,25 @@ def test_ensemble_output_matches_local_day_index(monkeypatch, target_date, expec
         freq="h",
     )
 
-    def fake_weather(model_id, *_args, **_kwargs):
+    def fake_weather(
+        model_id,
+        _loc,
+        _tz,
+        _target_date,
+        *,
+        accuracy_mode=True,
+        fast_mode=False,
+        endpoint_override=None,
+        extra_params=None,
+        requested_days=1,
+    ):
+        assert isinstance(model_id, str)
+        assert isinstance(accuracy_mode, bool)
+        assert isinstance(fast_mode, bool)
+        assert endpoint_override is None or isinstance(endpoint_override, str)
+        assert extra_params is None or isinstance(extra_params, dict)
+        assert isinstance(requested_days, int)
+
         df = pd.DataFrame(
             {
                 "temp_air_c": [10.0] * len(idx_short),
@@ -50,8 +68,8 @@ def test_ensemble_output_matches_local_day_index(monkeypatch, target_date, expec
         fetch_meta = {
             "source": "test_mock",
             "cache_hit": False,
-            "requested_days": 1,
-            "horizon_days": 1,
+            "requested_days": requested_days,
+            "horizon_days": requested_days,
             "model_max_days": 1,
             "derived_irradiance_hours": 0,
         }
@@ -92,6 +110,11 @@ def test_ensemble_output_matches_local_day_index(monkeypatch, target_date, expec
 
     expected_index = we.local_day_hourly_index(target_date, tz)
 
-    assert len(expected_index) == expected_len
+    expected_lengths = {
+        dt.date(2026, 3, 29): 23,
+        dt.date(2026, 10, 25): 25,
+        dt.date(2026, 6, 21): 24,
+    }
+    assert len(expected_index) == expected_lengths[target_date]
     assert list(out.pv_ensemble_p50.index) == list(expected_index)
     assert list(out.weather_ensemble_table.df.index) == list(expected_index)
