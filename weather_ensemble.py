@@ -511,8 +511,9 @@ class EnsembleWeatherResult:
 
 def local_day_hourly_index(target_date: dt.date, tzname: str) -> pd.DatetimeIndex:
     """Return the canonical tz-aware hourly index for a local day."""
-    start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tzname)
-    end = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=1), dt.time(0, 0)), tz=tzname)
+    tz = ZoneInfo(str(tzname))
+    start = dt.datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0, tzinfo=tz)
+    end = start + dt.timedelta(days=1)
     return pd.date_range(start=start, end=end, freq="h", inclusive="left")
 
 
