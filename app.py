@@ -4362,44 +4362,47 @@ with left:
         else:
             save_settings_payload(current_settings_payload)
 
-if run_clicked:
+if run_clicked or st.session_state.get("last_run_result"):
     st.session_state["_post_run_rerun_pending"] = False
-    if settings_dirty:
-        if not settings_valid:
-            st.error(settings_error or "Could not save settings.")
-            st.stop()
-        ok = save_settings_payload(current_settings_payload, rerun=False)
-        if not ok:
-            st.stop()
-    st.session_state.last_soc = soc_percent
-    st.session_state.last_kwh = yesterday_kwh
     try:
-        with st.spinner("Calling backend and loading results..."):
-            api_put(
-                "/v1/inputs/last",
-                {
-                    "soc_now_percent": float(soc_percent),
-                    "soc_at_22_percent": float(soc_percent),
-                    "yesterday_consumption_kwh": float(yesterday_kwh),
-                },
-            )
-            run_response = api_post(
-                "/v1/run/now",
-                {
-                    "soc_now_percent": float(soc_percent),
-                    "soc_at_22_percent": float(soc_percent),
-                    "yesterday_consumption_kwh": float(yesterday_kwh),
-                    "buffer_percent": float(buffer_percent),
-                    "user_max_ac_kw": float(user_max_ac_kw),
-                    "weather_models": selected_models if forecast_mode == "expert" else None,
-                    "forecast_mode": forecast_mode,
-                    "use_satellite_nowcast_0_6h": bool(sat_nowcast_for_run),
-                    "ensemble_method": ensemble_method,
-                    "pv_uncertainty": True,
-                },
-            )
-            flush_ui_error_buffer()
-            result = (run_response or {}).get("result") or {}
+        result = st.session_state.get("last_run_result") or {}
+        hard_stop = False
+        if run_clicked:
+            if settings_dirty:
+                if not settings_valid:
+                    st.error(settings_error or "Could not save settings.")
+                    st.stop()
+                ok = save_settings_payload(current_settings_payload, rerun=False)
+                if not ok:
+                    st.stop()
+            st.session_state.last_soc = soc_percent
+            st.session_state.last_kwh = yesterday_kwh
+            with st.spinner("Calling backend and loading results..."):
+                api_put(
+                    "/v1/inputs/last",
+                    {
+                        "soc_now_percent": float(soc_percent),
+                        "soc_at_22_percent": float(soc_percent),
+                        "yesterday_consumption_kwh": float(yesterday_kwh),
+                    },
+                )
+                run_response = api_post(
+                    "/v1/run/now",
+                    {
+                        "soc_now_percent": float(soc_percent),
+                        "soc_at_22_percent": float(soc_percent),
+                        "yesterday_consumption_kwh": float(yesterday_kwh),
+                        "buffer_percent": float(buffer_percent),
+                        "user_max_ac_kw": float(user_max_ac_kw),
+                        "weather_models": selected_models if forecast_mode == "expert" else None,
+                        "forecast_mode": forecast_mode,
+                        "use_satellite_nowcast_0_6h": bool(sat_nowcast_for_run),
+                        "ensemble_method": ensemble_method,
+                        "pv_uncertainty": True,
+                    },
+                )
+                flush_ui_error_buffer()
+                result = (run_response or {}).get("result") or {}
             hard_stop, hard_stop_message, hard_stop_warnings = should_hard_stop(result)
             status = str(result.get("status") or "").strip().lower()
             if hard_stop:
@@ -4420,6 +4423,7 @@ if run_clicked:
                 if hard_stop_warnings:
                     failure_lines.append("Warnings:")
                     failure_lines.extend([f"- {str(warning)}" for warning in hard_stop_warnings if str(warning).strip()])
+                st.session_state["last_run_result"] = None
                 st.error("\n".join(failure_lines))
                 st.stop()
             elif hard_stop_message or status == "degraded":
@@ -4442,6 +4446,15 @@ if run_clicked:
             st.session_state["_fresh_weather_ensemble_debug"] = dbg if isinstance(dbg, dict) else {}
             st.session_state["_fresh_weather_ensemble_models_used"] = list(models_used)
             st.session_state["_post_run_rerun_pending"] = True
+            st.session_state["last_run_result"] = result
+            st.session_state["last_run_result_at"] = dt.datetime.now(dt.UTC).isoformat()
+        status = str(result.get("status") or "").strip().lower()
+        expected_keys = {"weather", "pv", "detail", "flows", "soc", "sunrise", "sunset", "target_date"}
+        if not isinstance(result, dict) or not expected_keys.issubset(result.keys()) or status not in {"ok", "degraded"}:
+            with right:
+                st.caption("Run forecast to see results.")
+            render_history_fragment()
+        else:
             tomorrow = dt.date.fromisoformat(result["target_date"])
             weather_df = df_from_split(result["weather"])
             pv = df_from_split(result["pv"])
