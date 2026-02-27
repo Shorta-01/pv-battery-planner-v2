@@ -23,7 +23,7 @@ import planner_core as core
 from config_accessors import get_inverter_ac_kw_limit
 from error_logging import classify_exception, format_exception_body
 from tariff_time import compute_offpeak_segments, make_summary_lines, parse_hhmm
-from ui_health import model_indicators, should_hard_stop
+from ui_health import compute_weather_health, should_hard_stop
 from ui_utils import (
     resolve_pv_outlook_savings,
     weather_code_to_icon as ui_weather_code_to_icon,
@@ -783,39 +783,6 @@ def last_run_status_badge(model_id: str) -> tuple[str | None, str]:
     return (None, "")
 
 
-def weather_model_fetch_data_status(model_id: str, weather_ensemble: dict | None) -> tuple[str, str, str, str]:
-    indicators = model_indicators(model_id, weather_ensemble)
-    fetch_map = {"ok": "✅", "fail": "❌", "na": "—"}
-    data_map = {"ok": "✅", "warn": "⚠️", "fail": "❌", "na": "—"}
-    fetch_state = str(indicators.get("fetch") or "na")
-    data_state = str(indicators.get("data") or "na")
-    default_tip = str(indicators.get("tooltip") or "")
-
-    fetch_tip = default_tip
-    if fetch_state == "fail" and weather_ensemble:
-        failed = weather_ensemble.get("failed_model_reasons") or {}
-        fetch_tip = str(failed.get(model_id) or default_tip)
-
-    data_tip = default_tip
-    if data_state == "warn" and weather_ensemble:
-        meta = (weather_ensemble.get("fetch_meta_by_model") or {}).get(model_id) or {}
-        missing_overlap = int(meta.get("missing_hours_overlap") or 0)
-        missing_vars = (weather_ensemble.get("missing_vars_by_model") or {}).get(model_id) or []
-        pv_critical = {
-            "shortwave_radiation",
-            "direct_normal_irradiance",
-            "diffuse_radiation",
-        }
-        pv_missing = [v for v in missing_vars if v in pv_critical]
-        data_tip = f"missing_hours_overlap={missing_overlap}; pv_missing={pv_missing}"
-
-    return (
-        fetch_map.get(fetch_state, "—"),
-        fetch_tip,
-        data_map.get(data_state, "—"),
-        data_tip,
-    )
-
 
 def render_weather_models(
     weather_models_catalog: list[dict],
@@ -828,13 +795,12 @@ def render_weather_models(
     show_auto_chips: bool = False,
     show_checkboxes: bool = True,
     show_capability_badges: bool = True,
-    weather_ensemble: dict | None = None,
 ) -> list[str]:
     model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
     selected_models: list[str] = []
 
     st.markdown(
-        "<style>.wm-name{cursor:help}.wm-badges{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;row-gap:4px}.wm-health{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;margin-left:10px}.wm-health-badge{display:inline-flex;align-items:center;border:1px solid #d0d7de;border-radius:999px;padding:1px 7px;font-size:.70rem;font-weight:700;line-height:1.35;white-space:nowrap;background:#fff;color:#2f363d;cursor:help}.wm-health-label{margin-right:4px;opacity:.8}.pvbp-text-chip{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;padding:1px 8px;font-size:.72rem;font-weight:700;line-height:1.45;border:1px solid transparent;letter-spacing:.01em}.pvbp-text-chip-auto{background:#e8f0ff;border-color:#bfd5ff;color:#1f4ea3}.pvbp-text-chip-last-ok{background:#e9f8ee;border-color:#b9e8c5;color:#1f7a3d}.pvbp-text-chip-last-warn{background:#fff7e6;border-color:#ffe2ad;color:#8a6200}.pvbp-text-chip-last-fail{background:#fdeaea;border-color:#f6c0c0;color:#9e2c2c}</style>",
+        "<style>.wm-name{cursor:help}.wm-badges{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;row-gap:4px}.pvbp-text-chip{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;padding:1px 8px;font-size:.72rem;font-weight:700;line-height:1.45;border:1px solid transparent;letter-spacing:.01em}.pvbp-text-chip-auto{background:#e8f0ff;border-color:#bfd5ff;color:#1f4ea3}.pvbp-text-chip-last-ok{background:#e9f8ee;border-color:#b9e8c5;color:#1f7a3d}.pvbp-text-chip-last-warn{background:#fff7e6;border-color:#ffe2ad;color:#8a6200}.pvbp-text-chip-last-fail{background:#fdeaea;border-color:#f6c0c0;color:#9e2c2c}</style>",
         unsafe_allow_html=True,
     )
 
@@ -857,24 +823,11 @@ def render_weather_models(
             else:
                 checked = bool(auto_selected_models and model_id in auto_selected_models)
 
-            fetch_status, fetch_tip, data_status, data_tip = weather_model_fetch_data_status(model_id, weather_ensemble)
-            fetch_badge_html = (
-                f"<span class='wm-health-badge' title='{_esc(fetch_tip)}'>"
-                f"<span class='wm-health-label'>Fetch</span>{_esc(fetch_status)}"
-                "</span>"
-            )
-            data_badge_html = (
-                f"<span class='wm-health-badge' title='{_esc(data_tip)}'>"
-                f"<span class='wm-health-label'>Data</span>{_esc(data_status)}"
-                "</span>"
-            )
-
         with cols[1]:
             label = str(model.get("label") or model_id)
             tip = WEATHER_MODEL_HOVERTEXT.get(model_id, "")
             st.markdown(
-                f"<span class='wm-name' title='{_esc(tip)}'><b>{_esc(label)}</b></span>"
-                f"<span class='wm-health'>{fetch_badge_html}{data_badge_html}</span>",
+                f"<span class='wm-name' title='{_esc(tip)}'><b>{_esc(label)}</b></span>",
                 unsafe_allow_html=True,
             )
 
@@ -1850,6 +1803,9 @@ def render_offpeak_plan_summary(
     detail_df: pd.DataFrame | None = None,
     soc_series: pd.Series | None = None,
     pv_quality_dict: dict | None = None,
+    weather_ensemble: dict | None = None,
+    forecast_status: str = "",
+    attempted_models: list[str] | None = None,
 ) -> None:
     del data_source, user_cap_kw, inverter_ac_kw_limit, battery_max_charge_kw, hard_limit_kw
     del min_soc_pct, max_cutoff_soc_pct, est_grid_import_expensive_kwh, detail_df, soc_series
@@ -1901,6 +1857,18 @@ def render_offpeak_plan_summary(
     confidence_icon_html = _pv_quality_signal_html(confidence_icon_label, confidence_icon_color, confidence_tooltip)
     savings_html = _build_cycle_savings_html(pv_quality_dict=pv_quality_dict, planning_metrics=metrics)
 
+    weather_level, weather_tip = compute_weather_health(
+        weather_ensemble,
+        status=forecast_status,
+        attempted_models=attempted_models,
+    )
+    weather_icon = {"ok": "✅", "warn": "⚠️", "fail": "❌"}.get(weather_level)
+    weather_status_html = (
+        f"<span title=\"{_esc_attr(weather_tip)}\" style='font-size:1.00rem;cursor:help;line-height:1;'>{weather_icon}</span>"
+        if weather_icon
+        else ""
+    )
+
 
     container.markdown(
         (
@@ -1909,7 +1877,7 @@ def render_offpeak_plan_summary(
             "<div style='display:flex;flex-direction:column;gap:0.56rem;'>"
             "<div style='display:flex;align-items:center;justify-content:space-between;gap:0.45rem;'>"
             "<div style='font-size:0.90rem;font-weight:760;letter-spacing:0.01em;opacity:0.96;'>Set These Values in Fusion Solar Now</div>"
-            f"<div style='display:inline-flex;align-items:center;'>{confidence_icon_html}</div>"
+            f"<div style='display:inline-flex;align-items:center;gap:0.42rem;'>{weather_status_html}{confidence_icon_html}</div>"
             "</div>"
             "<div style='display:grid;grid-template-columns:1fr 1fr;gap:0.60rem;'>"
             "<div style='border:1px solid rgba(255,255,255,0.10);border-radius:12px;padding:0.54rem 0.58rem;"
@@ -3899,13 +3867,6 @@ with left:
                 auto_selected = set(auto_select_models_for_location(wm_latitude, wm_longitude, requested_days=1)) & available_ids
                 if not auto_selected:
                     auto_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
-                fresh_dbg = st.session_state.get("_fresh_weather_ensemble_debug") or {}
-                fresh_used = set(st.session_state.get("_fresh_weather_ensemble_models_used", []) or [])
-                dbg = fresh_dbg if fresh_dbg else (st.session_state.get("last_weather_ensemble_debug") or {})
-                used = fresh_used if fresh_used else set(st.session_state.get("last_weather_ensemble_models_used", []) or [])
-                has_last_run = bool(dbg or used)
-                weather_ensemble = dbg if has_last_run else None
-                used_models = used if has_last_run else set()
 
                 if forecast_mode == "auto":
                     _ = render_weather_models(
@@ -3913,12 +3874,10 @@ with left:
                         auto_selected,
                         widget_key_prefix="wm_auto",
                         disabled=True,
-                        used_models=used_models,
                         auto_selected_models=auto_selected,
                         show_auto_chips=True,
                         show_checkboxes=False,
                         show_capability_badges=True,
-                        weather_ensemble=weather_ensemble,
                     )
                     selected_models = []
                     sat_nowcast_for_run = should_use_satellite_nowcast_auto(
@@ -3942,11 +3901,9 @@ with left:
                         weather_models_catalog,
                         initial_selected,
                         widget_key_prefix="wm",
-                        used_models=used_models,
                         show_auto_chips=False,
                         show_checkboxes=True,
                         show_capability_badges=True,
-                        weather_ensemble=weather_ensemble,
                     )
                     sat_nowcast_ui = st.checkbox(
                         "Use satellite nowcast for the next 0–6 hours",
@@ -3956,8 +3913,6 @@ with left:
                     )
                     sat_nowcast_for_run = bool(sat_nowcast_ui)
 
-                st.session_state.pop("_fresh_weather_ensemble_debug", None)
-                st.session_state.pop("_fresh_weather_ensemble_models_used", None)
 
         return forecast_mode, selected_models, sat_nowcast_for_run
 
@@ -4363,7 +4318,6 @@ with left:
             save_settings_payload(current_settings_payload)
 
 if run_clicked or st.session_state.get("last_run_result"):
-    st.session_state["_post_run_rerun_pending"] = False
     try:
         result = st.session_state.get("last_run_result") or {}
         hard_stop = False
@@ -4416,8 +4370,6 @@ if run_clicked or st.session_state.get("last_run_result"):
                     or []
                 )
                 st.session_state["last_weather_ensemble_models_used"] = list(models_used)
-                st.session_state["_fresh_weather_ensemble_debug"] = dbg if isinstance(dbg, dict) else {}
-                st.session_state["_fresh_weather_ensemble_models_used"] = list(models_used)
 
                 failure_lines = [hard_stop_message, "Please verify your weather configuration and retry the forecast."]
                 if hard_stop_warnings:
@@ -4443,9 +4395,6 @@ if run_clicked or st.session_state.get("last_run_result"):
             )
             st.session_state["last_forecast_mode"] = forecast_mode
             st.session_state["last_weather_ensemble_models_used"] = list(models_used)
-            st.session_state["_fresh_weather_ensemble_debug"] = dbg if isinstance(dbg, dict) else {}
-            st.session_state["_fresh_weather_ensemble_models_used"] = list(models_used)
-            st.session_state["_post_run_rerun_pending"] = True
             st.session_state["last_run_result"] = result
             st.session_state["last_run_result_at"] = dt.datetime.now(dt.UTC).isoformat()
         status = str(result.get("status") or "").strip().lower()
@@ -4538,6 +4487,12 @@ if run_clicked or st.session_state.get("last_run_result"):
                     detail_df=detail_df,
                     soc_series=soc_series,
                     pv_quality_dict=pv_quality,
+                    weather_ensemble=(result.get("weather_ensemble") if isinstance(result.get("weather_ensemble"), dict) else None),
+                    forecast_status=str(result.get("status") or ""),
+                    attempted_models=(
+                        result.get("tomorrow_models_used")
+                        or ((result.get("weather_ensemble") or {}).get("selected_models") if isinstance(result.get("weather_ensemble"), dict) else None)
+                    ),
                 )
             with top_right:
                 render_pv_quality_widget(
@@ -4795,6 +4750,3 @@ if run_clicked or st.session_state.get("last_run_result"):
             with st.expander("Debug traceback", expanded=False):
                 st.code(traceback.format_exc())
 
-if st.session_state.get("_post_run_rerun_pending", False):
-    st.session_state["_post_run_rerun_pending"] = False
-    st.rerun()
