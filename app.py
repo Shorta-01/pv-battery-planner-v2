@@ -1501,6 +1501,10 @@ def _build_cycle_savings_html(
         history_debug_mode = st.session_state.get("history_mode", "Simple") == "Debug"
         show_savings_diagnostics = bool(APP_DEBUG or history_debug_mode)
 
+    diag_grid_only_cycle = _safe_float((pv_quality_dict or {}).get("grid_only_cost_eur_cycle"), None)
+    diag_isystem_cash_cycle = _safe_float((pv_quality_dict or {}).get("isystem_cost_eur_cycle_cash"), None)
+    diag_isystem_cycle = _safe_float((pv_quality_dict or {}).get("isystem_cost_eur_cycle"), None)
+    diag_benefit_cycle = _safe_float((pv_quality_dict or {}).get("benefit_vs_grid_only_eur_cycle"), None)
     diag_baseline_cycle = _safe_float((pv_quality_dict or {}).get("baseline_cost_eur_cycle"), 0.0)
     diag_plan_cash_cycle = _safe_float((pv_quality_dict or {}).get("plan_cost_eur_cycle_cash"), 0.0)
     diag_terminal_cycle = _safe_float((pv_quality_dict or {}).get("terminal_battery_value_eur_cycle"), 0.0)
@@ -1509,21 +1513,37 @@ def _build_cycle_savings_html(
     diag_cycle_start_soc = _safe_float((pv_quality_dict or {}).get("cycle_start_soc_pct"), 0.0)
     diag_cycle_end_soc = _safe_float((pv_quality_dict or {}).get("cycle_end_soc_pct"), 0.0)
     diag_cycle_delta_soc = _safe_float((pv_quality_dict or {}).get("cycle_soc_delta_pct"), 0.0)
+    has_new_diag = all(v is not None for v in [diag_grid_only_cycle, diag_isystem_cash_cycle, diag_isystem_cycle, diag_benefit_cycle])
     savings_diag_html = ""
     if show_savings_diagnostics:
-        savings_diag_html = (
-            "<details style='margin-top:0.35rem;'>"
-            "<summary style='font-size:0.70rem;cursor:pointer;opacity:0.86;'>€ Savings diagnostics</summary>"
-            "<div style='margin-top:0.25rem;font-size:0.68rem;opacity:0.82;line-height:1.35;'>"
-            f"<div>Baseline (cycle): €{diag_baseline_cycle:.2f}</div>"
-            f"<div>Plan cash (cycle): €{diag_plan_cash_cycle:.2f}</div>"
-            f"<div>Terminal battery value: €{diag_terminal_cycle:.2f}</div>"
-            f"<div>Plan adjusted (cycle): €{diag_plan_adjusted_cycle:.2f}</div>"
-            f"<div>Savings (cycle): €{diag_savings_cycle:.2f}</div>"
-            f"<div>Start SOC / End SOC / ΔSOC: {diag_cycle_start_soc:.1f}% / {diag_cycle_end_soc:.1f}% / {diag_cycle_delta_soc:+.1f}%</div>"
-            "</div>"
-            "</details>"
-        )
+        if has_new_diag:
+            savings_diag_html = (
+                "<details style='margin-top:0.35rem;'>"
+                "<summary style='font-size:0.70rem;cursor:pointer;opacity:0.86;'>€ Savings diagnostics</summary>"
+                "<div style='margin-top:0.25rem;font-size:0.68rem;opacity:0.82;line-height:1.35;'>"
+                f"<div>Grid only (cycle): €{float(diag_grid_only_cycle):.2f}</div>"
+                f"<div>iSystem cash (cycle): €{float(diag_isystem_cash_cycle):.2f}</div>"
+                f"<div>Terminal battery value: €{diag_terminal_cycle:.2f}</div>"
+                f"<div>iSystem (cycle): €{float(diag_isystem_cycle):.2f}</div>"
+                f"<div>Savings (Grid only − iSystem) (cycle): €{float(diag_benefit_cycle):.2f}</div>"
+                f"<div>Start SOC / End SOC / ΔSOC: {diag_cycle_start_soc:.1f}% / {diag_cycle_end_soc:.1f}% / {diag_cycle_delta_soc:+.1f}%</div>"
+                "</div>"
+                "</details>"
+            )
+        else:
+            savings_diag_html = (
+                "<details style='margin-top:0.35rem;'>"
+                "<summary style='font-size:0.70rem;cursor:pointer;opacity:0.86;'>€ Savings diagnostics</summary>"
+                "<div style='margin-top:0.25rem;font-size:0.68rem;opacity:0.82;line-height:1.35;'>"
+                f"<div>Baseline (cycle): €{diag_baseline_cycle:.2f}</div>"
+                f"<div>Plan cash (cycle): €{diag_plan_cash_cycle:.2f}</div>"
+                f"<div>Terminal battery value: €{diag_terminal_cycle:.2f}</div>"
+                f"<div>Plan adjusted (cycle): €{diag_plan_adjusted_cycle:.2f}</div>"
+                f"<div>Savings (cycle): €{diag_savings_cycle:.2f}</div>"
+                f"<div>Start SOC / End SOC / ΔSOC: {diag_cycle_start_soc:.1f}% / {diag_cycle_end_soc:.1f}% / {diag_cycle_delta_soc:+.1f}%</div>"
+                "</div>"
+                "</details>"
+            )
     if s is not None and base_cost is not None and plan_cost is not None:
         s = float(s)
         pill_color = "#52b788" if s >= 0 else "#d62828"
