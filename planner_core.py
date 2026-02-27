@@ -1290,9 +1290,7 @@ def build_cycle_hourly_load_series(
 ) -> "pd.Series":
     cfg = tariff_cfg or DEFAULT_CONFIG["tariff"]
     cycle_start, _ = compute_charging_window_for_target_date(target_date, cfg)
-    next_cycle_start, _ = compute_charging_window_for_target_date(target_date + dt.timedelta(days=1), cfg)
-    if next_cycle_start <= cycle_start:
-        next_cycle_start = cycle_start + dt.timedelta(hours=24)
+    next_cycle_start = cycle_start + dt.timedelta(hours=24)
 
     cycle_idx = pd.date_range(cycle_start, next_cycle_start, freq="h", inclusive="left", tz=TIMEZONE)
     cycle_loads = build_hourly_load_series(cycle_idx, total_consumption_kwh)
@@ -1403,7 +1401,7 @@ def compute_euro_savings_no_battery_vs_plan(
     tariff_cfg: dict,
 ) -> dict:
     """
-    Returns cycle totals (off-peak start -> next off-peak start), plus tomorrow detail.
+    Returns cycle totals for a fixed 24h operational horizon from off-peak start, plus tomorrow detail.
     """
     inj = float(tariff_cfg.get("injection_grid_price_eur_per_kwh", 0.0))
 
@@ -1412,13 +1410,12 @@ def compute_euro_savings_no_battery_vs_plan(
 
     idx_tomorrow = pd.date_range(tomorrow_start, tomorrow_end, freq="h", inclusive="left", tz=TIMEZONE)
     window_start, window_end = compute_charging_window_for_target_date(tomorrow_date, tariff_cfg)
-    next_window_start, _ = compute_charging_window_for_target_date(tomorrow_date + dt.timedelta(days=1), tariff_cfg)
     cycle_start = window_start
-    cycle_end = next_window_start
-    if cycle_end <= cycle_start:
-        cycle_end = cycle_start + dt.timedelta(hours=24)
+    cycle_end = cycle_start + dt.timedelta(hours=24)
 
     idx_cycle = pd.date_range(cycle_start, cycle_end, freq="h", inclusive="left", tz=TIMEZONE)
+    if ENABLE_INVARIANT_CHECKS:
+        assert len(idx_cycle) == 24, "Cycle horizon must always span 24 hourly slots."
 
     pv_baseline_col_used = "pv_total_decision_kwh" if "pv_total_decision_kwh" in pv_df.columns else "pv_total_kwh"
     pv_plan_col_used = "pv_total_decision_kwh" if "pv_total_decision_kwh" in pv_df.columns else "pv_total_kwh"
