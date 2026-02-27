@@ -1,0 +1,975 @@
+==============================================================================================================
+STEP 3 COMPACT AUDIT — Consumption chain proof
+==============================================================================================================
+
+==============================================================================================================
+planner_core.py — function build_consumption_forecast  (lines 1321..1340)
+==============================================================================================================
+planner_core.py:1321: def build_consumption_forecast(
+planner_core.py:1322:     profile_kwh_per_hour: list[float],
+planner_core.py:1323:     total_kwh: float,
+planner_core.py:1324:     target_date: dt.date,
+planner_core.py:1325:     tz: str,
+planner_core.py:1326: ) -> "pd.Series":
+planner_core.py:1327:     """Build a 24h consumption series for target_date using a supplied profile."""
+planner_core.py:1328:     if len(profile_kwh_per_hour) != 24:
+planner_core.py:1329:         raise ValueError("profile_kwh_per_hour must contain 24 values.")
+planner_core.py:1330:     profile = [float(v) for v in profile_kwh_per_hour]
+planner_core.py:1331:     profile_sum = float(sum(profile))
+planner_core.py:1332:     if profile_sum <= 0:
+planner_core.py:1333:         raise ValueError("profile_kwh_per_hour must have a positive sum.")
+planner_core.py:1334: 
+planner_core.py:1335:     start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz)
+planner_core.py:1336:     end = start + dt.timedelta(days=1)
+planner_core.py:1337:     idx = pd.date_range(start, end, freq="h", inclusive="left")
+planner_core.py:1338:     normalized = [v / profile_sum for v in profile]
+planner_core.py:1339:     values = [float(total_kwh) * normalized[ts.hour] for ts in idx]
+planner_core.py:1340:     return pd.Series(values, index=idx, dtype=float)
+
+planner_core.py: function load_consumption_profile NOT FOUND
+
+==============================================================================================================
+planner_core.py — function build_hourly_load_series  (lines 1275..1283)
+==============================================================================================================
+planner_core.py:1275: def build_hourly_load_series(index: "pd.DatetimeIndex", total_kwh: float) -> "pd.Series":
+planner_core.py:1276:     loads = hourly_load_kwh(total_kwh)
+planner_core.py:1277:     base = pd.Series([loads[t.hour] for t in index], index=index, dtype=float)
+planner_core.py:1278:     dt_h = timestep_hours(index)
+planner_core.py:1279:     weighted = base * dt_h
+planner_core.py:1280:     wsum = float(weighted.sum())
+planner_core.py:1281:     if wsum <= 0:
+planner_core.py:1282:         return pd.Series(0.0, index=index, dtype=float)
+planner_core.py:1283:     return weighted * (total_kwh / wsum)
+
+==============================================================================================================
+planner_core.py — function build_cycle_hourly_load_series  (lines 1286..1307)
+==============================================================================================================
+planner_core.py:1286: def build_cycle_hourly_load_series(
+planner_core.py:1287:     target_date: dt.date,
+planner_core.py:1288:     total_consumption_kwh: float,
+planner_core.py:1289:     tariff_cfg: Optional[dict] = None,
+planner_core.py:1290: ) -> "pd.Series":
+planner_core.py:1291:     cfg = tariff_cfg or DEFAULT_CONFIG["tariff"]
+planner_core.py:1292:     cycle_start, _ = compute_charging_window_for_target_date(target_date, cfg)
+planner_core.py:1293:     next_cycle_start, _ = compute_charging_window_for_target_date(target_date + dt.timedelta(days=1), cfg)
+planner_core.py:1294:     if next_cycle_start <= cycle_start:
+planner_core.py:1295:         next_cycle_start = cycle_start + dt.timedelta(hours=24)
+planner_core.py:1296: 
+planner_core.py:1297:     cycle_idx = pd.date_range(cycle_start, next_cycle_start, freq="h", inclusive="left", tz=TIMEZONE)
+planner_core.py:1298:     cycle_loads = build_hourly_load_series(cycle_idx, total_consumption_kwh)
+planner_core.py:1299: 
+planner_core.py:1300:     if ENABLE_INVARIANT_CHECKS:
+planner_core.py:1301:         cycle_total = float(cycle_loads.sum())
+planner_core.py:1302:         if abs(cycle_total - float(total_consumption_kwh)) > 1e-6:
+planner_core.py:1303:             raise ValueError(
+planner_core.py:1304:                 "Cycle load normalization mismatch: "
+planner_core.py:1305:                 f"sum={cycle_total:.9f} expected={float(total_consumption_kwh):.9f}"
+planner_core.py:1306:             )
+planner_core.py:1307:     return cycle_loads
+
+==============================================================================================================
+planner_core.py — critical risk/check lines (context)
+==============================================================================================================
+
+--- pattern: Cycle load normalization mismatch (showing 1 hits, max 8) ---
+   planner_core.py:1298:     cycle_loads = build_hourly_load_series(cycle_idx, total_consumption_kwh)
+   planner_core.py:1299: 
+   planner_core.py:1300:     if ENABLE_INVARIANT_CHECKS:
+   planner_core.py:1301:         cycle_total = float(cycle_loads.sum())
+   planner_core.py:1302:         if abs(cycle_total - float(total_consumption_kwh)) > 1e-6:
+   planner_core.py:1303:             raise ValueError(
+>> planner_core.py:1304:                 "Cycle load normalization mismatch: "
+   planner_core.py:1305:                 f"sum={cycle_total:.9f} expected={float(total_consumption_kwh):.9f}"
+   planner_core.py:1306:             )
+   planner_core.py:1307:     return cycle_loads
+   planner_core.py:1308: 
+   planner_core.py:1309: 
+   planner_core.py:1310: def load_consumption_profile_kwh_per_hour() -> list[float]:
+   planner_core.py:1311:     """Return a normalized 24h load profile for backward compatibility."""
+   planner_core.py:1312:     if len(LOAD_PROFILE) != 24:
+   planner_core.py:1313:         raise ValueError("LOAD_PROFILE must have 24 values.")
+   planner_core.py:1314:     profile = [float(v) for v in LOAD_PROFILE]
+   planner_core.py:1315:     total = float(sum(profile))
+   planner_core.py:1316:     if total <= 0:
+
+--- pattern: Cycle load total does not match (showing 1 hits, max 8) ---
+   planner_core.py:3208: 
+   planner_core.py:3209:     if ENABLE_INVARIANT_CHECKS:
+   planner_core.py:3210:         load_cycle_total_kwh = float(cycle_loads.sum())
+   planner_core.py:3211:         load_night_kwh = float(night_loads.sum())
+   planner_core.py:3212:         load_day_kwh = float(loads.sum())
+   planner_core.py:3213:         if abs(load_cycle_total_kwh - float(total_consumption_kwh)) > 1e-6:
+>> planner_core.py:3214:             raise ValueError("Cycle load total does not match target consumption.")
+   planner_core.py:3215:         if abs((load_night_kwh + load_day_kwh) - float(total_consumption_kwh)) > 1e-6:
+   planner_core.py:3216:             raise ValueError("Night + day load total does not match target consumption.")
+   planner_core.py:3217: 
+   planner_core.py:3218:     energy = max(0.0, min(1.0, soc_day_start)) * BATTERY_KWH
+   planner_core.py:3219:     min_energy = MIN_SOC * BATTERY_KWH
+   planner_core.py:3220:     max_energy = MAX_CUTOFF_SOC * BATTERY_KWH
+   planner_core.py:3221:     charge_cutoff_energy = min(MAX_CUTOFF_SOC, max(MIN_SOC, cutoff_soc)) * BATTERY_KWH
+   planner_core.py:3222: 
+   planner_core.py:3223:     rows = []
+   planner_core.py:3224:     econ_eps = 1e-6
+   planner_core.py:3225:     econ_cfg = cfg if isinstance(cfg, dict) else {}
+   planner_core.py:3226:     inj_raw = econ_cfg.get("injection_grid_price_eur_per_kwh")
+
+--- pattern: night_loads|day_idx|cycle_loads (showing 8 hits, max 8) ---
+   planner_core.py:287:     m = int(mm)
+   planner_core.py:288:     if not (0 <= h <= 23 and 0 <= m <= 59):
+   planner_core.py:289:         raise ValueError(f"Invalid time '{value}' (hour 00-23, minute 00-59).")
+   planner_core.py:290: 
+   planner_core.py:291: 
+   planner_core.py:292: def parse_offpeak_windows_by_dow(value) -> dict[int, list[tuple[str, str]]]:
+>> planner_core.py:293:     def parse_day_windows(day_idx: int, day_value) -> list[tuple[str, str]]:
+   planner_core.py:294:         if not isinstance(day_value, list):
+   planner_core.py:295:             raise ValueError(f"Invalid tariff windows for {DAY_NAMES[day_idx]} (day index {day_idx}): {day_value!r}")
+   planner_core.py:296:         parsed_windows: list[tuple[str, str]] = []
+   planner_core.py:297:         for window in day_value:
+   planner_core.py:298:             if not (isinstance(window, (list, tuple)) and len(window) == 2):
+   planner_core.py:299:                 raise ValueError(
+   planner_core.py:300:                     f"Invalid window for {DAY_NAMES[day_idx]} (day index {day_idx}): {window!r}. "
+   planner_core.py:301:                     "Expected [start, end]."
+   planner_core.py:302:                 )
+   planner_core.py:303:             start, end = window
+   planner_core.py:304:             _validate_time_hhmm(start, allow_2400_end=False)
+   planner_core.py:305:             _validate_time_hhmm(end, allow_2400_end=True)
+   planner_core.py:289:         raise ValueError(f"Invalid time '{value}' (hour 00-23, minute 00-59).")
+   planner_core.py:290: 
+   planner_core.py:291: 
+   planner_core.py:292: def parse_offpeak_windows_by_dow(value) -> dict[int, list[tuple[str, str]]]:
+   planner_core.py:293:     def parse_day_windows(day_idx: int, day_value) -> list[tuple[str, str]]:
+   planner_core.py:294:         if not isinstance(day_value, list):
+>> planner_core.py:295:             raise ValueError(f"Invalid tariff windows for {DAY_NAMES[day_idx]} (day index {day_idx}): {day_value!r}")
+   planner_core.py:296:         parsed_windows: list[tuple[str, str]] = []
+   planner_core.py:297:         for window in day_value:
+   planner_core.py:298:             if not (isinstance(window, (list, tuple)) and len(window) == 2):
+   planner_core.py:299:                 raise ValueError(
+   planner_core.py:300:                     f"Invalid window for {DAY_NAMES[day_idx]} (day index {day_idx}): {window!r}. "
+   planner_core.py:301:                     "Expected [start, end]."
+   planner_core.py:302:                 )
+   planner_core.py:303:             start, end = window
+   planner_core.py:304:             _validate_time_hhmm(start, allow_2400_end=False)
+   planner_core.py:305:             _validate_time_hhmm(end, allow_2400_end=True)
+   planner_core.py:306:             if start == end:
+   planner_core.py:307:                 raise ValueError(
+   planner_core.py:294:         if not isinstance(day_value, list):
+   planner_core.py:295:             raise ValueError(f"Invalid tariff windows for {DAY_NAMES[day_idx]} (day index {day_idx}): {day_value!r}")
+   planner_core.py:296:         parsed_windows: list[tuple[str, str]] = []
+   planner_core.py:297:         for window in day_value:
+   planner_core.py:298:             if not (isinstance(window, (list, tuple)) and len(window) == 2):
+   planner_core.py:299:                 raise ValueError(
+>> planner_core.py:300:                     f"Invalid window for {DAY_NAMES[day_idx]} (day index {day_idx}): {window!r}. "
+   planner_core.py:301:                     "Expected [start, end]."
+   planner_core.py:302:                 )
+   planner_core.py:303:             start, end = window
+   planner_core.py:304:             _validate_time_hhmm(start, allow_2400_end=False)
+   planner_core.py:305:             _validate_time_hhmm(end, allow_2400_end=True)
+   planner_core.py:306:             if start == end:
+   planner_core.py:307:                 raise ValueError(
+   planner_core.py:308:                     f"Invalid window for {DAY_NAMES[day_idx]} (day index {day_idx}): {window!r}. "
+   planner_core.py:309:                     "Start and end cannot be the same."
+   planner_core.py:310:                 )
+   planner_core.py:311:             parsed_windows.append((start, end))
+   planner_core.py:312:         return parsed_windows
+   planner_core.py:302:                 )
+   planner_core.py:303:             start, end = window
+   planner_core.py:304:             _validate_time_hhmm(start, allow_2400_end=False)
+   planner_core.py:305:             _validate_time_hhmm(end, allow_2400_end=True)
+   planner_core.py:306:             if start == end:
+   planner_core.py:307:                 raise ValueError(
+>> planner_core.py:308:                     f"Invalid window for {DAY_NAMES[day_idx]} (day index {day_idx}): {window!r}. "
+   planner_core.py:309:                     "Start and end cannot be the same."
+   planner_core.py:310:                 )
+   planner_core.py:311:             parsed_windows.append((start, end))
+   planner_core.py:312:         return parsed_windows
+   planner_core.py:313: 
+   planner_core.py:314:     by_day: dict[int, list[tuple[str, str]]] = {}
+   planner_core.py:315:     if isinstance(value, list):
+   planner_core.py:316:         if len(value) != 7:
+   planner_core.py:317:             raise ValueError(f"tariff.offpeak_windows_by_dow must contain 7 days, got {len(value)}.")
+   planner_core.py:318:         for i, day_windows in enumerate(value):
+   planner_core.py:319:             by_day[i] = parse_day_windows(i, day_windows)
+   planner_core.py:320:     elif isinstance(value, dict):
+   planner_core.py:1292:     cycle_start, _ = compute_charging_window_for_target_date(target_date, cfg)
+   planner_core.py:1293:     next_cycle_start, _ = compute_charging_window_for_target_date(target_date + dt.timedelta(days=1), cfg)
+   planner_core.py:1294:     if next_cycle_start <= cycle_start:
+   planner_core.py:1295:         next_cycle_start = cycle_start + dt.timedelta(hours=24)
+   planner_core.py:1296: 
+   planner_core.py:1297:     cycle_idx = pd.date_range(cycle_start, next_cycle_start, freq="h", inclusive="left", tz=TIMEZONE)
+>> planner_core.py:1298:     cycle_loads = build_hourly_load_series(cycle_idx, total_consumption_kwh)
+   planner_core.py:1299: 
+   planner_core.py:1300:     if ENABLE_INVARIANT_CHECKS:
+   planner_core.py:1301:         cycle_total = float(cycle_loads.sum())
+   planner_core.py:1302:         if abs(cycle_total - float(total_consumption_kwh)) > 1e-6:
+   planner_core.py:1303:             raise ValueError(
+   planner_core.py:1304:                 "Cycle load normalization mismatch: "
+   planner_core.py:1305:                 f"sum={cycle_total:.9f} expected={float(total_consumption_kwh):.9f}"
+   planner_core.py:1306:             )
+   planner_core.py:1307:     return cycle_loads
+   planner_core.py:1308: 
+   planner_core.py:1309: 
+   planner_core.py:1310: def load_consumption_profile_kwh_per_hour() -> list[float]:
+   planner_core.py:1295:         next_cycle_start = cycle_start + dt.timedelta(hours=24)
+   planner_core.py:1296: 
+   planner_core.py:1297:     cycle_idx = pd.date_range(cycle_start, next_cycle_start, freq="h", inclusive="left", tz=TIMEZONE)
+   planner_core.py:1298:     cycle_loads = build_hourly_load_series(cycle_idx, total_consumption_kwh)
+   planner_core.py:1299: 
+   planner_core.py:1300:     if ENABLE_INVARIANT_CHECKS:
+>> planner_core.py:1301:         cycle_total = float(cycle_loads.sum())
+   planner_core.py:1302:         if abs(cycle_total - float(total_consumption_kwh)) > 1e-6:
+   planner_core.py:1303:             raise ValueError(
+   planner_core.py:1304:                 "Cycle load normalization mismatch: "
+   planner_core.py:1305:                 f"sum={cycle_total:.9f} expected={float(total_consumption_kwh):.9f}"
+   planner_core.py:1306:             )
+   planner_core.py:1307:     return cycle_loads
+   planner_core.py:1308: 
+   planner_core.py:1309: 
+   planner_core.py:1310: def load_consumption_profile_kwh_per_hour() -> list[float]:
+   planner_core.py:1311:     """Return a normalized 24h load profile for backward compatibility."""
+   planner_core.py:1312:     if len(LOAD_PROFILE) != 24:
+   planner_core.py:1313:         raise ValueError("LOAD_PROFILE must have 24 values.")
+   planner_core.py:1301:         cycle_total = float(cycle_loads.sum())
+   planner_core.py:1302:         if abs(cycle_total - float(total_consumption_kwh)) > 1e-6:
+   planner_core.py:1303:             raise ValueError(
+   planner_core.py:1304:                 "Cycle load normalization mismatch: "
+   planner_core.py:1305:                 f"sum={cycle_total:.9f} expected={float(total_consumption_kwh):.9f}"
+   planner_core.py:1306:             )
+>> planner_core.py:1307:     return cycle_loads
+   planner_core.py:1308: 
+   planner_core.py:1309: 
+   planner_core.py:1310: def load_consumption_profile_kwh_per_hour() -> list[float]:
+   planner_core.py:1311:     """Return a normalized 24h load profile for backward compatibility."""
+   planner_core.py:1312:     if len(LOAD_PROFILE) != 24:
+   planner_core.py:1313:         raise ValueError("LOAD_PROFILE must have 24 values.")
+   planner_core.py:1314:     profile = [float(v) for v in LOAD_PROFILE]
+   planner_core.py:1315:     total = float(sum(profile))
+   planner_core.py:1316:     if total <= 0:
+   planner_core.py:1317:         raise ValueError("LOAD_PROFILE sum must be > 0.")
+   planner_core.py:1318:     return [v / total for v in profile]
+   planner_core.py:1319: 
+   planner_core.py:3085:     idx = pd.date_range(session_start, session_end, freq="h", inclusive="left", tz=TIMEZONE)
+   planner_core.py:3086:     if precomputed_loads is not None:
+   planner_core.py:3087:         loads = pd.to_numeric(precomputed_loads.reindex(idx), errors="coerce").fillna(0.0).astype(float)
+   planner_core.py:3088:     else:
+   planner_core.py:3089:         if tomorrow_date is None:
+   planner_core.py:3090:             tomorrow_date = session_end.date()
+>> planner_core.py:3091:         cycle_loads = build_cycle_hourly_load_series(tomorrow_date, total_consumption_kwh, tariff_cfg=cfg)
+   planner_core.py:3092:         loads = pd.to_numeric(cycle_loads.reindex(idx), errors="coerce").fillna(0.0).astype(float)
+   planner_core.py:3093:     energy = max(0.0, min(1.0, soc_at_22)) * BATTERY_KWH
+   planner_core.py:3094:     min_energy = MIN_SOC * BATTERY_KWH
+   planner_core.py:3095:     max_energy = MAX_CUTOFF_SOC * BATTERY_KWH
+   planner_core.py:3096:     charge_cutoff_energy = min(MAX_CUTOFF_SOC, max(MIN_SOC, cutoff_soc)) * BATTERY_KWH
+   planner_core.py:3097:     night_load_from_battery = should_use_battery_for_offpeak_load(cfg)
+   planner_core.py:3098:     max_grid_import_kw = float((cfg or {}).get("max_grid_import_kw", 0.0))
+   planner_core.py:3099:     grid_import_cap_active = max_grid_import_kw > 0.0
+   planner_core.py:3100:     grid_import_cap_binding_events = 0
+   planner_core.py:3101:     grid_import_cap_load_exceeds_events = 0
+   planner_core.py:3102:     grid_import_cap_limited_charge_kwh_total = 0.0
+   planner_core.py:3103: 
+
+--- pattern: reindex\( (showing 8 hits, max 8) ---
+   planner_core.py:1418:     if cycle_end <= cycle_start:
+   planner_core.py:1419:         cycle_end = cycle_start + dt.timedelta(hours=24)
+   planner_core.py:1420: 
+   planner_core.py:1421:     idx_cycle = pd.date_range(cycle_start, cycle_end, freq="h", inclusive="left", tz=TIMEZONE)
+   planner_core.py:1422: 
+   planner_core.py:1423:     dt_h_cycle = timestep_hours(idx_cycle)
+>> planner_core.py:1424:     pv_cycle = pv_df["pv_total_kwh"].reindex(idx_cycle).fillna(0.0).astype(float)
+   planner_core.py:1425:     load_cycle = pd.Series(
+   planner_core.py:1426:         [load_kwh_at(ts, total_consumption_kwh, float(dt_h_cycle.loc[ts])) for ts in idx_cycle],
+   planner_core.py:1427:         index=idx_cycle,
+   planner_core.py:1428:         dtype=float,
+   planner_core.py:1429:     )
+   planner_core.py:1430:     base_import_cycle = (load_cycle - pv_cycle).clip(lower=0.0)
+   planner_core.py:1431:     base_export_cycle = (pv_cycle - load_cycle).clip(lower=0.0)
+   planner_core.py:1432:     base_price_cycle = pd.Series([import_price_eur_per_kwh(ts, tariff_cfg) for ts in idx_cycle], index=idx_cycle)
+   planner_core.py:1433:     base_cost_cycle = base_import_cycle * base_price_cycle - base_export_cycle * inj
+   planner_core.py:1434: 
+   planner_core.py:1435:     plan_import_cycle = pd.Series(0.0, index=idx_cycle, dtype=float)
+   planner_core.py:1436:     plan_export_cycle = pd.Series(0.0, index=idx_cycle, dtype=float)
+   planner_core.py:1446:         session_start=window_start,
+   planner_core.py:1447:         session_end=window_end,
+   planner_core.py:1448:         total_consumption_kwh=total_consumption_kwh,
+   planner_core.py:1449:         tariff_cfg=tariff_cfg,
+   planner_core.py:1450:     )
+   planner_core.py:1451:     if len(idx_pre) > 0:
+>> planner_core.py:1452:         plan_import_cycle.loc[idx_pre] = night_df["grid_import_kwh"].reindex(idx_pre).fillna(0.0).astype(float)
+   planner_core.py:1453:         if "grid_export_kwh" in night_df.columns:
+   planner_core.py:1454:             plan_export_cycle.loc[idx_pre] = night_df["grid_export_kwh"].reindex(idx_pre).fillna(0.0).astype(float)
+   planner_core.py:1455:         if "soc_end_pct" in night_df.columns:
+   planner_core.py:1456:             plan_soc_end_cycle.loc[idx_pre] = pd.to_numeric(
+   planner_core.py:1457:                 night_df["soc_end_pct"].reindex(idx_pre), errors="coerce"
+   planner_core.py:1458:             )
+   planner_core.py:1459: 
+   planner_core.py:1460:     if len(idx_post) > 0:
+   planner_core.py:1461:         plan_import_cycle.loc[idx_post] = flows_df["grid_import_kwh"].reindex(idx_post).fillna(0.0).astype(float)
+   planner_core.py:1462:         plan_export_cycle.loc[idx_post] = flows_df["grid_export_kwh"].reindex(idx_post).fillna(0.0).astype(float)
+   planner_core.py:1463:         if "soc_end_pct" in flows_df.columns:
+   planner_core.py:1464:             plan_soc_end_cycle.loc[idx_post] = pd.to_numeric(
+   planner_core.py:1448:         total_consumption_kwh=total_consumption_kwh,
+   planner_core.py:1449:         tariff_cfg=tariff_cfg,
+   planner_core.py:1450:     )
+   planner_core.py:1451:     if len(idx_pre) > 0:
+   planner_core.py:1452:         plan_import_cycle.loc[idx_pre] = night_df["grid_import_kwh"].reindex(idx_pre).fillna(0.0).astype(float)
+   planner_core.py:1453:         if "grid_export_kwh" in night_df.columns:
+>> planner_core.py:1454:             plan_export_cycle.loc[idx_pre] = night_df["grid_export_kwh"].reindex(idx_pre).fillna(0.0).astype(float)
+   planner_core.py:1455:         if "soc_end_pct" in night_df.columns:
+   planner_core.py:1456:             plan_soc_end_cycle.loc[idx_pre] = pd.to_numeric(
+   planner_core.py:1457:                 night_df["soc_end_pct"].reindex(idx_pre), errors="coerce"
+   planner_core.py:1458:             )
+   planner_core.py:1459: 
+   planner_core.py:1460:     if len(idx_post) > 0:
+   planner_core.py:1461:         plan_import_cycle.loc[idx_post] = flows_df["grid_import_kwh"].reindex(idx_post).fillna(0.0).astype(float)
+   planner_core.py:1462:         plan_export_cycle.loc[idx_post] = flows_df["grid_export_kwh"].reindex(idx_post).fillna(0.0).astype(float)
+   planner_core.py:1463:         if "soc_end_pct" in flows_df.columns:
+   planner_core.py:1464:             plan_soc_end_cycle.loc[idx_post] = pd.to_numeric(
+   planner_core.py:1465:                 flows_df["soc_end_pct"].reindex(idx_post), errors="coerce"
+   planner_core.py:1466:             )
+   planner_core.py:1451:     if len(idx_pre) > 0:
+   planner_core.py:1452:         plan_import_cycle.loc[idx_pre] = night_df["grid_import_kwh"].reindex(idx_pre).fillna(0.0).astype(float)
+   planner_core.py:1453:         if "grid_export_kwh" in night_df.columns:
+   planner_core.py:1454:             plan_export_cycle.loc[idx_pre] = night_df["grid_export_kwh"].reindex(idx_pre).fillna(0.0).astype(float)
+   planner_core.py:1455:         if "soc_end_pct" in night_df.columns:
+   planner_core.py:1456:             plan_soc_end_cycle.loc[idx_pre] = pd.to_numeric(
+>> planner_core.py:1457:                 night_df["soc_end_pct"].reindex(idx_pre), errors="coerce"
+   planner_core.py:1458:             )
+   planner_core.py:1459: 
+   planner_core.py:1460:     if len(idx_post) > 0:
+   planner_core.py:1461:         plan_import_cycle.loc[idx_post] = flows_df["grid_import_kwh"].reindex(idx_post).fillna(0.0).astype(float)
+   planner_core.py:1462:         plan_export_cycle.loc[idx_post] = flows_df["grid_export_kwh"].reindex(idx_post).fillna(0.0).astype(float)
+   planner_core.py:1463:         if "soc_end_pct" in flows_df.columns:
+   planner_core.py:1464:             plan_soc_end_cycle.loc[idx_post] = pd.to_numeric(
+   planner_core.py:1465:                 flows_df["soc_end_pct"].reindex(idx_post), errors="coerce"
+   planner_core.py:1466:             )
+   planner_core.py:1467: 
+   planner_core.py:1468:     plan_cost_cycle_cash = plan_import_cycle * base_price_cycle - plan_export_cycle * inj
+   planner_core.py:1469:     hourly_savings_cycle = (base_cost_cycle - plan_cost_cycle_cash).reindex(idx_cycle).fillna(0.0)
+   planner_core.py:1455:         if "soc_end_pct" in night_df.columns:
+   planner_core.py:1456:             plan_soc_end_cycle.loc[idx_pre] = pd.to_numeric(
+   planner_core.py:1457:                 night_df["soc_end_pct"].reindex(idx_pre), errors="coerce"
+   planner_core.py:1458:             )
+   planner_core.py:1459: 
+   planner_core.py:1460:     if len(idx_post) > 0:
+>> planner_core.py:1461:         plan_import_cycle.loc[idx_post] = flows_df["grid_import_kwh"].reindex(idx_post).fillna(0.0).astype(float)
+   planner_core.py:1462:         plan_export_cycle.loc[idx_post] = flows_df["grid_export_kwh"].reindex(idx_post).fillna(0.0).astype(float)
+   planner_core.py:1463:         if "soc_end_pct" in flows_df.columns:
+   planner_core.py:1464:             plan_soc_end_cycle.loc[idx_post] = pd.to_numeric(
+   planner_core.py:1465:                 flows_df["soc_end_pct"].reindex(idx_post), errors="coerce"
+   planner_core.py:1466:             )
+   planner_core.py:1467: 
+   planner_core.py:1468:     plan_cost_cycle_cash = plan_import_cycle * base_price_cycle - plan_export_cycle * inj
+   planner_core.py:1469:     hourly_savings_cycle = (base_cost_cycle - plan_cost_cycle_cash).reindex(idx_cycle).fillna(0.0)
+   planner_core.py:1470: 
+   planner_core.py:1471:     dt_h_tom = timestep_hours(idx_tomorrow)
+   planner_core.py:1472:     pv_tom = pv_df["pv_total_kwh"].reindex(idx_tomorrow).fillna(0.0).astype(float)
+   planner_core.py:1473:     load_tom = pd.Series(
+   planner_core.py:1456:             plan_soc_end_cycle.loc[idx_pre] = pd.to_numeric(
+   planner_core.py:1457:                 night_df["soc_end_pct"].reindex(idx_pre), errors="coerce"
+   planner_core.py:1458:             )
+   planner_core.py:1459: 
+   planner_core.py:1460:     if len(idx_post) > 0:
+   planner_core.py:1461:         plan_import_cycle.loc[idx_post] = flows_df["grid_import_kwh"].reindex(idx_post).fillna(0.0).astype(float)
+>> planner_core.py:1462:         plan_export_cycle.loc[idx_post] = flows_df["grid_export_kwh"].reindex(idx_post).fillna(0.0).astype(float)
+   planner_core.py:1463:         if "soc_end_pct" in flows_df.columns:
+   planner_core.py:1464:             plan_soc_end_cycle.loc[idx_post] = pd.to_numeric(
+   planner_core.py:1465:                 flows_df["soc_end_pct"].reindex(idx_post), errors="coerce"
+   planner_core.py:1466:             )
+   planner_core.py:1467: 
+   planner_core.py:1468:     plan_cost_cycle_cash = plan_import_cycle * base_price_cycle - plan_export_cycle * inj
+   planner_core.py:1469:     hourly_savings_cycle = (base_cost_cycle - plan_cost_cycle_cash).reindex(idx_cycle).fillna(0.0)
+   planner_core.py:1470: 
+   planner_core.py:1471:     dt_h_tom = timestep_hours(idx_tomorrow)
+   planner_core.py:1472:     pv_tom = pv_df["pv_total_kwh"].reindex(idx_tomorrow).fillna(0.0).astype(float)
+   planner_core.py:1473:     load_tom = pd.Series(
+   planner_core.py:1474:         [load_kwh_at(ts, total_consumption_kwh, float(dt_h_tom.loc[ts])) for ts in idx_tomorrow],
+   planner_core.py:1459: 
+   planner_core.py:1460:     if len(idx_post) > 0:
+   planner_core.py:1461:         plan_import_cycle.loc[idx_post] = flows_df["grid_import_kwh"].reindex(idx_post).fillna(0.0).astype(float)
+   planner_core.py:1462:         plan_export_cycle.loc[idx_post] = flows_df["grid_export_kwh"].reindex(idx_post).fillna(0.0).astype(float)
+   planner_core.py:1463:         if "soc_end_pct" in flows_df.columns:
+   planner_core.py:1464:             plan_soc_end_cycle.loc[idx_post] = pd.to_numeric(
+>> planner_core.py:1465:                 flows_df["soc_end_pct"].reindex(idx_post), errors="coerce"
+   planner_core.py:1466:             )
+   planner_core.py:1467: 
+   planner_core.py:1468:     plan_cost_cycle_cash = plan_import_cycle * base_price_cycle - plan_export_cycle * inj
+   planner_core.py:1469:     hourly_savings_cycle = (base_cost_cycle - plan_cost_cycle_cash).reindex(idx_cycle).fillna(0.0)
+   planner_core.py:1470: 
+   planner_core.py:1471:     dt_h_tom = timestep_hours(idx_tomorrow)
+   planner_core.py:1472:     pv_tom = pv_df["pv_total_kwh"].reindex(idx_tomorrow).fillna(0.0).astype(float)
+   planner_core.py:1473:     load_tom = pd.Series(
+   planner_core.py:1474:         [load_kwh_at(ts, total_consumption_kwh, float(dt_h_tom.loc[ts])) for ts in idx_tomorrow],
+   planner_core.py:1475:         index=idx_tomorrow,
+   planner_core.py:1476:         dtype=float,
+   planner_core.py:1477:     )
+   planner_core.py:1463:         if "soc_end_pct" in flows_df.columns:
+   planner_core.py:1464:             plan_soc_end_cycle.loc[idx_post] = pd.to_numeric(
+   planner_core.py:1465:                 flows_df["soc_end_pct"].reindex(idx_post), errors="coerce"
+   planner_core.py:1466:             )
+   planner_core.py:1467: 
+   planner_core.py:1468:     plan_cost_cycle_cash = plan_import_cycle * base_price_cycle - plan_export_cycle * inj
+>> planner_core.py:1469:     hourly_savings_cycle = (base_cost_cycle - plan_cost_cycle_cash).reindex(idx_cycle).fillna(0.0)
+   planner_core.py:1470: 
+   planner_core.py:1471:     dt_h_tom = timestep_hours(idx_tomorrow)
+   planner_core.py:1472:     pv_tom = pv_df["pv_total_kwh"].reindex(idx_tomorrow).fillna(0.0).astype(float)
+   planner_core.py:1473:     load_tom = pd.Series(
+   planner_core.py:1474:         [load_kwh_at(ts, total_consumption_kwh, float(dt_h_tom.loc[ts])) for ts in idx_tomorrow],
+   planner_core.py:1475:         index=idx_tomorrow,
+   planner_core.py:1476:         dtype=float,
+   planner_core.py:1477:     )
+   planner_core.py:1478:     base_import_tom = (load_tom - pv_tom).clip(lower=0.0)
+   planner_core.py:1479:     base_export_tom = (pv_tom - load_tom).clip(lower=0.0)
+   planner_core.py:1480:     price_tom = pd.Series([import_price_eur_per_kwh(ts, tariff_cfg) for ts in idx_tomorrow], index=idx_tomorrow)
+   planner_core.py:1481:     base_cost_tom = base_import_tom * price_tom - base_export_tom * inj
+
+--- pattern: normalize (showing 8 hits, max 8) ---
+   planner_core.py:847: 
+   planner_core.py:848: 
+   planner_core.py:849: def minute_of_day(t: dt.time) -> int:
+   planner_core.py:850:     return 60 * t.hour + t.minute  # 0..1439
+   planner_core.py:851: 
+   planner_core.py:852: 
+>> planner_core.py:853: def normalize_windows(windows: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+   planner_core.py:854:     # Als er ooit "00:00-24:00" in zit, is de dag volledig dal.
+   planner_core.py:855:     for s, e in windows:
+   planner_core.py:856:         if s == "00:00" and e == "24:00":
+   planner_core.py:857:             return [("00:00", "24:00")]
+   planner_core.py:858:     return windows
+   planner_core.py:859: 
+   planner_core.py:860: 
+   planner_core.py:861: def in_window(tmin: int, start: int, end: int) -> bool:
+   planner_core.py:862:     # start/end in minuten; end kan 1440 zijn.
+   planner_core.py:863:     if start < end:
+   planner_core.py:864:         return start <= tmin < end
+   planner_core.py:865:     # wraps midnight
+   planner_core.py:864:         return start <= tmin < end
+   planner_core.py:865:     # wraps midnight
+   planner_core.py:866:     return (tmin >= start) or (tmin < end)
+   planner_core.py:867: 
+   planner_core.py:868: 
+   planner_core.py:869: def in_any_window(t: dt.time, windows: List[Tuple[str, str]]) -> bool:
+>> planner_core.py:870:     windows = normalize_windows(windows)
+   planner_core.py:871:     tmin = minute_of_day(t)
+   planner_core.py:872:     for s, e in windows:
+   planner_core.py:873:         smin, emin = to_minutes(s), to_minutes(e)
+   planner_core.py:874:         if smin == 0 and emin == 1440:
+   planner_core.py:875:             return True
+   planner_core.py:876:         if in_window(tmin, smin, emin):
+   planner_core.py:877:             return True
+   planner_core.py:878:     return False
+   planner_core.py:879: 
+   planner_core.py:880: 
+   planner_core.py:881: def window_duration_hours(s: str, e: str) -> float:
+   planner_core.py:882:     smin, emin = to_minutes(s), to_minutes(e)
+   planner_core.py:885:     if smin < emin:
+   planner_core.py:886:         return (emin - smin) / 60.0
+   planner_core.py:887:     return ((1440 - smin) + emin) / 60.0
+   planner_core.py:888: 
+   planner_core.py:889: 
+   planner_core.py:890: def total_window_hours(windows: List[Tuple[str, str]]) -> float:
+>> planner_core.py:891:     windows = normalize_windows(windows)
+   planner_core.py:892:     if windows == [("00:00", "24:00")]:
+   planner_core.py:893:         return 24.0
+   planner_core.py:894:     return sum(window_duration_hours(s, e) for s, e in windows)
+   planner_core.py:895: 
+   planner_core.py:896: 
+   planner_core.py:897: def get_offpeak_windows(for_date: dt.date) -> List[Tuple[str, str]]:
+   planner_core.py:898:     return normalize_windows(OFFPEAK_WINDOWS_BY_DOW.get(for_date.weekday(), []))
+   planner_core.py:899: 
+   planner_core.py:900: 
+   planner_core.py:901: def get_offpeak_windows_for_date(for_date: dt.date, cfg: Optional[dict] = None) -> List[Tuple[str, str]]:
+   planner_core.py:902:     if cfg is None:
+   planner_core.py:903:         return get_offpeak_windows(for_date)
+   planner_core.py:892:     if windows == [("00:00", "24:00")]:
+   planner_core.py:893:         return 24.0
+   planner_core.py:894:     return sum(window_duration_hours(s, e) for s, e in windows)
+   planner_core.py:895: 
+   planner_core.py:896: 
+   planner_core.py:897: def get_offpeak_windows(for_date: dt.date) -> List[Tuple[str, str]]:
+>> planner_core.py:898:     return normalize_windows(OFFPEAK_WINDOWS_BY_DOW.get(for_date.weekday(), []))
+   planner_core.py:899: 
+   planner_core.py:900: 
+   planner_core.py:901: def get_offpeak_windows_for_date(for_date: dt.date, cfg: Optional[dict] = None) -> List[Tuple[str, str]]:
+   planner_core.py:902:     if cfg is None:
+   planner_core.py:903:         return get_offpeak_windows(for_date)
+   planner_core.py:904: 
+   planner_core.py:905:     source = cfg.get("offpeak_windows_by_dow")
+   planner_core.py:906:     if source is None and isinstance(cfg.get("tariff"), dict):
+   planner_core.py:907:         source = cfg["tariff"].get("offpeak_windows_by_dow")
+   planner_core.py:908: 
+   planner_core.py:909:     if source is None:
+   planner_core.py:910:         return get_offpeak_windows(for_date)
+   planner_core.py:907:         source = cfg["tariff"].get("offpeak_windows_by_dow")
+   planner_core.py:908: 
+   planner_core.py:909:     if source is None:
+   planner_core.py:910:         return get_offpeak_windows(for_date)
+   planner_core.py:911: 
+   planner_core.py:912:     parsed = parse_offpeak_windows_by_dow(source)
+>> planner_core.py:913:     return normalize_windows(parsed.get(for_date.weekday(), []))
+   planner_core.py:914: 
+   planner_core.py:915: 
+   planner_core.py:916: def get_offpeak_mask_for_date(index: pd.DatetimeIndex, target_date: dt.date, cfg: Optional[dict] = None) -> pd.Series:
+   planner_core.py:917:     normalized = pd.DatetimeIndex(index)
+   planner_core.py:918:     if len(normalized) == 0:
+   planner_core.py:919:         return pd.Series(False, index=normalized, dtype=bool)
+   planner_core.py:920: 
+   planner_core.py:921:     windows = get_offpeak_windows_for_date(target_date, cfg)
+   planner_core.py:922:     values = [in_any_window(ts.time(), windows) for ts in normalized]
+   planner_core.py:923:     return pd.Series(values, index=normalized, dtype=bool)
+   planner_core.py:924: 
+   planner_core.py:925: 
+   planner_core.py:911: 
+   planner_core.py:912:     parsed = parse_offpeak_windows_by_dow(source)
+   planner_core.py:913:     return normalize_windows(parsed.get(for_date.weekday(), []))
+   planner_core.py:914: 
+   planner_core.py:915: 
+   planner_core.py:916: def get_offpeak_mask_for_date(index: pd.DatetimeIndex, target_date: dt.date, cfg: Optional[dict] = None) -> pd.Series:
+>> planner_core.py:917:     normalized = pd.DatetimeIndex(index)
+   planner_core.py:918:     if len(normalized) == 0:
+   planner_core.py:919:         return pd.Series(False, index=normalized, dtype=bool)
+   planner_core.py:920: 
+   planner_core.py:921:     windows = get_offpeak_windows_for_date(target_date, cfg)
+   planner_core.py:922:     values = [in_any_window(ts.time(), windows) for ts in normalized]
+   planner_core.py:923:     return pd.Series(values, index=normalized, dtype=bool)
+   planner_core.py:924: 
+   planner_core.py:925: 
+   planner_core.py:926: def get_offpeak_mask(index: pd.DatetimeIndex, cfg: Optional[dict] = None) -> pd.Series:
+   planner_core.py:927:     normalized = pd.DatetimeIndex(index)
+   planner_core.py:928:     if len(normalized) == 0:
+   planner_core.py:929:         return pd.Series(False, index=normalized, dtype=bool)
+   planner_core.py:912:     parsed = parse_offpeak_windows_by_dow(source)
+   planner_core.py:913:     return normalize_windows(parsed.get(for_date.weekday(), []))
+   planner_core.py:914: 
+   planner_core.py:915: 
+   planner_core.py:916: def get_offpeak_mask_for_date(index: pd.DatetimeIndex, target_date: dt.date, cfg: Optional[dict] = None) -> pd.Series:
+   planner_core.py:917:     normalized = pd.DatetimeIndex(index)
+>> planner_core.py:918:     if len(normalized) == 0:
+   planner_core.py:919:         return pd.Series(False, index=normalized, dtype=bool)
+   planner_core.py:920: 
+   planner_core.py:921:     windows = get_offpeak_windows_for_date(target_date, cfg)
+   planner_core.py:922:     values = [in_any_window(ts.time(), windows) for ts in normalized]
+   planner_core.py:923:     return pd.Series(values, index=normalized, dtype=bool)
+   planner_core.py:924: 
+   planner_core.py:925: 
+   planner_core.py:926: def get_offpeak_mask(index: pd.DatetimeIndex, cfg: Optional[dict] = None) -> pd.Series:
+   planner_core.py:927:     normalized = pd.DatetimeIndex(index)
+   planner_core.py:928:     if len(normalized) == 0:
+   planner_core.py:929:         return pd.Series(False, index=normalized, dtype=bool)
+   planner_core.py:930: 
+   planner_core.py:913:     return normalize_windows(parsed.get(for_date.weekday(), []))
+   planner_core.py:914: 
+   planner_core.py:915: 
+   planner_core.py:916: def get_offpeak_mask_for_date(index: pd.DatetimeIndex, target_date: dt.date, cfg: Optional[dict] = None) -> pd.Series:
+   planner_core.py:917:     normalized = pd.DatetimeIndex(index)
+   planner_core.py:918:     if len(normalized) == 0:
+>> planner_core.py:919:         return pd.Series(False, index=normalized, dtype=bool)
+   planner_core.py:920: 
+   planner_core.py:921:     windows = get_offpeak_windows_for_date(target_date, cfg)
+   planner_core.py:922:     values = [in_any_window(ts.time(), windows) for ts in normalized]
+   planner_core.py:923:     return pd.Series(values, index=normalized, dtype=bool)
+   planner_core.py:924: 
+   planner_core.py:925: 
+   planner_core.py:926: def get_offpeak_mask(index: pd.DatetimeIndex, cfg: Optional[dict] = None) -> pd.Series:
+   planner_core.py:927:     normalized = pd.DatetimeIndex(index)
+   planner_core.py:928:     if len(normalized) == 0:
+   planner_core.py:929:         return pd.Series(False, index=normalized, dtype=bool)
+   planner_core.py:930: 
+   planner_core.py:931:     if isinstance(cfg, dt.date):
+
+--- pattern: sum\( (showing 8 hits, max 8) ---
+   planner_core.py:405:     if min_soc_percent > max_cutoff_soc_percent:
+   planner_core.py:406:         raise ValueError("battery.min_soc_percent must be <= battery.max_cutoff_soc_percent.")
+   planner_core.py:407: 
+   planner_core.py:408:     profile = load_profile["load_profile_24h"]
+   planner_core.py:409:     if not isinstance(profile, list) or len(profile) != 24:
+   planner_core.py:410:         raise ValueError("load_profile.load_profile_24h must be a list of 24 numbers.")
+>> planner_core.py:411:     profile_sum = sum(float(v) for v in profile)
+   planner_core.py:412:     if profile_sum <= 0:
+   planner_core.py:413:         raise ValueError("load_profile.load_profile_24h must have a positive sum.")
+   planner_core.py:414: 
+   planner_core.py:415:     if "offpeak_windows_by_dow" not in tariff:
+   planner_core.py:416:         raise ValueError("tariff.offpeak_windows_by_dow is required.")
+   planner_core.py:417:     if "peak_grid_price_eur_per_kwh" not in tariff:
+   planner_core.py:418:         raise ValueError("tariff.peak_grid_price_eur_per_kwh is required.")
+   planner_core.py:419:     if "offpeak_grid_price_eur_per_kwh" not in tariff:
+   planner_core.py:420:         raise ValueError("tariff.offpeak_grid_price_eur_per_kwh is required.")
+   planner_core.py:421:     if "injection_grid_price_eur_per_kwh" not in tariff:
+   planner_core.py:422:         raise ValueError("tariff.injection_grid_price_eur_per_kwh is required.")
+   planner_core.py:423: 
+   planner_core.py:888: 
+   planner_core.py:889: 
+   planner_core.py:890: def total_window_hours(windows: List[Tuple[str, str]]) -> float:
+   planner_core.py:891:     windows = normalize_windows(windows)
+   planner_core.py:892:     if windows == [("00:00", "24:00")]:
+   planner_core.py:893:         return 24.0
+>> planner_core.py:894:     return sum(window_duration_hours(s, e) for s, e in windows)
+   planner_core.py:895: 
+   planner_core.py:896: 
+   planner_core.py:897: def get_offpeak_windows(for_date: dt.date) -> List[Tuple[str, str]]:
+   planner_core.py:898:     return normalize_windows(OFFPEAK_WINDOWS_BY_DOW.get(for_date.weekday(), []))
+   planner_core.py:899: 
+   planner_core.py:900: 
+   planner_core.py:901: def get_offpeak_windows_for_date(for_date: dt.date, cfg: Optional[dict] = None) -> List[Tuple[str, str]]:
+   planner_core.py:902:     if cfg is None:
+   planner_core.py:903:         return get_offpeak_windows(for_date)
+   planner_core.py:904: 
+   planner_core.py:905:     source = cfg.get("offpeak_windows_by_dow")
+   planner_core.py:906:     if source is None and isinstance(cfg.get("tariff"), dict):
+   planner_core.py:1122: ) -> float:
+   planner_core.py:1123:     start_h = _to_local_ts(start_local).ceil("h")
+   planner_core.py:1124:     end_h = _to_local_ts(end_local).floor("h")
+   planner_core.py:1125:     if end_h <= start_h:
+   planner_core.py:1126:         return 0.0
+   planner_core.py:1127: 
+>> planner_core.py:1128:     day_weights = sum(_tod_weight_for_hour(hour) for hour in range(24))
+   planner_core.py:1129:     if day_weights <= 0:
+   planner_core.py:1130:         return 0.0
+   planner_core.py:1131:     kwh_per_weight = float(effective_daily_kwh) / day_weights
+   planner_core.py:1132:     window_weight = 0.0
+   planner_core.py:1133:     for ts in pd.date_range(start_h, end_h, freq="h", inclusive="left"):
+   planner_core.py:1134:         window_weight += _tod_weight_for_hour(int(ts.hour))
+   planner_core.py:1135:     return max(0.0, float(window_weight * kwh_per_weight))
+   planner_core.py:1136: 
+   planner_core.py:1137: 
+   planner_core.py:1138: def get_charge_session_index_from_window(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> pd.DatetimeIndex:
+   planner_core.py:1139:     """
+   planner_core.py:1140:     Hourly index of charging decision slots fully inside [start_ts, end_ts).
+   planner_core.py:1244: # LOAD & PV HELPERS
+   planner_core.py:1245: # ============================================================
+   planner_core.py:1246: 
+   planner_core.py:1247: def hourly_load_kwh(total_kwh: float) -> List[float]:
+   planner_core.py:1248:     if len(LOAD_PROFILE) != 24:
+   planner_core.py:1249:         raise ValueError("LOAD_PROFILE must have 24 values.")
+>> planner_core.py:1250:     s = sum(LOAD_PROFILE)
+   planner_core.py:1251:     if s <= 0:
+   planner_core.py:1252:         raise ValueError("LOAD_PROFILE sum must be > 0.")
+   planner_core.py:1253:     prof = [p / s for p in LOAD_PROFILE]
+   planner_core.py:1254:     return [total_kwh * p for p in prof]
+   planner_core.py:1255: 
+   planner_core.py:1256: 
+   planner_core.py:1257: def load_kwh_at(ts: pd.Timestamp, total_kwh: float, dt_h: float = 1.0) -> float:
+   planner_core.py:1258:     loads = hourly_load_kwh(total_kwh)
+   planner_core.py:1259:     return float(loads[ts.hour]) * float(dt_h)
+   planner_core.py:1260: 
+   planner_core.py:1261: 
+   planner_core.py:1262: def timestep_hours(index: "pd.DatetimeIndex") -> "pd.Series":
+   planner_core.py:1274: 
+   planner_core.py:1275: def build_hourly_load_series(index: "pd.DatetimeIndex", total_kwh: float) -> "pd.Series":
+   planner_core.py:1276:     loads = hourly_load_kwh(total_kwh)
+   planner_core.py:1277:     base = pd.Series([loads[t.hour] for t in index], index=index, dtype=float)
+   planner_core.py:1278:     dt_h = timestep_hours(index)
+   planner_core.py:1279:     weighted = base * dt_h
+>> planner_core.py:1280:     wsum = float(weighted.sum())
+   planner_core.py:1281:     if wsum <= 0:
+   planner_core.py:1282:         return pd.Series(0.0, index=index, dtype=float)
+   planner_core.py:1283:     return weighted * (total_kwh / wsum)
+   planner_core.py:1284: 
+   planner_core.py:1285: 
+   planner_core.py:1286: def build_cycle_hourly_load_series(
+   planner_core.py:1287:     target_date: dt.date,
+   planner_core.py:1288:     total_consumption_kwh: float,
+   planner_core.py:1289:     tariff_cfg: Optional[dict] = None,
+   planner_core.py:1290: ) -> "pd.Series":
+   planner_core.py:1291:     cfg = tariff_cfg or DEFAULT_CONFIG["tariff"]
+   planner_core.py:1292:     cycle_start, _ = compute_charging_window_for_target_date(target_date, cfg)
+   planner_core.py:1295:         next_cycle_start = cycle_start + dt.timedelta(hours=24)
+   planner_core.py:1296: 
+   planner_core.py:1297:     cycle_idx = pd.date_range(cycle_start, next_cycle_start, freq="h", inclusive="left", tz=TIMEZONE)
+   planner_core.py:1298:     cycle_loads = build_hourly_load_series(cycle_idx, total_consumption_kwh)
+   planner_core.py:1299: 
+   planner_core.py:1300:     if ENABLE_INVARIANT_CHECKS:
+>> planner_core.py:1301:         cycle_total = float(cycle_loads.sum())
+   planner_core.py:1302:         if abs(cycle_total - float(total_consumption_kwh)) > 1e-6:
+   planner_core.py:1303:             raise ValueError(
+   planner_core.py:1304:                 "Cycle load normalization mismatch: "
+   planner_core.py:1305:                 f"sum={cycle_total:.9f} expected={float(total_consumption_kwh):.9f}"
+   planner_core.py:1306:             )
+   planner_core.py:1307:     return cycle_loads
+   planner_core.py:1308: 
+   planner_core.py:1309: 
+   planner_core.py:1310: def load_consumption_profile_kwh_per_hour() -> list[float]:
+   planner_core.py:1311:     """Return a normalized 24h load profile for backward compatibility."""
+   planner_core.py:1312:     if len(LOAD_PROFILE) != 24:
+   planner_core.py:1313:         raise ValueError("LOAD_PROFILE must have 24 values.")
+   planner_core.py:1309: 
+   planner_core.py:1310: def load_consumption_profile_kwh_per_hour() -> list[float]:
+   planner_core.py:1311:     """Return a normalized 24h load profile for backward compatibility."""
+   planner_core.py:1312:     if len(LOAD_PROFILE) != 24:
+   planner_core.py:1313:         raise ValueError("LOAD_PROFILE must have 24 values.")
+   planner_core.py:1314:     profile = [float(v) for v in LOAD_PROFILE]
+>> planner_core.py:1315:     total = float(sum(profile))
+   planner_core.py:1316:     if total <= 0:
+   planner_core.py:1317:         raise ValueError("LOAD_PROFILE sum must be > 0.")
+   planner_core.py:1318:     return [v / total for v in profile]
+   planner_core.py:1319: 
+   planner_core.py:1320: 
+   planner_core.py:1321: def build_consumption_forecast(
+   planner_core.py:1322:     profile_kwh_per_hour: list[float],
+   planner_core.py:1323:     total_kwh: float,
+   planner_core.py:1324:     target_date: dt.date,
+   planner_core.py:1325:     tz: str,
+   planner_core.py:1326: ) -> "pd.Series":
+   planner_core.py:1327:     """Build a 24h consumption series for target_date using a supplied profile."""
+   planner_core.py:1325:     tz: str,
+   planner_core.py:1326: ) -> "pd.Series":
+   planner_core.py:1327:     """Build a 24h consumption series for target_date using a supplied profile."""
+   planner_core.py:1328:     if len(profile_kwh_per_hour) != 24:
+   planner_core.py:1329:         raise ValueError("profile_kwh_per_hour must contain 24 values.")
+   planner_core.py:1330:     profile = [float(v) for v in profile_kwh_per_hour]
+>> planner_core.py:1331:     profile_sum = float(sum(profile))
+   planner_core.py:1332:     if profile_sum <= 0:
+   planner_core.py:1333:         raise ValueError("profile_kwh_per_hour must have a positive sum.")
+   planner_core.py:1334: 
+   planner_core.py:1335:     start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz)
+   planner_core.py:1336:     end = start + dt.timedelta(days=1)
+   planner_core.py:1337:     idx = pd.date_range(start, end, freq="h", inclusive="left")
+   planner_core.py:1338:     normalized = [v / profile_sum for v in profile]
+   planner_core.py:1339:     values = [float(total_kwh) * normalized[ts.hour] for ts in idx]
+   planner_core.py:1340:     return pd.Series(values, index=idx, dtype=float)
+   planner_core.py:1341: 
+   planner_core.py:1342: 
+   planner_core.py:1343: def parse_soc_input(raw: str) -> float:
+
+==============================================================================================================
+backend_api.py — wiring (context)
+==============================================================================================================
+
+--- pattern: yesterday_(consumption_)?kwh ---
+   backend_api.py:211:     max_ac_charge_power_kw_default: float = DEFAULT_MAX_AC_CAP
+   backend_api.py:212: 
+   backend_api.py:213: 
+   backend_api.py:214: class InputsPayload(BaseModel):
+   backend_api.py:215:     soc_now_percent: float | None = None
+   backend_api.py:216:     soc_at_22_percent: float | None = None
+>> backend_api.py:217:     yesterday_consumption_kwh: float = Field(..., gt=0.0)
+   backend_api.py:218: 
+   backend_api.py:219: 
+   backend_api.py:220: class RunNowPayload(BaseModel):
+   backend_api.py:221:     soc_now_percent: float | None = None
+   backend_api.py:222:     soc_at_22_percent: float | None = None
+   backend_api.py:223:     yesterday_consumption_kwh: float | None = Field(default=None, gt=0.0)
+   backend_api.py:224:     buffer_percent: float = Field(default=0.0, ge=0.0, le=10.0)
+   backend_api.py:225:     user_max_ac_kw: float | None = Field(default=None, ge=0.0)
+   backend_api.py:226:     weather_models: list[str] | None = None
+   backend_api.py:227:     forecast_mode: str | None = None
+   backend_api.py:228:     ensemble_method: str = Field(default="weighted")
+   backend_api.py:229:     pv_uncertainty: bool = False
+   backend_api.py:230:     fast_mode: bool = False
+   backend_api.py:231:     use_satellite_nowcast_0_6h: bool | None = None
+   backend_api.py:217:     yesterday_consumption_kwh: float = Field(..., gt=0.0)
+   backend_api.py:218: 
+   backend_api.py:219: 
+   backend_api.py:220: class RunNowPayload(BaseModel):
+   backend_api.py:221:     soc_now_percent: float | None = None
+   backend_api.py:222:     soc_at_22_percent: float | None = None
+>> backend_api.py:223:     yesterday_consumption_kwh: float | None = Field(default=None, gt=0.0)
+   backend_api.py:224:     buffer_percent: float = Field(default=0.0, ge=0.0, le=10.0)
+   backend_api.py:225:     user_max_ac_kw: float | None = Field(default=None, ge=0.0)
+   backend_api.py:226:     weather_models: list[str] | None = None
+   backend_api.py:227:     forecast_mode: str | None = None
+   backend_api.py:228:     ensemble_method: str = Field(default="weighted")
+   backend_api.py:229:     pv_uncertainty: bool = False
+   backend_api.py:230:     fast_mode: bool = False
+   backend_api.py:231:     use_satellite_nowcast_0_6h: bool | None = None
+   backend_api.py:232: 
+   backend_api.py:233: 
+   backend_api.py:234: class NightlyTickPayload(BaseModel):
+   backend_api.py:235:     force: bool = False
+   backend_api.py:236: 
+   backend_api.py:237: 
+   backend_api.py:782:             payload.setdefault("config", self.settings.get("config", {}))
+   backend_api.py:783:             if "inputs_used" not in payload and self.last_inputs:
+   backend_api.py:784:                 soc_last = self.last_inputs.get("soc_now_percent", self.last_inputs.get("soc_at_22_percent"))
+   backend_api.py:785:                 payload["inputs_used"] = {
+   backend_api.py:786:                     "soc_now_percent": soc_last,
+   backend_api.py:787:                     "soc_at_22_percent": soc_last,
+>> backend_api.py:788:                     "yesterday_consumption_kwh": self.last_inputs.get("yesterday_consumption_kwh"),
+   backend_api.py:789:                 }
+   backend_api.py:790:             insert_forecast_run(str(SQLITE_PATH), payload)
+   backend_api.py:791: 
+   backend_api.py:792:     def _is_heavy_history_item(self, item: dict) -> bool:
+   backend_api.py:793:         if not isinstance(item, dict):
+   backend_api.py:794:             return False
+   backend_api.py:795:         return any(key in item for key in FULL_RESULT_HEAVY_KEYS)
+   backend_api.py:796: 
+   backend_api.py:797:     def _load_history(self) -> list[dict]:
+   backend_api.py:798:         raw_history = self._read_json(HISTORY_PATH, default=[])
+   backend_api.py:799:         if not isinstance(raw_history, list):
+   backend_api.py:800:             return []
+   backend_api.py:801: 
+   backend_api.py:802:         migrated = False
+   backend_api.py:899:         )
+   backend_api.py:900:         if raw_soc_now != soc or raw_soc_legacy != soc:
+   backend_api.py:901:             changed = True
+   backend_api.py:902:         self.last_inputs["soc_now_percent"] = soc
+   backend_api.py:903:         self.last_inputs["soc_at_22_percent"] = soc
+   backend_api.py:904: 
+>> backend_api.py:905:         raw_ykwh = self.last_inputs.get("yesterday_consumption_kwh")
+   backend_api.py:906:         ykwh = _coerce_float(raw_ykwh, 18.0, field_name="yesterday_consumption_kwh", warnings=warnings)
+   backend_api.py:907:         if ykwh <= 0:
+   backend_api.py:908:             warnings.append(f"yesterday_consumption_kwh: must be > 0 -> default 18.0")
+   backend_api.py:909:             ykwh = 18.0
+   backend_api.py:910:         if raw_ykwh != ykwh:
+   backend_api.py:911:             changed = True
+   backend_api.py:912:         self.last_inputs["yesterday_consumption_kwh"] = ykwh
+   backend_api.py:913: 
+   backend_api.py:914:         self.last_inputs_sanitized_warnings = warnings
+   backend_api.py:915:         if changed:
+   backend_api.py:916:             self._save_inputs()
+   backend_api.py:917: 
+   backend_api.py:918:     def _sanitize_settings(self) -> None:
+   backend_api.py:919:         changed = False
+   backend_api.py:900:         if raw_soc_now != soc or raw_soc_legacy != soc:
+   backend_api.py:901:             changed = True
+   backend_api.py:902:         self.last_inputs["soc_now_percent"] = soc
+   backend_api.py:903:         self.last_inputs["soc_at_22_percent"] = soc
+   backend_api.py:904: 
+   backend_api.py:905:         raw_ykwh = self.last_inputs.get("yesterday_consumption_kwh")
+>> backend_api.py:906:         ykwh = _coerce_float(raw_ykwh, 18.0, field_name="yesterday_consumption_kwh", warnings=warnings)
+   backend_api.py:907:         if ykwh <= 0:
+   backend_api.py:908:             warnings.append(f"yesterday_consumption_kwh: must be > 0 -> default 18.0")
+   backend_api.py:909:             ykwh = 18.0
+   backend_api.py:910:         if raw_ykwh != ykwh:
+   backend_api.py:911:             changed = True
+   backend_api.py:912:         self.last_inputs["yesterday_consumption_kwh"] = ykwh
+   backend_api.py:913: 
+   backend_api.py:914:         self.last_inputs_sanitized_warnings = warnings
+   backend_api.py:915:         if changed:
+   backend_api.py:916:             self._save_inputs()
+   backend_api.py:917: 
+   backend_api.py:918:     def _sanitize_settings(self) -> None:
+   backend_api.py:919:         changed = False
+   backend_api.py:920:         if not isinstance(self.settings, dict):
+   backend_api.py:902:         self.last_inputs["soc_now_percent"] = soc
+   backend_api.py:903:         self.last_inputs["soc_at_22_percent"] = soc
+   backend_api.py:904: 
+   backend_api.py:905:         raw_ykwh = self.last_inputs.get("yesterday_consumption_kwh")
+   backend_api.py:906:         ykwh = _coerce_float(raw_ykwh, 18.0, field_name="yesterday_consumption_kwh", warnings=warnings)
+   backend_api.py:907:         if ykwh <= 0:
+>> backend_api.py:908:             warnings.append(f"yesterday_consumption_kwh: must be > 0 -> default 18.0")
+   backend_api.py:909:             ykwh = 18.0
+   backend_api.py:910:         if raw_ykwh != ykwh:
+   backend_api.py:911:             changed = True
+   backend_api.py:912:         self.last_inputs["yesterday_consumption_kwh"] = ykwh
+   backend_api.py:913: 
+   backend_api.py:914:         self.last_inputs_sanitized_warnings = warnings
+   backend_api.py:915:         if changed:
+   backend_api.py:916:             self._save_inputs()
+   backend_api.py:917: 
+   backend_api.py:918:     def _sanitize_settings(self) -> None:
+   backend_api.py:919:         changed = False
+   backend_api.py:920:         if not isinstance(self.settings, dict):
+   backend_api.py:921:             self.settings = self._build_settings_from_repo_defaults()
+   backend_api.py:922:             changed = True
+
+--- pattern: build_consumption_forecast\( ---
+   backend_api.py:1379:         total_s = float(pd.to_numeric(pv["pv_south_kwh"], errors="coerce").fillna(0.0).sum())
+   backend_api.py:1380:         split_total = total_e + total_s
+   backend_api.py:1381:         ratio_e, ratio_s = (total_e / split_total, total_s / split_total) if split_total > 0 else (0.5, 0.5)
+   backend_api.py:1382:         pv = core.ensure_pv_columns(pv, split_ratio=(ratio_e, ratio_s))
+   backend_api.py:1383: 
+   backend_api.py:1384:         cons_profile = core.load_consumption_profile_kwh_per_hour()
+>> backend_api.py:1385:         cons = core.build_consumption_forecast(cons_profile, yesterday_kwh, target_date, tz)
+   backend_api.py:1386:         offpeak_start, offpeak_end = core.compute_charging_window_for_target_date(target_date, cfg.get("tariff", {}))
+   backend_api.py:1387:         now_local = dt.datetime.now(ZoneInfo(tz))
+   backend_api.py:1388:         battery_kwh = float(cfg.get("battery", {}).get("battery_kwh", core.BATTERY_KWH))
+   backend_api.py:1389:         min_soc_percent = float(cfg.get("battery", {}).get("min_soc_percent", core.MIN_SOC_PERCENT))
+   backend_api.py:1390: 
+   backend_api.py:1391:         effective_daily_kwh, _effective_meta = fetch_effective_daily_kwh(SQLITE_PATH, lookback_runs=14, prefer_same_day_type=True)
+   backend_api.py:1392:         used_history = effective_daily_kwh is not None
+   backend_api.py:1393:         if effective_daily_kwh is None:
+   backend_api.py:1394:             effective_daily_kwh = float(yesterday_kwh)
+   backend_api.py:1395: 
+   backend_api.py:1396:         hours_until_offpeak_start = max(0.0, (offpeak_start - now_local).total_seconds() / 3600.0)
+   backend_api.py:1397:         daytime_pv_window = (
+   backend_api.py:1398:             offpeak_start.date() == now_local.date()
+   backend_api.py:1399:             and 8 <= now_local.hour < 18
+
+--- pattern: consumption_kwh\s*= ---
+   backend_api.py:1470:         pv["pv_total_decision_kwh"] = pd.to_numeric(decision_series.reindex(pv.index), errors="coerce")
+   backend_api.py:1471: 
+   backend_api.py:1472:         detail_df, flows_df, soc_series, charge_kw, cutoff_soc, cutoff_reason, charge_note, charge_target_reachable, charge_warning_text = core.run_detailed_plan(
+   backend_api.py:1473:             target_date=target_date,
+   backend_api.py:1474:             weather=weather,
+   backend_api.py:1475:             pv_df=pv,
+>> backend_api.py:1476:             consumption_kwh=cons,
+   backend_api.py:1477:             soc_at_22_percent=estimated_soc_percent,
+   backend_api.py:1478:             buffer_percent=buffer_percent,
+   backend_api.py:1479:             max_ac_charge_power_kw=user_max_ac_kw,
+   backend_api.py:1480:         )
+   backend_api.py:1481:         cutoff_adjusted_for_pv_headroom = str(cutoff_reason).startswith("CONFLICT")
+   backend_api.py:1482:         cutoff_adjustment_reason = (
+   backend_api.py:1483:             "Cutoff lowered to preserve PV headroom for daytime surplus handling."
+   backend_api.py:1484:             if cutoff_adjusted_for_pv_headroom
+   backend_api.py:1485:             else ""
+   backend_api.py:1486:         )
+   backend_api.py:1487:         pv_surplus_store_econ_enabled = bool(flows_df.attrs.get("pv_surplus_store_econ_enabled", False))
+   backend_api.py:1488:         pv_surplus_export_preferred_kwh = float(flows_df.attrs.get("pv_surplus_export_preferred_kwh", 0.0))
+   backend_api.py:1489:         pv_surplus_store_preferred_kwh = float(flows_df.attrs.get("pv_surplus_store_preferred_kwh", 0.0))
+   backend_api.py:1490:         pv_store_vs_export_decisions_count = int(flows_df.attrs.get("pv_store_vs_export_decisions_count", 0))
+   backend_api.py:1537:             flows_df=flows_df,
+   backend_api.py:1538:             soc_at_22=float(estimated_soc_percent) / 100.0,
+   backend_api.py:1539:             charge_kw=charge_kw,
+   backend_api.py:1540:             cutoff_soc=cutoff_soc,
+   backend_api.py:1541:             today_date=today_date,
+   backend_api.py:1542:             tomorrow_date=target_date,
+>> backend_api.py:1543:             total_consumption_kwh=cons_forecast_kwh,
+   backend_api.py:1544:             tariff_cfg=(cfg.get("tariff", {}) if isinstance(cfg, dict) else {}),
+   backend_api.py:1545:         )
+   backend_api.py:1546:         pv_quality.update(savings)
+   backend_api.py:1547: 
+   backend_api.py:1548:         pv_totals_kwh = {
+   backend_api.py:1549:             "p50": canonical_tomorrow_total_kwh,
+   backend_api.py:1550:             "p10": (
+   backend_api.py:1551:                 float(pd.to_numeric(pv["pv_total_low_kwh"], errors="coerce").sum(min_count=1))
+   backend_api.py:1552:                 if "pv_total_low_kwh" in pv.columns and not pd.isna(pd.to_numeric(pv["pv_total_low_kwh"], errors="coerce").sum(min_count=1))
+   backend_api.py:1553:                 else (float(ensemble_tomorrow.pv_ensemble_p10.sum(min_count=1)) if ensemble_tomorrow.pv_ensemble_p10 is not None else None)
+   backend_api.py:1554:             ),
+   backend_api.py:1555:             "p90": (
+   backend_api.py:1556:                 float(pd.to_numeric(pv["pv_total_high_kwh"], errors="coerce").sum(min_count=1))
+   backend_api.py:1557:                 if "pv_total_high_kwh" in pv.columns and not pd.isna(pd.to_numeric(pv["pv_total_high_kwh"], errors="coerce").sum(min_count=1))
+
+--- pattern: run_detailed_plan\( ---
+   backend_api.py:1466:         if decision_series is None:
+   backend_api.py:1467:             decision_series = ensemble_tomorrow.pv_ensemble_p50
+   backend_api.py:1468:         if decision_series is None:
+   backend_api.py:1469:             decision_series = ensemble_tomorrow.pv_ensemble_p50
+   backend_api.py:1470:         pv["pv_total_decision_kwh"] = pd.to_numeric(decision_series.reindex(pv.index), errors="coerce")
+   backend_api.py:1471: 
+>> backend_api.py:1472:         detail_df, flows_df, soc_series, charge_kw, cutoff_soc, cutoff_reason, charge_note, charge_target_reachable, charge_warning_text = core.run_detailed_plan(
+   backend_api.py:1473:             target_date=target_date,
+   backend_api.py:1474:             weather=weather,
+   backend_api.py:1475:             pv_df=pv,
+   backend_api.py:1476:             consumption_kwh=cons,
+   backend_api.py:1477:             soc_at_22_percent=estimated_soc_percent,
+   backend_api.py:1478:             buffer_percent=buffer_percent,
+   backend_api.py:1479:             max_ac_charge_power_kw=user_max_ac_kw,
+   backend_api.py:1480:         )
+   backend_api.py:1481:         cutoff_adjusted_for_pv_headroom = str(cutoff_reason).startswith("CONFLICT")
+   backend_api.py:1482:         cutoff_adjustment_reason = (
+   backend_api.py:1483:             "Cutoff lowered to preserve PV headroom for daytime surplus handling."
+   backend_api.py:1484:             if cutoff_adjusted_for_pv_headroom
+   backend_api.py:1485:             else ""
+   backend_api.py:1486:         )
+   backend_api.py:1528:         }
+   backend_api.py:1529:         if "loc" in quality_sig.parameters:
+   backend_api.py:1530:             quality_kwargs["loc"] = loc
+   backend_api.py:1531:         pv_quality = scoring.compute_pv_quality_score(**quality_kwargs)
+   backend_api.py:1532: 
+   backend_api.py:1533:         today_date = target_date - dt.timedelta(days=1)
+>> backend_api.py:1534:         # Savings cycle must start from estimated off-peak SOC for continuity with run_detailed_plan().
+   backend_api.py:1535:         savings = core.compute_euro_savings_no_battery_vs_plan(
+   backend_api.py:1536:             pv_df=pv,
+   backend_api.py:1537:             flows_df=flows_df,
+   backend_api.py:1538:             soc_at_22=float(estimated_soc_percent) / 100.0,
+   backend_api.py:1539:             charge_kw=charge_kw,
+   backend_api.py:1540:             cutoff_soc=cutoff_soc,
+   backend_api.py:1541:             today_date=today_date,
+   backend_api.py:1542:             tomorrow_date=target_date,
+   backend_api.py:1543:             total_consumption_kwh=cons_forecast_kwh,
+   backend_api.py:1544:             tariff_cfg=(cfg.get("tariff", {}) if isinstance(cfg, dict) else {}),
+   backend_api.py:1545:         )
+   backend_api.py:1546:         pv_quality.update(savings)
+   backend_api.py:1547: 
+   backend_api.py:1548:         pv_totals_kwh = {
+
+END. Paste step3_audit_compact.txt here (should be manageable).
