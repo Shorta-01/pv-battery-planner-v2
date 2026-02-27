@@ -1,0 +1,1139 @@
+
+==============================================================================================================
+1) backend_api.py — def _run(...) signature + usage of weather_models/forecast_mode/ensemble_method/pv_uncertainty/fast_mode/nowcast
+==============================================================================================================
+   backend_api.py:1032:         self._save_inputs()
+   backend_api.py:1033:         return self.last_inputs
+   backend_api.py:1034: 
+   backend_api.py:1035:     def _serialize_df(self, df: pd.DataFrame) -> dict:
+   backend_api.py:1036:         return json.loads(df.to_json(date_format="iso", orient="split"))
+   backend_api.py:1037: 
+   backend_api.py:1038:     def _serialize_series(self, s: pd.Series) -> dict:
+   backend_api.py:1039:         frame = s.to_frame(name="value")
+   backend_api.py:1040:         return self._serialize_df(frame)
+   backend_api.py:1041: 
+>> backend_api.py:1042:     def _run(
+   backend_api.py:1043:         self,
+   backend_api.py:1044:         target_date: dt.date,
+   backend_api.py:1045:         soc_percent: float,
+   backend_api.py:1046:         yesterday_kwh: float,
+   backend_api.py:1047:         buffer_percent: float,
+   backend_api.py:1048:         user_max_ac_kw: float,
+   backend_api.py:1049:         weather_models: list[str] | None,
+   backend_api.py:1050:         forecast_mode: str | None,
+   backend_api.py:1051:         ensemble_method: str,
+   backend_api.py:1052:         pv_uncertainty: bool,
+   backend_api.py:1053:         fast_mode: bool = False,
+   backend_api.py:1054:         use_satellite_nowcast_0_6h_override: bool | None = None,
+   backend_api.py:1055:     ) -> dict:
+   backend_api.py:1056:         run_started = time.perf_counter()
+   backend_api.py:1057:         cfg = self.settings["config"]
+   backend_api.py:1058:         loc_cfg = cfg.get("location", {})
+   backend_api.py:1059:         tz = str(loc_cfg.get("timezone", "Europe/Brussels"))
+   backend_api.py:1060:         loc = core.Location(
+   backend_api.py:1061:             name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
+   backend_api.py:1062:             latitude=float(loc_cfg["latitude"]),
+   backend_api.py:1063:             longitude=float(loc_cfg["longitude"]),
+   backend_api.py:1064:             elevation_m=float(loc_cfg["elevation_m"]) if loc_cfg.get("elevation_m") is not None else None,
+   backend_api.py:1065:         )
+   backend_api.py:1066: 
+   backend_api.py:1067:         mode = str(forecast_mode or "auto").lower().strip()
+
+==============================================================================================================
+backend_api.py — hits for: weather_models|forecast_mode|ensemble_method|pv_uncertainty|fast_mode|use_satellite_nowcast_0_6h
+==============================================================================================================
+   backend_api.py:44:     insert_actual_hourly_rows,
+   backend_api.py:45:     insert_error_event,
+   backend_api.py:46:     insert_forecast_run,
+   backend_api.py:47:     set_error_fixed,
+   backend_api.py:48: )
+   backend_api.py:49: from weather_ensemble import (
+   backend_api.py:50:     DEFAULT_ACCURACY_MODELS,
+   backend_api.py:51:     WEATHER_DISPLAY_VARS,
+>> backend_api.py:52:     WEATHER_MODELS,
+   backend_api.py:53:     auto_select_models_for_location,
+   backend_api.py:54:     build_ensemble_forecast,
+   backend_api.py:55:     should_use_satellite_nowcast_auto,
+   backend_api.py:56:     get_model_caps,
+   backend_api.py:57:     weather_models_payload,
+   backend_api.py:58:     select_week_ahead_models,
+   backend_api.py:59: )
+   backend_api.py:60: 
+   backend_api.py:61: LOCAL_STATE_DIR = Path("local_state")
+   backend_api.py:62: SETTINGS_PATH = LOCAL_STATE_DIR / "settings.json"
+   backend_api.py:63: INPUTS_PATH = LOCAL_STATE_DIR / "last_inputs.json"
+   backend_api.py:64: LATEST_RESULT_PATH = LOCAL_STATE_DIR / "latest_result.json"
+   backend_api.py:65: HISTORY_PATH = LOCAL_STATE_DIR / "results_history.json"
+   backend_api.py:66: SQLITE_PATH = LOCAL_STATE_DIR / "planner_history.sqlite"
+   backend_api.py:67: RUN_HISTORY_PATH = Path("run_history_log.json")
+   backend_api.py:68: TOKEN_PATH = LOCAL_STATE_DIR / "api_token.txt"
+   backend_api.py:69: DEFAULT_NIGHTLY_TIME = "22:00"
+   backend_api.py:70: DEFAULT_MAX_AC_CAP = 5.0
+   backend_api.py:49: from weather_ensemble import (
+   backend_api.py:50:     DEFAULT_ACCURACY_MODELS,
+   backend_api.py:51:     WEATHER_DISPLAY_VARS,
+   backend_api.py:52:     WEATHER_MODELS,
+   backend_api.py:53:     auto_select_models_for_location,
+   backend_api.py:54:     build_ensemble_forecast,
+   backend_api.py:55:     should_use_satellite_nowcast_auto,
+   backend_api.py:56:     get_model_caps,
+>> backend_api.py:57:     weather_models_payload,
+   backend_api.py:58:     select_week_ahead_models,
+   backend_api.py:59: )
+   backend_api.py:60: 
+   backend_api.py:61: LOCAL_STATE_DIR = Path("local_state")
+   backend_api.py:62: SETTINGS_PATH = LOCAL_STATE_DIR / "settings.json"
+   backend_api.py:63: INPUTS_PATH = LOCAL_STATE_DIR / "last_inputs.json"
+   backend_api.py:64: LATEST_RESULT_PATH = LOCAL_STATE_DIR / "latest_result.json"
+   backend_api.py:65: HISTORY_PATH = LOCAL_STATE_DIR / "results_history.json"
+   backend_api.py:66: SQLITE_PATH = LOCAL_STATE_DIR / "planner_history.sqlite"
+   backend_api.py:67: RUN_HISTORY_PATH = Path("run_history_log.json")
+   backend_api.py:68: TOKEN_PATH = LOCAL_STATE_DIR / "api_token.txt"
+   backend_api.py:69: DEFAULT_NIGHTLY_TIME = "22:00"
+   backend_api.py:70: DEFAULT_MAX_AC_CAP = 5.0
+   backend_api.py:71: SETTINGS_SOURCE_SETTINGS_JSON = "settings.json"
+   backend_api.py:72: SETTINGS_SOURCE_CONFIG_DEFAULTS = "config.json(defaults)"
+   backend_api.py:73: MAX_HISTORY = 30
+   backend_api.py:74: 
+   backend_api.py:75: PV_QUALITY_COLORS = {
+   backend_api.py:218: 
+   backend_api.py:219: 
+   backend_api.py:220: class RunNowPayload(BaseModel):
+   backend_api.py:221:     soc_now_percent: float | None = None
+   backend_api.py:222:     soc_at_22_percent: float | None = None
+   backend_api.py:223:     yesterday_consumption_kwh: float | None = Field(default=None, gt=0.0)
+   backend_api.py:224:     buffer_percent: float = Field(default=0.0, ge=0.0, le=10.0)
+   backend_api.py:225:     user_max_ac_kw: float | None = Field(default=None, ge=0.0)
+>> backend_api.py:226:     weather_models: list[str] | None = None
+   backend_api.py:227:     forecast_mode: str | None = None
+   backend_api.py:228:     ensemble_method: str = Field(default="weighted")
+   backend_api.py:229:     pv_uncertainty: bool = False
+   backend_api.py:230:     fast_mode: bool = False
+   backend_api.py:231:     use_satellite_nowcast_0_6h: bool | None = None
+   backend_api.py:232: 
+   backend_api.py:233: 
+   backend_api.py:234: class NightlyTickPayload(BaseModel):
+   backend_api.py:235:     force: bool = False
+   backend_api.py:236: 
+   backend_api.py:237: 
+   backend_api.py:238: def _resolve_soc_percent(
+   backend_api.py:239:     *,
+   backend_api.py:240:     payload_soc_now: float | None,
+   backend_api.py:241:     payload_soc_legacy: float | None,
+   backend_api.py:242:     source: dict,
+   backend_api.py:243:     warnings: list[str],
+   backend_api.py:244: ) -> float:
+   backend_api.py:219: 
+   backend_api.py:220: class RunNowPayload(BaseModel):
+   backend_api.py:221:     soc_now_percent: float | None = None
+   backend_api.py:222:     soc_at_22_percent: float | None = None
+   backend_api.py:223:     yesterday_consumption_kwh: float | None = Field(default=None, gt=0.0)
+   backend_api.py:224:     buffer_percent: float = Field(default=0.0, ge=0.0, le=10.0)
+   backend_api.py:225:     user_max_ac_kw: float | None = Field(default=None, ge=0.0)
+   backend_api.py:226:     weather_models: list[str] | None = None
+>> backend_api.py:227:     forecast_mode: str | None = None
+   backend_api.py:228:     ensemble_method: str = Field(default="weighted")
+   backend_api.py:229:     pv_uncertainty: bool = False
+   backend_api.py:230:     fast_mode: bool = False
+   backend_api.py:231:     use_satellite_nowcast_0_6h: bool | None = None
+   backend_api.py:232: 
+   backend_api.py:233: 
+   backend_api.py:234: class NightlyTickPayload(BaseModel):
+   backend_api.py:235:     force: bool = False
+   backend_api.py:236: 
+   backend_api.py:237: 
+   backend_api.py:238: def _resolve_soc_percent(
+   backend_api.py:239:     *,
+   backend_api.py:240:     payload_soc_now: float | None,
+   backend_api.py:241:     payload_soc_legacy: float | None,
+   backend_api.py:242:     source: dict,
+   backend_api.py:243:     warnings: list[str],
+   backend_api.py:244: ) -> float:
+   backend_api.py:245:     source_soc_now = source.get("soc_now_percent") if isinstance(source, dict) else None
+   backend_api.py:220: class RunNowPayload(BaseModel):
+   backend_api.py:221:     soc_now_percent: float | None = None
+   backend_api.py:222:     soc_at_22_percent: float | None = None
+   backend_api.py:223:     yesterday_consumption_kwh: float | None = Field(default=None, gt=0.0)
+   backend_api.py:224:     buffer_percent: float = Field(default=0.0, ge=0.0, le=10.0)
+   backend_api.py:225:     user_max_ac_kw: float | None = Field(default=None, ge=0.0)
+   backend_api.py:226:     weather_models: list[str] | None = None
+   backend_api.py:227:     forecast_mode: str | None = None
+>> backend_api.py:228:     ensemble_method: str = Field(default="weighted")
+   backend_api.py:229:     pv_uncertainty: bool = False
+   backend_api.py:230:     fast_mode: bool = False
+   backend_api.py:231:     use_satellite_nowcast_0_6h: bool | None = None
+   backend_api.py:232: 
+   backend_api.py:233: 
+   backend_api.py:234: class NightlyTickPayload(BaseModel):
+   backend_api.py:235:     force: bool = False
+   backend_api.py:236: 
+   backend_api.py:237: 
+   backend_api.py:238: def _resolve_soc_percent(
+   backend_api.py:239:     *,
+   backend_api.py:240:     payload_soc_now: float | None,
+   backend_api.py:241:     payload_soc_legacy: float | None,
+   backend_api.py:242:     source: dict,
+   backend_api.py:243:     warnings: list[str],
+   backend_api.py:244: ) -> float:
+   backend_api.py:245:     source_soc_now = source.get("soc_now_percent") if isinstance(source, dict) else None
+   backend_api.py:246:     source_soc_legacy = source.get("soc_at_22_percent") if isinstance(source, dict) else None
+   backend_api.py:221:     soc_now_percent: float | None = None
+   backend_api.py:222:     soc_at_22_percent: float | None = None
+   backend_api.py:223:     yesterday_consumption_kwh: float | None = Field(default=None, gt=0.0)
+   backend_api.py:224:     buffer_percent: float = Field(default=0.0, ge=0.0, le=10.0)
+   backend_api.py:225:     user_max_ac_kw: float | None = Field(default=None, ge=0.0)
+   backend_api.py:226:     weather_models: list[str] | None = None
+   backend_api.py:227:     forecast_mode: str | None = None
+   backend_api.py:228:     ensemble_method: str = Field(default="weighted")
+>> backend_api.py:229:     pv_uncertainty: bool = False
+   backend_api.py:230:     fast_mode: bool = False
+   backend_api.py:231:     use_satellite_nowcast_0_6h: bool | None = None
+   backend_api.py:232: 
+   backend_api.py:233: 
+   backend_api.py:234: class NightlyTickPayload(BaseModel):
+   backend_api.py:235:     force: bool = False
+   backend_api.py:236: 
+   backend_api.py:237: 
+   backend_api.py:238: def _resolve_soc_percent(
+   backend_api.py:239:     *,
+   backend_api.py:240:     payload_soc_now: float | None,
+   backend_api.py:241:     payload_soc_legacy: float | None,
+   backend_api.py:242:     source: dict,
+   backend_api.py:243:     warnings: list[str],
+   backend_api.py:244: ) -> float:
+   backend_api.py:245:     source_soc_now = source.get("soc_now_percent") if isinstance(source, dict) else None
+   backend_api.py:246:     source_soc_legacy = source.get("soc_at_22_percent") if isinstance(source, dict) else None
+   backend_api.py:247:     raw_soc = payload_soc_now
+   backend_api.py:222:     soc_at_22_percent: float | None = None
+   backend_api.py:223:     yesterday_consumption_kwh: float | None = Field(default=None, gt=0.0)
+   backend_api.py:224:     buffer_percent: float = Field(default=0.0, ge=0.0, le=10.0)
+   backend_api.py:225:     user_max_ac_kw: float | None = Field(default=None, ge=0.0)
+   backend_api.py:226:     weather_models: list[str] | None = None
+   backend_api.py:227:     forecast_mode: str | None = None
+   backend_api.py:228:     ensemble_method: str = Field(default="weighted")
+   backend_api.py:229:     pv_uncertainty: bool = False
+>> backend_api.py:230:     fast_mode: bool = False
+   backend_api.py:231:     use_satellite_nowcast_0_6h: bool | None = None
+   backend_api.py:232: 
+   backend_api.py:233: 
+   backend_api.py:234: class NightlyTickPayload(BaseModel):
+   backend_api.py:235:     force: bool = False
+   backend_api.py:236: 
+   backend_api.py:237: 
+   backend_api.py:238: def _resolve_soc_percent(
+   backend_api.py:239:     *,
+   backend_api.py:240:     payload_soc_now: float | None,
+   backend_api.py:241:     payload_soc_legacy: float | None,
+   backend_api.py:242:     source: dict,
+   backend_api.py:243:     warnings: list[str],
+   backend_api.py:244: ) -> float:
+   backend_api.py:245:     source_soc_now = source.get("soc_now_percent") if isinstance(source, dict) else None
+   backend_api.py:246:     source_soc_legacy = source.get("soc_at_22_percent") if isinstance(source, dict) else None
+   backend_api.py:247:     raw_soc = payload_soc_now
+   backend_api.py:248:     field_name = "soc_now_percent"
+   backend_api.py:223:     yesterday_consumption_kwh: float | None = Field(default=None, gt=0.0)
+   backend_api.py:224:     buffer_percent: float = Field(default=0.0, ge=0.0, le=10.0)
+   backend_api.py:225:     user_max_ac_kw: float | None = Field(default=None, ge=0.0)
+   backend_api.py:226:     weather_models: list[str] | None = None
+   backend_api.py:227:     forecast_mode: str | None = None
+   backend_api.py:228:     ensemble_method: str = Field(default="weighted")
+   backend_api.py:229:     pv_uncertainty: bool = False
+   backend_api.py:230:     fast_mode: bool = False
+>> backend_api.py:231:     use_satellite_nowcast_0_6h: bool | None = None
+   backend_api.py:232: 
+   backend_api.py:233: 
+   backend_api.py:234: class NightlyTickPayload(BaseModel):
+   backend_api.py:235:     force: bool = False
+   backend_api.py:236: 
+   backend_api.py:237: 
+   backend_api.py:238: def _resolve_soc_percent(
+   backend_api.py:239:     *,
+   backend_api.py:240:     payload_soc_now: float | None,
+   backend_api.py:241:     payload_soc_legacy: float | None,
+   backend_api.py:242:     source: dict,
+   backend_api.py:243:     warnings: list[str],
+   backend_api.py:244: ) -> float:
+   backend_api.py:245:     source_soc_now = source.get("soc_now_percent") if isinstance(source, dict) else None
+   backend_api.py:246:     source_soc_legacy = source.get("soc_at_22_percent") if isinstance(source, dict) else None
+   backend_api.py:247:     raw_soc = payload_soc_now
+   backend_api.py:248:     field_name = "soc_now_percent"
+   backend_api.py:249:     if raw_soc is None:
+   backend_api.py:695: 
+   backend_api.py:696:         fallback_used = code is None
+   backend_api.py:697:         if fallback_used:
+   backend_api.py:698:             code = 3
+   backend_api.py:699:             source_model_id = None
+   backend_api.py:700:             source_max_days = None
+   backend_api.py:701:             selection_policy = selection_policy or "hard_fallback"
+   backend_api.py:702: 
+>> backend_api.py:703:         model_labels = globals().get("WEATHER_MODELS", {}) if isinstance(globals().get("WEATHER_MODELS", {}), dict) else {}
+   backend_api.py:704:         out.append(
+   backend_api.py:705:             {
+   backend_api.py:706:                 "date": day.isoformat(),
+   backend_api.py:707:                 "p50_kwh": float(pv_totals_p50[i]) if pv_totals_p50[i] is not None else None,
+   backend_api.py:708:                 "p10_kwh": float(pv_totals_p10[i]) if pv_totals_p10 and i < len(pv_totals_p10) and pv_totals_p10[i] is not None else None,
+   backend_api.py:709:                 "p90_kwh": float(pv_totals_p90[i]) if pv_totals_p90 and i < len(pv_totals_p90) and pv_totals_p90[i] is not None else None,
+   backend_api.py:710:                 "weather_code": int(code),
+   backend_api.py:711:                 "weather_best_of_day": not fallback_used,
+   backend_api.py:712:                 "weather_code_source_model_id": source_model_id,
+   backend_api.py:713:                 "weather_code_source_model_label": (
+   backend_api.py:714:                     "Ensemble weather"
+   backend_api.py:715:                     if source_model_id == "ensemble_weather"
+   backend_api.py:716:                     else ((model_labels.get(source_model_id) or {}).get("label") if source_model_id else None)
+   backend_api.py:717:                 ),
+   backend_api.py:718:                 "weather_code_source_max_days": int(source_max_days) if source_max_days is not None else None,
+   backend_api.py:719:                 "icon_key": None,
+   backend_api.py:720:                 "weather_code_fallback_used": bool(fallback_used),
+   backend_api.py:721:                 "weather_code_selection_policy": selection_policy,
+   backend_api.py:1041: 
+   backend_api.py:1042:     def _run(
+   backend_api.py:1043:         self,
+   backend_api.py:1044:         target_date: dt.date,
+   backend_api.py:1045:         soc_percent: float,
+   backend_api.py:1046:         yesterday_kwh: float,
+   backend_api.py:1047:         buffer_percent: float,
+   backend_api.py:1048:         user_max_ac_kw: float,
+>> backend_api.py:1049:         weather_models: list[str] | None,
+   backend_api.py:1050:         forecast_mode: str | None,
+   backend_api.py:1051:         ensemble_method: str,
+   backend_api.py:1052:         pv_uncertainty: bool,
+   backend_api.py:1053:         fast_mode: bool = False,
+   backend_api.py:1054:         use_satellite_nowcast_0_6h_override: bool | None = None,
+   backend_api.py:1055:     ) -> dict:
+   backend_api.py:1056:         run_started = time.perf_counter()
+   backend_api.py:1057:         cfg = self.settings["config"]
+   backend_api.py:1058:         loc_cfg = cfg.get("location", {})
+   backend_api.py:1059:         tz = str(loc_cfg.get("timezone", "Europe/Brussels"))
+   backend_api.py:1060:         loc = core.Location(
+   backend_api.py:1061:             name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
+   backend_api.py:1062:             latitude=float(loc_cfg["latitude"]),
+   backend_api.py:1063:             longitude=float(loc_cfg["longitude"]),
+   backend_api.py:1064:             elevation_m=float(loc_cfg["elevation_m"]) if loc_cfg.get("elevation_m") is not None else None,
+   backend_api.py:1065:         )
+   backend_api.py:1066: 
+   backend_api.py:1067:         mode = str(forecast_mode or "auto").lower().strip()
+   backend_api.py:1042:     def _run(
+   backend_api.py:1043:         self,
+   backend_api.py:1044:         target_date: dt.date,
+   backend_api.py:1045:         soc_percent: float,
+   backend_api.py:1046:         yesterday_kwh: float,
+   backend_api.py:1047:         buffer_percent: float,
+   backend_api.py:1048:         user_max_ac_kw: float,
+   backend_api.py:1049:         weather_models: list[str] | None,
+>> backend_api.py:1050:         forecast_mode: str | None,
+   backend_api.py:1051:         ensemble_method: str,
+   backend_api.py:1052:         pv_uncertainty: bool,
+   backend_api.py:1053:         fast_mode: bool = False,
+   backend_api.py:1054:         use_satellite_nowcast_0_6h_override: bool | None = None,
+   backend_api.py:1055:     ) -> dict:
+   backend_api.py:1056:         run_started = time.perf_counter()
+   backend_api.py:1057:         cfg = self.settings["config"]
+   backend_api.py:1058:         loc_cfg = cfg.get("location", {})
+   backend_api.py:1059:         tz = str(loc_cfg.get("timezone", "Europe/Brussels"))
+   backend_api.py:1060:         loc = core.Location(
+   backend_api.py:1061:             name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
+   backend_api.py:1062:             latitude=float(loc_cfg["latitude"]),
+   backend_api.py:1063:             longitude=float(loc_cfg["longitude"]),
+   backend_api.py:1064:             elevation_m=float(loc_cfg["elevation_m"]) if loc_cfg.get("elevation_m") is not None else None,
+   backend_api.py:1065:         )
+   backend_api.py:1066: 
+   backend_api.py:1067:         mode = str(forecast_mode or "auto").lower().strip()
+   backend_api.py:1068:         if mode not in ("auto", "expert"):
+   backend_api.py:1043:         self,
+   backend_api.py:1044:         target_date: dt.date,
+   backend_api.py:1045:         soc_percent: float,
+   backend_api.py:1046:         yesterday_kwh: float,
+   backend_api.py:1047:         buffer_percent: float,
+   backend_api.py:1048:         user_max_ac_kw: float,
+   backend_api.py:1049:         weather_models: list[str] | None,
+   backend_api.py:1050:         forecast_mode: str | None,
+>> backend_api.py:1051:         ensemble_method: str,
+   backend_api.py:1052:         pv_uncertainty: bool,
+   backend_api.py:1053:         fast_mode: bool = False,
+   backend_api.py:1054:         use_satellite_nowcast_0_6h_override: bool | None = None,
+   backend_api.py:1055:     ) -> dict:
+   backend_api.py:1056:         run_started = time.perf_counter()
+   backend_api.py:1057:         cfg = self.settings["config"]
+   backend_api.py:1058:         loc_cfg = cfg.get("location", {})
+   backend_api.py:1059:         tz = str(loc_cfg.get("timezone", "Europe/Brussels"))
+   backend_api.py:1060:         loc = core.Location(
+   backend_api.py:1061:             name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
+   backend_api.py:1062:             latitude=float(loc_cfg["latitude"]),
+   backend_api.py:1063:             longitude=float(loc_cfg["longitude"]),
+   backend_api.py:1064:             elevation_m=float(loc_cfg["elevation_m"]) if loc_cfg.get("elevation_m") is not None else None,
+   backend_api.py:1065:         )
+   backend_api.py:1066: 
+   backend_api.py:1067:         mode = str(forecast_mode or "auto").lower().strip()
+   backend_api.py:1068:         if mode not in ("auto", "expert"):
+   backend_api.py:1069:             mode = "auto"
+
+==============================================================================================================
+backend_api.py — hits for: weather_ensemble
+==============================================================================================================
+   backend_api.py:41:     fetch_latest_full_run,
+   backend_api.py:42:     fetch_full_run_by_id,
+   backend_api.py:43:     init_db,
+   backend_api.py:44:     insert_actual_hourly_rows,
+   backend_api.py:45:     insert_error_event,
+   backend_api.py:46:     insert_forecast_run,
+   backend_api.py:47:     set_error_fixed,
+   backend_api.py:48: )
+>> backend_api.py:49: from weather_ensemble import (
+   backend_api.py:50:     DEFAULT_ACCURACY_MODELS,
+   backend_api.py:51:     WEATHER_DISPLAY_VARS,
+   backend_api.py:52:     WEATHER_MODELS,
+   backend_api.py:53:     auto_select_models_for_location,
+   backend_api.py:54:     build_ensemble_forecast,
+   backend_api.py:55:     should_use_satellite_nowcast_auto,
+   backend_api.py:56:     get_model_caps,
+   backend_api.py:57:     weather_models_payload,
+   backend_api.py:58:     select_week_ahead_models,
+   backend_api.py:59: )
+   backend_api.py:60: 
+   backend_api.py:61: LOCAL_STATE_DIR = Path("local_state")
+   backend_api.py:62: SETTINGS_PATH = LOCAL_STATE_DIR / "settings.json"
+   backend_api.py:63: INPUTS_PATH = LOCAL_STATE_DIR / "last_inputs.json"
+   backend_api.py:64: LATEST_RESULT_PATH = LOCAL_STATE_DIR / "latest_result.json"
+   backend_api.py:65: HISTORY_PATH = LOCAL_STATE_DIR / "results_history.json"
+   backend_api.py:66: SQLITE_PATH = LOCAL_STATE_DIR / "planner_history.sqlite"
+   backend_api.py:67: RUN_HISTORY_PATH = Path("run_history_log.json")
+   backend_api.py:374:         else:
+   backend_api.py:375:             df = df.tz_convert(tz)
+   backend_api.py:376: 
+   backend_api.py:377:     day_df = df.loc[(df.index >= day_start) & (df.index < day_end), ["weather_code"]]
+   backend_api.py:378:     return _best_of_day_weather_code(day_df)
+   backend_api.py:379: 
+   backend_api.py:380: 
+   backend_api.py:381: def _best_of_day_from_ensemble_weather_table(
+>> backend_api.py:382:     weather_ensemble_df: pd.DataFrame | None,
+   backend_api.py:383:     day_start: pd.Timestamp,
+   backend_api.py:384:     day_end: pd.Timestamp,
+   backend_api.py:385:     tz: str,
+   backend_api.py:386: ) -> int | None:
+   backend_api.py:387:     if not isinstance(weather_ensemble_df, pd.DataFrame) or "weather_code" not in weather_ensemble_df.columns:
+   backend_api.py:388:         return None
+   backend_api.py:389:     df = weather_ensemble_df
+   backend_api.py:390:     idx = df.index
+   backend_api.py:391:     if isinstance(idx, pd.DatetimeIndex):
+   backend_api.py:392:         if idx.tz is None:
+   backend_api.py:393:             df = df.copy()
+   backend_api.py:394:             df.index = df.index.tz_localize(tz)
+   backend_api.py:395:         else:
+   backend_api.py:396:             df = df.tz_convert(tz)
+   backend_api.py:397:     day_df = df.loc[(df.index >= day_start) & (df.index < day_end), ["weather_code"]]
+   backend_api.py:398:     return _best_of_day_weather_code(day_df)
+   backend_api.py:399: 
+   backend_api.py:400: 
+   backend_api.py:379: 
+   backend_api.py:380: 
+   backend_api.py:381: def _best_of_day_from_ensemble_weather_table(
+   backend_api.py:382:     weather_ensemble_df: pd.DataFrame | None,
+   backend_api.py:383:     day_start: pd.Timestamp,
+   backend_api.py:384:     day_end: pd.Timestamp,
+   backend_api.py:385:     tz: str,
+   backend_api.py:386: ) -> int | None:
+>> backend_api.py:387:     if not isinstance(weather_ensemble_df, pd.DataFrame) or "weather_code" not in weather_ensemble_df.columns:
+   backend_api.py:388:         return None
+   backend_api.py:389:     df = weather_ensemble_df
+   backend_api.py:390:     idx = df.index
+   backend_api.py:391:     if isinstance(idx, pd.DatetimeIndex):
+   backend_api.py:392:         if idx.tz is None:
+   backend_api.py:393:             df = df.copy()
+   backend_api.py:394:             df.index = df.index.tz_localize(tz)
+   backend_api.py:395:         else:
+   backend_api.py:396:             df = df.tz_convert(tz)
+   backend_api.py:397:     day_df = df.loc[(df.index >= day_start) & (df.index < day_end), ["weather_code"]]
+   backend_api.py:398:     return _best_of_day_weather_code(day_df)
+   backend_api.py:399: 
+   backend_api.py:400: 
+   backend_api.py:401: def _pick_week_ahead_weather_code(
+   backend_api.py:402:     day_offset: int,
+   backend_api.py:403:     *,
+   backend_api.py:404:     target_date: dt.date,
+   backend_api.py:405:     tz: str,
+   backend_api.py:381: def _best_of_day_from_ensemble_weather_table(
+   backend_api.py:382:     weather_ensemble_df: pd.DataFrame | None,
+   backend_api.py:383:     day_start: pd.Timestamp,
+   backend_api.py:384:     day_end: pd.Timestamp,
+   backend_api.py:385:     tz: str,
+   backend_api.py:386: ) -> int | None:
+   backend_api.py:387:     if not isinstance(weather_ensemble_df, pd.DataFrame) or "weather_code" not in weather_ensemble_df.columns:
+   backend_api.py:388:         return None
+>> backend_api.py:389:     df = weather_ensemble_df
+   backend_api.py:390:     idx = df.index
+   backend_api.py:391:     if isinstance(idx, pd.DatetimeIndex):
+   backend_api.py:392:         if idx.tz is None:
+   backend_api.py:393:             df = df.copy()
+   backend_api.py:394:             df.index = df.index.tz_localize(tz)
+   backend_api.py:395:         else:
+   backend_api.py:396:             df = df.tz_convert(tz)
+   backend_api.py:397:     day_df = df.loc[(df.index >= day_start) & (df.index < day_end), ["weather_code"]]
+   backend_api.py:398:     return _best_of_day_weather_code(day_df)
+   backend_api.py:399: 
+   backend_api.py:400: 
+   backend_api.py:401: def _pick_week_ahead_weather_code(
+   backend_api.py:402:     day_offset: int,
+   backend_api.py:403:     *,
+   backend_api.py:404:     target_date: dt.date,
+   backend_api.py:405:     tz: str,
+   backend_api.py:406:     weather_by_model: dict[str, object],
+   backend_api.py:407:     weights_used: dict[str, float] | None,
+   backend_api.py:576:     weights_used: dict[str, float] | None = None,
+   backend_api.py:577:     weather_primary_model_id: str | None = None,
+   backend_api.py:578:     derived_weather_code_by_model: dict[str, bool] | None = None,
+   backend_api.py:579:     # Backward-compatible args used by isolated function tests.
+   backend_api.py:580:     hourly_pv_p50: pd.Series | None = None,
+   backend_api.py:581:     hourly_pv_p10: pd.Series | None = None,
+   backend_api.py:582:     hourly_pv_p90: pd.Series | None = None,
+   backend_api.py:583:     weather_code_series: pd.Series | None = None,
+>> backend_api.py:584:     weather_ensemble_df: pd.DataFrame | None = None,
+   backend_api.py:585:     week_weather_code_policy: str | None = None,
+   backend_api.py:586: ) -> list[dict[str, object]]:
+   backend_api.py:587:     if pv_totals_p50 is None:
+   backend_api.py:588:         def _daily_totals(series: pd.Series | None) -> list[float | None]:
+   backend_api.py:589:             if series is None or len(series) == 0:
+   backend_api.py:590:                 return [None] * 7
+   backend_api.py:591:             s = pd.to_numeric(series, errors="coerce")
+   backend_api.py:592:             if isinstance(s.index, pd.DatetimeIndex):
+   backend_api.py:593:                 if s.index.tz is None:
+   backend_api.py:594:                     s.index = s.index.tz_localize(tz)
+   backend_api.py:595:                 else:
+   backend_api.py:596:                     s = s.tz_convert(tz)
+   backend_api.py:597:             daily = s.resample("D").sum(min_count=1)
+   backend_api.py:598:             out_vals: list[float | None] = []
+   backend_api.py:599:             for i in range(7):
+   backend_api.py:600:                 v = daily.iloc[i] if i < len(daily) else None
+   backend_api.py:601:                 out_vals.append(None if v is None or pd.isna(v) else float(v))
+   backend_api.py:602:             return out_vals
+   backend_api.py:618:         weather_icon_vote_breakdown: dict[str, object] | None = None
+   backend_api.py:619: 
+   backend_api.py:620:         day_start = pd.Timestamp(dt.datetime.combine(day, dt.time(0, 0)), tz=tz)
+   backend_api.py:621:         day_end = day_start + pd.Timedelta(days=1)
+   backend_api.py:622:         selection_policy = week_weather_code_policy
+   backend_api.py:623: 
+   backend_api.py:624:         ensemble_picker = globals().get("_best_of_day_from_ensemble_weather_table")
+   backend_api.py:625:         if callable(ensemble_picker):
+>> backend_api.py:626:             ensemble_code = ensemble_picker(weather_ensemble_df, day_start, day_end, tz)
+   backend_api.py:627:         else:
+   backend_api.py:628:             ensemble_code = _best_of_day_weather_code(
+   backend_api.py:629:                 weather_ensemble_df.loc[(weather_ensemble_df.index >= day_start) & (weather_ensemble_df.index < day_end), ["weather_code"]]
+   backend_api.py:630:             ) if isinstance(weather_ensemble_df, pd.DataFrame) and "weather_code" in weather_ensemble_df.columns and isinstance(weather_ensemble_df.index, pd.DatetimeIndex) else None
+   backend_api.py:631:         if ensemble_code is not None:
+   backend_api.py:632:             code = int(ensemble_code)
+   backend_api.py:633:             source_model_id = "ensemble_weather"
+   backend_api.py:634:             source_max_days = None
+   backend_api.py:635:             selection_policy = selection_policy or "ensemble_best_of_day"
+   backend_api.py:636:         else:
+   backend_api.py:637:             vote_picker = globals().get("_pick_week_ahead_weather_code_vote")
+   backend_api.py:638:             if callable(vote_picker):
+   backend_api.py:639:                 vote_code, vote_diag = vote_picker(
+   backend_api.py:640:                     i,
+   backend_api.py:641:                     target_date=target_date,
+   backend_api.py:642:                     tz=tz,
+   backend_api.py:643:                     weather_by_model=weather_by_model or {},
+   backend_api.py:644:                     weights_used=weights_used,
+   backend_api.py:621:         day_end = day_start + pd.Timedelta(days=1)
+   backend_api.py:622:         selection_policy = week_weather_code_policy
+   backend_api.py:623: 
+   backend_api.py:624:         ensemble_picker = globals().get("_best_of_day_from_ensemble_weather_table")
+   backend_api.py:625:         if callable(ensemble_picker):
+   backend_api.py:626:             ensemble_code = ensemble_picker(weather_ensemble_df, day_start, day_end, tz)
+   backend_api.py:627:         else:
+   backend_api.py:628:             ensemble_code = _best_of_day_weather_code(
+>> backend_api.py:629:                 weather_ensemble_df.loc[(weather_ensemble_df.index >= day_start) & (weather_ensemble_df.index < day_end), ["weather_code"]]
+   backend_api.py:630:             ) if isinstance(weather_ensemble_df, pd.DataFrame) and "weather_code" in weather_ensemble_df.columns and isinstance(weather_ensemble_df.index, pd.DatetimeIndex) else None
+   backend_api.py:631:         if ensemble_code is not None:
+   backend_api.py:632:             code = int(ensemble_code)
+   backend_api.py:633:             source_model_id = "ensemble_weather"
+   backend_api.py:634:             source_max_days = None
+   backend_api.py:635:             selection_policy = selection_policy or "ensemble_best_of_day"
+   backend_api.py:636:         else:
+   backend_api.py:637:             vote_picker = globals().get("_pick_week_ahead_weather_code_vote")
+   backend_api.py:638:             if callable(vote_picker):
+   backend_api.py:639:                 vote_code, vote_diag = vote_picker(
+   backend_api.py:640:                     i,
+   backend_api.py:641:                     target_date=target_date,
+   backend_api.py:642:                     tz=tz,
+   backend_api.py:643:                     weather_by_model=weather_by_model or {},
+   backend_api.py:644:                     weights_used=weights_used,
+   backend_api.py:645:                     primary_id=weather_primary_model_id,
+   backend_api.py:646:                     derived_weather_code_by_model=derived_weather_code_by_model,
+   backend_api.py:647:                 )
+   backend_api.py:622:         selection_policy = week_weather_code_policy
+   backend_api.py:623: 
+   backend_api.py:624:         ensemble_picker = globals().get("_best_of_day_from_ensemble_weather_table")
+   backend_api.py:625:         if callable(ensemble_picker):
+   backend_api.py:626:             ensemble_code = ensemble_picker(weather_ensemble_df, day_start, day_end, tz)
+   backend_api.py:627:         else:
+   backend_api.py:628:             ensemble_code = _best_of_day_weather_code(
+   backend_api.py:629:                 weather_ensemble_df.loc[(weather_ensemble_df.index >= day_start) & (weather_ensemble_df.index < day_end), ["weather_code"]]
+>> backend_api.py:630:             ) if isinstance(weather_ensemble_df, pd.DataFrame) and "weather_code" in weather_ensemble_df.columns and isinstance(weather_ensemble_df.index, pd.DatetimeIndex) else None
+   backend_api.py:631:         if ensemble_code is not None:
+   backend_api.py:632:             code = int(ensemble_code)
+   backend_api.py:633:             source_model_id = "ensemble_weather"
+   backend_api.py:634:             source_max_days = None
+   backend_api.py:635:             selection_policy = selection_policy or "ensemble_best_of_day"
+   backend_api.py:636:         else:
+   backend_api.py:637:             vote_picker = globals().get("_pick_week_ahead_weather_code_vote")
+   backend_api.py:638:             if callable(vote_picker):
+   backend_api.py:639:                 vote_code, vote_diag = vote_picker(
+   backend_api.py:640:                     i,
+   backend_api.py:641:                     target_date=target_date,
+   backend_api.py:642:                     tz=tz,
+   backend_api.py:643:                     weather_by_model=weather_by_model or {},
+   backend_api.py:644:                     weights_used=weights_used,
+   backend_api.py:645:                     primary_id=weather_primary_model_id,
+   backend_api.py:646:                     derived_weather_code_by_model=derived_weather_code_by_model,
+   backend_api.py:647:                 )
+   backend_api.py:648:                 if vote_code is not None:
+   backend_api.py:1182:                     sort_keys=True,
+   backend_api.py:1183:                 ),
+   backend_api.py:1184:                 "config": cfg,
+   backend_api.py:1185:                 "created_at_utc": run_at_utc,
+   backend_api.py:1186:                 "metrics": {
+   backend_api.py:1187:                     "pv_forecast_kwh": 0.0,
+   backend_api.py:1188:                     "cons_forecast_kwh": float(yesterday_kwh),
+   backend_api.py:1189:                 },
+>> backend_api.py:1190:                 "weather_ensemble": {
+   backend_api.py:1191:                     "selected_models": tomorrow_models,
+   backend_api.py:1192:                     "ensemble_method": ensemble_method_tomorrow,
+   backend_api.py:1193:                     "weights_used": getattr(exc, "weights_used", None),
+   backend_api.py:1194:                     "primary_model_id": None,
+   backend_api.py:1195:                     "failed_models": failed_models,
+   backend_api.py:1196:                     "failure_reasons_by_model": failed_reasons,
+   backend_api.py:1197:                     "failed_model_reasons": failed_reasons,
+   backend_api.py:1198:                     "model_live_failed_used_cached": {},
+   backend_api.py:1199:                     "fast_mode": bool(fast_mode),
+   backend_api.py:1200:                 },
+   backend_api.py:1201:                 "forecast_mode_effective": mode,
+   backend_api.py:1202:                 "tomorrow_models_used": [],
+   backend_api.py:1203:                 "week_ahead_models_considered": list(week_models),
+   backend_api.py:1204:                 "weather_by_model": {},
+   backend_api.py:1205:             }
+   backend_api.py:1206:             insert_forecast_run(str(SQLITE_PATH), error_payload)
+   backend_api.py:1207:             self.latest_result = error_payload
+   backend_api.py:1208:             self.history.append(_to_history_summary(error_payload))
+   backend_api.py:1344:             tz=tz,
+   backend_api.py:1345:             pv_totals_p50=pv_totals_p50,
+   backend_api.py:1346:             pv_totals_p10=pv_totals_p10,
+   backend_api.py:1347:             pv_totals_p90=pv_totals_p90,
+   backend_api.py:1348:             weather_by_model=weather_by_model,
+   backend_api.py:1349:             weights_used=weights_used_week,
+   backend_api.py:1350:             weather_primary_model_id=primary_id,
+   backend_api.py:1351:             derived_weather_code_by_model=derived_weather_code_by_model_week,
+>> backend_api.py:1352:             weather_ensemble_df=getattr(getattr(ensemble_week, "weather_ensemble_table", None), "df", None),
+   backend_api.py:1353:         )
+   backend_api.py:1354:         pv_week_ahead = pv_week_ahead_all[1:7]
+   backend_api.py:1355: 
+   backend_api.py:1356:         warnings = list(dict.fromkeys(warnings))
+   backend_api.py:1357:         status = "degraded" if warnings else "ok"
+   backend_api.py:1358: 
+   backend_api.py:1359:         weather = ensemble_tomorrow.weather_primary
+   backend_api.py:1360:         tomorrow_index, tomorrow_index_dst_adjusted = core.build_local_day_hour_index(target_date, tz)
+   backend_api.py:1361:         if len(tomorrow_index) != 24:
+   backend_api.py:1362:             raise RuntimeError(f"INV-T4 violation: expected 24 hourly slots, got {len(tomorrow_index)}")
+   backend_api.py:1363: 
+   backend_api.py:1364:         pv = pd.DataFrame(index=tomorrow_index)
+   backend_api.py:1365:         pv["pv_east_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_east_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1366:         pv["pv_south_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_south_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1367:         pv["pv_total_unclipped_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_unclipped_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1368:         pv["pv_total_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1369:         if ensemble_tomorrow.pv_ensemble_p10 is not None:
+   backend_api.py:1370:             pv["pv_total_low_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p10.reindex(pv.index), errors="coerce")
+   backend_api.py:1647:         inputs_used["pv_decision_scenario"] = decision_quantile
+   backend_api.py:1648:         inputs_used["pv_decision_reason"] = decision_reason
+   backend_api.py:1649: 
+   backend_api.py:1650:         payload = {
+   backend_api.py:1651:             "run_id": run_id,
+   backend_api.py:1652:             "target_date": target_date.isoformat(),
+   backend_api.py:1653:             "weather": self._serialize_df(weather.df),
+   backend_api.py:1654:             "weather_primary_model_id": ensemble_tomorrow.weather_primary_model_id,
+>> backend_api.py:1655:             "weather_ensemble_table": self._serialize_df(getattr(getattr(ensemble_tomorrow, "weather_ensemble_table", None), "df", pd.DataFrame(index=pv.index))),
+   backend_api.py:1656:             "weather_by_model": {model_id: self._serialize_df(fr.df) for model_id, fr in (getattr(ensemble_tomorrow, "weather_by_model", {}) or {}).items()},
+   backend_api.py:1657:             "pv_by_model": {model_id: self._serialize_df(model_pv) for model_id, model_pv in (getattr(ensemble_tomorrow, "pv_by_model", {}) or {}).items()},
+   backend_api.py:1658:             "derived_irradiance_by_model": getattr(ensemble_tomorrow, "derived_irradiance_by_model", {}),
+   backend_api.py:1659:             "derived_weather_code_by_model": getattr(ensemble_tomorrow, "derived_weather_code_by_model", {}),
+   backend_api.py:1660:             "quality_weight_factors_by_model": getattr(ensemble_tomorrow, "quality_weight_factors_by_model", {}),
+   backend_api.py:1661:             "pv": self._serialize_df(pv),
+   backend_api.py:1662:             "detail": self._serialize_df(detail_df),
+   backend_api.py:1663:             "flows": self._serialize_df(flows_df),
+   backend_api.py:1664:             "soc": self._serialize_series(soc_series),
+   backend_api.py:1665:             "sunrise": pd.Timestamp(weather.sunrise).isoformat(),
+   backend_api.py:1666:             "sunset": pd.Timestamp(weather.sunset).isoformat(),
+   backend_api.py:1667:             "metrics": {
+   backend_api.py:1668:                 "charge_kw": float(charge_kw),
+   backend_api.py:1669:                 "cutoff_soc": float(cutoff_soc),
+   backend_api.py:1670:                 "cutoff_reason": cutoff_reason,
+   backend_api.py:1671:                 "charge_note": charge_note,
+   backend_api.py:1672:                 "charge_target_reachable": bool(charge_target_reachable),
+   backend_api.py:1673:                 "charge_warning_text": str(charge_warning_text or ""),
+   backend_api.py:1749:                     "pv_uncertainty_enabled": bool(pv_uncertainty),
+   backend_api.py:1750:                     "per_model_pv_totals_kwh": getattr(ensemble_tomorrow, "per_model_pv_totals_kwh", {}),
+   backend_api.py:1751:                     "pv_totals_kwh": pv_totals_kwh,
+   backend_api.py:1752:                 },
+   backend_api.py:1753:                 sort_keys=True,
+   backend_api.py:1754:             ),
+   backend_api.py:1755:             "config": cfg,
+   backend_api.py:1756:             "created_at_utc": run_at_utc,
+>> backend_api.py:1757:             "weather_ensemble": {
+   backend_api.py:1758:                 "selected_models": getattr(ensemble_tomorrow, "selected_models", tomorrow_models),
+   backend_api.py:1759:                 "ensemble_method": ensemble_method_tomorrow,
+   backend_api.py:1760:                 "weights_used": getattr(ensemble_tomorrow, "weights_used", None),
+   backend_api.py:1761:                 "primary_model_id": ensemble_tomorrow.weather_primary_model_id,
+   backend_api.py:1762:                 "per_model_pv_totals_kwh": getattr(ensemble_tomorrow, "per_model_pv_totals_kwh", {}),
+   backend_api.py:1763:                 "pv_totals_kwh": pv_totals_kwh if pv_uncertainty else None,
+   backend_api.py:1764:                 "pv_tomorrow_low_high_kwh": pv_tomorrow_low_high_kwh,
+   backend_api.py:1765:                 "pv_tomorrow_model_spread_kwh": pv_model_spread,
+   backend_api.py:1766:                 "pv_week_ahead": pv_week_ahead,
+   backend_api.py:1767:                 "ensemble_method_week_ahead": ensemble_method_week,
+   backend_api.py:1768:                 "missing_vars_by_model": getattr(ensemble_tomorrow, "missing_vars_by_model", {}),
+   backend_api.py:1769:                 "derived_irradiance_by_model": getattr(ensemble_tomorrow, "derived_irradiance_by_model", {}),
+   backend_api.py:1770:                 "derived_weather_code_by_model": getattr(ensemble_tomorrow, "derived_weather_code_by_model", {}),
+   backend_api.py:1771:                 "derived_irradiance_hours_by_model": getattr(ensemble_tomorrow, "derived_irradiance_hours_by_model", {}),
+   backend_api.py:1772:                 "quality_weight_factors_by_model": getattr(ensemble_tomorrow, "quality_weight_factors_by_model", {}),
+   backend_api.py:1773:                 "fetch_meta_by_model": getattr(ensemble_tomorrow, "fetch_meta_by_model", {}),
+   backend_api.py:1774:                 "failed_models": getattr(ensemble_tomorrow, "failed_models", []),
+   backend_api.py:1775:                 "failed_model_reasons": getattr(ensemble_tomorrow, "failed_model_reasons", {}),
+
+==============================================================================================================
+backend_api.py — hits for: EnsembleWeatherResult|pv_ensemble_
+==============================================================================================================
+   backend_api.py:1311:             for i in range(days):
+   backend_api.py:1312:                 if i >= len(daily_total) or daily_total.iloc[i] <= 0:
+   backend_api.py:1313:                     out.append(None)
+   backend_api.py:1314:                 else:
+   backend_api.py:1315:                     out.append(float(daily_valid.iloc[i] / daily_total.iloc[i]))
+   backend_api.py:1316:             return out
+   backend_api.py:1317: 
+   backend_api.py:1318:         if ensemble_week is not None:
+>> backend_api.py:1319:             pv_totals_p50 = _daily_totals_nullable(ensemble_week.pv_ensemble_p50)
+   backend_api.py:1320:             pv_totals_p10 = _daily_totals_nullable(ensemble_week.pv_ensemble_p10)
+   backend_api.py:1321:             pv_totals_p90 = _daily_totals_nullable(ensemble_week.pv_ensemble_p90)
+   backend_api.py:1322:             primary_id = getattr(ensemble_week, "weather_primary_model_id", None)
+   backend_api.py:1323:             weather_by_model = getattr(ensemble_week, "weather_by_model", {}) or {}
+   backend_api.py:1324:             weights_used_week = getattr(ensemble_week, "weights_used", None)
+   backend_api.py:1325:             derived_weather_code_by_model_week = getattr(ensemble_week, "derived_weather_code_by_model", {}) or {}
+   backend_api.py:1326:             week_models_used_count_per_hour = getattr(ensemble_week, "pv_models_used_count_per_hour", None)
+   backend_api.py:1327:         else:
+   backend_api.py:1328:             pv_totals_p50 = [None] * 7
+   backend_api.py:1329:             pv_totals_p10 = [None] * 7
+   backend_api.py:1330:             pv_totals_p90 = [None] * 7
+   backend_api.py:1331:             primary_id = None
+   backend_api.py:1332:             weather_by_model = {}
+   backend_api.py:1333:             weights_used_week = None
+   backend_api.py:1334:             derived_weather_code_by_model_week = {}
+   backend_api.py:1335:             week_models_used_count_per_hour = None
+   backend_api.py:1336: 
+   backend_api.py:1337:         week_models_count_per_day = _daily_counts_nullable(week_models_used_count_per_hour)
+   backend_api.py:1312:                 if i >= len(daily_total) or daily_total.iloc[i] <= 0:
+   backend_api.py:1313:                     out.append(None)
+   backend_api.py:1314:                 else:
+   backend_api.py:1315:                     out.append(float(daily_valid.iloc[i] / daily_total.iloc[i]))
+   backend_api.py:1316:             return out
+   backend_api.py:1317: 
+   backend_api.py:1318:         if ensemble_week is not None:
+   backend_api.py:1319:             pv_totals_p50 = _daily_totals_nullable(ensemble_week.pv_ensemble_p50)
+>> backend_api.py:1320:             pv_totals_p10 = _daily_totals_nullable(ensemble_week.pv_ensemble_p10)
+   backend_api.py:1321:             pv_totals_p90 = _daily_totals_nullable(ensemble_week.pv_ensemble_p90)
+   backend_api.py:1322:             primary_id = getattr(ensemble_week, "weather_primary_model_id", None)
+   backend_api.py:1323:             weather_by_model = getattr(ensemble_week, "weather_by_model", {}) or {}
+   backend_api.py:1324:             weights_used_week = getattr(ensemble_week, "weights_used", None)
+   backend_api.py:1325:             derived_weather_code_by_model_week = getattr(ensemble_week, "derived_weather_code_by_model", {}) or {}
+   backend_api.py:1326:             week_models_used_count_per_hour = getattr(ensemble_week, "pv_models_used_count_per_hour", None)
+   backend_api.py:1327:         else:
+   backend_api.py:1328:             pv_totals_p50 = [None] * 7
+   backend_api.py:1329:             pv_totals_p10 = [None] * 7
+   backend_api.py:1330:             pv_totals_p90 = [None] * 7
+   backend_api.py:1331:             primary_id = None
+   backend_api.py:1332:             weather_by_model = {}
+   backend_api.py:1333:             weights_used_week = None
+   backend_api.py:1334:             derived_weather_code_by_model_week = {}
+   backend_api.py:1335:             week_models_used_count_per_hour = None
+   backend_api.py:1336: 
+   backend_api.py:1337:         week_models_count_per_day = _daily_counts_nullable(week_models_used_count_per_hour)
+   backend_api.py:1338:         week_coverage_per_day = _daily_coverage(
+   backend_api.py:1313:                     out.append(None)
+   backend_api.py:1314:                 else:
+   backend_api.py:1315:                     out.append(float(daily_valid.iloc[i] / daily_total.iloc[i]))
+   backend_api.py:1316:             return out
+   backend_api.py:1317: 
+   backend_api.py:1318:         if ensemble_week is not None:
+   backend_api.py:1319:             pv_totals_p50 = _daily_totals_nullable(ensemble_week.pv_ensemble_p50)
+   backend_api.py:1320:             pv_totals_p10 = _daily_totals_nullable(ensemble_week.pv_ensemble_p10)
+>> backend_api.py:1321:             pv_totals_p90 = _daily_totals_nullable(ensemble_week.pv_ensemble_p90)
+   backend_api.py:1322:             primary_id = getattr(ensemble_week, "weather_primary_model_id", None)
+   backend_api.py:1323:             weather_by_model = getattr(ensemble_week, "weather_by_model", {}) or {}
+   backend_api.py:1324:             weights_used_week = getattr(ensemble_week, "weights_used", None)
+   backend_api.py:1325:             derived_weather_code_by_model_week = getattr(ensemble_week, "derived_weather_code_by_model", {}) or {}
+   backend_api.py:1326:             week_models_used_count_per_hour = getattr(ensemble_week, "pv_models_used_count_per_hour", None)
+   backend_api.py:1327:         else:
+   backend_api.py:1328:             pv_totals_p50 = [None] * 7
+   backend_api.py:1329:             pv_totals_p10 = [None] * 7
+   backend_api.py:1330:             pv_totals_p90 = [None] * 7
+   backend_api.py:1331:             primary_id = None
+   backend_api.py:1332:             weather_by_model = {}
+   backend_api.py:1333:             weights_used_week = None
+   backend_api.py:1334:             derived_weather_code_by_model_week = {}
+   backend_api.py:1335:             week_models_used_count_per_hour = None
+   backend_api.py:1336: 
+   backend_api.py:1337:         week_models_count_per_day = _daily_counts_nullable(week_models_used_count_per_hour)
+   backend_api.py:1338:         week_coverage_per_day = _daily_coverage(
+   backend_api.py:1339:             getattr(ensemble_week, "pv_ensemble_p50", None) if ensemble_week is not None else None
+   backend_api.py:1331:             primary_id = None
+   backend_api.py:1332:             weather_by_model = {}
+   backend_api.py:1333:             weights_used_week = None
+   backend_api.py:1334:             derived_weather_code_by_model_week = {}
+   backend_api.py:1335:             week_models_used_count_per_hour = None
+   backend_api.py:1336: 
+   backend_api.py:1337:         week_models_count_per_day = _daily_counts_nullable(week_models_used_count_per_hour)
+   backend_api.py:1338:         week_coverage_per_day = _daily_coverage(
+>> backend_api.py:1339:             getattr(ensemble_week, "pv_ensemble_p50", None) if ensemble_week is not None else None
+   backend_api.py:1340:         )
+   backend_api.py:1341: 
+   backend_api.py:1342:         pv_week_ahead_all = _build_pv_week_ahead(
+   backend_api.py:1343:             target_date=target_date,
+   backend_api.py:1344:             tz=tz,
+   backend_api.py:1345:             pv_totals_p50=pv_totals_p50,
+   backend_api.py:1346:             pv_totals_p10=pv_totals_p10,
+   backend_api.py:1347:             pv_totals_p90=pv_totals_p90,
+   backend_api.py:1348:             weather_by_model=weather_by_model,
+   backend_api.py:1349:             weights_used=weights_used_week,
+   backend_api.py:1350:             weather_primary_model_id=primary_id,
+   backend_api.py:1351:             derived_weather_code_by_model=derived_weather_code_by_model_week,
+   backend_api.py:1352:             weather_ensemble_df=getattr(getattr(ensemble_week, "weather_ensemble_table", None), "df", None),
+   backend_api.py:1353:         )
+   backend_api.py:1354:         pv_week_ahead = pv_week_ahead_all[1:7]
+   backend_api.py:1355: 
+   backend_api.py:1356:         warnings = list(dict.fromkeys(warnings))
+   backend_api.py:1357:         status = "degraded" if warnings else "ok"
+   backend_api.py:1357:         status = "degraded" if warnings else "ok"
+   backend_api.py:1358: 
+   backend_api.py:1359:         weather = ensemble_tomorrow.weather_primary
+   backend_api.py:1360:         tomorrow_index, tomorrow_index_dst_adjusted = core.build_local_day_hour_index(target_date, tz)
+   backend_api.py:1361:         if len(tomorrow_index) != 24:
+   backend_api.py:1362:             raise RuntimeError(f"INV-T4 violation: expected 24 hourly slots, got {len(tomorrow_index)}")
+   backend_api.py:1363: 
+   backend_api.py:1364:         pv = pd.DataFrame(index=tomorrow_index)
+>> backend_api.py:1365:         pv["pv_east_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_east_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1366:         pv["pv_south_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_south_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1367:         pv["pv_total_unclipped_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_unclipped_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1368:         pv["pv_total_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1369:         if ensemble_tomorrow.pv_ensemble_p10 is not None:
+   backend_api.py:1370:             pv["pv_total_low_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p10.reindex(pv.index), errors="coerce")
+   backend_api.py:1371:         if ensemble_tomorrow.pv_ensemble_p90 is not None:
+   backend_api.py:1372:             pv["pv_total_high_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p90.reindex(pv.index), errors="coerce")
+   backend_api.py:1373:         clipped_raw = (pv["pv_total_unclipped_kwh"] - pv["pv_total_kwh"]).clip(lower=0.0)
+   backend_api.py:1374:         pv["pv_clipped_kwh"] = clipped_raw.where(pv["pv_total_unclipped_kwh"].notna() & pv["pv_total_kwh"].notna())
+   backend_api.py:1375:         pv["pv_dc_available_kwh"] = pv["pv_total_unclipped_kwh"]
+   backend_api.py:1376:         pv["pv_ac_limited_kwh"] = pv["pv_total_kwh"]
+   backend_api.py:1377: 
+   backend_api.py:1378:         total_e = float(pd.to_numeric(pv["pv_east_kwh"], errors="coerce").fillna(0.0).sum())
+   backend_api.py:1379:         total_s = float(pd.to_numeric(pv["pv_south_kwh"], errors="coerce").fillna(0.0).sum())
+   backend_api.py:1380:         split_total = total_e + total_s
+   backend_api.py:1381:         ratio_e, ratio_s = (total_e / split_total, total_s / split_total) if split_total > 0 else (0.5, 0.5)
+   backend_api.py:1382:         pv = core.ensure_pv_columns(pv, split_ratio=(ratio_e, ratio_s))
+   backend_api.py:1383: 
+   backend_api.py:1358: 
+   backend_api.py:1359:         weather = ensemble_tomorrow.weather_primary
+   backend_api.py:1360:         tomorrow_index, tomorrow_index_dst_adjusted = core.build_local_day_hour_index(target_date, tz)
+   backend_api.py:1361:         if len(tomorrow_index) != 24:
+   backend_api.py:1362:             raise RuntimeError(f"INV-T4 violation: expected 24 hourly slots, got {len(tomorrow_index)}")
+   backend_api.py:1363: 
+   backend_api.py:1364:         pv = pd.DataFrame(index=tomorrow_index)
+   backend_api.py:1365:         pv["pv_east_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_east_p50.reindex(pv.index), errors="coerce")
+>> backend_api.py:1366:         pv["pv_south_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_south_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1367:         pv["pv_total_unclipped_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_unclipped_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1368:         pv["pv_total_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1369:         if ensemble_tomorrow.pv_ensemble_p10 is not None:
+   backend_api.py:1370:             pv["pv_total_low_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p10.reindex(pv.index), errors="coerce")
+   backend_api.py:1371:         if ensemble_tomorrow.pv_ensemble_p90 is not None:
+   backend_api.py:1372:             pv["pv_total_high_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p90.reindex(pv.index), errors="coerce")
+   backend_api.py:1373:         clipped_raw = (pv["pv_total_unclipped_kwh"] - pv["pv_total_kwh"]).clip(lower=0.0)
+   backend_api.py:1374:         pv["pv_clipped_kwh"] = clipped_raw.where(pv["pv_total_unclipped_kwh"].notna() & pv["pv_total_kwh"].notna())
+   backend_api.py:1375:         pv["pv_dc_available_kwh"] = pv["pv_total_unclipped_kwh"]
+   backend_api.py:1376:         pv["pv_ac_limited_kwh"] = pv["pv_total_kwh"]
+   backend_api.py:1377: 
+   backend_api.py:1378:         total_e = float(pd.to_numeric(pv["pv_east_kwh"], errors="coerce").fillna(0.0).sum())
+   backend_api.py:1379:         total_s = float(pd.to_numeric(pv["pv_south_kwh"], errors="coerce").fillna(0.0).sum())
+   backend_api.py:1380:         split_total = total_e + total_s
+   backend_api.py:1381:         ratio_e, ratio_s = (total_e / split_total, total_s / split_total) if split_total > 0 else (0.5, 0.5)
+   backend_api.py:1382:         pv = core.ensure_pv_columns(pv, split_ratio=(ratio_e, ratio_s))
+   backend_api.py:1383: 
+   backend_api.py:1384:         cons_profile = core.load_consumption_profile_kwh_per_hour()
+   backend_api.py:1359:         weather = ensemble_tomorrow.weather_primary
+   backend_api.py:1360:         tomorrow_index, tomorrow_index_dst_adjusted = core.build_local_day_hour_index(target_date, tz)
+   backend_api.py:1361:         if len(tomorrow_index) != 24:
+   backend_api.py:1362:             raise RuntimeError(f"INV-T4 violation: expected 24 hourly slots, got {len(tomorrow_index)}")
+   backend_api.py:1363: 
+   backend_api.py:1364:         pv = pd.DataFrame(index=tomorrow_index)
+   backend_api.py:1365:         pv["pv_east_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_east_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1366:         pv["pv_south_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_south_p50.reindex(pv.index), errors="coerce")
+>> backend_api.py:1367:         pv["pv_total_unclipped_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_unclipped_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1368:         pv["pv_total_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1369:         if ensemble_tomorrow.pv_ensemble_p10 is not None:
+   backend_api.py:1370:             pv["pv_total_low_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p10.reindex(pv.index), errors="coerce")
+   backend_api.py:1371:         if ensemble_tomorrow.pv_ensemble_p90 is not None:
+   backend_api.py:1372:             pv["pv_total_high_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p90.reindex(pv.index), errors="coerce")
+   backend_api.py:1373:         clipped_raw = (pv["pv_total_unclipped_kwh"] - pv["pv_total_kwh"]).clip(lower=0.0)
+   backend_api.py:1374:         pv["pv_clipped_kwh"] = clipped_raw.where(pv["pv_total_unclipped_kwh"].notna() & pv["pv_total_kwh"].notna())
+   backend_api.py:1375:         pv["pv_dc_available_kwh"] = pv["pv_total_unclipped_kwh"]
+   backend_api.py:1376:         pv["pv_ac_limited_kwh"] = pv["pv_total_kwh"]
+   backend_api.py:1377: 
+   backend_api.py:1378:         total_e = float(pd.to_numeric(pv["pv_east_kwh"], errors="coerce").fillna(0.0).sum())
+   backend_api.py:1379:         total_s = float(pd.to_numeric(pv["pv_south_kwh"], errors="coerce").fillna(0.0).sum())
+   backend_api.py:1380:         split_total = total_e + total_s
+   backend_api.py:1381:         ratio_e, ratio_s = (total_e / split_total, total_s / split_total) if split_total > 0 else (0.5, 0.5)
+   backend_api.py:1382:         pv = core.ensure_pv_columns(pv, split_ratio=(ratio_e, ratio_s))
+   backend_api.py:1383: 
+   backend_api.py:1384:         cons_profile = core.load_consumption_profile_kwh_per_hour()
+   backend_api.py:1385:         cons = core.build_consumption_forecast(cons_profile, yesterday_kwh, target_date, tz)
+   backend_api.py:1360:         tomorrow_index, tomorrow_index_dst_adjusted = core.build_local_day_hour_index(target_date, tz)
+   backend_api.py:1361:         if len(tomorrow_index) != 24:
+   backend_api.py:1362:             raise RuntimeError(f"INV-T4 violation: expected 24 hourly slots, got {len(tomorrow_index)}")
+   backend_api.py:1363: 
+   backend_api.py:1364:         pv = pd.DataFrame(index=tomorrow_index)
+   backend_api.py:1365:         pv["pv_east_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_east_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1366:         pv["pv_south_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_south_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1367:         pv["pv_total_unclipped_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_unclipped_p50.reindex(pv.index), errors="coerce")
+>> backend_api.py:1368:         pv["pv_total_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1369:         if ensemble_tomorrow.pv_ensemble_p10 is not None:
+   backend_api.py:1370:             pv["pv_total_low_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p10.reindex(pv.index), errors="coerce")
+   backend_api.py:1371:         if ensemble_tomorrow.pv_ensemble_p90 is not None:
+   backend_api.py:1372:             pv["pv_total_high_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p90.reindex(pv.index), errors="coerce")
+   backend_api.py:1373:         clipped_raw = (pv["pv_total_unclipped_kwh"] - pv["pv_total_kwh"]).clip(lower=0.0)
+   backend_api.py:1374:         pv["pv_clipped_kwh"] = clipped_raw.where(pv["pv_total_unclipped_kwh"].notna() & pv["pv_total_kwh"].notna())
+   backend_api.py:1375:         pv["pv_dc_available_kwh"] = pv["pv_total_unclipped_kwh"]
+   backend_api.py:1376:         pv["pv_ac_limited_kwh"] = pv["pv_total_kwh"]
+   backend_api.py:1377: 
+   backend_api.py:1378:         total_e = float(pd.to_numeric(pv["pv_east_kwh"], errors="coerce").fillna(0.0).sum())
+   backend_api.py:1379:         total_s = float(pd.to_numeric(pv["pv_south_kwh"], errors="coerce").fillna(0.0).sum())
+   backend_api.py:1380:         split_total = total_e + total_s
+   backend_api.py:1381:         ratio_e, ratio_s = (total_e / split_total, total_s / split_total) if split_total > 0 else (0.5, 0.5)
+   backend_api.py:1382:         pv = core.ensure_pv_columns(pv, split_ratio=(ratio_e, ratio_s))
+   backend_api.py:1383: 
+   backend_api.py:1384:         cons_profile = core.load_consumption_profile_kwh_per_hour()
+   backend_api.py:1385:         cons = core.build_consumption_forecast(cons_profile, yesterday_kwh, target_date, tz)
+   backend_api.py:1386:         offpeak_start, offpeak_end = core.compute_charging_window_for_target_date(target_date, cfg.get("tariff", {}))
+   backend_api.py:1361:         if len(tomorrow_index) != 24:
+   backend_api.py:1362:             raise RuntimeError(f"INV-T4 violation: expected 24 hourly slots, got {len(tomorrow_index)}")
+   backend_api.py:1363: 
+   backend_api.py:1364:         pv = pd.DataFrame(index=tomorrow_index)
+   backend_api.py:1365:         pv["pv_east_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_east_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1366:         pv["pv_south_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_south_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1367:         pv["pv_total_unclipped_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_unclipped_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1368:         pv["pv_total_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p50.reindex(pv.index), errors="coerce")
+>> backend_api.py:1369:         if ensemble_tomorrow.pv_ensemble_p10 is not None:
+   backend_api.py:1370:             pv["pv_total_low_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p10.reindex(pv.index), errors="coerce")
+   backend_api.py:1371:         if ensemble_tomorrow.pv_ensemble_p90 is not None:
+   backend_api.py:1372:             pv["pv_total_high_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p90.reindex(pv.index), errors="coerce")
+   backend_api.py:1373:         clipped_raw = (pv["pv_total_unclipped_kwh"] - pv["pv_total_kwh"]).clip(lower=0.0)
+   backend_api.py:1374:         pv["pv_clipped_kwh"] = clipped_raw.where(pv["pv_total_unclipped_kwh"].notna() & pv["pv_total_kwh"].notna())
+   backend_api.py:1375:         pv["pv_dc_available_kwh"] = pv["pv_total_unclipped_kwh"]
+   backend_api.py:1376:         pv["pv_ac_limited_kwh"] = pv["pv_total_kwh"]
+   backend_api.py:1377: 
+   backend_api.py:1378:         total_e = float(pd.to_numeric(pv["pv_east_kwh"], errors="coerce").fillna(0.0).sum())
+   backend_api.py:1379:         total_s = float(pd.to_numeric(pv["pv_south_kwh"], errors="coerce").fillna(0.0).sum())
+   backend_api.py:1380:         split_total = total_e + total_s
+   backend_api.py:1381:         ratio_e, ratio_s = (total_e / split_total, total_s / split_total) if split_total > 0 else (0.5, 0.5)
+   backend_api.py:1382:         pv = core.ensure_pv_columns(pv, split_ratio=(ratio_e, ratio_s))
+   backend_api.py:1383: 
+   backend_api.py:1384:         cons_profile = core.load_consumption_profile_kwh_per_hour()
+   backend_api.py:1385:         cons = core.build_consumption_forecast(cons_profile, yesterday_kwh, target_date, tz)
+   backend_api.py:1386:         offpeak_start, offpeak_end = core.compute_charging_window_for_target_date(target_date, cfg.get("tariff", {}))
+   backend_api.py:1387:         now_local = dt.datetime.now(ZoneInfo(tz))
+   backend_api.py:1362:             raise RuntimeError(f"INV-T4 violation: expected 24 hourly slots, got {len(tomorrow_index)}")
+   backend_api.py:1363: 
+   backend_api.py:1364:         pv = pd.DataFrame(index=tomorrow_index)
+   backend_api.py:1365:         pv["pv_east_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_east_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1366:         pv["pv_south_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_south_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1367:         pv["pv_total_unclipped_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_unclipped_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1368:         pv["pv_total_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1369:         if ensemble_tomorrow.pv_ensemble_p10 is not None:
+>> backend_api.py:1370:             pv["pv_total_low_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p10.reindex(pv.index), errors="coerce")
+   backend_api.py:1371:         if ensemble_tomorrow.pv_ensemble_p90 is not None:
+   backend_api.py:1372:             pv["pv_total_high_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p90.reindex(pv.index), errors="coerce")
+   backend_api.py:1373:         clipped_raw = (pv["pv_total_unclipped_kwh"] - pv["pv_total_kwh"]).clip(lower=0.0)
+   backend_api.py:1374:         pv["pv_clipped_kwh"] = clipped_raw.where(pv["pv_total_unclipped_kwh"].notna() & pv["pv_total_kwh"].notna())
+   backend_api.py:1375:         pv["pv_dc_available_kwh"] = pv["pv_total_unclipped_kwh"]
+   backend_api.py:1376:         pv["pv_ac_limited_kwh"] = pv["pv_total_kwh"]
+   backend_api.py:1377: 
+   backend_api.py:1378:         total_e = float(pd.to_numeric(pv["pv_east_kwh"], errors="coerce").fillna(0.0).sum())
+   backend_api.py:1379:         total_s = float(pd.to_numeric(pv["pv_south_kwh"], errors="coerce").fillna(0.0).sum())
+   backend_api.py:1380:         split_total = total_e + total_s
+   backend_api.py:1381:         ratio_e, ratio_s = (total_e / split_total, total_s / split_total) if split_total > 0 else (0.5, 0.5)
+   backend_api.py:1382:         pv = core.ensure_pv_columns(pv, split_ratio=(ratio_e, ratio_s))
+   backend_api.py:1383: 
+   backend_api.py:1384:         cons_profile = core.load_consumption_profile_kwh_per_hour()
+   backend_api.py:1385:         cons = core.build_consumption_forecast(cons_profile, yesterday_kwh, target_date, tz)
+   backend_api.py:1386:         offpeak_start, offpeak_end = core.compute_charging_window_for_target_date(target_date, cfg.get("tariff", {}))
+   backend_api.py:1387:         now_local = dt.datetime.now(ZoneInfo(tz))
+   backend_api.py:1388:         battery_kwh = float(cfg.get("battery", {}).get("battery_kwh", core.BATTERY_KWH))
+   backend_api.py:1363: 
+   backend_api.py:1364:         pv = pd.DataFrame(index=tomorrow_index)
+   backend_api.py:1365:         pv["pv_east_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_east_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1366:         pv["pv_south_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_south_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1367:         pv["pv_total_unclipped_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_unclipped_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1368:         pv["pv_total_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1369:         if ensemble_tomorrow.pv_ensemble_p10 is not None:
+   backend_api.py:1370:             pv["pv_total_low_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p10.reindex(pv.index), errors="coerce")
+>> backend_api.py:1371:         if ensemble_tomorrow.pv_ensemble_p90 is not None:
+   backend_api.py:1372:             pv["pv_total_high_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p90.reindex(pv.index), errors="coerce")
+   backend_api.py:1373:         clipped_raw = (pv["pv_total_unclipped_kwh"] - pv["pv_total_kwh"]).clip(lower=0.0)
+   backend_api.py:1374:         pv["pv_clipped_kwh"] = clipped_raw.where(pv["pv_total_unclipped_kwh"].notna() & pv["pv_total_kwh"].notna())
+   backend_api.py:1375:         pv["pv_dc_available_kwh"] = pv["pv_total_unclipped_kwh"]
+   backend_api.py:1376:         pv["pv_ac_limited_kwh"] = pv["pv_total_kwh"]
+   backend_api.py:1377: 
+   backend_api.py:1378:         total_e = float(pd.to_numeric(pv["pv_east_kwh"], errors="coerce").fillna(0.0).sum())
+   backend_api.py:1379:         total_s = float(pd.to_numeric(pv["pv_south_kwh"], errors="coerce").fillna(0.0).sum())
+   backend_api.py:1380:         split_total = total_e + total_s
+   backend_api.py:1381:         ratio_e, ratio_s = (total_e / split_total, total_s / split_total) if split_total > 0 else (0.5, 0.5)
+   backend_api.py:1382:         pv = core.ensure_pv_columns(pv, split_ratio=(ratio_e, ratio_s))
+   backend_api.py:1383: 
+   backend_api.py:1384:         cons_profile = core.load_consumption_profile_kwh_per_hour()
+   backend_api.py:1385:         cons = core.build_consumption_forecast(cons_profile, yesterday_kwh, target_date, tz)
+   backend_api.py:1386:         offpeak_start, offpeak_end = core.compute_charging_window_for_target_date(target_date, cfg.get("tariff", {}))
+   backend_api.py:1387:         now_local = dt.datetime.now(ZoneInfo(tz))
+   backend_api.py:1388:         battery_kwh = float(cfg.get("battery", {}).get("battery_kwh", core.BATTERY_KWH))
+   backend_api.py:1389:         min_soc_percent = float(cfg.get("battery", {}).get("min_soc_percent", core.MIN_SOC_PERCENT))
+   backend_api.py:1364:         pv = pd.DataFrame(index=tomorrow_index)
+   backend_api.py:1365:         pv["pv_east_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_east_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1366:         pv["pv_south_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_south_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1367:         pv["pv_total_unclipped_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_unclipped_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1368:         pv["pv_total_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p50.reindex(pv.index), errors="coerce")
+   backend_api.py:1369:         if ensemble_tomorrow.pv_ensemble_p10 is not None:
+   backend_api.py:1370:             pv["pv_total_low_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p10.reindex(pv.index), errors="coerce")
+   backend_api.py:1371:         if ensemble_tomorrow.pv_ensemble_p90 is not None:
+>> backend_api.py:1372:             pv["pv_total_high_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_p90.reindex(pv.index), errors="coerce")
+   backend_api.py:1373:         clipped_raw = (pv["pv_total_unclipped_kwh"] - pv["pv_total_kwh"]).clip(lower=0.0)
+   backend_api.py:1374:         pv["pv_clipped_kwh"] = clipped_raw.where(pv["pv_total_unclipped_kwh"].notna() & pv["pv_total_kwh"].notna())
+   backend_api.py:1375:         pv["pv_dc_available_kwh"] = pv["pv_total_unclipped_kwh"]
+   backend_api.py:1376:         pv["pv_ac_limited_kwh"] = pv["pv_total_kwh"]
+   backend_api.py:1377: 
+   backend_api.py:1378:         total_e = float(pd.to_numeric(pv["pv_east_kwh"], errors="coerce").fillna(0.0).sum())
+   backend_api.py:1379:         total_s = float(pd.to_numeric(pv["pv_south_kwh"], errors="coerce").fillna(0.0).sum())
+   backend_api.py:1380:         split_total = total_e + total_s
+   backend_api.py:1381:         ratio_e, ratio_s = (total_e / split_total, total_s / split_total) if split_total > 0 else (0.5, 0.5)
+   backend_api.py:1382:         pv = core.ensure_pv_columns(pv, split_ratio=(ratio_e, ratio_s))
+   backend_api.py:1383: 
+   backend_api.py:1384:         cons_profile = core.load_consumption_profile_kwh_per_hour()
+   backend_api.py:1385:         cons = core.build_consumption_forecast(cons_profile, yesterday_kwh, target_date, tz)
+   backend_api.py:1386:         offpeak_start, offpeak_end = core.compute_charging_window_for_target_date(target_date, cfg.get("tariff", {}))
+   backend_api.py:1387:         now_local = dt.datetime.now(ZoneInfo(tz))
+   backend_api.py:1388:         battery_kwh = float(cfg.get("battery", {}).get("battery_kwh", core.BATTERY_KWH))
+   backend_api.py:1389:         min_soc_percent = float(cfg.get("battery", {}).get("min_soc_percent", core.MIN_SOC_PERCENT))
+   backend_api.py:1390: 
+
+==============================================================================================================
+backend_api.py — hits for: pv_total_decision_kwh
+==============================================================================================================
+   backend_api.py:1462:         if decision_quantile == "p50":
+   backend_api.py:1463:             decision_series = ensemble_tomorrow.pv_ensemble_p50
+   backend_api.py:1464:         else:
+   backend_api.py:1465:             decision_series = getattr(ensemble_tomorrow, "pv_ensemble_p25", None)
+   backend_api.py:1466:         if decision_series is None:
+   backend_api.py:1467:             decision_series = ensemble_tomorrow.pv_ensemble_p50
+   backend_api.py:1468:         if decision_series is None:
+   backend_api.py:1469:             decision_series = ensemble_tomorrow.pv_ensemble_p50
+>> backend_api.py:1470:         pv["pv_total_decision_kwh"] = pd.to_numeric(decision_series.reindex(pv.index), errors="coerce")
+   backend_api.py:1471: 
+   backend_api.py:1472:         detail_df, flows_df, soc_series, charge_kw, cutoff_soc, cutoff_reason, charge_note, charge_target_reachable, charge_warning_text = core.run_detailed_plan(
+   backend_api.py:1473:             target_date=target_date,
+   backend_api.py:1474:             weather=weather,
+   backend_api.py:1475:             pv_df=pv,
+   backend_api.py:1476:             consumption_kwh=cons,
+   backend_api.py:1477:             soc_at_22_percent=estimated_soc_percent,
+   backend_api.py:1478:             buffer_percent=buffer_percent,
+   backend_api.py:1479:             max_ac_charge_power_kw=user_max_ac_kw,
+   backend_api.py:1480:         )
+   backend_api.py:1481:         cutoff_adjusted_for_pv_headroom = str(cutoff_reason).startswith("CONFLICT")
+   backend_api.py:1482:         cutoff_adjustment_reason = (
+   backend_api.py:1483:             "Cutoff lowered to preserve PV headroom for daytime surplus handling."
+   backend_api.py:1484:             if cutoff_adjusted_for_pv_headroom
+   backend_api.py:1485:             else ""
+   backend_api.py:1486:         )
+   backend_api.py:1487:         pv_surplus_store_econ_enabled = bool(flows_df.attrs.get("pv_surplus_store_econ_enabled", False))
+   backend_api.py:1488:         pv_surplus_export_preferred_kwh = float(flows_df.attrs.get("pv_surplus_export_preferred_kwh", 0.0))
+
+==============================================================================================================
+2) planner_core.py — fetch_weather_for_date + _fetch_weather_payload (do they call weather_ensemble?)
+==============================================================================================================
+   planner_core.py:1910:     if sunset_ts.tzinfo is None:
+   planner_core.py:1911:         sunset_ts = sunset_ts.tz_localize(tz_use)
+   planner_core.py:1912:     else:
+   planner_core.py:1913:         sunset_ts = sunset_ts.tz_convert(tz_use)
+   planner_core.py:1914: 
+   planner_core.py:1915:     sunrise = sunrise_ts.to_pydatetime()
+   planner_core.py:1916:     sunset = sunset_ts.to_pydatetime()
+   planner_core.py:1917:     return ForecastResult(df=df, sunrise=sunrise, sunset=sunset)
+   planner_core.py:1918: 
+   planner_core.py:1919: 
+>> planner_core.py:1920: def fetch_weather_for_date(loc: Location, target_date: dt.date, tz: str | None = None) -> ForecastResult:
+   planner_core.py:1921:     tz_use = tz or TIMEZONE
+   planner_core.py:1922:     return _fetch_weather_payload(loc, target_date, tz_use)
+   planner_core.py:1923: 
+   planner_core.py:1924: 
+   planner_core.py:1925: def fetch_tomorrow_weather(loc: Location, tz: str | None = None) -> ForecastResult:
+   planner_core.py:1926:     tz_use = tz or TIMEZONE
+   planner_core.py:1927:     today_local = dt.datetime.now(ZoneInfo(tz_use)).date()
+   planner_core.py:1928:     tomorrow = today_local + dt.timedelta(days=1)
+   planner_core.py:1929:     return fetch_weather_for_date(loc, tomorrow, tz=tz_use)
+   planner_core.py:1930: 
+   planner_core.py:1931: 
+   planner_core.py:1932: def local_day_hourly_index(target_date: dt.date, tzname: str) -> pd.DatetimeIndex:
+   planner_core.py:1933:     """Return the canonical tz-aware hourly index for a local calendar day.
+   planner_core.py:1934: 
+   planner_core.py:1935:     The returned index naturally contains 23/24/25 rows on DST start/normal/end
+   planner_core.py:1936:     days and preserves duplicate wall-clock hours on fall-back days via timezone-
+   planner_core.py:1937:     aware timestamps.
+   planner_core.py:1938:     """
+   planner_core.py:1939:     tz = ZoneInfo(str(tzname))
+   planner_core.py:1940:     day_start = dt.datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0, tzinfo=tz)
+   planner_core.py:1941:     next_day = day_start + dt.timedelta(days=1)
+   planner_core.py:1942:     return pd.date_range(start=day_start, end=next_day, freq="h", inclusive="left")
+   planner_core.py:1943: 
+   planner_core.py:1944: 
+   planner_core.py:1945: def build_local_day_hour_index(day: dt.date, tz: str) -> tuple[pd.DatetimeIndex, bool]:
+   planner_core.py:1764:     if len(parts) >= 3:
+   planner_core.py:1765:         candidates.append(", ".join(parts[-2:]))
+   planner_core.py:1766: 
+   planner_core.py:1767:     deduped: list[str] = []
+   planner_core.py:1768:     for candidate in candidates:
+   planner_core.py:1769:         if candidate and candidate not in deduped:
+   planner_core.py:1770:             deduped.append(candidate)
+   planner_core.py:1771:     return deduped
+   planner_core.py:1772: 
+   planner_core.py:1773: 
+>> planner_core.py:1774: def _fetch_weather_payload(loc: Location, target_date: dt.date, tz_use: str) -> ForecastResult:
+   planner_core.py:1775:     service = "open-meteo-weather"
+   planner_core.py:1776:     url = "https://api.open-meteo.com/v1/ecmwf"
+   planner_core.py:1777:     params = {
+   planner_core.py:1778:         "latitude": loc.latitude,
+   planner_core.py:1779:         "longitude": loc.longitude,
+   planner_core.py:1780:         "timezone": tz_use,
+   planner_core.py:1781:         "wind_speed_unit": "ms",
+   planner_core.py:1782:         "temperature_unit": "celsius",
+   planner_core.py:1783:         "timeformat": "iso8601",
+   planner_core.py:1784:         "start_date": target_date.isoformat(),
+   planner_core.py:1785:         "end_date": target_date.isoformat(),
+   planner_core.py:1786:         "hourly": ",".join([
+   planner_core.py:1787:             "temperature_2m",
+   planner_core.py:1788:             "cloud_cover",
+   planner_core.py:1789:             "shortwave_radiation",
+   planner_core.py:1790:             "direct_normal_irradiance",
+   planner_core.py:1791:             "diffuse_radiation",
+   planner_core.py:1792:             "wind_speed_10m",
+   planner_core.py:1793:         ]),
+   planner_core.py:1794:         "daily": ",".join(["sunrise", "sunset"]),
+   planner_core.py:1795:     }
+   planner_core.py:1796: 
+   planner_core.py:1797:     data = _request_json(service=service, url=url, params=params)
+   planner_core.py:1798: 
+   planner_core.py:1799:     hourly = data.get("hourly")
+
+==============================================================================================================
+3) Search for pv_total_decision_kwh creation/assignment across repo
+==============================================================================================================
+
+==============================================================================================================
+END — paste output here.
+==============================================================================================================
