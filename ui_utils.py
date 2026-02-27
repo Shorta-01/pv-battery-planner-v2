@@ -254,12 +254,12 @@ def resolve_pv_outlook_savings(pv_quality_dict: dict | None) -> dict[str, Any]:
     horizon_label = str(data.get("savings_horizon_label") or "").strip() or None
     detail_note = "⏱️ Bars: tomorrow (00–24)"
     if display_scope == "cycle" and bars_scope == "cycle":
-        note = "Grid only vs iSystem cycle savings shown (off-peak start → next off-peak start)." if use_new_scheme else "Cycle savings shown (off-peak start → next off-peak start)."
-        detail_note = "⏱️ Bars: cycle (off-peak start → next off-peak start)"
+        note = "Grid only vs iSystem cycle savings shown (24u vanaf start daluren (vast 24u venster))." if use_new_scheme else "Cycle savings shown (24u vanaf start daluren (vast 24u venster))."
+        detail_note = "⏱️ Bars: cycle (24u vanaf start daluren (vast 24u venster))"
     elif display_scope in {"cycle", "total"} and hourly is not None:
-        note = "Grid only vs iSystem cycle savings shown (off-peak start → next off-peak start). Hourly bars show tomorrow (00–24)." if use_new_scheme else "Cycle savings shown (off-peak start → next off-peak start). Hourly bars show tomorrow (00–24)."
+        note = "Grid only vs iSystem cycle savings shown (24u vanaf start daluren (vast 24u venster)). Hourly bars show tomorrow (00–24)." if use_new_scheme else "Cycle savings shown (24u vanaf start daluren (vast 24u venster)). Hourly bars show tomorrow (00–24)."
     elif display_scope in {"cycle", "total"}:
-        note = "Grid only vs iSystem cycle savings shown (off-peak start → next off-peak start)." if use_new_scheme else "Cycle savings shown (off-peak start → next off-peak start)."
+        note = "Grid only vs iSystem cycle savings shown (24u vanaf start daluren (vast 24u venster))." if use_new_scheme else "Cycle savings shown (24u vanaf start daluren (vast 24u venster))."
     else:
         note = "Grid only vs iSystem values shown for tomorrow only." if use_new_scheme else "Values shown are for tomorrow only."
 
