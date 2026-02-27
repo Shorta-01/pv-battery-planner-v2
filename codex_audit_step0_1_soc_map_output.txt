@@ -1,0 +1,530 @@
+
+==============================================================================================================
+A) app.py — where /v1/run/now payload is built (show context)
+==============================================================================================================
+   app.py:4338:                         "soc_now_percent": float(soc_percent),
+   app.py:4339:                         "soc_at_22_percent": float(soc_percent),
+   app.py:4340:                         "yesterday_consumption_kwh": float(yesterday_kwh),
+   app.py:4341:                     },
+   app.py:4342:                 )
+   app.py:4343:                 run_response = api_post(
+>> app.py:4344:                     "/v1/run/now",
+   app.py:4345:                     {
+   app.py:4346:                         "soc_now_percent": float(soc_percent),
+   app.py:4347:                         "soc_at_22_percent": float(soc_percent),
+   app.py:4348:                         "yesterday_consumption_kwh": float(yesterday_kwh),
+   app.py:4349:                         "buffer_percent": float(buffer_percent),
+   app.py:4350:                         "user_max_ac_kw": float(user_max_ac_kw),
+   app.py:4728: 
+   app.py:4729:             for warning in result.get("warnings", []):
+   app.py:4730:                 st.warning(f"Nightly context warning: {warning}")
+   app.py:4731:     except ImportError as exc:
+   app.py:4732:         st.error(f"Missing dependency: {exc}. Install with: python -m pip install -r requirements.txt")
+   app.py:4733:     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+>> app.py:4734:         log_frontend_error(severity="error", error_type="network", where="app.py:run_forecast", title="Frontend error: backend unreachable", exc=exc, context={"endpoint": "/v1/run/now"})
+   app.py:4735:         st.error("Backend unreachable. Is backend running?")
+   app.py:4736:     except RuntimeError as exc:
+   app.py:4737:         log_frontend_error(severity="error", error_type="http_error", where="app.py:run_forecast", title="Frontend error: HTTP failure", exc=exc)
+   app.py:4738:         st.error(str(exc))
+   app.py:4739:     except requests.RequestException as exc:
+   app.py:4740:         log_frontend_error(severity="error", error_type="http_error", where="app.py:run_forecast", title="Frontend error: HTTP failure", exc=exc)
+
+==============================================================================================================
+B) backend_api.py — RunNowPayload definition (fields + line numbers)
+==============================================================================================================
+Found RunNowPayload at line 220
+- soc_now_percent  (line 221)
+- soc_at_22_percent  (line 222)
+- yesterday_consumption_kwh  (line 223)
+- buffer_percent  (line 224)
+- user_max_ac_kw  (line 225)
+- weather_models  (line 226)
+- forecast_mode  (line 227)
+- ensemble_method  (line 228)
+- pv_uncertainty  (line 229)
+- fast_mode  (line 230)
+- use_satellite_nowcast_0_6h  (line 231)
+   backend_api.py:214: class InputsPayload(BaseModel):
+   backend_api.py:215:     soc_now_percent: float | None = None
+   backend_api.py:216:     soc_at_22_percent: float | None = None
+   backend_api.py:217:     yesterday_consumption_kwh: float = Field(..., gt=0.0)
+   backend_api.py:218: 
+   backend_api.py:219: 
+>> backend_api.py:220: class RunNowPayload(BaseModel):
+   backend_api.py:221:     soc_now_percent: float | None = None
+   backend_api.py:222:     soc_at_22_percent: float | None = None
+   backend_api.py:223:     yesterday_consumption_kwh: float | None = Field(default=None, gt=0.0)
+   backend_api.py:224:     buffer_percent: float = Field(default=0.0, ge=0.0, le=10.0)
+   backend_api.py:225:     user_max_ac_kw: float | None = Field(default=None, ge=0.0)
+   backend_api.py:226:     weather_models: list[str] | None = None
+
+==============================================================================================================
+C) backend_api.py — /v1/run/now handler and its immediate calls (context)
+==============================================================================================================
+   backend_api.py:1800:         self._save_results()
+   backend_api.py:1801:         self._save_settings()
+   backend_api.py:1802:         del detail_df, flows_df, pv, weather
+   backend_api.py:1803:         gc.collect()
+   backend_api.py:1804:         return payload
+   backend_api.py:1805: 
+>> backend_api.py:1806:     def run_now(self, payload: RunNowPayload) -> dict:
+   backend_api.py:1807:         if not self._lock.acquire(blocking=False):
+   backend_api.py:1808:             raise HTTPException(status_code=423, detail="Run already in progress")
+   backend_api.py:1809:         try:
+   backend_api.py:1810:             source = self.last_inputs
+   backend_api.py:1811:             warnings: list[str] = [*self.last_inputs_sanitized_warnings, *self.settings_sanitized_warnings]
+   backend_api.py:1812:             soc = _resolve_soc_percent(
+   backend_api.py:2122: @app.put("/v1/inputs/last")
+   backend_api.py:2123: def put_last_inputs(payload: InputsPayload, authorization: str | None = Header(default=None)) -> dict:
+   backend_api.py:2124:     _require_token(authorization)
+   backend_api.py:2125:     return state.update_inputs(payload)
+   backend_api.py:2126: 
+   backend_api.py:2127: 
+>> backend_api.py:2128: @app.post("/v1/run/now")
+   backend_api.py:2129: def run_now(payload: RunNowPayload, authorization: str | None = Header(default=None)) -> dict:
+   backend_api.py:2130:     _require_token(authorization)
+   backend_api.py:2131:     return state.run_now(payload)
+   backend_api.py:2132: 
+   backend_api.py:2133: 
+   backend_api.py:2134: @app.post("/v1/run/nightly")
+   backend_api.py:2123: def put_last_inputs(payload: InputsPayload, authorization: str | None = Header(default=None)) -> dict:
+   backend_api.py:2124:     _require_token(authorization)
+   backend_api.py:2125:     return state.update_inputs(payload)
+   backend_api.py:2126: 
+   backend_api.py:2127: 
+   backend_api.py:2128: @app.post("/v1/run/now")
+>> backend_api.py:2129: def run_now(payload: RunNowPayload, authorization: str | None = Header(default=None)) -> dict:
+   backend_api.py:2130:     _require_token(authorization)
+   backend_api.py:2131:     return state.run_now(payload)
+   backend_api.py:2132: 
+   backend_api.py:2133: 
+   backend_api.py:2134: @app.post("/v1/run/nightly")
+   backend_api.py:2135: def run_nightly(payload: NightlyTickPayload, authorization: str | None = Header(default=None)) -> dict:
+
+==============================================================================================================
+D) backend_api.py — BackendState.run_now / PlannerService.run_now / _resolve_soc_percent
+==============================================================================================================
+   backend_api.py:726:             }
+   backend_api.py:727:         )
+   backend_api.py:728: 
+   backend_api.py:729:     return out
+   backend_api.py:730: 
+   backend_api.py:731: 
+>> backend_api.py:732: class BackendState:
+   backend_api.py:733:     def __init__(self) -> None:
+   backend_api.py:734:         LOCAL_STATE_DIR.mkdir(parents=True, exist_ok=True)
+   backend_api.py:735:         init_db(str(SQLITE_PATH))
+   backend_api.py:736:         self._lock = threading.Lock()
+   backend_api.py:737:         self.api_token = self._load_or_create_token()
+   backend_api.py:738:         self.settings = self._load_settings()
+   backend_api.py:1800:         self._save_results()
+   backend_api.py:1801:         self._save_settings()
+   backend_api.py:1802:         del detail_df, flows_df, pv, weather
+   backend_api.py:1803:         gc.collect()
+   backend_api.py:1804:         return payload
+   backend_api.py:1805: 
+>> backend_api.py:1806:     def run_now(self, payload: RunNowPayload) -> dict:
+   backend_api.py:1807:         if not self._lock.acquire(blocking=False):
+   backend_api.py:1808:             raise HTTPException(status_code=423, detail="Run already in progress")
+   backend_api.py:1809:         try:
+   backend_api.py:1810:             source = self.last_inputs
+   backend_api.py:1811:             warnings: list[str] = [*self.last_inputs_sanitized_warnings, *self.settings_sanitized_warnings]
+   backend_api.py:1812:             soc = _resolve_soc_percent(
+   backend_api.py:2123: def put_last_inputs(payload: InputsPayload, authorization: str | None = Header(default=None)) -> dict:
+   backend_api.py:2124:     _require_token(authorization)
+   backend_api.py:2125:     return state.update_inputs(payload)
+   backend_api.py:2126: 
+   backend_api.py:2127: 
+   backend_api.py:2128: @app.post("/v1/run/now")
+>> backend_api.py:2129: def run_now(payload: RunNowPayload, authorization: str | None = Header(default=None)) -> dict:
+   backend_api.py:2130:     _require_token(authorization)
+   backend_api.py:2131:     return state.run_now(payload)
+   backend_api.py:2132: 
+   backend_api.py:2133: 
+   backend_api.py:2134: @app.post("/v1/run/nightly")
+   backend_api.py:2135: def run_nightly(payload: NightlyTickPayload, authorization: str | None = Header(default=None)) -> dict:
+   backend_api.py:1036:         return json.loads(df.to_json(date_format="iso", orient="split"))
+   backend_api.py:1037: 
+   backend_api.py:1038:     def _serialize_series(self, s: pd.Series) -> dict:
+   backend_api.py:1039:         frame = s.to_frame(name="value")
+   backend_api.py:1040:         return self._serialize_df(frame)
+   backend_api.py:1041: 
+>> backend_api.py:1042:     def _run(
+   backend_api.py:1043:         self,
+   backend_api.py:1044:         target_date: dt.date,
+   backend_api.py:1045:         soc_percent: float,
+   backend_api.py:1046:         yesterday_kwh: float,
+   backend_api.py:1047:         buffer_percent: float,
+   backend_api.py:1048:         user_max_ac_kw: float,
+   backend_api.py:232: 
+   backend_api.py:233: 
+   backend_api.py:234: class NightlyTickPayload(BaseModel):
+   backend_api.py:235:     force: bool = False
+   backend_api.py:236: 
+   backend_api.py:237: 
+>> backend_api.py:238: def _resolve_soc_percent(
+   backend_api.py:239:     *,
+   backend_api.py:240:     payload_soc_now: float | None,
+   backend_api.py:241:     payload_soc_legacy: float | None,
+   backend_api.py:242:     source: dict,
+   backend_api.py:243:     warnings: list[str],
+   backend_api.py:244: ) -> float:
+
+==============================================================================================================
+E) planner_core.py — find SOC input usage (context around key functions)
+==============================================================================================================
+   planner_core.py:1025:     pv_credit_kwh: float,
+   planner_core.py:1026:     battery_kwh: float,
+   planner_core.py:1027:     min_soc_percent: float,
+   planner_core.py:1028:     used_history: bool,
+   planner_core.py:1029:     pv_credit_available: bool,
+   planner_core.py:1030: ) -> tuple[float, float, str, str, dict]:
+>> planner_core.py:1031:     """Estimate SOC at off-peak start with TOD load weighting and optional PV credit."""
+   planner_core.py:1032:     now_ts = _to_local_ts(now_local)
+   planner_core.py:1033:     offpeak_ts = _to_local_ts(offpeak_start)
+   planner_core.py:1034:     hours_until = max(0.0, (offpeak_ts - now_ts).total_seconds() / 3600.0)
+   planner_core.py:1035:     load_kwh_window = estimate_window_consumption_kwh(
+   planner_core.py:1036:         start_local=now_local,
+   planner_core.py:1037:         end_local=offpeak_start.to_pydatetime(),
+   planner_core.py:1013:         earliest_start_hhmm, earliest_end_hhmm = min(target_windows, key=lambda x: to_minutes(x[0]))
+   planner_core.py:1014:         return _window_to_interval(target_midnight, earliest_start_hhmm, earliest_end_hhmm)
+   planner_core.py:1015: 
+   planner_core.py:1016:     return target_midnight, target_midnight
+   planner_core.py:1017: 
+   planner_core.py:1018: 
+>> planner_core.py:1019: def estimate_soc_at_offpeak_start(
+   planner_core.py:1020:     *,
+   planner_core.py:1021:     soc_now_percent: float,
+   planner_core.py:1022:     now_local: dt.datetime,
+   planner_core.py:1023:     offpeak_start: pd.Timestamp,
+   planner_core.py:1024:     effective_daily_kwh: float,
+   planner_core.py:1025:     pv_credit_kwh: float,
+   planner_core.py:1337:     idx = pd.date_range(start, end, freq="h", inclusive="left")
+   planner_core.py:1338:     normalized = [v / profile_sum for v in profile]
+   planner_core.py:1339:     values = [float(total_kwh) * normalized[ts.hour] for ts in idx]
+   planner_core.py:1340:     return pd.Series(values, index=idx, dtype=float)
+   planner_core.py:1341: 
+   planner_core.py:1342: 
+>> planner_core.py:1343: def parse_soc_input(raw: str) -> float:
+   planner_core.py:1344:     val = raw.strip().replace(",", ".")
+   planner_core.py:1345:     if not val:
+   planner_core.py:1346:         raise ValueError("SOC input is required")
+   planner_core.py:1347: 
+   planner_core.py:1348:     soc_percent = float(val)
+   planner_core.py:1349:     if 0.0 <= soc_percent <= 100.0 and not (0.0 < soc_percent < 1.0):
+   planner_core.py:1360:         try:
+   planner_core.py:1361:             return float(raw.replace(",", "."))
+   planner_core.py:1362:         except ValueError:
+   planner_core.py:1363:             print("Invalid number. Please try again.")
+   planner_core.py:1364: 
+   planner_core.py:1365: 
+>> planner_core.py:1366: def ask_required_soc(prompt: str) -> float:
+   planner_core.py:1367:     while True:
+   planner_core.py:1368:         raw = input(prompt)
+   planner_core.py:1369:         try:
+   planner_core.py:1370:             return parse_soc_input(raw)
+   planner_core.py:1371:         except ValueError:
+   planner_core.py:1372:             print("Invalid SOC. Expected percent 0..100, not fraction 0..1. Example: use 20 not 0.20.")
+   planner_core.py:2585: 
+   planner_core.py:2586: 
+   planner_core.py:2587: # ============================================================
+   planner_core.py:2588: # CORE: timing-aware SOC & charge plan
+   planner_core.py:2589: # ============================================================
+   planner_core.py:2590: 
+>> planner_core.py:2591: def compute_soc_low_timing_aware(
+   planner_core.py:2592:     df: "pd.DataFrame",
+   planner_core.py:2593:     total_consumption_kwh: float,
+   planner_core.py:2594:     for_date: dt.date,
+   planner_core.py:2595:     buffer_soc: float = 0.0,
+   planner_core.py:2596:     tariff_cfg: Optional[dict] = None,
+   planner_core.py:2597:     pv_col: str = "pv_total_kwh",
+   planner_core.py:2776:         tariff_cfg=tariff_cfg,
+   planner_core.py:2777:     )
+   planner_core.py:2778:     charge_warning_text = str(charge_note) if str(charge_note).startswith("Warning") else ""
+   planner_core.py:2779:     charge_target_reachable = not bool(charge_warning_text)
+   planner_core.py:2780:     return detail_df, flows_df, soc_series, float(charge_kw), float(cutoff_soc), str(cutoff_reason), str(charge_note), bool(charge_target_reachable), str(charge_warning_text)
+   planner_core.py:2781: 
+>> planner_core.py:2782: def compute_soc_high_headroom(
+   planner_core.py:2783:     df: "pd.DataFrame",
+   planner_core.py:2784:     total_consumption_kwh: float,
+   planner_core.py:2785:     for_date: dt.date,
+   planner_core.py:2786:     sunrise: dt.datetime,
+   planner_core.py:2787:     sunset: dt.datetime,
+   planner_core.py:2788: ) -> Tuple[float, float]:
+   planner_core.py:2816: 
+   planner_core.py:2817:     soc_high = 1.0 - (stored_kwh_sum / BATTERY_KWH)
+   planner_core.py:2818:     soc_high = min(max(soc_high, MIN_SOC), 1.0)
+   planner_core.py:2819:     return surplus_sum_ac, soc_high
+   planner_core.py:2820: 
+   planner_core.py:2821: 
+>> planner_core.py:2822: def choose_cutoff_soc(for_date: dt.date, soc_low: float, soc_high: float, tariff_cfg: Optional[dict] = None) -> Tuple[float, str]:
+   planner_core.py:2823:     if not tariff_has_meaningful_spread(tariff_cfg or DEFAULT_CONFIG["tariff"]):
+   planner_core.py:2824:         return MIN_SOC, "No active arbitrage target: flat tariff / no meaningful spread; keep cutoff at MIN_SOC for PV headroom."
+   planner_core.py:2825: 
+   planner_core.py:2826:     expensive_windows = get_expensive_windows(for_date, tariff_cfg)
+   planner_core.py:2827:     if not expensive_windows:
+   planner_core.py:2828:         return MIN_SOC, "No expensive hours (all off-peak): keep cutoff low for maximum headroom."
+   planner_core.py:3164:     night_df.attrs["grid_import_cap_limited_charge_kwh_total"] = float(grid_import_cap_limited_charge_kwh_total)
+   planner_core.py:3165:     if ENABLE_INVARIANT_CHECKS:
+   planner_core.py:3166:         validate_flow_invariants(night_df, "night")
+   planner_core.py:3167:     return night_df
+   planner_core.py:3168: 
+   planner_core.py:3169: 
+>> planner_core.py:3170: def simulate_full_day_soc(
+   planner_core.py:3171:     df: "pd.DataFrame",
+   planner_core.py:3172:     total_consumption_kwh: float,
+   planner_core.py:3173:     soc_at_22: float,
+   planner_core.py:3174:     charge_kw: float,
+   planner_core.py:3175:     cutoff_soc: float,
+   planner_core.py:3176:     tomorrow_date: dt.date,
+   planner_core.py:3470: 
+   planner_core.py:3471:     print("\nExpensive-hour totals:")
+   planner_core.py:3472:     print(f"- Total grid import: {detail_df['grid_import_kwh'].sum():.2f} kWh")
+   planner_core.py:3473:     print(f"- Total grid export: {detail_df['grid_export_kwh'].sum():.2f} kWh")
+   planner_core.py:3474: 
+   planner_core.py:3475: 
+>> planner_core.py:3476: def print_fusionsolar_actions(cutoff_soc: float, charge_kw: float, cutoff_note: str = "") -> None:
+   planner_core.py:3477:     print(format_fusionsolar_actions(cutoff_soc, charge_kw))
+   planner_core.py:3478:     if cutoff_note:
+   planner_core.py:3479:         print(cutoff_note)
+   planner_core.py:3480: 
+   planner_core.py:3481: 
+   planner_core.py:3482: def format_fusionsolar_actions(cutoff_soc: float, charge_kw: float) -> str:
+   planner_core.py:1015: 
+   planner_core.py:1016:     return target_midnight, target_midnight
+   planner_core.py:1017: 
+   planner_core.py:1018: 
+   planner_core.py:1019: def estimate_soc_at_offpeak_start(
+   planner_core.py:1020:     *,
+>> planner_core.py:1021:     soc_now_percent: float,
+   planner_core.py:1022:     now_local: dt.datetime,
+   planner_core.py:1023:     offpeak_start: pd.Timestamp,
+   planner_core.py:1024:     effective_daily_kwh: float,
+   planner_core.py:1025:     pv_credit_kwh: float,
+   planner_core.py:1026:     battery_kwh: float,
+   planner_core.py:1027:     min_soc_percent: float,
+   planner_core.py:1038:         effective_daily_kwh=float(effective_daily_kwh),
+   planner_core.py:1039:     )
+   planner_core.py:1040:     pv_credit_used = max(0.0, min(float(pv_credit_kwh), load_kwh_window))
+   planner_core.py:1041:     net_kwh = max(0.0, load_kwh_window - pv_credit_used)
+   planner_core.py:1042: 
+   planner_core.py:1043:     battery_kwh = max(float(battery_kwh), 1e-9)
+>> planner_core.py:1044:     energy_now = (float(soc_now_percent) / 100.0) * battery_kwh
+   planner_core.py:1045:     energy_est = energy_now - net_kwh
+   planner_core.py:1046: 
+   planner_core.py:1047:     energy_floor = (float(min_soc_percent) / 100.0) * battery_kwh
+   planner_core.py:1048:     energy_est = max(energy_floor, energy_est)
+   planner_core.py:1049: 
+   planner_core.py:1050:     soc_est = (energy_est / battery_kwh) * 100.0
+   planner_core.py:707:     sunrise: dt.datetime
+   planner_core.py:708:     sunset: dt.datetime
+   planner_core.py:709: 
+   planner_core.py:710: 
+   planner_core.py:711: @dataclass
+   planner_core.py:712: class PlannerInputs:
+>> planner_core.py:713:     soc_at_22: float
+   planner_core.py:714:     yesterday_consumption_kwh: float
+   planner_core.py:715:     forecast_buffer_soc: float = 0.0
+   planner_core.py:716: 
+   planner_core.py:717: 
+   planner_core.py:718: @dataclass
+   planner_core.py:719: class PlannerOutput:
+   planner_core.py:1391:     return out
+   planner_core.py:1392: 
+   planner_core.py:1393: 
+   planner_core.py:1394: def compute_euro_savings_no_battery_vs_plan(
+   planner_core.py:1395:     pv_df: pd.DataFrame,
+   planner_core.py:1396:     flows_df: pd.DataFrame,
+>> planner_core.py:1397:     soc_at_22: float,
+   planner_core.py:1398:     charge_kw: float,
+   planner_core.py:1399:     cutoff_soc: float,
+   planner_core.py:1400:     today_date: dt.date,
+   planner_core.py:1401:     tomorrow_date: dt.date,
+   planner_core.py:1402:     total_consumption_kwh: float,
+   planner_core.py:1403:     tariff_cfg: dict,
+   planner_core.py:1437:     plan_soc_end_cycle = pd.Series(np.nan, index=idx_cycle, dtype=float)
+   planner_core.py:1438: 
+   planner_core.py:1439:     idx_pre = idx_cycle[idx_cycle < tomorrow_start]
+   planner_core.py:1440:     idx_post = idx_cycle[idx_cycle >= tomorrow_start]
+   planner_core.py:1441: 
+   planner_core.py:1442:     night_df = simulate_night_charging_series(
+>> planner_core.py:1443:         soc_at_22,
+   planner_core.py:1444:         charge_kw,
+   planner_core.py:1445:         cutoff_soc,
+   planner_core.py:1446:         session_start=window_start,
+   planner_core.py:1447:         session_end=window_end,
+   planner_core.py:1448:         total_consumption_kwh=total_consumption_kwh,
+   planner_core.py:1449:         tariff_cfg=tariff_cfg,
+   planner_core.py:1488: 
+   planner_core.py:1489:     baseline_cycle = float(base_cost_cycle.sum())
+   planner_core.py:1490:     plan_cycle_cash = float(plan_cost_cycle_cash.sum())
+   planner_core.py:1491:     baseline_tom = float(base_cost_tom.sum())
+   planner_core.py:1492:     plan_tom = float(plan_cost_tom.sum())
+   planner_core.py:1493: 
+>> planner_core.py:1494:     cycle_start_soc = max(0.0, min(1.0, float(soc_at_22)))
+   planner_core.py:1495:     cycle_end_soc: float | None = None
+   planner_core.py:1496:     cycle_terminal_row_ts = cycle_end - dt.timedelta(hours=1)
+   planner_core.py:1497:     if cycle_terminal_row_ts in plan_soc_end_cycle.index:
+   planner_core.py:1498:         try:
+   planner_core.py:1499:             soc_pct = float(plan_soc_end_cycle.loc[cycle_terminal_row_ts])
+   planner_core.py:1500:         except Exception:
+   planner_core.py:1573:         ),
+   planner_core.py:1574:         "savings_horizon_detail": (
+   planner_core.py:1575:             "Cycle (off-peak start → next off-peak start): "
+   planner_core.py:1576:             f"{cycle_start.strftime('%H:%M')} → {cycle_end.strftime('%H:%M')}"
+   planner_core.py:1577:         ),
+   planner_core.py:1578:         "savings_hourly_detail_scope": "tomorrow_00_24",
+>> planner_core.py:1579:         "savings_cycle_start_soc_percent_used": float(soc_at_22 * 100.0),
+   planner_core.py:1580:         "cycle_start_soc_pct": cycle_start_soc_pct,
+   planner_core.py:1581:         "cycle_end_soc_pct": cycle_end_soc_pct,
+   planner_core.py:1582:         "cycle_soc_delta_pct": cycle_soc_delta_pct,
+   planner_core.py:1583:         "cycle_stored_energy_delta_kwh": cycle_stored_energy_delta_kwh,
+   planner_core.py:1584:         "savings_night_load_from_battery_used": bool(should_use_battery_for_offpeak_load(tariff_cfg)),
+   planner_core.py:1585:         "savings_cycle_window_start_local": cycle_start.isoformat(),
+   planner_core.py:2634:     return soc_low
+   planner_core.py:2635: 
+   planner_core.py:2636: 
+   planner_core.py:2637: def run_forecast_pipeline(
+   planner_core.py:2638:     cfg: dict,
+   planner_core.py:2639:     target_date: dt.date,
+>> planner_core.py:2640:     soc_at_22_percent: float,
+   planner_core.py:2641:     yesterday_kwh: float,
+   planner_core.py:2642:     buffer_percent: float,
+   planner_core.py:2643:     user_max_ac_kw: float,
+   planner_core.py:2644: ) -> PlannerOutput:
+   planner_core.py:2645:     with applied_config(cfg) as effective_cfg:
+   planner_core.py:2646:         quick_sanity_checks()
+   planner_core.py:2678:             f"Cutoff capped to {MAX_CUTOFF_SOC_PERCENT:.1f}% (was {old_cutoff_soc*100:.1f}%)."
+   planner_core.py:2679:             if abs(cutoff_soc - old_cutoff_soc) > 1e-9 else ""
+   planner_core.py:2680:         )
+   planner_core.py:2681: 
+   planner_core.py:2682:         charge_date = target_date - dt.timedelta(days=1)
+   planner_core.py:2683:         _, charge_kw, charge_note, achieved_soc_start = plan_charge_power(
+>> planner_core.py:2684:             soc_at_22_percent / 100.0,
+   planner_core.py:2685:             cutoff_soc,
+   planner_core.py:2686:             charge_date,
+   planner_core.py:2687:             user_cap_kw=user_max_ac_kw,
+   planner_core.py:2688:             tariff_cfg=tariff_cfg,
+   planner_core.py:2689:         )
+   planner_core.py:2690: 
+   planner_core.py:2691:         detail_df, grid_import, grid_export, _, _ = simulate_expensive_hours_detailed(
+   planner_core.py:2692:             pv, yesterday_kwh, achieved_soc_start, target_date, tariff_cfg=tariff_cfg
+   planner_core.py:2693:         )
+   planner_core.py:2694:         full_soc, full_flows = simulate_full_day_soc(
+   planner_core.py:2695:             pv,
+   planner_core.py:2696:             yesterday_kwh,
+>> planner_core.py:2697:             soc_at_22_percent / 100.0,
+   planner_core.py:2698:             charge_kw,
+   planner_core.py:2699:             cutoff_soc,
+   planner_core.py:2700:             target_date,
+   planner_core.py:2701:             tariff_cfg=tariff_cfg,
+   planner_core.py:2702:         )
+   planner_core.py:2703: 
+   planner_core.py:606:         return float(row[col]) if col in row else 0.0
+   planner_core.py:607: 
+   planner_core.py:608:     kwh_cols = [c for c in flows_df.columns if c.endswith("_kwh")]
+   planner_core.py:609: 
+   planner_core.py:610:     for ts, row in flows_df.iterrows():
+   planner_core.py:611:         ts_text = str(ts)
+>> planner_core.py:612:         soc_start = _as_float(row, "soc_start_pct")
+   planner_core.py:613:         soc_end = _as_float(row, "soc_end_pct")
+   planner_core.py:614: 
+   planner_core.py:615:         if soc_start < soc_lo or soc_start > soc_hi:
+   planner_core.py:616:             raise RuntimeError(
+   planner_core.py:617:                 "Invariant failed (SOC bounds): "
+   planner_core.py:618:                 f"context={context}, timestamp={ts_text}, soc_start_pct={soc_start:.6f}, "
+   planner_core.py:609: 
+   planner_core.py:610:     for ts, row in flows_df.iterrows():
+   planner_core.py:611:         ts_text = str(ts)
+   planner_core.py:612:         soc_start = _as_float(row, "soc_start_pct")
+   planner_core.py:613:         soc_end = _as_float(row, "soc_end_pct")
+   planner_core.py:614: 
+>> planner_core.py:615:         if soc_start < soc_lo or soc_start > soc_hi:
+   planner_core.py:616:             raise RuntimeError(
+   planner_core.py:617:                 "Invariant failed (SOC bounds): "
+   planner_core.py:618:                 f"context={context}, timestamp={ts_text}, soc_start_pct={soc_start:.6f}, "
+   planner_core.py:619:                 f"expected_range=[{soc_lo:.6f}, {soc_hi:.6f}]"
+   planner_core.py:620:             )
+   planner_core.py:621:         if soc_end < soc_lo or soc_end > soc_hi:
+   planner_core.py:612:         soc_start = _as_float(row, "soc_start_pct")
+   planner_core.py:613:         soc_end = _as_float(row, "soc_end_pct")
+   planner_core.py:614: 
+   planner_core.py:615:         if soc_start < soc_lo or soc_start > soc_hi:
+   planner_core.py:616:             raise RuntimeError(
+   planner_core.py:617:                 "Invariant failed (SOC bounds): "
+>> planner_core.py:618:                 f"context={context}, timestamp={ts_text}, soc_start_pct={soc_start:.6f}, "
+   planner_core.py:619:                 f"expected_range=[{soc_lo:.6f}, {soc_hi:.6f}]"
+   planner_core.py:620:             )
+   planner_core.py:621:         if soc_end < soc_lo or soc_end > soc_hi:
+   planner_core.py:622:             raise RuntimeError(
+   planner_core.py:623:                 "Invariant failed (SOC bounds): "
+   planner_core.py:624:                 f"context={context}, timestamp={ts_text}, soc_end_pct={soc_end:.6f}, "
+   planner_core.py:723:     hourly_df: "pd.DataFrame"
+   planner_core.py:724:     expensive_detail_df: "pd.DataFrame"
+   planner_core.py:725:     full_day_soc: "pd.Series"
+   planner_core.py:726:     full_day_flows_df: "pd.DataFrame"
+   planner_core.py:727:     cutoff_soc: float
+   planner_core.py:728:     charge_kw: float
+>> planner_core.py:729:     achieved_soc_start: float
+   planner_core.py:730:     grid_import_expensive_kwh: float
+   planner_core.py:731:     grid_export_expensive_kwh: float
+   planner_core.py:732:     curtailed_expensive_kwh: float
+   planner_core.py:733:     cutoff_note: str
+   planner_core.py:734:     cutoff_reason: str
+   planner_core.py:735:     charge_note: str
+   planner_core.py:2677:         cutoff_note = (
+   planner_core.py:2678:             f"Cutoff capped to {MAX_CUTOFF_SOC_PERCENT:.1f}% (was {old_cutoff_soc*100:.1f}%)."
+   planner_core.py:2679:             if abs(cutoff_soc - old_cutoff_soc) > 1e-9 else ""
+   planner_core.py:2680:         )
+   planner_core.py:2681: 
+   planner_core.py:2682:         charge_date = target_date - dt.timedelta(days=1)
+>> planner_core.py:2683:         _, charge_kw, charge_note, achieved_soc_start = plan_charge_power(
+   planner_core.py:2684:             soc_at_22_percent / 100.0,
+   planner_core.py:2685:             cutoff_soc,
+   planner_core.py:2686:             charge_date,
+   planner_core.py:2687:             user_cap_kw=user_max_ac_kw,
+   planner_core.py:2688:             tariff_cfg=tariff_cfg,
+   planner_core.py:2689:         )
+   planner_core.py:2686:             charge_date,
+   planner_core.py:2687:             user_cap_kw=user_max_ac_kw,
+   planner_core.py:2688:             tariff_cfg=tariff_cfg,
+   planner_core.py:2689:         )
+   planner_core.py:2690: 
+   planner_core.py:2691:         detail_df, grid_import, grid_export, _, _ = simulate_expensive_hours_detailed(
+>> planner_core.py:2692:             pv, yesterday_kwh, achieved_soc_start, target_date, tariff_cfg=tariff_cfg
+   planner_core.py:2693:         )
+   planner_core.py:2694:         full_soc, full_flows = simulate_full_day_soc(
+   planner_core.py:2695:             pv,
+   planner_core.py:2696:             yesterday_kwh,
+   planner_core.py:2697:             soc_at_22_percent / 100.0,
+   planner_core.py:2698:             charge_kw,
+   planner_core.py:2708:             hourly_df=pv,
+   planner_core.py:2709:             expensive_detail_df=detail_df,
+   planner_core.py:2710:             full_day_soc=full_soc,
+   planner_core.py:2711:             full_day_flows_df=full_flows,
+   planner_core.py:2712:             cutoff_soc=cutoff_soc,
+   planner_core.py:2713:             charge_kw=charge_kw,
+>> planner_core.py:2714:             achieved_soc_start=achieved_soc_start,
+   planner_core.py:2715:             grid_import_expensive_kwh=float(grid_import),
+   planner_core.py:2716:             grid_export_expensive_kwh=float(grid_export),
+   planner_core.py:2717:             curtailed_expensive_kwh=float(detail_df["curtailed_kwh"].sum()) if not detail_df.empty else 0.0,
+   planner_core.py:2718:             cutoff_note=cutoff_note,
+   planner_core.py:2719:             cutoff_reason=cutoff_reason,
+   planner_core.py:2720:             charge_note=charge_note,
+   planner_core.py:2748:         sunset=weather.sunset,
+   planner_core.py:2749:     )
+   planner_core.py:2750:     cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high, tariff_cfg=tariff_cfg)
+   planner_core.py:2751:     cutoff_soc = min(max(cutoff_soc_raw + (float(buffer_percent) / 100.0), MIN_SOC), MAX_CUTOFF_SOC)
+   planner_core.py:2752: 
+   planner_core.py:2753:     charge_date = target_date - dt.timedelta(days=1)
+>> planner_core.py:2754:     _, charge_kw, charge_note, achieved_soc_start = plan_charge_power(
+   planner_core.py:2755:         soc_at_22_percent / 100.0,
+   planner_core.py:2756:         cutoff_soc,
+   planner_core.py:2757:         charge_date,
+   planner_core.py:2758:         user_cap_kw=max_ac_charge_power_kw,
+   planner_core.py:2759:         tariff_cfg=tariff_cfg,
+   planner_core.py:2760:     )
+
+==============================================================================================================
+END — Paste this output back here. Then Step 0 is fully proven and we can start Step 1.
+==============================================================================================================
