@@ -1459,6 +1459,8 @@ class BackendState:
             used_history=bool(used_history),
             pv_credit_available=bool(pv_credit_available),
         )
+        inputs_used["soc_at_22_percent"] = float(estimated_soc_percent)
+        inputs_used["soc_offpeak_start_estimated_percent"] = float(estimated_soc_percent)
         decision_quantile, decision_reason = pick_decision_quantile(soc_offpeak_confidence, uncertainty_enabled=bool(pv_uncertainty))
         if decision_quantile == "p50":
             decision_series = ensemble_tomorrow.pv_ensemble_p50
@@ -1637,8 +1639,6 @@ class BackendState:
         }
         tomorrow_models_used = list(getattr(ensemble_tomorrow, "selected_models", []) or [])
 
-        inputs_used["soc_at_22_percent"] = float(estimated_soc_percent)
-        inputs_used["soc_offpeak_start_estimated_percent"] = float(estimated_soc_percent)
         inputs_used["soc_offpeak_start_hours_until"] = float(hours_until_offpeak_start)
         inputs_used["soc_offpeak_start_confidence"] = str(soc_offpeak_confidence)
         inputs_used["soc_offpeak_start_method"] = str(soc_offpeak_method)
