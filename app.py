@@ -1626,7 +1626,7 @@ def _build_cycle_savings_html(
             f"<div style='font-size:0.95rem;font-weight:800;color:{pill_color};'>{pill}</div>"
             "</div>"
             f"<div style='margin-top:0.22rem;font-size:0.70rem;opacity:0.80;'>"
-            f"No battery {scope_suffix}: €{float(base_cost):.2f} · Battery plan {scope_suffix}: €{float(plan_cost):.2f}"
+            f"Grid only {scope_suffix}: €{float(base_cost):.2f} · iSystem {scope_suffix}: €{float(plan_cost):.2f}"
             "</div>"
             + inventory_chip
             + bars_html
