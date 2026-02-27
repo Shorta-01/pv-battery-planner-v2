@@ -897,10 +897,12 @@ class BackendState:
             source=self.last_inputs,
             warnings=warnings,
         )
-        if raw_soc_now != soc or raw_soc_legacy != soc:
+        if raw_soc_now != soc:
             changed = True
         self.last_inputs["soc_now_percent"] = soc
-        self.last_inputs["soc_at_22_percent"] = soc
+        if "soc_at_22_percent" in self.last_inputs:
+            self.last_inputs.pop("soc_at_22_percent", None)
+            changed = True
 
         raw_ykwh = self.last_inputs.get("yesterday_consumption_kwh")
         ykwh = _coerce_float(raw_ykwh, 18.0, field_name="yesterday_consumption_kwh", warnings=warnings)
@@ -1025,7 +1027,6 @@ class BackendState:
         )
         self.last_inputs = {
             "soc_now_percent": float(soc),
-            "soc_at_22_percent": float(soc),
             "yesterday_consumption_kwh": float(payload.yesterday_consumption_kwh),
             "last_inputs_updated_at": now_local,
         }
@@ -1107,7 +1108,7 @@ class BackendState:
         config_hash = compute_config_hash(cfg)
         inputs_used = {
             "soc_now_percent": float(soc_percent),
-            "soc_at_22_percent": float(soc_percent),
+            "soc_at_22_percent": None,
             "soc_offpeak_start_estimated_percent": None,
             "soc_offpeak_start_hours_until": None,
             "soc_offpeak_start_confidence": None,
@@ -1494,6 +1495,8 @@ class BackendState:
         max_grid_import_kw = float(flows_df.attrs.get("max_grid_import_kw", cfg.get("tariff", {}).get("max_grid_import_kw", 0.0)))
         grid_import_cap_active = bool(flows_df.attrs.get("grid_import_cap_active", max_grid_import_kw > 0.0))
         grid_import_cap_binding_events = int(flows_df.attrs.get("grid_import_cap_binding_events", 0))
+        charge_effective_cap_kw = float(flows_df.attrs.get("charge_effective_cap_kw", 0.0))
+        charge_limit_reason_raw = str(flows_df.attrs.get("charge_limit_reason_raw", "none") or "none")
         grid_import_cap_load_exceeds_events = int(flows_df.attrs.get("grid_import_cap_load_exceeds_events", 0))
         grid_import_cap_limited_charge_kwh_total = float(flows_df.attrs.get("grid_import_cap_limited_charge_kwh_total", 0.0))
         if not allow_injection_to_grid:
@@ -1508,6 +1511,7 @@ class BackendState:
             warnings.append("Grid import cap exceeded by household load in some hours (cannot be enforced).")
         if grid_import_cap_binding_events > 0:
             warnings.append("Grid import cap limited battery charging; target may be unreachable.")
+        charge_limit_reason = "grid_import_cap" if grid_import_cap_binding_events > 0 else charge_limit_reason_raw
         grid_import = float(flows_df.get("grid_import_kwh", pd.Series(dtype=float)).sum())
         grid_export = float(flows_df.get("grid_export_kwh", pd.Series(dtype=float)).sum())
         canonical_tomorrow_total_kwh = (float(pd.to_numeric(pv["pv_total_kwh"], errors="coerce").sum(min_count=1)) if "pv_total_kwh" in pv.columns else None)
@@ -1671,6 +1675,8 @@ class BackendState:
                 "charge_note": charge_note,
                 "charge_target_reachable": bool(charge_target_reachable),
                 "charge_warning_text": str(charge_warning_text or ""),
+                "charge_effective_cap_kw": float(charge_effective_cap_kw),
+                "charge_limit_reason": str(charge_limit_reason),
                 "grid_import": float(grid_import),
                 "grid_export": float(grid_export),
                 "pv_forecast_kwh": pv_forecast_kwh,

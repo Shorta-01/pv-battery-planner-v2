@@ -4336,7 +4336,6 @@ if run_clicked or st.session_state.get("last_run_result"):
                     "/v1/inputs/last",
                     {
                         "soc_now_percent": float(soc_percent),
-                        "soc_at_22_percent": float(soc_percent),
                         "yesterday_consumption_kwh": float(yesterday_kwh),
                     },
                 )
@@ -4344,7 +4343,6 @@ if run_clicked or st.session_state.get("last_run_result"):
                     "/v1/run/now",
                     {
                         "soc_now_percent": float(soc_percent),
-                        "soc_at_22_percent": float(soc_percent),
                         "yesterday_consumption_kwh": float(yesterday_kwh),
                         "buffer_percent": float(buffer_percent),
                         "user_max_ac_kw": float(user_max_ac_kw),
@@ -4749,4 +4747,3 @@ if run_clicked or st.session_state.get("last_run_result"):
         if APP_DEBUG:
             with st.expander("Debug traceback", expanded=False):
                 st.code(traceback.format_exc())
-

@@ -1420,8 +1420,11 @@ def compute_euro_savings_no_battery_vs_plan(
 
     idx_cycle = pd.date_range(cycle_start, cycle_end, freq="h", inclusive="left", tz=TIMEZONE)
 
+    pv_baseline_col_used = "pv_total_decision_kwh" if "pv_total_decision_kwh" in pv_df.columns else "pv_total_kwh"
+    pv_plan_col_used = "pv_total_decision_kwh" if "pv_total_decision_kwh" in pv_df.columns else "pv_total_kwh"
+
     dt_h_cycle = timestep_hours(idx_cycle)
-    pv_cycle = pv_df["pv_total_kwh"].reindex(idx_cycle).fillna(0.0).astype(float)
+    pv_cycle = pd.to_numeric(pv_df[pv_baseline_col_used].reindex(idx_cycle), errors="coerce").fillna(0.0).astype(float)
     load_cycle = pd.Series(
         [load_kwh_at(ts, total_consumption_kwh, float(dt_h_cycle.loc[ts])) for ts in idx_cycle],
         index=idx_cycle,
@@ -1469,7 +1472,7 @@ def compute_euro_savings_no_battery_vs_plan(
     hourly_savings_cycle = (base_cost_cycle - plan_cost_cycle_cash).reindex(idx_cycle).fillna(0.0)
 
     dt_h_tom = timestep_hours(idx_tomorrow)
-    pv_tom = pv_df["pv_total_kwh"].reindex(idx_tomorrow).fillna(0.0).astype(float)
+    pv_tom = pd.to_numeric(pv_df[pv_baseline_col_used].reindex(idx_tomorrow), errors="coerce").fillna(0.0).astype(float)
     load_tom = pd.Series(
         [load_kwh_at(ts, total_consumption_kwh, float(dt_h_tom.loc[ts])) for ts in idx_tomorrow],
         index=idx_tomorrow,
@@ -1581,6 +1584,8 @@ def compute_euro_savings_no_battery_vs_plan(
         "cycle_end_soc_pct": cycle_end_soc_pct,
         "cycle_soc_delta_pct": cycle_soc_delta_pct,
         "cycle_stored_energy_delta_kwh": cycle_stored_energy_delta_kwh,
+        "pv_baseline_col_used": str(pv_baseline_col_used),
+        "pv_plan_col_used": str(pv_plan_col_used),
         "savings_night_load_from_battery_used": bool(should_use_battery_for_offpeak_load(tariff_cfg)),
         "savings_cycle_window_start_local": cycle_start.isoformat(),
         "savings_cycle_window_end_local": cycle_end.isoformat(),
@@ -2758,6 +2763,20 @@ def run_detailed_plan(
         user_cap_kw=max_ac_charge_power_kw,
         tariff_cfg=tariff_cfg,
     )
+    target_date_for_window = charge_date + dt.timedelta(days=1)
+    window_start, window_end = compute_charging_window_for_target_date(target_date_for_window, tariff_cfg)
+    available_charge_hours = float(len(get_charge_session_index_from_window(window_start, window_end)))
+    required_grid_kwh = 0.0
+    if available_charge_hours > 0 and cutoff_soc > (soc_at_22_percent / 100.0) + 1e-9 and tariff_has_meaningful_spread(tariff_cfg):
+        soc_at_22_kwh = (soc_at_22_percent / 100.0) * BATTERY_KWH
+        target_soc_kwh = cutoff_soc * BATTERY_KWH
+        required_batt_kwh = max(0.0, target_soc_kwh - soc_at_22_kwh)
+        required_grid_kwh = required_batt_kwh / BATTERY_AC_CHARGE_EFF
+    recommended_allowed_ac_kw = (required_grid_kwh / available_charge_hours) if available_charge_hours > 0 else 0.0
+    charge_effective_cap_kw, charge_limit_reason_raw = _compute_charge_limit_metadata(
+        recommended_kw=recommended_allowed_ac_kw,
+        user_cap_kw=max_ac_charge_power_kw,
+    )
 
     detail_df, _, _, _, _ = simulate_expensive_hours_detailed(
         pv,
@@ -2775,6 +2794,8 @@ def run_detailed_plan(
         target_date,
         tariff_cfg=tariff_cfg,
     )
+    flows_df.attrs["charge_effective_cap_kw"] = float(charge_effective_cap_kw)
+    flows_df.attrs["charge_limit_reason_raw"] = str(charge_limit_reason_raw)
     charge_warning_text = str(charge_note) if str(charge_note).startswith("Warning") else ""
     charge_target_reachable = not bool(charge_warning_text)
     return detail_df, flows_df, soc_series, float(charge_kw), float(cutoff_soc), str(cutoff_reason), str(charge_note), bool(charge_target_reachable), str(charge_warning_text)
@@ -2864,8 +2885,10 @@ def plan_charge_power(
     required_batt_kwh = max(0.0, target_soc_kwh - soc_at_22_kwh)
     required_grid_kwh = required_batt_kwh / BATTERY_AC_CHARGE_EFF
     recommended_allowed_ac_kw = required_grid_kwh / available_charge_hours
-    user_cap = MAX_AC_CHARGE_KW_HARD_LIMIT if user_cap_kw is None else max(user_cap_kw, 0.0)
-    effective_cap_kw = min(user_cap, INVERTER_AC_KW_LIMIT, BATTERY_MAX_CHARGE_KW)
+    effective_cap_kw, _ = _compute_charge_limit_metadata(
+        recommended_kw=recommended_allowed_ac_kw,
+        user_cap_kw=user_cap_kw,
+    )
     allowed_ac_kw = min(recommended_allowed_ac_kw, effective_cap_kw)
 
     if recommended_allowed_ac_kw > allowed_ac_kw + 1e-9:
@@ -2880,6 +2903,20 @@ def plan_charge_power(
         return required_grid_kwh, allowed_ac_kw, note, achievable_soc
 
     return required_grid_kwh, allowed_ac_kw, f"Automatically computed over {available_charge_hours:.1f}h charging window.", soc_cutoff
+
+
+def _compute_charge_limit_metadata(recommended_kw: float, user_cap_kw: Optional[float]) -> Tuple[float, str]:
+    user_cap = MAX_AC_CHARGE_KW_HARD_LIMIT if user_cap_kw is None else max(float(user_cap_kw), 0.0)
+    caps = {
+        "user": float(user_cap),
+        "inverter": float(INVERTER_AC_KW_LIMIT),
+        "battery": float(BATTERY_MAX_CHARGE_KW),
+    }
+    effective_cap_kw = float(min(caps.values()))
+    if float(recommended_kw) <= effective_cap_kw + 1e-9:
+        return effective_cap_kw, "none"
+    limiter_reason = min(caps.items(), key=lambda item: item[1])[0]
+    return effective_cap_kw, str(limiter_reason)
 
 
 # ============================================================
