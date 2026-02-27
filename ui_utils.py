@@ -170,7 +170,7 @@ def resolve_pv_outlook_savings(pv_quality_dict: dict | None) -> dict[str, Any]:
     total_plan = _to_float_or_none(data.get("plan_cost_eur_total"))
     total_savings = _to_float_or_none(data.get("savings_eur_total"))
 
-    has_new_cycle = cycle_grid_only is not None or cycle_isystem is not None or cycle_benefit is not None
+    has_new_cycle = cycle_benefit is not None
     has_new_tomorrow = tomorrow_grid_only is not None or tomorrow_isystem is not None or tomorrow_benefit is not None
 
     display_scope = "tomorrow"
@@ -254,7 +254,7 @@ def resolve_pv_outlook_savings(pv_quality_dict: dict | None) -> dict[str, Any]:
     horizon_label = str(data.get("savings_horizon_label") or "").strip() or None
     detail_note = "⏱️ Bars: tomorrow (00–24)"
     if display_scope == "cycle" and bars_scope == "cycle":
-        note = "Grid only vs iSystem cycle savings shown (off-peak start → next off-peak start). Hourly bars align to cycle hours." if use_new_scheme else "Cycle savings shown (off-peak start → next off-peak start). Hourly bars align to cycle hours."
+        note = "Grid only vs iSystem cycle savings shown (off-peak start → next off-peak start)." if use_new_scheme else "Cycle savings shown (off-peak start → next off-peak start)."
         detail_note = "⏱️ Bars: cycle (off-peak start → next off-peak start)"
     elif display_scope in {"cycle", "total"} and hourly is not None:
         note = "Grid only vs iSystem cycle savings shown (off-peak start → next off-peak start). Hourly bars show tomorrow (00–24)." if use_new_scheme else "Cycle savings shown (off-peak start → next off-peak start). Hourly bars show tomorrow (00–24)."
