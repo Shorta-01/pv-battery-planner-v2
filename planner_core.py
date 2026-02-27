@@ -1434,7 +1434,6 @@ def compute_euro_savings_no_battery_vs_plan(
     base_export_cycle = (pv_cycle - load_cycle).clip(lower=0.0)
     base_price_cycle = pd.Series([import_price_eur_per_kwh(ts, tariff_cfg) for ts in idx_cycle], index=idx_cycle)
     grid_only_import_cycle = load_cycle
-    grid_only_export_cycle = pd.Series(0.0, index=idx_cycle, dtype=float)
     grid_only_cost_cycle_series = grid_only_import_cycle * base_price_cycle
     base_cost_cycle = base_import_cycle * base_price_cycle - base_export_cycle * inj
 
@@ -1485,6 +1484,12 @@ def compute_euro_savings_no_battery_vs_plan(
         index=idx_tomorrow,
         dtype=float,
     )
+
+    if ENABLE_INVARIANT_CHECKS:
+        small_eps = 1e-6
+        assert abs(float(load_cycle.sum()) - float(total_consumption_kwh)) < small_eps, (
+            "Cycle load mismatch: expected total_consumption_kwh over cycle horizon."
+        )
     base_import_tom = (load_tom - pv_tom).clip(lower=0.0)
     base_export_tom = (pv_tom - load_tom).clip(lower=0.0)
     price_tom = pd.Series([import_price_eur_per_kwh(ts, tariff_cfg) for ts in idx_tomorrow], index=idx_tomorrow)
@@ -1583,6 +1588,10 @@ def compute_euro_savings_no_battery_vs_plan(
     if len(hourly_savings_cycle_hour_labels) != 24:
         hourly_savings_cycle_hour_labels = [f"{h:02d}:00" for h in range(24)]
 
+    if ENABLE_INVARIANT_CHECKS:
+        assert len(hourly_benefit_vs_grid_only_tomorrow_cash_list) == 24
+        assert len(hourly_benefit_vs_grid_only_cycle_cash_list) == 24
+
     result = {
         "baseline_cost_eur_total": baseline_cycle,
         "plan_cost_eur_total": plan_cycle,
@@ -1645,6 +1654,12 @@ def compute_euro_savings_no_battery_vs_plan(
         "isystem_cost_eur_cycle_cash": 0.0,
         "isystem_cost_eur_cycle": 0.0,
         "benefit_vs_grid_only_eur_cycle": 0.0,
+        "grid_only_cost_eur_tomorrow": 0.0,
+        "isystem_cost_eur_tomorrow_cash": 0.0,
+        "benefit_vs_grid_only_eur_tomorrow_cash": 0.0,
+        "hourly_benefit_vs_grid_only_eur_cycle_cash": [0.0] * 24,
+        "hourly_benefit_vs_grid_only_eur_tomorrow_cash": [0.0] * 24,
+        "hourly_benefit_cycle_hour_labels": [f"{h:02d}:00" for h in range(24)],
         "cycle_start_soc_pct": 0.0,
         "cycle_end_soc_pct": 0.0,
         "cycle_soc_delta_pct": 0.0,
