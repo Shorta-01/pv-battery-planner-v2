@@ -1,0 +1,773 @@
+
+==============================================================================================================
+0) REPO STATE (branch + commit + clean status)
+==============================================================================================================
+Repo:   /workspace/pv-battery-planner-v2
+Branch: work
+Commit: 424a6a547b30d5753ca9de1b10697ec841504995
+Clean:  NO
+
+Dirty files:
+?? codex_audit_step0_trace.py
+?? codex_audit_step0_trace_output.txt
+
+==============================================================================================================
+1) BACKEND ENTRYPOINT ANCHORS (run/now, API endpoints, PlannerService entry)
+==============================================================================================================
+backend_api.py:1806:     def run_now(self, payload: RunNowPayload) -> dict:
+backend_api.py:1939: app = FastAPI(title="PV Battery Planner Backend")
+backend_api.py:2104: @app.post("/v1/settings/reset_to_repo_defaults")
+backend_api.py:2110: @app.post("/v1/settings/factory_settings")
+backend_api.py:2128: @app.post("/v1/run/now")
+backend_api.py:2129: def run_now(payload: RunNowPayload, authorization: str | None = Header(default=None)) -> dict:
+backend_api.py:2131:     return state.run_now(payload)
+backend_api.py:2134: @app.post("/v1/run/nightly")
+backend_api.py:2140: @app.post("/v1/actuals/hourly")
+backend_api.py:2172: @app.post("/v1/score/day")
+backend_api.py:2224: @app.post("/v1/evse/stop")
+backend_api.py:2230: @app.post("/v1/evse/resume")
+backend_api.py:2261: @app.post("/v1/errors")
+backend_api.py:2292: @app.post("/v1/errors/{error_id}/fixed")
+app.py:4344:                     "/v1/run/now",
+app.py:4734:         log_frontend_error(severity="error", error_type="network", where="app.py:run_forecast", title="Frontend error: backend unreachable", exc=exc, context={"endpoint": "/v1/run/now"})
+
+==============================================================================================================
+2) INPUT 1 — SOC NOW (%) — ingress (app/backend) + usage (planner_core)  (matches: 1)
+==============================================================================================================
+001  app.py:3428:                 "SOC now (%)",
+
+==============================================================================================================
+3) INPUT 2 — CONSUMPTION (kWh) — ingress + processing (daily vs hourly vs fallback)  (matches: 97)
+==============================================================================================================
+001  app.py:47:     "yesterday_kwh": "This is your total home usage yesterday. It matters because the app uses it to estimate tomorrow's hourly load. Example: if yesterday was 18 kWh, tomorrow's hourly load profile scales to 18 kWh.",
+002  app.py:56:     "inverter_ac_model": "How DC power becomes AC power. linear: AC = DC × inverter efficiency, then clip at the inverter AC limit (simple). pvwatts: part-load inverter behavior (more realistic at low power). Example: 2.0 kW DC with 0.97 → ~1.94 kW AC in linear mode before clipping.",
+003  app.py:81:     "battery_max_discharge_kw": "Maximum battery discharge power. It caps support to load. Example: 3.0 kW.",
+004  app.py:98:     "Forecast total load (kWh)": "Estimated total consumption for tomorrow. This is based on yesterday's total and a default hourly profile.",
+005  app.py:104:     "PV production vs Load (estimated) (hourly)": "This chart shows hourly energy from your PV and your estimated home load, plus battery SOC on a secondary axis. Load is estimated from yesterday total plus a profile and can differ from real usage (EV charging, heat pump cycles, weekends).",
+006  app.py:105:     "Surplus vs Deficit (hourly)": "This chart compares PV surplus and load deficit each hour. It matters because surplus can charge the battery, while deficit means battery discharge or grid import is needed.",
+007  app.py:111:     "Hourly planning output": "This table combines hourly PV, load, battery SOC, and grid flows. It helps you inspect exactly what the planner expects each hour.",
+008  app.py:361:         issues["Inputs"].append("Yesterday usage must be between 2.0 and 60.0 kWh.")
+009  app.py:1727:             "<span title='Forecast total load (kWh) for tomorrow (00–24).' "
+010  app.py:2108:         "Load (estimated)",
+011  app.py:2192:             "Load (estimated)": round(_safe_float(metrics.get("cons_forecast_kwh"), 0.0), 2),
+012  app.py:2317: def _extract_hourly_df(detail_payload: dict) -> pd.DataFrame:
+013  app.py:2319:         hourly_df = pd.DataFrame([r for r in detail_payload.get("hourly", []) if isinstance(r, dict)])
+014  app.py:2568:             def _hourly_records_from_detail(detail_payload: dict) -> list[dict]:
+015  app.py:2632:                 hourly_records = _hourly_records_from_detail(detail_payload)
+016  app.py:2688:         load_a = float(row_a.get("Load (estimated)") or metrics_a.get("cons_forecast_kwh") or 0.0)
+017  app.py:2689:         load_b = float(row_b.get("Load (estimated)") or metrics_b.get("cons_forecast_kwh") or 0.0)
+018  app.py:2732:         m2.metric("Load Δ (kWh)", f"{load_b - load_a:+.2f}", help=f"A: {load_a:.2f} → B: {load_b:.2f}")
+019  app.py:2821:                 "run_a": {"label": run_a_label, "run_id": run_id_a, "summary": {"pv_p50": pv_a, "pv_range_width_kwh": pv_width_a, "load": load_a, "charge_kw": charge_a, "cutoff_soc_pct": cutoff_a, "warnings_count": warn_a}},
+020  app.py:2822:                 "run_b": {"label": run_b_label, "run_id": run_id_b, "summary": {"pv_p50": pv_b, "pv_range_width_kwh": pv_width_b, "load": load_b, "charge_kw": charge_b, "cutoff_soc_pct": cutoff_b, "warnings_count": warn_b}},
+021  app.py:2974:             s4.metric("Load (estimated)", f"{float(pd.to_numeric(pd.Series([latest_row.get('Load (estimated)')]), errors='coerce').fillna(0).iloc[0]):.2f} kWh")
+022  app.py:3000:             simple_columns = ["Date", "Status", "PV quality", "PV p50", "Load (estimated)", "Allowed AC charge power", "Warnings badge"]
+023  app.py:3011:                 "Load (estimated)",
+024  app.py:3053:                     "Load (estimated)": st.column_config.NumberColumn(format="%.2f kWh"),
+025  app.py:3132:         load = pd.to_numeric(load_series, errors="coerce").fillna(0.0)
+026  app.py:3133:         out["pv_surplus_kwh"] = (out["pv_total_kwh"] - load).clip(lower=0.0)
+027  app.py:3138:         load = pd.to_numeric(load_series, errors="coerce").fillna(0.0)
+028  app.py:3139:         out["pv_deficit_kwh"] = (load - out["pv_total_kwh"]).clip(lower=0.0)
+029  app.py:3149:             "PV/load chart index length mismatch (working=%s, soc=%s)",
+030  app.py:3154:         logging.getLogger(__name__).warning("PV/load chart index mismatch between working frame and SOC series")
+031  app.py:3187:         "Load (estimated) kWh (hour): %{customdata[3]:.2f}<br>"
+032  app.py:3257:             name="Load (estimated)",
+033  app.py:3438:                 "Yesterday total consumption (kWh)",
+034  app.py:3446:                 st.error("Run forecast is blocked: Yesterday total consumption must be between 2.0 and 60.0 kWh. Enter a typical day such as 12.0 kWh if yesterday was unusual.")
+035  app.py:4313:                             st.caption(f"Could not load details: {exc}")
+036  app.py:4528:             tooltip_heading("PV production vs Load (estimated) (hourly)", CHART_TOOLTIPS["PV production vs Load (estimated) (hourly)"])
+037  app.py:4692:                         "residual_kwh": {"label": "Energy balance residual (kWh)", "help": "(PV + import + batt discharge) - (load + batt charge + export + curtailed).", "format": "%.3f"},
+038  app.py:4695:                         "load_kwh": {"label": "Load (estimated) (kWh)", "help": "Estimated household demand based on yesterday total + profile; real usage can differ (EV, heat pump, weekend effects).", "format": "%.2f"},
+039  backend_api.py:268: class ActualsHourlyPayload(BaseModel):
+040  backend_api.py:1172:                 "data_source": {"soc": "manual", "load": "manual", "pv": "forecast"},
+041  backend_api.py:1508:             warnings.append("Grid import cap exceeded by household load in some hours (cannot be enforced).")
+042  backend_api.py:1741:             "data_source": {"soc": "manual", "load": "manual", "pv": "forecast"},
+043  planner_core.py:115: BATTERY_DISCHARGE_EFF = 0.95  # batterij -> load
+044  planner_core.py:128: # Load profile (24 uur): verdeling van "gisteren verbruik" over de uren
+045  planner_core.py:408:     profile = load_profile["load_profile_24h"]
+046  planner_core.py:409:     if not isinstance(profile, list) or len(profile) != 24:
+047  planner_core.py:411:     profile_sum = sum(float(v) for v in profile)
+048  planner_core.py:655:                     "Invariant failed (load balance): "
+049  planner_core.py:1031:     """Estimate SOC at off-peak start with TOD load weighting and optional PV credit."""
+050  planner_core.py:1244: # LOAD & PV HELPERS
+051  planner_core.py:1247: def hourly_load_kwh(total_kwh: float) -> List[float]:
+052  planner_core.py:1258:     loads = hourly_load_kwh(total_kwh)
+053  planner_core.py:1275: def build_hourly_load_series(index: "pd.DatetimeIndex", total_kwh: float) -> "pd.Series":
+054  planner_core.py:1276:     loads = hourly_load_kwh(total_kwh)
+055  planner_core.py:1286: def build_cycle_hourly_load_series(
+056  planner_core.py:1298:     cycle_loads = build_hourly_load_series(cycle_idx, total_consumption_kwh)
+057  planner_core.py:1304:                 "Cycle load normalization mismatch: "
+058  planner_core.py:1311:     """Return a normalized 24h load profile for backward compatibility."""
+059  planner_core.py:1314:     profile = [float(v) for v in LOAD_PROFILE]
+060  planner_core.py:1315:     total = float(sum(profile))
+061  planner_core.py:1318:     return [v / total for v in profile]
+062  planner_core.py:1327:     """Build a 24h consumption series for target_date using a supplied profile."""
+063  planner_core.py:1330:     profile = [float(v) for v in profile_kwh_per_hour]
+064  planner_core.py:1331:     profile_sum = float(sum(profile))
+065  planner_core.py:1338:     normalized = [v / profile_sum for v in profile]
+066  planner_core.py:1385:     load_series = build_hourly_load_series(out.index, total_consumption_kwh)
+067  planner_core.py:1388:     load = out["load_kwh"].fillna(0.0)
+068  planner_core.py:1389:     out["pv_surplus_kwh"] = (pv_total - load).clip(lower=0.0)
+069  planner_core.py:1390:     out["pv_deficit_kwh"] = (load - pv_total).clip(lower=0.0)
+070  planner_core.py:2603:     loads = build_hourly_load_series(df.index, total_consumption_kwh)
+071  planner_core.py:2616:         load = float(loads.loc[ts])
+072  planner_core.py:2617:         net = load - pv  # + tekort, - overschot
+073  planner_core.py:2799:     loads = build_hourly_load_series(df.index, total_consumption_kwh)
+074  planner_core.py:2901:     loads = build_hourly_load_series(df.index, total_consumption_kwh)
+075  planner_core.py:2943:         load = float(loads.loc[ts])
+076  planner_core.py:2947:         pv_to_load = min(pv_ac_limited, load)
+077  planner_core.py:2948:         remaining_load = max(0.0, load - pv_to_load)
+078  planner_core.py:3009:             "load_kwh": load,
+079  planner_core.py:3011:             "surplus_kwh": max(0.0, pv_ac_limited - load),
+080  planner_core.py:3012:             "deficit_kwh": max(0.0, load - pv_ac_limited),
+081  planner_core.py:3091:         cycle_loads = build_cycle_hourly_load_series(tomorrow_date, total_consumption_kwh, tariff_cfg=cfg)
+082  planner_core.py:3108:         load = float(loads.loc[ts])
+083  planner_core.py:3109:         remaining_load = load
+084  planner_core.py:3149:             "load_kwh": float(load),
+085  planner_core.py:3186:     cycle_loads = build_cycle_hourly_load_series(tomorrow_date, total_consumption_kwh, tariff_cfg=cfg)
+086  planner_core.py:3214:             raise ValueError("Cycle load total does not match target consumption.")
+087  planner_core.py:3216:             raise ValueError("Night + day load total does not match target consumption.")
+088  planner_core.py:3262:         load = float(loads.loc[ts])
+089  planner_core.py:3265:         pv_to_load = min(pv_ac_limited, load)
+090  planner_core.py:3266:         remaining_load = max(0.0, load - pv_to_load)
+091  planner_core.py:3357:             "load_kwh": load,
+092  planner_core.py:3414:     print("\nHour | PV_EAST | PV_SOUTH | PV_UNCL | PV_CLIP | PV_TOTAL | LOAD  | SURPLUS | DEFICIT | Sun%")
+093  planner_core.py:3432:     print(f"- Total LOAD est: {float(df['load_kwh'].sum()):.2f} kWh")
+094  planner_core.py:3458:     print("Hour | PV_E | PV_S | PV_T | Load | Sur+ | Def- | Batt+ | Batt- | Grid+ | Grid- | SOC% start -> end")
+095  planner_core.py:3499:         yesterday_consumption_kwh = ask_required_float("Total consumption yesterday from FusionSolar (kWh): ")
+096  planner_core.py:3502:         print("Consumption must be > 0.")
+097  planner_core.py:3518:     print(f"- Yesterday consumption (kWh): {yesterday_consumption_kwh:.2f}")
+
+==============================================================================================================
+4) INPUT 3 — PV FORECAST TOMORROW — models/ensemble + fields forwarded to planner  (matches: 837)
+==============================================================================================================
+001  weather_ensemble.py:28: DEFAULT_ACCURACY_MODELS = ["knmi_harmonie_arome", "dwd_icon_d2", "ecmwf_ifs"]
+002  weather_ensemble.py:31:     "dwd_icon_d2": 0.35,
+003  weather_ensemble.py:32:     "ecmwf_ifs": 0.20,
+004  weather_ensemble.py:33:     "dwd_icon_eu": 0.10,
+005  weather_ensemble.py:34:     "meteofrance_seamless": 0.10,
+006  weather_ensemble.py:35:     "gfs": 0.05,
+007  weather_ensemble.py:105:         "supports_15min_radiation": False,
+008  weather_ensemble.py:114:     "dwd_icon_d2": {
+009  weather_ensemble.py:115:         "label": "DWD ICON-D2",
+010  weather_ensemble.py:116:         "endpoint": "https://api.open-meteo.com/v1/dwd-icon",
+011  weather_ensemble.py:117:         "params": {"models": "icon_d2"},
+012  weather_ensemble.py:122:         "supports_15min_radiation": True,
+013  weather_ensemble.py:131:     "ecmwf_ifs": {
+014  weather_ensemble.py:132:         "label": "ECMWF IFS",
+015  weather_ensemble.py:133:         "endpoint": "https://api.open-meteo.com/v1/ecmwf",
+016  weather_ensemble.py:139:         "supports_15min_radiation": False,
+017  weather_ensemble.py:148:     "ecmwf_aifs": {
+018  weather_ensemble.py:149:         "label": "ECMWF AIFS 0.25° Single",
+019  weather_ensemble.py:150:         "endpoint": "https://api.open-meteo.com/v1/ecmwf",
+020  weather_ensemble.py:151:         "params": {"models": "ecmwf_aifs025"},
+021  weather_ensemble.py:156:         "supports_15min_radiation": False,
+022  weather_ensemble.py:162:             "notes": "ECMWF AIFS Single 0.25° (Open-Meteo ECMWF API).",
+023  weather_ensemble.py:165:     "dwd_icon_eu": {
+024  weather_ensemble.py:166:         "label": "DWD ICON-EU",
+025  weather_ensemble.py:168:         "params": {"models": "icon_eu"},
+026  weather_ensemble.py:173:         "supports_15min_radiation": False,
+027  weather_ensemble.py:179:             "notes": "ICON EU via /v1/forecast. Radiation components should be available depending on Open-Meteo feed.",
+028  weather_ensemble.py:182:     "meteofrance_seamless": {
+029  weather_ensemble.py:185:         "params": {"models": "meteofrance_seamless"},
+030  weather_ensemble.py:190:         "supports_15min_radiation": False,
+031  weather_ensemble.py:199:     "gfs": {
+032  weather_ensemble.py:200:         "label": "NOAA GFS",
+033  weather_ensemble.py:202:         "params": {"models": "gfs_seamless"},
+034  weather_ensemble.py:207:         "supports_15min_radiation": False,
+035  weather_ensemble.py:225:         "supports_15min_radiation": bool(spec.get("supports_15min_radiation", False)),
+036  weather_ensemble.py:280:             "supports_15min_radiation": False,
+037  weather_ensemble.py:323:         "ecmwf_ifs",
+038  weather_ensemble.py:324:         "dwd_icon_eu",
+039  weather_ensemble.py:325:         "meteofrance_seamless",
+040  weather_ensemble.py:326:         "gfs",
+041  weather_ensemble.py:328:         "dwd_icon_d2",
+042  weather_ensemble.py:351:             ["knmi_harmonie_arome", "dwd_icon_d2", "dwd_icon_eu", "ecmwf_ifs"]
+043  weather_ensemble.py:353:             else ["knmi_harmonie_arome", "dwd_icon_eu", "ecmwf_ifs", "gfs"]
+044  weather_ensemble.py:357:         chosen = _pick_preferred(["dwd_icon_eu", "meteofrance_seamless", "ecmwf_ifs", "gfs"])
+045  weather_ensemble.py:359:         chosen = _pick_preferred(["ecmwf_ifs", "gfs"])
+046  weather_ensemble.py:431:         elevations = pd.to_numeric(solpos.get("apparent_elevation"), errors="coerce")
+047  weather_ensemble.py:432:         return bool((elevations > 0).fillna(False).any())
+048  weather_ensemble.py:459:     "icon_d2": "dwd_icon_d2",
+049  weather_ensemble.py:460:     "icon_eu": "dwd_icon_eu",
+050  weather_ensemble.py:461:     "ifs": "ecmwf_ifs",
+051  weather_ensemble.py:466:     "dwd_icon_d2": "icon_d2",
+052  weather_ensemble.py:467:     "ecmwf_ifs": "ecmwf_ifs025",
+053  weather_ensemble.py:468:     "ecmwf_aifs": "ecmwf_aifs025",
+054  weather_ensemble.py:469:     "dwd_icon_eu": "icon_eu",
+055  weather_ensemble.py:470:     "meteofrance_seamless": "meteofrance_seamless",
+056  weather_ensemble.py:471:     "gfs": "gfs_seamless",
+057  weather_ensemble.py:477:     "shortwave_radiation",
+058  weather_ensemble.py:482: IRRADIANCE_HOURLY_VARIABLES = [
+059  weather_ensemble.py:483:     "direct_normal_irradiance",
+060  weather_ensemble.py:484:     "diffuse_radiation",
+061  weather_ensemble.py:485:     "direct_radiation",
+062  weather_ensemble.py:488: INSTANT_IRRADIANCE_HOURLY_VARIABLES = [
+063  weather_ensemble.py:489:     "shortwave_radiation_instant",
+064  weather_ensemble.py:490:     "direct_normal_irradiance_instant",
+065  weather_ensemble.py:491:     "diffuse_radiation_instant",
+066  weather_ensemble.py:492:     "direct_radiation_instant",
+067  weather_ensemble.py:495: IRR_CRITICAL = {"shortwave_radiation", "direct_normal_irradiance", "diffuse_radiation", "direct_radiation"}
+068  weather_ensemble.py:501:     "shortwave_radiation",
+069  weather_ensemble.py:502:     "direct_normal_irradiance",
+070  weather_ensemble.py:503:     "diffuse_radiation",
+071  weather_ensemble.py:508:     "dwd_icon_d2": "icon_d2",
+072  weather_ensemble.py:509:     "ecmwf_ifs": "ifs",
+073  weather_ensemble.py:527: IRRADIANCE_HOURLY_MAX_WM2 = 1400.0
+074  weather_ensemble.py:528: IRRADIANCE_HOURLY_EXTREME_WM2 = 2500.0
+075  weather_ensemble.py:529: IRRADIANCE_DAILY_CLEARSKY_FACTOR = 1.35
+076  weather_ensemble.py:536:     pv_ensemble_p50: pd.Series
+077  weather_ensemble.py:537:     pv_ensemble_unclipped_p50: pd.Series
+078  weather_ensemble.py:538:     pv_ensemble_clipped_p50: pd.Series
+079  weather_ensemble.py:539:     pv_ensemble_east_p50: pd.Series
+080  weather_ensemble.py:540:     pv_ensemble_south_p50: pd.Series
+081  weather_ensemble.py:541:     pv_ensemble_p10: pd.Series | None
+082  weather_ensemble.py:542:     pv_ensemble_p25: pd.Series | None
+083  weather_ensemble.py:543:     pv_ensemble_p90: pd.Series | None
+084  weather_ensemble.py:546:     derived_irradiance_by_model: dict[str, bool]
+085  weather_ensemble.py:548:     derived_irradiance_hours_by_model: dict[str, int]
+086  weather_ensemble.py:558:     weather_ensemble_table: core.ForecastResult
+087  weather_ensemble.py:600:     for col in ("pv_total_kwh", "pv_kwh", "pv_kwh_p50"):
+088  weather_ensemble.py:700: def check_irradiance_sanity(
+089  weather_ensemble.py:716:     sustained_mask = ghi > IRRADIANCE_HOURLY_MAX_WM2
+090  weather_ensemble.py:718:     extreme_count = int((ghi > IRRADIANCE_HOURLY_EXTREME_WM2).sum())
+091  weather_ensemble.py:723:             f"irradiance anomaly model={model_id}: hourly_ghi_exceeds={IRRADIANCE_HOURLY_MAX_WM2:.0f}W/m² "
+092  weather_ensemble.py:741:             if measured_wh > (clear_wh * IRRADIANCE_DAILY_CLEARSKY_FACTOR):
+093  weather_ensemble.py:743:                     "irradiance anomaly model="
+094  weather_ensemble.py:745:                     f"ratio={ratio:.2f} limit={IRRADIANCE_DAILY_CLEARSKY_FACTOR:.2f} "
+095  weather_ensemble.py:749:             _LOGGER.debug("[weather_ensemble] check_irradiance_sanity skipped model=%s err=%s", model_id, exc)
+096  weather_ensemble.py:880:         _LOGGER.warning("[weather_ensemble][circuit_breaker] failed to persist success state for model=%s err=%s", model_id, exc)
+097  weather_ensemble.py:904:         _LOGGER.warning("[weather_ensemble][circuit_breaker] failed to persist failure state for model=%s err=%s", model_id, exc)
+098  weather_ensemble.py:912: def _provider_cache_location_bucket(lat: float, lon: float, elevation_m: float | None = None) -> str:
+099  weather_ensemble.py:913:     elev_bucket = int(round(float(elevation_m))) if elevation_m is not None else "none"
+100  weather_ensemble.py:1177:         "[weather_ensemble] model_fetch model=%s endpoint=%s params_hash=%s status=%s elapsed_ms=%s category=%s outcome=%s",
+101  weather_ensemble.py:1196:     disc = pvlib.irradiance.disc(ghi, solpos["apparent_zenith"], df.index)
+102  weather_ensemble.py:1209: def _cache_key(model_id: str, lat: float, lon: float, tz: str, target_date: dt.date, elevation_m: float | None = None) -> tuple:
+103  weather_ensemble.py:1210:     elev_bucket = int(round(float(elevation_m))) if elevation_m is not None else None
+104  weather_ensemble.py:1231:         "shortwave_radiation": "ghi_wm2",
+105  weather_ensemble.py:1232:         "direct_normal_irradiance": "dni_wm2",
+106  weather_ensemble.py:1233:         "diffuse_radiation": "dhi_wm2",
+107  weather_ensemble.py:1260:         "shortwave_radiation": "ghi_wm2",
+108  weather_ensemble.py:1261:         "direct_normal_irradiance": "dni_wm2",
+109  weather_ensemble.py:1262:         "diffuse_radiation": "dhi_wm2",
+110  weather_ensemble.py:1272:     # Open-Meteo radiation series are preceding-hour means timestamped at hour-end.
+111  weather_ensemble.py:1276: def _finalize_irradiance_components(
+112  weather_ensemble.py:1301:         irradiance_df = pd.DataFrame(
+113  weather_ensemble.py:1309:         irradiance_df = _decompose_from_ghi(irradiance_df, loc, tz)
+114  weather_ensemble.py:1310:         dni_out = pd.to_numeric(irradiance_df["dni_wm2"], errors="coerce")
+115  weather_ensemble.py:1311:         dhi_out = pd.to_numeric(irradiance_df["dhi_wm2"], errors="coerce")
+116  weather_ensemble.py:1313:     derived_irradiance_hours = max(0, before_missing_count - after_missing_count)
+117  weather_ensemble.py:1314:     derived_irradiance = derived_irradiance_hours > 0
+118  weather_ensemble.py:1317:     irradiance_fields = {
+119  weather_ensemble.py:1318:         "direct_normal_irradiance": dni_out,
+120  weather_ensemble.py:1319:         "diffuse_radiation": dhi_out,
+121  weather_ensemble.py:1321:     for field, values in irradiance_fields.items():
+122  weather_ensemble.py:1327:     return dni_out, dhi_out, sorted(missing_set), derived_irradiance, int(derived_irradiance_hours)
+123  weather_ensemble.py:1385:         _cache_key(model_id, loc.latitude, loc.longitude, tz, target_date, loc.elevation_m),
+124  weather_ensemble.py:1398:             cached_derived_hours = int(cached_meta.get("derived_irradiance_hours", cached_derived_hours))
+125  weather_ensemble.py:1407:             "derived_irradiance_hours": int(cached_derived_hours),
+126  weather_ensemble.py:1410:     hourly_variables = BASE_HOURLY_VARIABLES[:] + IRRADIANCE_HOURLY_VARIABLES
+127  weather_ensemble.py:1413:         hourly_variables += INSTANT_IRRADIANCE_HOURLY_VARIABLES
+128  weather_ensemble.py:1414:     location_bucket = _provider_cache_location_bucket(loc.latitude, loc.longitude, loc.elevation_m)
+129  weather_ensemble.py:1426:         "daily": "sunrise,sunset",
+130  weather_ensemble.py:1431:     if loc.elevation_m is not None:
+131  weather_ensemble.py:1432:         params["elevation"] = int(round(float(loc.elevation_m)))
+132  weather_ensemble.py:1434:     use_icon15 = (
+133  weather_ensemble.py:1435:         model_id == "dwd_icon_d2"
+134  weather_ensemble.py:1436:         and bool(spec.get("supports_15min_radiation", False))
+135  weather_ensemble.py:1441:     if use_icon15:
+136  weather_ensemble.py:1443:             "shortwave_radiation",
+137  weather_ensemble.py:1444:             "diffuse_radiation",
+138  weather_ensemble.py:1445:             "direct_normal_irradiance",
+139  weather_ensemble.py:1502:             fallback_params["hourly"] = ",".join(BASE_HOURLY_VARIABLES + IRRADIANCE_HOURLY_VARIABLES)
+140  weather_ensemble.py:1596:     instant_supported = any((hourly.get(k) is not None) for k in INSTANT_IRRADIANCE_HOURLY_VARIABLES)
+141  weather_ensemble.py:1597:     fetch_meta["instant_irradiance_supported"] = bool(instant_supported)
+142  weather_ensemble.py:1620:     ghi = _series("shortwave_radiation", np.nan, record_missing=False).clip(lower=0.0)
+143  weather_ensemble.py:1621:     bhi = _series("direct_radiation", np.nan, record_missing=False)
+144  weather_ensemble.py:1622:     dni_api = _series("direct_normal_irradiance", np.nan, record_missing=False)
+145  weather_ensemble.py:1623:     dhi_api = _series("diffuse_radiation", np.nan, record_missing=False)
+146  weather_ensemble.py:1633:             "shortwave_radiation_instant": "ghi_inst_wm2",
+147  weather_ensemble.py:1634:             "direct_normal_irradiance_instant": "dni_inst_wm2",
+148  weather_ensemble.py:1635:             "diffuse_radiation_instant": "dhi_inst_wm2",
+149  weather_ensemble.py:1636:             "direct_radiation_instant": "bhi_inst_wm2",
+150  weather_ensemble.py:1645:     if use_icon15 and minutely:
+151  weather_ensemble.py:1674:         daylight_mask = cos_zen > 0
+152  weather_ensemble.py:1675:         dni_from_bhi.loc[daylight_mask] = (
+153  weather_ensemble.py:1676:             pd.to_numeric(bhi.loc[daylight_mask], errors="coerce")
+154  weather_ensemble.py:1677:             / cos_zen.loc[daylight_mask]
+155  weather_ensemble.py:1688:     dni_final, dhi_final, missing_vars, derived_irradiance, derived_irradiance_hours = _finalize_irradiance_components(
+156  weather_ensemble.py:1696:     fetch_meta["derived_irradiance_hours"] = int(derived_irradiance_hours)
+157  weather_ensemble.py:1704:             if v not in ("direct_normal_irradiance", "diffuse_radiation")
+158  weather_ensemble.py:1758:     _alias("shortwave_radiation", "ghi_wm2")
+159  weather_ensemble.py:1759:     _alias("direct_normal_irradiance", "dni_wm2")
+160  weather_ensemble.py:1760:     _alias("diffuse_radiation", "dhi_wm2")
+161  weather_ensemble.py:1766:     sunrise = pd.to_datetime((daily.get("sunrise") or [None])[0], errors="coerce")
+162  weather_ensemble.py:1767:     sunset = pd.to_datetime((daily.get("sunset") or [None])[0], errors="coerce")
+163  weather_ensemble.py:1768:     if pd.isna(sunrise) or pd.isna(sunset):
+164  weather_ensemble.py:1775:             sunrise = pd.to_datetime(sun_times["sunrise"].iloc[0], errors="coerce")
+165  weather_ensemble.py:1776:             sunset = pd.to_datetime(sun_times["sunset"].iloc[0], errors="coerce")
+166  weather_ensemble.py:1777:         if pd.isna(sunrise) or pd.isna(sunset):
+167  weather_ensemble.py:1779:             sunrise = day_start
+168  weather_ensemble.py:1780:             sunset = day_start + dt.timedelta(hours=12)
+169  weather_ensemble.py:1781:     if sunrise.tzinfo is None:
+170  weather_ensemble.py:1782:         sunrise = sunrise.tz_localize(tz)
+171  weather_ensemble.py:1784:         sunrise = sunrise.tz_convert(tz)
+172  weather_ensemble.py:1785:     if sunset.tzinfo is None:
+173  weather_ensemble.py:1786:         sunset = sunset.tz_localize(tz)
+174  weather_ensemble.py:1788:         sunset = sunset.tz_convert(tz)
+175  weather_ensemble.py:1790:     forecast = core.ForecastResult(df=df, sunrise=sunrise.to_pydatetime(), sunset=sunset.to_pydatetime())
+176  weather_ensemble.py:1795:         bool(derived_irradiance),
+177  weather_ensemble.py:1797:             "derived_irradiance_hours": int(derived_irradiance_hours),
+178  weather_ensemble.py:1803:     return forecast, list(set(missing_vars)), bool(derived_irradiance), fetch_meta
+179  weather_ensemble.py:1880:     p10: pd.Series,
+180  weather_ensemble.py:1881:     p50: pd.Series,
+181  weather_ensemble.py:1882:     p90: pd.Series,
+182  weather_ensemble.py:1886:     new_p10 = (p50 - scaler * (p50 - p10)).clip(lower=0.0)
+183  weather_ensemble.py:1887:     new_p90 = (p50 + scaler * (p90 - p50)).clip(lower=0.0)
+184  weather_ensemble.py:1888:     new_p10 = pd.concat([new_p10, p50], axis=1).min(axis=1)
+185  weather_ensemble.py:1889:     new_p90 = pd.concat([new_p90, p50], axis=1).max(axis=1)
+186  weather_ensemble.py:1890:     return new_p10.astype(float), new_p90.astype(float)
+187  weather_ensemble.py:1905:     cols = [c for c in ["shortwave_radiation", "direct_normal_irradiance", "diffuse_radiation", "cloud_cover"] if c in out.columns]
+188  weather_ensemble.py:1953:         _LOGGER.debug("[weather_ensemble] dynamic_weights disabled err=%s", exc)
+189  weather_ensemble.py:1988:     derived_irradiance_by_model: dict[str, bool] | None = None,
+190  weather_ensemble.py:1989:     derived_irradiance_hours_by_model: dict[str, int] | None = None,
+191  weather_ensemble.py:2002:         derived = bool((derived_irradiance_by_model or {}).get(model_id))
+192  weather_ensemble.py:2011:         derived_hours = int((derived_irradiance_hours_by_model or {}).get(model_id, 0) or 0)
+193  weather_ensemble.py:2041: def fetch_satellite_radiation_nowcast(lat: float, lon: float, tz: str, forecast_hours: int = 6) -> pd.DataFrame:
+194  weather_ensemble.py:2042:     endpoint = "https://satellite-api.open-meteo.com/v1/satellite-radiation"
+195  weather_ensemble.py:2047:         "hourly": "shortwave_radiation,direct_normal_irradiance,diffuse_radiation",
+196  weather_ensemble.py:2061:     df["shortwave_radiation"] = pd.to_numeric(pd.Series(hourly.get("shortwave_radiation", []), index=times), errors="coerce")
+197  weather_ensemble.py:2062:     df["direct_normal_irradiance"] = pd.to_numeric(pd.Series(hourly.get("direct_normal_irradiance", []), index=times), errors="coerce")
+198  weather_ensemble.py:2063:     df["diffuse_radiation"] = pd.to_numeric(pd.Series(hourly.get("diffuse_radiation", []), index=times), errors="coerce")
+199  weather_ensemble.py:2067: def build_weather_ensemble_table(
+200  weather_ensemble.py:2150:     derived_irradiance_by_model: dict[str, bool] = {}
+... truncated (637 more)
+
+==============================================================================================================
+5) OUTPUT 1 — SAVINGS (€) — baseline vs plan + scope (cycle/tomorrow) + terminal SOC value  (matches: 309)
+==============================================================================================================
+001  planner_core.py:67: TIMEZONE = "Europe/Brussels"
+002  planner_core.py:123: # Tariff prices (all-in €/kWh)
+003  planner_core.py:124: PEAK_GRID_PRICE_EUR_PER_KWH = 0.30
+004  planner_core.py:125: OFFPEAK_GRID_PRICE_EUR_PER_KWH = 0.20
+005  planner_core.py:126: INJECTION_GRID_PRICE_EUR_PER_KWH = 0.05
+006  planner_core.py:192:         "peak_grid_price_eur_per_kwh": PEAK_GRID_PRICE_EUR_PER_KWH,
+007  planner_core.py:193:         "offpeak_grid_price_eur_per_kwh": OFFPEAK_GRID_PRICE_EUR_PER_KWH,
+008  planner_core.py:194:         "injection_grid_price_eur_per_kwh": INJECTION_GRID_PRICE_EUR_PER_KWH,
+009  planner_core.py:200:             [["22:00", "07:00"]],  # Monday
+010  planner_core.py:201:             [["22:00", "07:00"]],  # Tuesday
+011  planner_core.py:202:             [["22:00", "07:00"]],  # Wednesday
+012  planner_core.py:203:             [["22:00", "07:00"]],  # Thursday
+013  planner_core.py:204:             [["22:00", "07:00"]],  # Friday
+014  planner_core.py:226:     0: [("22:00", "07:00")],
+015  planner_core.py:227:     1: [("22:00", "07:00")],
+016  planner_core.py:228:     2: [("22:00", "07:00")],
+017  planner_core.py:229:     3: [("22:00", "07:00")],
+018  planner_core.py:230:     4: [("22:00", "07:00")],
+019  planner_core.py:417:     if "peak_grid_price_eur_per_kwh" not in tariff:
+020  planner_core.py:418:         raise ValueError("tariff.peak_grid_price_eur_per_kwh is required.")
+021  planner_core.py:419:     if "offpeak_grid_price_eur_per_kwh" not in tariff:
+022  planner_core.py:420:         raise ValueError("tariff.offpeak_grid_price_eur_per_kwh is required.")
+023  planner_core.py:421:     if "injection_grid_price_eur_per_kwh" not in tariff:
+024  planner_core.py:422:         raise ValueError("tariff.injection_grid_price_eur_per_kwh is required.")
+025  planner_core.py:424:     peak_price = float(tariff["peak_grid_price_eur_per_kwh"])
+026  planner_core.py:425:     offpeak_price = float(tariff["offpeak_grid_price_eur_per_kwh"])
+027  planner_core.py:426:     float(tariff["injection_grid_price_eur_per_kwh"])
+028  planner_core.py:428:         raise ValueError("tariff.peak_grid_price_eur_per_kwh must be >= 0.")
+029  planner_core.py:430:         raise ValueError("tariff.offpeak_grid_price_eur_per_kwh must be >= 0.")
+030  planner_core.py:479:     global PEAK_GRID_PRICE_EUR_PER_KWH, OFFPEAK_GRID_PRICE_EUR_PER_KWH, INJECTION_GRID_PRICE_EUR_PER_KWH
+031  planner_core.py:523:     PEAK_GRID_PRICE_EUR_PER_KWH = float(tariff["peak_grid_price_eur_per_kwh"])
+032  planner_core.py:524:     OFFPEAK_GRID_PRICE_EUR_PER_KWH = float(tariff["offpeak_grid_price_eur_per_kwh"])
+033  planner_core.py:525:     INJECTION_GRID_PRICE_EUR_PER_KWH = float(tariff["injection_grid_price_eur_per_kwh"])
+034  planner_core.py:968: def get_charge_session_index(charge_date: dt.date, cfg: Optional[dict] = None, start_hhmm: str = "22:00") -> pd.DatetimeIndex:
+035  planner_core.py:979:     Returns (start_ts, end_ts) tz-aware in TIMEZONE for the off-peak window that should be used
+036  planner_core.py:1031:     """Estimate SOC at off-peak start with TOD load weighting and optional PV credit."""
+037  planner_core.py:1153: def import_price_eur_per_kwh(ts: pd.Timestamp, tariff_cfg: dict) -> float:
+038  planner_core.py:1154:     offpeak = float(tariff_cfg.get("offpeak_grid_price_eur_per_kwh", 0.0))
+039  planner_core.py:1155:     peak = float(tariff_cfg.get("peak_grid_price_eur_per_kwh", 0.0))
+040  planner_core.py:1162:     peak = float(cfg.get("peak_grid_price_eur_per_kwh", PEAK_GRID_PRICE_EUR_PER_KWH))
+041  planner_core.py:1163:     offpeak = float(cfg.get("offpeak_grid_price_eur_per_kwh", OFFPEAK_GRID_PRICE_EUR_PER_KWH))
+042  planner_core.py:1188:     return available_charge_hours, f"{window_start.strftime('%H:%M')}–{window_end.strftime('%H:%M')}: {available_charge_hours:.1f}h off-peak"
+043  planner_core.py:1193:     Complement binnen 00:00-24:00. Ondersteunt wrap (bv 22:00-07:00).
+044  planner_core.py:1286: def build_cycle_hourly_load_series(
+045  planner_core.py:1292:     cycle_start, _ = compute_charging_window_for_target_date(target_date, cfg)
+046  planner_core.py:1293:     next_cycle_start, _ = compute_charging_window_for_target_date(target_date + dt.timedelta(days=1), cfg)
+047  planner_core.py:1294:     if next_cycle_start <= cycle_start:
+048  planner_core.py:1295:         next_cycle_start = cycle_start + dt.timedelta(hours=24)
+049  planner_core.py:1297:     cycle_idx = pd.date_range(cycle_start, next_cycle_start, freq="h", inclusive="left", tz=TIMEZONE)
+050  planner_core.py:1298:     cycle_loads = build_hourly_load_series(cycle_idx, total_consumption_kwh)
+051  planner_core.py:1301:         cycle_total = float(cycle_loads.sum())
+052  planner_core.py:1302:         if abs(cycle_total - float(total_consumption_kwh)) > 1e-6:
+053  planner_core.py:1304:                 "Cycle load normalization mismatch: "
+054  planner_core.py:1305:                 f"sum={cycle_total:.9f} expected={float(total_consumption_kwh):.9f}"
+055  planner_core.py:1307:     return cycle_loads
+056  planner_core.py:1394: def compute_euro_savings_no_battery_vs_plan(
+057  planner_core.py:1406:     Returns cycle totals (off-peak start -> next off-peak start), plus tomorrow detail.
+058  planner_core.py:1408:     inj = float(tariff_cfg.get("injection_grid_price_eur_per_kwh", 0.0))
+059  planner_core.py:1416:     cycle_start = window_start
+060  planner_core.py:1417:     cycle_end = next_window_start
+061  planner_core.py:1418:     if cycle_end <= cycle_start:
+062  planner_core.py:1419:         cycle_end = cycle_start + dt.timedelta(hours=24)
+063  planner_core.py:1421:     idx_cycle = pd.date_range(cycle_start, cycle_end, freq="h", inclusive="left", tz=TIMEZONE)
+064  planner_core.py:1423:     dt_h_cycle = timestep_hours(idx_cycle)
+065  planner_core.py:1424:     pv_cycle = pv_df["pv_total_kwh"].reindex(idx_cycle).fillna(0.0).astype(float)
+066  planner_core.py:1425:     load_cycle = pd.Series(
+067  planner_core.py:1426:         [load_kwh_at(ts, total_consumption_kwh, float(dt_h_cycle.loc[ts])) for ts in idx_cycle],
+068  planner_core.py:1427:         index=idx_cycle,
+069  planner_core.py:1430:     base_import_cycle = (load_cycle - pv_cycle).clip(lower=0.0)
+070  planner_core.py:1431:     base_export_cycle = (pv_cycle - load_cycle).clip(lower=0.0)
+071  planner_core.py:1432:     base_price_cycle = pd.Series([import_price_eur_per_kwh(ts, tariff_cfg) for ts in idx_cycle], index=idx_cycle)
+072  planner_core.py:1433:     base_cost_cycle = base_import_cycle * base_price_cycle - base_export_cycle * inj
+073  planner_core.py:1435:     plan_import_cycle = pd.Series(0.0, index=idx_cycle, dtype=float)
+074  planner_core.py:1436:     plan_export_cycle = pd.Series(0.0, index=idx_cycle, dtype=float)
+075  planner_core.py:1437:     plan_soc_end_cycle = pd.Series(np.nan, index=idx_cycle, dtype=float)
+076  planner_core.py:1439:     idx_pre = idx_cycle[idx_cycle < tomorrow_start]
+077  planner_core.py:1440:     idx_post = idx_cycle[idx_cycle >= tomorrow_start]
+078  planner_core.py:1452:         plan_import_cycle.loc[idx_pre] = night_df["grid_import_kwh"].reindex(idx_pre).fillna(0.0).astype(float)
+079  planner_core.py:1454:             plan_export_cycle.loc[idx_pre] = night_df["grid_export_kwh"].reindex(idx_pre).fillna(0.0).astype(float)
+080  planner_core.py:1456:             plan_soc_end_cycle.loc[idx_pre] = pd.to_numeric(
+081  planner_core.py:1461:         plan_import_cycle.loc[idx_post] = flows_df["grid_import_kwh"].reindex(idx_post).fillna(0.0).astype(float)
+082  planner_core.py:1462:         plan_export_cycle.loc[idx_post] = flows_df["grid_export_kwh"].reindex(idx_post).fillna(0.0).astype(float)
+083  planner_core.py:1464:             plan_soc_end_cycle.loc[idx_post] = pd.to_numeric(
+084  planner_core.py:1468:     plan_cost_cycle_cash = plan_import_cycle * base_price_cycle - plan_export_cycle * inj
+085  planner_core.py:1469:     hourly_savings_cycle = (base_cost_cycle - plan_cost_cycle_cash).reindex(idx_cycle).fillna(0.0)
+086  planner_core.py:1480:     price_tom = pd.Series([import_price_eur_per_kwh(ts, tariff_cfg) for ts in idx_tomorrow], index=idx_tomorrow)
+087  planner_core.py:1485:     plan_cost_tom = plan_import_tom * price_tom - plan_export_tom * inj
+088  planner_core.py:1487:     hourly_savings = (base_cost_tom - plan_cost_tom).reindex(idx_tomorrow).fillna(0.0)
+089  planner_core.py:1489:     baseline_cycle = float(base_cost_cycle.sum())
+090  planner_core.py:1490:     plan_cycle_cash = float(plan_cost_cycle_cash.sum())
+091  planner_core.py:1491:     baseline_tom = float(base_cost_tom.sum())
+092  planner_core.py:1492:     plan_tom = float(plan_cost_tom.sum())
+093  planner_core.py:1494:     cycle_start_soc = max(0.0, min(1.0, float(soc_at_22)))
+094  planner_core.py:1495:     cycle_end_soc: float | None = None
+095  planner_core.py:1496:     cycle_terminal_row_ts = cycle_end - dt.timedelta(hours=1)
+096  planner_core.py:1497:     if cycle_terminal_row_ts in plan_soc_end_cycle.index:
+097  planner_core.py:1499:             soc_pct = float(plan_soc_end_cycle.loc[cycle_terminal_row_ts])
+098  planner_core.py:1503:             cycle_end_soc = max(0.0, min(1.0, soc_pct / 100.0))
+099  planner_core.py:1505:     terminal_battery_value_eur_cycle = 0.0
+100  planner_core.py:1506:     savings_cycle_terminal_value_applied = False
+101  planner_core.py:1507:     cycle_stored_energy_delta_kwh = 0.0
+102  planner_core.py:1508:     cycle_soc_delta_pct = 0.0
+103  planner_core.py:1509:     if cycle_end_soc is not None:
+104  planner_core.py:1510:         cycle_stored_energy_delta_kwh = (cycle_end_soc - cycle_start_soc) * BATTERY_KWH
+105  planner_core.py:1511:         cycle_soc_delta_pct = (cycle_end_soc - cycle_start_soc) * 100.0
+106  planner_core.py:1512:         replacement_price = float(import_price_eur_per_kwh(cycle_end, tariff_cfg))
+107  planner_core.py:1515:         terminal_battery_value_eur_cycle = cycle_stored_energy_delta_kwh * replacement_cost_per_stored_kwh
+108  planner_core.py:1516:         savings_cycle_terminal_value_applied = True
+109  planner_core.py:1518:     plan_cycle = plan_cycle_cash - terminal_battery_value_eur_cycle
+110  planner_core.py:1519:     savings_cycle = baseline_cycle - plan_cycle
+111  planner_core.py:1521:     hourly_savings_list = [float(hourly_savings.loc[ts]) for ts in idx_tomorrow]
+112  planner_core.py:1522:     if len(hourly_savings_list) != 24:
+113  planner_core.py:1523:         hourly_savings_list = (hourly_savings_list + [0.0] * 24)[:24]
+114  planner_core.py:1530:     baseline_cycle = _safe_numeric(baseline_cycle)
+115  planner_core.py:1531:     plan_cycle_cash = _safe_numeric(plan_cycle_cash)
+116  planner_core.py:1532:     plan_cycle = _safe_numeric(plan_cycle)
+117  planner_core.py:1533:     baseline_tom = _safe_numeric(baseline_tom)
+118  planner_core.py:1535:     terminal_battery_value_eur_cycle = _safe_numeric(terminal_battery_value_eur_cycle)
+119  planner_core.py:1536:     cycle_stored_energy_delta_kwh = _safe_numeric(cycle_stored_energy_delta_kwh)
+120  planner_core.py:1537:     cycle_soc_delta_pct = _safe_numeric(cycle_soc_delta_pct)
+121  planner_core.py:1538:     cycle_start_soc_pct = _safe_numeric(cycle_start_soc * 100.0)
+122  planner_core.py:1539:     cycle_end_soc_pct = _safe_numeric((cycle_end_soc if cycle_end_soc is not None else cycle_start_soc) * 100.0)
+123  planner_core.py:1540:     savings_cycle = _safe_numeric(savings_cycle)
+124  planner_core.py:1541:     savings_tom = _safe_numeric(float(baseline_tom - plan_tom))
+125  planner_core.py:1542:     hourly_savings_cycle_list = [float(hourly_savings_cycle.loc[ts]) for ts in idx_cycle]
+126  planner_core.py:1543:     if len(hourly_savings_cycle_list) != 24:
+127  planner_core.py:1544:         hourly_savings_cycle_list = (hourly_savings_cycle_list + [0.0] * 24)[:24]
+128  planner_core.py:1545:     hourly_savings_cycle_hour_labels = [ts.strftime("%H:%M") for ts in idx_cycle][:24]
+129  planner_core.py:1546:     if len(hourly_savings_cycle_hour_labels) != 24:
+130  planner_core.py:1547:         hourly_savings_cycle_hour_labels = [f"{h:02d}:00" for h in range(24)]
+131  planner_core.py:1550:         "baseline_cost_eur_total": baseline_cycle,
+132  planner_core.py:1551:         "plan_cost_eur_total": plan_cycle,
+133  planner_core.py:1552:         "savings_eur_total": savings_cycle,
+134  planner_core.py:1553:         "baseline_cost_eur_cycle": baseline_cycle,
+135  planner_core.py:1554:         "plan_cost_eur_cycle": plan_cycle,
+136  planner_core.py:1555:         "savings_eur_cycle": savings_cycle,
+137  planner_core.py:1556:         "baseline_cost_eur_cycle_cash": baseline_cycle,
+138  planner_core.py:1557:         "plan_cost_eur_cycle_cash": plan_cycle_cash,
+139  planner_core.py:1558:         "terminal_battery_value_eur_cycle": terminal_battery_value_eur_cycle,
+140  planner_core.py:1559:         "plan_cost_eur_cycle_adjusted": plan_cycle,
+141  planner_core.py:1560:         "baseline_cost_eur_tomorrow": baseline_tom,
+142  planner_core.py:1561:         "plan_cost_eur_tomorrow": plan_tom,
+143  planner_core.py:1562:         "savings_eur_tomorrow": savings_tom,
+144  planner_core.py:1563:         "hourly_savings_eur_cycle": hourly_savings_cycle_list,
+145  planner_core.py:1564:         "hourly_savings_cycle_hour_labels": hourly_savings_cycle_hour_labels,
+146  planner_core.py:1565:         "hourly_savings_eur_tomorrow": hourly_savings_list,
+147  planner_core.py:1566:         "savings_horizon_kind": "offpeak_cycle",
+148  planner_core.py:1567:         "savings_horizon_start_iso": cycle_start.isoformat(),
+149  planner_core.py:1568:         "savings_horizon_end_iso": cycle_end.isoformat(),
+150  planner_core.py:1569:         "savings_cycle_inventory_adjusted": True,
+151  planner_core.py:1570:         "savings_cycle_terminal_value_applied": bool(savings_cycle_terminal_value_applied),
+152  planner_core.py:1571:         "savings_horizon_label": (
+153  planner_core.py:1572:             "off-peak start -> next off-peak start"
+154  planner_core.py:1574:         "savings_horizon_detail": (
+155  planner_core.py:1575:             "Cycle (off-peak start → next off-peak start): "
+156  planner_core.py:1576:             f"{cycle_start.strftime('%H:%M')} → {cycle_end.strftime('%H:%M')}"
+157  planner_core.py:1578:         "savings_hourly_detail_scope": "tomorrow_00_24",
+158  planner_core.py:1579:         "savings_cycle_start_soc_percent_used": float(soc_at_22 * 100.0),
+159  planner_core.py:1580:         "cycle_start_soc_pct": cycle_start_soc_pct,
+160  planner_core.py:1581:         "cycle_end_soc_pct": cycle_end_soc_pct,
+161  planner_core.py:1582:         "cycle_soc_delta_pct": cycle_soc_delta_pct,
+162  planner_core.py:1583:         "cycle_stored_energy_delta_kwh": cycle_stored_energy_delta_kwh,
+163  planner_core.py:1584:         "savings_night_load_from_battery_used": bool(should_use_battery_for_offpeak_load(tariff_cfg)),
+164  planner_core.py:1585:         "savings_cycle_window_start_local": cycle_start.isoformat(),
+165  planner_core.py:1586:         "savings_cycle_window_end_local": cycle_end.isoformat(),
+166  planner_core.py:1590:         "baseline_cost_eur_cycle": 0.0,
+167  planner_core.py:1591:         "plan_cost_eur_cycle_cash": 0.0,
+168  planner_core.py:1592:         "terminal_battery_value_eur_cycle": 0.0,
+169  planner_core.py:1593:         "plan_cost_eur_cycle": 0.0,
+170  planner_core.py:1594:         "savings_eur_cycle": 0.0,
+171  planner_core.py:1595:         "cycle_start_soc_pct": 0.0,
+172  planner_core.py:1596:         "cycle_end_soc_pct": 0.0,
+173  planner_core.py:1597:         "cycle_soc_delta_pct": 0.0,
+174  planner_core.py:1598:         "cycle_stored_energy_delta_kwh": 0.0,
+175  planner_core.py:1599:         "savings_cycle_terminal_value_applied": False,
+176  planner_core.py:1600:         "savings_horizon_label": "off-peak start -> next off-peak start",
+177  planner_core.py:2609:     offpeak_price = float((tariff_cfg or {}).get("offpeak_grid_price_eur_per_kwh", OFFPEAK_GRID_PRICE_EUR_PER_KWH))
+178  planner_core.py:2619:             hour_price = import_price_eur_per_kwh(ts, tariff_cfg or DEFAULT_CONFIG["tariff"])
+179  planner_core.py:2828:         return MIN_SOC, "No expensive hours (all off-peak): keep cutoff low for maximum headroom."
+180  planner_core.py:2851:         return 0.0, 0.0, "No off-peak hours available in configured charging windows.", soc_start
+181  planner_core.py:3091:         cycle_loads = build_cycle_hourly_load_series(tomorrow_date, total_consumption_kwh, tariff_cfg=cfg)
+182  planner_core.py:3092:         loads = pd.to_numeric(cycle_loads.reindex(idx), errors="coerce").fillna(0.0).astype(float)
+183  planner_core.py:3186:     cycle_loads = build_cycle_hourly_load_series(tomorrow_date, total_consumption_kwh, tariff_cfg=cfg)
+184  planner_core.py:3187:     night_loads = pd.to_numeric(cycle_loads.reindex(pd.date_range(window_start, window_end, freq="h", inclusive="left", tz=TIMEZONE)), errors="coerce").fillna(0.0).astype(float)
+185  planner_core.py:3204:     loads = pd.to_numeric(cycle_loads.reindex(day_idx), errors="coerce").fillna(0.0).astype(float)
+186  planner_core.py:3210:         load_cycle_total_kwh = float(cycle_loads.sum())
+187  planner_core.py:3213:         if abs(load_cycle_total_kwh - float(total_consumption_kwh)) > 1e-6:
+188  planner_core.py:3214:             raise ValueError("Cycle load total does not match target consumption.")
+189  planner_core.py:3226:     inj_raw = econ_cfg.get("injection_grid_price_eur_per_kwh")
+190  planner_core.py:3227:     peak_raw = econ_cfg.get("peak_grid_price_eur_per_kwh")
+191  planner_core.py:3228:     offpeak_raw = econ_cfg.get("offpeak_grid_price_eur_per_kwh")
+192  planner_core.py:3389:     soc_series = pd.Series(pd.to_numeric(flows_df["soc_end_pct"], errors="coerce").fillna(0.0).values, index=tomorrow_idx, name="soc_percent")
+193  planner_core.py:3496:     soc_at_22_percent = ask_required_soc("Battery SOC at 22:00 from FusionSolar (%): ") * 100.0
+194  planner_core.py:3517:     print(f"- SOC at 22:00 (%): {soc_at_22_percent:.1f}")
+195  backend_api.py:69: DEFAULT_NIGHTLY_TIME = "22:00"
+196  backend_api.py:185:         "baseline_cost_eur_cycle": pv_quality.get("baseline_cost_eur_cycle"),
+197  backend_api.py:186:         "plan_cost_eur_cycle_cash": pv_quality.get("plan_cost_eur_cycle_cash"),
+198  backend_api.py:187:         "terminal_battery_value_eur_cycle": pv_quality.get("terminal_battery_value_eur_cycle"),
+199  backend_api.py:188:         "plan_cost_eur_cycle": pv_quality.get("plan_cost_eur_cycle"),
+200  backend_api.py:189:         "savings_eur_cycle": pv_quality.get("savings_eur_cycle"),
+... truncated (109 more)
+
+==============================================================================================================
+6) OUTPUT 2 — ACTION PLAN — charge kW + cutoff/target + warnings/limits end-to-end  (matches: 768)
+==============================================================================================================
+001  planner_core.py:25: import warnings
+002  planner_core.py:107: MIN_SOC_PERCENT = 5.0  # minimum SOC (End-of-discharge SOC)
+003  planner_core.py:108: MIN_SOC = MIN_SOC_PERCENT / 100.0
+004  planner_core.py:109: MAX_CUTOFF_SOC_PERCENT = 95.0
+005  planner_core.py:110: MAX_CUTOFF_SOC = MAX_CUTOFF_SOC_PERCENT / 100.0
+006  planner_core.py:117: # Hard safety limit for automatically computed AC charge power
+007  planner_core.py:118: MAX_AC_CHARGE_KW_HARD_LIMIT = 5.0
+008  planner_core.py:119: INVERTER_AC_KW_LIMIT = 4.6
+009  planner_core.py:120: BATTERY_MAX_CHARGE_KW = 5.0
+010  planner_core.py:121: BATTERY_MAX_DISCHARGE_KW = 5.0
+011  planner_core.py:126: INJECTION_GRID_PRICE_EUR_PER_KWH = 0.05
+012  planner_core.py:173:         "inverter_ac_kw_limit": INVERTER_AC_KW_LIMIT,
+013  planner_core.py:177:         "min_soc_percent": MIN_SOC_PERCENT,
+014  planner_core.py:178:         "max_cutoff_soc_percent": MAX_CUTOFF_SOC_PERCENT,
+015  planner_core.py:179:         "battery_max_charge_kw": BATTERY_MAX_CHARGE_KW,
+016  planner_core.py:180:         "battery_max_discharge_kw": BATTERY_MAX_DISCHARGE_KW,
+017  planner_core.py:181:         "max_ac_charge_kw_hard_limit": MAX_AC_CHARGE_KW_HARD_LIMIT,
+018  planner_core.py:194:         "injection_grid_price_eur_per_kwh": INJECTION_GRID_PRICE_EUR_PER_KWH,
+019  planner_core.py:195:         "allow_injection_to_grid": True,
+020  planner_core.py:196:         "max_grid_import_kw": 0.0,
+021  planner_core.py:378:         warnings.warn(
+022  planner_core.py:381:             RuntimeWarning,
+023  planner_core.py:399:     min_soc_percent = float(battery["min_soc_percent"])
+024  planner_core.py:400:     max_cutoff_soc_percent = float(battery["max_cutoff_soc_percent"])
+025  planner_core.py:401:     if not (0.0 <= min_soc_percent <= 100.0):
+026  planner_core.py:402:         raise ValueError("battery.min_soc_percent must be in [0, 100].")
+027  planner_core.py:403:     if not (0.0 <= max_cutoff_soc_percent <= 100.0):
+028  planner_core.py:404:         raise ValueError("battery.max_cutoff_soc_percent must be in [0, 100].")
+029  planner_core.py:405:     if min_soc_percent > max_cutoff_soc_percent:
+030  planner_core.py:406:         raise ValueError("battery.min_soc_percent must be <= battery.max_cutoff_soc_percent.")
+031  planner_core.py:421:     if "injection_grid_price_eur_per_kwh" not in tariff:
+032  planner_core.py:422:         raise ValueError("tariff.injection_grid_price_eur_per_kwh is required.")
+033  planner_core.py:426:     float(tariff["injection_grid_price_eur_per_kwh"])
+034  planner_core.py:436:     allow_injection_to_grid = tariff.get("allow_injection_to_grid", True)
+035  planner_core.py:437:     if not isinstance(allow_injection_to_grid, bool):
+036  planner_core.py:438:         raise ValueError("tariff.allow_injection_to_grid must be a boolean.")
+037  planner_core.py:440:     max_grid_import_kw_raw = tariff.get("max_grid_import_kw", 0.0)
+038  planner_core.py:442:         max_grid_import_kw = float(max_grid_import_kw_raw)
+039  planner_core.py:444:         raise ValueError("tariff.max_grid_import_kw must be a finite number >= 0.") from None
+040  planner_core.py:445:     if not math.isfinite(max_grid_import_kw) or max_grid_import_kw < 0.0:
+041  planner_core.py:446:         raise ValueError("tariff.max_grid_import_kw must be a finite number >= 0.")
+042  planner_core.py:475:     global PV_CALIBRATION_FACTOR_EAST, PV_CALIBRATION_FACTOR_SOUTH, INVERTER_AC_KW_LIMIT
+043  planner_core.py:476:     global BATTERY_KWH, MIN_SOC_PERCENT, MAX_CUTOFF_SOC_PERCENT
+044  planner_core.py:477:     global BATTERY_MAX_CHARGE_KW, BATTERY_MAX_DISCHARGE_KW, MAX_AC_CHARGE_KW_HARD_LIMIT
+045  planner_core.py:478:     global LOAD_PROFILE, MIN_SOC, MAX_CUTOFF_SOC, EFFECTIVE_CFG, OFFPEAK_WINDOWS_BY_DOW
+046  planner_core.py:479:     global PEAK_GRID_PRICE_EUR_PER_KWH, OFFPEAK_GRID_PRICE_EUR_PER_KWH, INJECTION_GRID_PRICE_EUR_PER_KWH
+047  planner_core.py:513:     INVERTER_AC_KW_LIMIT = float(pv["inverter_ac_kw_limit"])
+048  planner_core.py:516:     MIN_SOC_PERCENT = float(battery["min_soc_percent"])
+049  planner_core.py:517:     MAX_CUTOFF_SOC_PERCENT = float(battery["max_cutoff_soc_percent"])
+050  planner_core.py:518:     BATTERY_MAX_CHARGE_KW = float(battery["battery_max_charge_kw"])
+051  planner_core.py:519:     BATTERY_MAX_DISCHARGE_KW = float(battery["battery_max_discharge_kw"])
+052  planner_core.py:520:     MAX_AC_CHARGE_KW_HARD_LIMIT = float(battery["max_ac_charge_kw_hard_limit"])
+053  planner_core.py:525:     INJECTION_GRID_PRICE_EUR_PER_KWH = float(tariff["injection_grid_price_eur_per_kwh"])
+054  planner_core.py:528:     MIN_SOC = MIN_SOC_PERCENT / 100.0
+055  planner_core.py:529:     MAX_CUTOFF_SOC = MAX_CUTOFF_SOC_PERCENT / 100.0
+056  planner_core.py:548:         warnings.warn(
+057  planner_core.py:550:             RuntimeWarning,
+058  planner_core.py:602:     soc_lo = (MIN_SOC * 100.0) - tol
+059  planner_core.py:603:     soc_hi = (MAX_CUTOFF_SOC * 100.0) + tol
+060  planner_core.py:638:         batt_discharge_kwh = _as_float(row, "batt_discharge_kwh")
+061  planner_core.py:640:         batt_charge_kwh = _as_float(row, "batt_charge_kwh")
+062  planner_core.py:645:             and batt_discharge_kwh <= tol
+063  planner_core.py:646:             and batt_charge_kwh > tol
+064  planner_core.py:650:             delivered_from_batt = batt_discharge_kwh * BATTERY_DISCHARGE_EFF
+065  planner_core.py:662:             expected_grid_import = batt_charge_kwh / BATTERY_AC_CHARGE_EFF if BATTERY_AC_CHARGE_EFF > 0 else 0.0
+066  planner_core.py:727:     cutoff_soc: float
+067  planner_core.py:728:     charge_kw: float
+068  planner_core.py:733:     cutoff_note: str
+069  planner_core.py:734:     cutoff_reason: str
+070  planner_core.py:799:             category="http_rate_limited",
+071  planner_core.py:916: def get_offpeak_mask_for_date(index: pd.DatetimeIndex, target_date: dt.date, cfg: Optional[dict] = None) -> pd.Series:
+072  planner_core.py:921:     windows = get_offpeak_windows_for_date(target_date, cfg)
+073  planner_core.py:977: def compute_charging_window_for_target_date(target_date: dt.date, tariff_cfg: dict) -> tuple[pd.Timestamp, pd.Timestamp]:
+074  planner_core.py:980:     to charge before target_date.
+075  planner_core.py:982:     target_midnight = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=TIMEZONE)
+076  planner_core.py:983:     charge_date = target_date - dt.timedelta(days=1)
+077  planner_core.py:1000:         return charge_midnight, target_midnight
+078  planner_core.py:1007:     crossing_midnight = [(start_ts, end_ts) for start_ts, end_ts in intervals if start_ts < target_midnight < end_ts]
+079  planner_core.py:1011:     target_windows = normalize_windows(get_offpeak_windows_for_date(target_date, tariff_cfg))
+080  planner_core.py:1012:     if target_windows:
+081  planner_core.py:1013:         earliest_start_hhmm, earliest_end_hhmm = min(target_windows, key=lambda x: to_minutes(x[0]))
+082  planner_core.py:1014:         return _window_to_interval(target_midnight, earliest_start_hhmm, earliest_end_hhmm)
+083  planner_core.py:1016:     return target_midnight, target_midnight
+084  planner_core.py:1027:     min_soc_percent: float,
+085  planner_core.py:1047:     energy_floor = (float(min_soc_percent) / 100.0) * battery_kwh
+086  planner_core.py:1171:     # In window_only mode, preserve battery for expensive hours / peak bridging.
+087  planner_core.py:1184:     target_date = charge_date + dt.timedelta(days=1)
+088  planner_core.py:1185:     window_start, window_end = compute_charging_window_for_target_date(target_date, cfg or EFFECTIVE_CFG["tariff"])
+089  planner_core.py:1287:     target_date: dt.date,
+090  planner_core.py:1292:     cycle_start, _ = compute_charging_window_for_target_date(target_date, cfg)
+091  planner_core.py:1293:     next_cycle_start, _ = compute_charging_window_for_target_date(target_date + dt.timedelta(days=1), cfg)
+092  planner_core.py:1324:     target_date: dt.date,
+093  planner_core.py:1327:     """Build a 24h consumption series for target_date using a supplied profile."""
+094  planner_core.py:1335:     start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tz)
+095  planner_core.py:1398:     charge_kw: float,
+096  planner_core.py:1399:     cutoff_soc: float,
+097  planner_core.py:1408:     inj = float(tariff_cfg.get("injection_grid_price_eur_per_kwh", 0.0))
+098  planner_core.py:1414:     window_start, window_end = compute_charging_window_for_target_date(tomorrow_date, tariff_cfg)
+099  planner_core.py:1415:     next_window_start, _ = compute_charging_window_for_target_date(tomorrow_date + dt.timedelta(days=1), tariff_cfg)
+100  planner_core.py:1444:         charge_kw,
+101  planner_core.py:1445:         cutoff_soc,
+102  planner_core.py:1620:         assert BATTERY_MAX_CHARGE_KW > 0
+103  planner_core.py:1621:         assert BATTERY_MAX_DISCHARGE_KW > 0
+104  planner_core.py:1622:         assert 0 <= MIN_SOC < 1
+105  planner_core.py:1623:         assert MIN_SOC <= MAX_CUTOFF_SOC <= 1
+106  planner_core.py:1628:             "Sanity check failed: verify panel counts, efficiencies, SOC limits and LOAD_PROFILE config."
+107  planner_core.py:1774: def _fetch_weather_payload(loc: Location, target_date: dt.date, tz_use: str) -> ForecastResult:
+108  planner_core.py:1784:         "start_date": target_date.isoformat(),
+109  planner_core.py:1785:         "end_date": target_date.isoformat(),
+110  planner_core.py:1849:         target_date,
+111  planner_core.py:1920: def fetch_weather_for_date(loc: Location, target_date: dt.date, tz: str | None = None) -> ForecastResult:
+112  planner_core.py:1922:     return _fetch_weather_payload(loc, target_date, tz_use)
+113  planner_core.py:1932: def local_day_hourly_index(target_date: dt.date, tzname: str) -> pd.DatetimeIndex:
+114  planner_core.py:1936:     days and preserves duplicate wall-clock hours on fall-back days via timezone-
+115  planner_core.py:1940:     day_start = dt.datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0, tzinfo=tz)
+116  planner_core.py:1988: def irradiance_sanity_warnings(
+117  planner_core.py:1995:     warnings_out: list[str] = []
+118  planner_core.py:1997:         return warnings_out
+119  planner_core.py:2001:         return warnings_out
+120  planner_core.py:2010:         warnings_out.append(
+121  planner_core.py:2024:                 warnings_out.append(
+122  planner_core.py:2026:                     f"clear_sky_whm2={clear_wh:.1f} ratio={ratio:.2f} limit={IRRADIANCE_DAILY_CLEARSKY_FACTOR:.2f}"
+123  planner_core.py:2031:     return warnings_out
+124  planner_core.py:2037:     Preserve NaN (if p[t] is NaN => e[t] NaN). Clamp negatives to 0.
+125  planner_core.py:2113:             warnings.warn(f"15-min PV aggregation failed, falling back to hourly path: {exc}", RuntimeWarning)
+126  planner_core.py:2299:     total_ac_kw_clipped = total_ac_kw_unclipped.clip(lower=0.0, upper=INVERTER_AC_KW_LIMIT)
+127  planner_core.py:2371:     out["pv_total_kw"] = (out["pv_total_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0, upper=INVERTER_AC_KW_LIMIT)
+128  planner_core.py:2375:     out["pv_ac_limited_kwh"] = out["pv_total_kwh"]
+129  planner_core.py:2377:     out["pv_ac_limited_kw"] = out["pv_total_kw"]
+130  planner_core.py:2411:     if "pv_ac_limited_kwh" not in out.columns:
+131  planner_core.py:2412:         out["pv_ac_limited_kwh"] = out["pv_total_kwh"]
+132  planner_core.py:2436:     out["pv_ac_limited_kwh"] = out["pv_total_kwh"]
+133  planner_core.py:2574:             print("Warning: East peak occurs after South peak. Check azimuth/tilt or weather input.")
+134  planner_core.py:2582:                 "Warning: East/South daily energy ratio is outside expected range (0.35-0.95). "
+135  planner_core.py:2601:         return MIN_SOC
+136  planner_core.py:2631:     soc_low = MIN_SOC + (required_from_batt_kwh / BATTERY_KWH)
+137  planner_core.py:2632:     soc_low = min(max(soc_low, MIN_SOC), 1.0)
+138  planner_core.py:2639:     target_date: dt.date,
+139  planner_core.py:2657:         weather = fetch_weather_for_date(loc, target_date, tz=tz)
+140  planner_core.py:2664:         soc_low = compute_soc_low_timing_aware(pv, yesterday_kwh, target_date, tariff_cfg=tariff_cfg)
+141  planner_core.py:2668:             target_date,
+142  planner_core.py:2672:         cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high, tariff_cfg=tariff_cfg)
+143  planner_core.py:2673:         cutoff_soc = cutoff_soc_raw + (float(buffer_percent) / 100.0)
+144  planner_core.py:2675:         old_cutoff_soc = cutoff_soc
+145  planner_core.py:2676:         cutoff_soc = min(max(cutoff_soc, MIN_SOC), MAX_CUTOFF_SOC)
+146  planner_core.py:2677:         cutoff_note = (
+147  planner_core.py:2678:             f"Cutoff capped to {MAX_CUTOFF_SOC_PERCENT:.1f}% (was {old_cutoff_soc*100:.1f}%)."
+148  planner_core.py:2679:             if abs(cutoff_soc - old_cutoff_soc) > 1e-9 else ""
+149  planner_core.py:2682:         charge_date = target_date - dt.timedelta(days=1)
+150  planner_core.py:2683:         _, charge_kw, charge_note, achieved_soc_start = plan_charge_power(
+151  planner_core.py:2685:             cutoff_soc,
+152  planner_core.py:2692:             pv, yesterday_kwh, achieved_soc_start, target_date, tariff_cfg=tariff_cfg
+153  planner_core.py:2698:             charge_kw,
+154  planner_core.py:2699:             cutoff_soc,
+155  planner_core.py:2700:             target_date,
+156  planner_core.py:2706:             tomorrow_date=target_date,
+157  planner_core.py:2712:             cutoff_soc=cutoff_soc,
+158  planner_core.py:2713:             charge_kw=charge_kw,
+159  planner_core.py:2718:             cutoff_note=cutoff_note,
+160  planner_core.py:2719:             cutoff_reason=cutoff_reason,
+161  planner_core.py:2725:     target_date: dt.date,
+162  planner_core.py:2742:     soc_low = compute_soc_low_timing_aware(pv, total_consumption_kwh, target_date, tariff_cfg=tariff_cfg, pv_col=pv_col)
+163  planner_core.py:2746:         target_date,
+164  planner_core.py:2750:     cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high, tariff_cfg=tariff_cfg)
+165  planner_core.py:2751:     cutoff_soc = min(max(cutoff_soc_raw + (float(buffer_percent) / 100.0), MIN_SOC), MAX_CUTOFF_SOC)
+166  planner_core.py:2753:     charge_date = target_date - dt.timedelta(days=1)
+167  planner_core.py:2754:     _, charge_kw, charge_note, achieved_soc_start = plan_charge_power(
+168  planner_core.py:2756:         cutoff_soc,
+169  planner_core.py:2766:         target_date,
+170  planner_core.py:2773:         charge_kw,
+171  planner_core.py:2774:         cutoff_soc,
+172  planner_core.py:2775:         target_date,
+173  planner_core.py:2778:     charge_warning_text = str(charge_note) if str(charge_note).startswith("Warning") else ""
+174  planner_core.py:2779:     charge_target_reachable = not bool(charge_warning_text)
+175  planner_core.py:2780:     return detail_df, flows_df, soc_series, float(charge_kw), float(cutoff_soc), str(cutoff_reason), str(charge_note), bool(charge_target_reachable), str(charge_warning_text)
+176  planner_core.py:2791:     Hoe meer overschot, hoe lager je bij start van hoog tarief wil zitten om injectie te vermijden.
+177  planner_core.py:2814:         max_store_kwh = float(BATTERY_MAX_CHARGE_KW) * float(dt_h.loc[ts])
+178  planner_core.py:2818:     soc_high = min(max(soc_high, MIN_SOC), 1.0)
+179  planner_core.py:2822: def choose_cutoff_soc(for_date: dt.date, soc_low: float, soc_high: float, tariff_cfg: Optional[dict] = None) -> Tuple[float, str]:
+180  planner_core.py:2824:         return MIN_SOC, "No active arbitrage target: flat tariff / no meaningful spread; keep cutoff at MIN_SOC for PV headroom."
+181  planner_core.py:2828:         return MIN_SOC, "No expensive hours (all off-peak): keep cutoff low for maximum headroom."
+182  planner_core.py:2833:         "CONFLICT: required SOC to bridge expensive hours is higher than PV headroom target. "
+183  planner_core.py:2834:         "Using headroom target to avoid morning PV export; expect some grid import later if PV underperforms."
+184  planner_core.py:2840:     soc_cutoff: float,
+185  planner_core.py:2846:     target_date = charge_date + dt.timedelta(days=1)
+186  planner_core.py:2847:     window_start, window_end = compute_charging_window_for_target_date(target_date, cfg)
+187  planner_core.py:2854:     soc_cutoff = max(min(soc_cutoff, 1.0), 0.0)
+188  planner_core.py:2856:     if soc_cutoff <= soc_start + 1e-9:
+189  planner_core.py:2857:         return 0.0, 0.0, "No AC charging needed (cutoff already reached).", soc_start
+190  planner_core.py:2863:     target_soc_kwh = soc_cutoff * BATTERY_KWH
+191  planner_core.py:2864:     required_batt_kwh = max(0.0, target_soc_kwh - soc_at_22_kwh)
+192  planner_core.py:2867:     user_cap = MAX_AC_CHARGE_KW_HARD_LIMIT if user_cap_kw is None else max(user_cap_kw, 0.0)
+193  planner_core.py:2868:     effective_cap_kw = min(user_cap, INVERTER_AC_KW_LIMIT, BATTERY_MAX_CHARGE_KW)
+194  planner_core.py:2876:             f"Warning: Needed ≈ {recommended_allowed_ac_kw:.2f} kW over {available_charge_hours:.1f}h, "
+195  planner_core.py:2878:             f"Cutoff may be unreachable; achievable SOC ≈ {achievable_soc*100:.1f}%."
+196  planner_core.py:2882:     return required_grid_kwh, allowed_ac_kw, f"Automatically computed over {available_charge_hours:.1f}h charging window.", soc_cutoff
+197  planner_core.py:2905:     min_energy = MIN_SOC * BATTERY_KWH
+198  planner_core.py:2906:     max_energy = MAX_CUTOFF_SOC * BATTERY_KWH
+199  planner_core.py:2912:     import_with_high_soc_due_to_power_limit = False
+200  planner_core.py:2913:     allow_injection = bool((tariff_cfg or {}).get("allow_injection_to_grid", True))
+... truncated (568 more)
+
+==============================================================================================================
+7) FUNCTION MAP (AST) — direct calls from key entrypoints
+==============================================================================================================
+backend_api.py: functions=74 (showing up to 40): __init__, _apply_config, _best_of_day_from_ensemble_weather_table, _best_of_day_from_model, _best_of_day_weather_code, _build_pv_week_ahead, _build_settings_from_repo_defaults, _clamp_score_0_100, _code_sort_key, _coerce_float, _daily_counts_nullable, _daily_coverage, _daily_totals, _daily_totals_nullable, _fetch_elevation_m, _float_or_default, _is_heavy_history_item, _load_history, _load_or_create_token, _load_settings, _log_backend_error_event, _migrate_json_history_to_sqlite, _model_max_days, _parse_actual_rows_csv_text, _parse_elevation_m, _pick_week_ahead_weather_code, _pick_week_ahead_weather_code_vote, _read_json, _require_token, _resolve_soc_percent, _run, _sanitize_last_inputs, _sanitize_settings, _save_inputs, _save_results, _save_settings, _serialize_df, _serialize_series, _to_history_summary, _tzinfo ...
+planner_core.py: functions=112 (showing up to 40): __str__, _agg_hour, _apply_last_resort_ghi, _apply_soft_daylight_factor_and_twilight_clamp, _as_float, _build_geocode_query_candidates, _fetch_weather_payload, _get_float, _http_session, _integrate_hourly_power_trapezoid, _raise_daily_shape_error, _request_json, _safe_numeric, _soft_daylight_factor_from_elevation, _to_local_ts, _tod_weight_for_hour, _validate_time_hhmm, _window_to_interval, add_load_and_surplus_columns, add_sun_percent, align_timestamp_to_index_tz, applied_config, apply_config, apply_daylight_clamp, apply_soft_daylight_gating, array_energy, ask_required_float, ask_required_soc, build_consumption_forecast, build_cycle_hourly_load_series, build_effective_config, build_hourly_load_series, build_local_day_hour_index, build_pv_forecast, choose_cutoff_soc, cloud_transmittance_from_cover, complement_windows, compose_address, compute_charging_window_for_target_date, compute_euro_savings_no_battery_vs_plan ...
+weather_ensemble.py: functions=71 (showing up to 40): __init__, _aggregate_minutely_15_to_hourly, _alias, _align_backward_hourly_mean_to_hour_start, _apply_uncertainty_day_type_scaling, _cache_key, _cleanup_provider_cache, _compute_allow_synth_mask, _decompose_from_ghi, _dynamic_weight_settings, _ensemble_column, _fetch_and_prepare, _finalize_irradiance_components, _is_central_europe, _is_circuit_open, _json_default, _load_circuit_breaker_state, _load_dynamic_weights, _load_provider_cache, _local_day_window, _log_model_fetch, _mark_provider_failure, _mark_provider_success, _nan_safe_hourly_median, _nowcast_sky_is_volatile, _params_hash, _parse_minutely_15_df, _parse_utc_timestamp, _persist_circuit_breaker_state, _pick_preferred, _provider_cache_location_bucket, _provider_cache_path, _read_json_file, _reorder_by_stable_models, _request_open_meteo, _safe_provider_reason, _serialize_bounded_json, _series, _should_retry_with_forecast, _source_fingerprint ...
+app.py: functions=100 (showing up to 40): _build_cycle_savings_html, _build_debug_bundle, _chip_html, _confidence_dot_html, _diff_table, _error_sort_key, _esc, _esc_attr, _extract_cutoff_soc_pct, _extract_hourly_df, _extract_pv_range_width, _flatten_diff_payload, _gauge_html, _get_run_detail, _hourly_records_from_detail, _icon_html, _is_noisy_diff_path, _limiter_icons_html, _norm_fraction, _normalize_badge_icon, _on_toggle_fixed, _parse_config_json, _parse_json_dict_maybe, _pct, _pick_float_value, _prepare_history_df, _pv_quality_flag_html, _pv_quality_level_from_label, _pv_quality_signal_html, _render_compare_runs_block, _render_history_log_block, _render_lookup_form_contents, _render_run_inspector, _run_label, _safe_filename_part, _safe_float, _soc_journey_bar_html, _target_date_for_filename, _to_py_date, add_tariff_and_sun_markers ...
+
+backend_api.py classes (top-level): SettingsPayload, InputsPayload, RunNowPayload, NightlyTickPayload, ActualsHourlyPayload, ErrorEventPayload, ErrorFixedPayload, BackendState
+
+Direct calls inside module-level run_now():
+ - Header
+ - _require_token
+ - post
+ - run_now
+
+==============================================================================================================
+END — Paste this full output back here. Then we start Stap 1 (max 8 regels end-to-end + mini rekenvoorbeeld).
+==============================================================================================================
