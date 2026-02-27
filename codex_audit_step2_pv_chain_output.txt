@@ -1,0 +1,1616 @@
+
+==============================================================================================================
+1) planner_core.py — run_forecast_pipeline: where pv is created + which quantile columns are used
+==============================================================================================================
+   planner_core.py:2627:         if cum > max_cum:
+   planner_core.py:2628:             max_cum = cum
+   planner_core.py:2629: 
+   planner_core.py:2630:     required_from_batt_kwh = max(0.0, max_cum) / BATTERY_DISCHARGE_EFF
+   planner_core.py:2631:     soc_low = MIN_SOC + (required_from_batt_kwh / BATTERY_KWH)
+   planner_core.py:2632:     soc_low = min(max(soc_low, MIN_SOC), 1.0)
+   planner_core.py:2633:     soc_low = min(1.0, soc_low + float(buffer_soc))
+   planner_core.py:2634:     return soc_low
+   planner_core.py:2635: 
+   planner_core.py:2636: 
+>> planner_core.py:2637: def run_forecast_pipeline(
+   planner_core.py:2638:     cfg: dict,
+   planner_core.py:2639:     target_date: dt.date,
+   planner_core.py:2640:     soc_at_22_percent: float,
+   planner_core.py:2641:     yesterday_kwh: float,
+   planner_core.py:2642:     buffer_percent: float,
+   planner_core.py:2643:     user_max_ac_kw: float,
+   planner_core.py:2644: ) -> PlannerOutput:
+   planner_core.py:2645:     with applied_config(cfg) as effective_cfg:
+   planner_core.py:2646:         quick_sanity_checks()
+   planner_core.py:2647: 
+   planner_core.py:2648:         loc_cfg = effective_cfg.get("location", {})
+   planner_core.py:2649:         tz = str(loc_cfg["timezone"])
+   planner_core.py:2650:         loc = Location(
+   planner_core.py:2651:             name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
+   planner_core.py:2652:             latitude=float(loc_cfg["latitude"]),
+   planner_core.py:2653:             longitude=float(loc_cfg["longitude"]),
+   planner_core.py:2654:             elevation_m=float(loc_cfg["elevation_m"]) if loc_cfg.get("elevation_m") is not None else None,
+   planner_core.py:2655:         )
+
+==============================================================================================================
+planner_core.py — hits for pattern: \bpv\s*=
+==============================================================================================================
+   planner_core.py:325:             by_day[i] = parse_day_windows(i, day_windows)
+   planner_core.py:326:     else:
+   planner_core.py:327:         raise ValueError("tariff.offpeak_windows_by_dow must be a list (len 7) or dict with weekday keys.")
+   planner_core.py:328:     return by_day
+   planner_core.py:329: 
+   planner_core.py:330: 
+   planner_core.py:331: def validate_config(cfg: dict) -> None:
+   planner_core.py:332:     location = cfg["location"]
+>> planner_core.py:333:     pv = cfg["pv"]
+   planner_core.py:334:     battery = cfg["battery"]
+   planner_core.py:335:     load_profile = cfg["load_profile"]
+   planner_core.py:336:     tariff = cfg["tariff"]
+   planner_core.py:337:     system = cfg.get("system", {})
+   planner_core.py:338:     weather = cfg.get("weather", {})
+   planner_core.py:339: 
+   planner_core.py:340:     if not (-90.0 <= float(location["latitude"]) <= 90.0):
+   planner_core.py:341:         raise ValueError("location.latitude must be in [-90, 90].")
+   planner_core.py:342:     if not (-180.0 <= float(location["longitude"]) <= 180.0):
+   planner_core.py:343:         raise ValueError("location.longitude must be in [-180, 180].")
+   planner_core.py:344:     if not (0.0 < float(pv["performance_ratio"]) <= 1.0):
+   planner_core.py:345:         raise ValueError("pv.performance_ratio must be in (0, 1].")
+   planner_core.py:346:     if not (0.0 < float(pv["inverter_eff"]) <= 1.0):
+   planner_core.py:347:         raise ValueError("pv.inverter_eff must be in (0, 1].")
+   planner_core.py:475:     global PV_CALIBRATION_FACTOR_EAST, PV_CALIBRATION_FACTOR_SOUTH, INVERTER_AC_KW_LIMIT
+   planner_core.py:476:     global BATTERY_KWH, MIN_SOC_PERCENT, MAX_CUTOFF_SOC_PERCENT
+   planner_core.py:477:     global BATTERY_MAX_CHARGE_KW, BATTERY_MAX_DISCHARGE_KW, MAX_AC_CHARGE_KW_HARD_LIMIT
+   planner_core.py:478:     global LOAD_PROFILE, MIN_SOC, MAX_CUTOFF_SOC, EFFECTIVE_CFG, OFFPEAK_WINDOWS_BY_DOW
+   planner_core.py:479:     global PEAK_GRID_PRICE_EUR_PER_KWH, OFFPEAK_GRID_PRICE_EUR_PER_KWH, INJECTION_GRID_PRICE_EUR_PER_KWH
+   planner_core.py:480:     global ENABLE_INVARIANT_CHECKS
+   planner_core.py:481: 
+   planner_core.py:482:     location = cfg["location"]
+>> planner_core.py:483:     pv = cfg["pv"]
+   planner_core.py:484:     battery = cfg["battery"]
+   planner_core.py:485:     load_profile = cfg["load_profile"]
+   planner_core.py:486:     tariff = cfg["tariff"]
+   planner_core.py:487:     system = cfg.get("system", {})
+   planner_core.py:488: 
+   planner_core.py:489:     USE_GEOCODING = bool(location["use_geocoding"])
+   planner_core.py:490:     ADDRESS_QUERY = str(location["address_query"])
+   planner_core.py:491:     LATITUDE = float(location["latitude"])
+   planner_core.py:492:     LONGITUDE = float(location["longitude"])
+   planner_core.py:493:     TIMEZONE = str(location["timezone"])
+   planner_core.py:494: 
+   planner_core.py:495:     PANEL_WP = int(pv["panel_wp"])
+   planner_core.py:496:     ARRAY_SOUTH_PANELS = int(pv["array_south_panels"])
+   planner_core.py:497:     ARRAY_EAST_PANELS = int(pv["array_east_panels"])
+   planner_core.py:2607:     optimization_mode = str((tariff_cfg or {}).get("optimization_mode", "window_only")).strip().lower()
+   planner_core.py:2608:     optimization_mode = optimization_mode if optimization_mode in {"window_only", "price_aware"} else "window_only"
+   planner_core.py:2609:     offpeak_price = float((tariff_cfg or {}).get("offpeak_grid_price_eur_per_kwh", OFFPEAK_GRID_PRICE_EUR_PER_KWH))
+   planner_core.py:2610:     break_even_price = offpeak_price / max(1e-9, BATTERY_AC_CHARGE_EFF * BATTERY_DISCHARGE_EFF)
+   planner_core.py:2611: 
+   planner_core.py:2612:     for ts in df.index:
+   planner_core.py:2613:         if not in_any_window(ts.time(), expensive_windows):
+   planner_core.py:2614:             continue
+>> planner_core.py:2615:         pv = float(df.loc[ts, pv_col])
+   planner_core.py:2616:         load = float(loads.loc[ts])
+   planner_core.py:2617:         net = load - pv  # + tekort, - overschot
+   planner_core.py:2618:         if optimization_mode == "price_aware":
+   planner_core.py:2619:             hour_price = import_price_eur_per_kwh(ts, tariff_cfg or DEFAULT_CONFIG["tariff"])
+   planner_core.py:2620:             if hour_price <= 0.0:
+   planner_core.py:2621:                 net = 0.0
+   planner_core.py:2622:             elif hour_price <= break_even_price:
+   planner_core.py:2623:                 net = 0.0
+   planner_core.py:2624:             else:
+   planner_core.py:2625:                 net *= (hour_price - break_even_price) / hour_price
+   planner_core.py:2626:         cum += net
+   planner_core.py:2627:         if cum > max_cum:
+   planner_core.py:2628:             max_cum = cum
+   planner_core.py:2629: 
+   planner_core.py:2650:         loc = Location(
+   planner_core.py:2651:             name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
+   planner_core.py:2652:             latitude=float(loc_cfg["latitude"]),
+   planner_core.py:2653:             longitude=float(loc_cfg["longitude"]),
+   planner_core.py:2654:             elevation_m=float(loc_cfg["elevation_m"]) if loc_cfg.get("elevation_m") is not None else None,
+   planner_core.py:2655:         )
+   planner_core.py:2656: 
+   planner_core.py:2657:         weather = fetch_weather_for_date(loc, target_date, tz=tz)
+>> planner_core.py:2658:         pv = build_pv_forecast(weather.df, loc, tz=tz)
+   planner_core.py:2659:         pv = apply_soft_daylight_gating(pv, loc).sort_index()
+   planner_core.py:2660:         pv = add_sun_percent(pv, weather.sunrise, weather.sunset)
+   planner_core.py:2661:         pv = add_load_and_surplus_columns(pv, yesterday_kwh)
+   planner_core.py:2662: 
+   planner_core.py:2663:         tariff_cfg = effective_cfg.get("tariff", DEFAULT_CONFIG["tariff"])
+   planner_core.py:2664:         soc_low = compute_soc_low_timing_aware(pv, yesterday_kwh, target_date, tariff_cfg=tariff_cfg)
+   planner_core.py:2665:         _, soc_high = compute_soc_high_headroom(
+   planner_core.py:2666:             pv,
+   planner_core.py:2667:             yesterday_kwh,
+   planner_core.py:2668:             target_date,
+   planner_core.py:2669:             sunrise=weather.sunrise,
+   planner_core.py:2670:             sunset=weather.sunset,
+   planner_core.py:2671:         )
+   planner_core.py:2672:         cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high, tariff_cfg=tariff_cfg)
+   planner_core.py:2651:             name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
+   planner_core.py:2652:             latitude=float(loc_cfg["latitude"]),
+   planner_core.py:2653:             longitude=float(loc_cfg["longitude"]),
+   planner_core.py:2654:             elevation_m=float(loc_cfg["elevation_m"]) if loc_cfg.get("elevation_m") is not None else None,
+   planner_core.py:2655:         )
+   planner_core.py:2656: 
+   planner_core.py:2657:         weather = fetch_weather_for_date(loc, target_date, tz=tz)
+   planner_core.py:2658:         pv = build_pv_forecast(weather.df, loc, tz=tz)
+>> planner_core.py:2659:         pv = apply_soft_daylight_gating(pv, loc).sort_index()
+   planner_core.py:2660:         pv = add_sun_percent(pv, weather.sunrise, weather.sunset)
+   planner_core.py:2661:         pv = add_load_and_surplus_columns(pv, yesterday_kwh)
+   planner_core.py:2662: 
+   planner_core.py:2663:         tariff_cfg = effective_cfg.get("tariff", DEFAULT_CONFIG["tariff"])
+   planner_core.py:2664:         soc_low = compute_soc_low_timing_aware(pv, yesterday_kwh, target_date, tariff_cfg=tariff_cfg)
+   planner_core.py:2665:         _, soc_high = compute_soc_high_headroom(
+   planner_core.py:2666:             pv,
+   planner_core.py:2667:             yesterday_kwh,
+   planner_core.py:2668:             target_date,
+   planner_core.py:2669:             sunrise=weather.sunrise,
+   planner_core.py:2670:             sunset=weather.sunset,
+   planner_core.py:2671:         )
+   planner_core.py:2672:         cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high, tariff_cfg=tariff_cfg)
+   planner_core.py:2673:         cutoff_soc = cutoff_soc_raw + (float(buffer_percent) / 100.0)
+   planner_core.py:2652:             latitude=float(loc_cfg["latitude"]),
+   planner_core.py:2653:             longitude=float(loc_cfg["longitude"]),
+   planner_core.py:2654:             elevation_m=float(loc_cfg["elevation_m"]) if loc_cfg.get("elevation_m") is not None else None,
+   planner_core.py:2655:         )
+   planner_core.py:2656: 
+   planner_core.py:2657:         weather = fetch_weather_for_date(loc, target_date, tz=tz)
+   planner_core.py:2658:         pv = build_pv_forecast(weather.df, loc, tz=tz)
+   planner_core.py:2659:         pv = apply_soft_daylight_gating(pv, loc).sort_index()
+>> planner_core.py:2660:         pv = add_sun_percent(pv, weather.sunrise, weather.sunset)
+   planner_core.py:2661:         pv = add_load_and_surplus_columns(pv, yesterday_kwh)
+   planner_core.py:2662: 
+   planner_core.py:2663:         tariff_cfg = effective_cfg.get("tariff", DEFAULT_CONFIG["tariff"])
+   planner_core.py:2664:         soc_low = compute_soc_low_timing_aware(pv, yesterday_kwh, target_date, tariff_cfg=tariff_cfg)
+   planner_core.py:2665:         _, soc_high = compute_soc_high_headroom(
+   planner_core.py:2666:             pv,
+   planner_core.py:2667:             yesterday_kwh,
+   planner_core.py:2668:             target_date,
+   planner_core.py:2669:             sunrise=weather.sunrise,
+   planner_core.py:2670:             sunset=weather.sunset,
+   planner_core.py:2671:         )
+   planner_core.py:2672:         cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high, tariff_cfg=tariff_cfg)
+   planner_core.py:2673:         cutoff_soc = cutoff_soc_raw + (float(buffer_percent) / 100.0)
+   planner_core.py:2674: 
+   planner_core.py:2653:             longitude=float(loc_cfg["longitude"]),
+   planner_core.py:2654:             elevation_m=float(loc_cfg["elevation_m"]) if loc_cfg.get("elevation_m") is not None else None,
+   planner_core.py:2655:         )
+   planner_core.py:2656: 
+   planner_core.py:2657:         weather = fetch_weather_for_date(loc, target_date, tz=tz)
+   planner_core.py:2658:         pv = build_pv_forecast(weather.df, loc, tz=tz)
+   planner_core.py:2659:         pv = apply_soft_daylight_gating(pv, loc).sort_index()
+   planner_core.py:2660:         pv = add_sun_percent(pv, weather.sunrise, weather.sunset)
+>> planner_core.py:2661:         pv = add_load_and_surplus_columns(pv, yesterday_kwh)
+   planner_core.py:2662: 
+   planner_core.py:2663:         tariff_cfg = effective_cfg.get("tariff", DEFAULT_CONFIG["tariff"])
+   planner_core.py:2664:         soc_low = compute_soc_low_timing_aware(pv, yesterday_kwh, target_date, tariff_cfg=tariff_cfg)
+   planner_core.py:2665:         _, soc_high = compute_soc_high_headroom(
+   planner_core.py:2666:             pv,
+   planner_core.py:2667:             yesterday_kwh,
+   planner_core.py:2668:             target_date,
+   planner_core.py:2669:             sunrise=weather.sunrise,
+   planner_core.py:2670:             sunset=weather.sunset,
+   planner_core.py:2671:         )
+   planner_core.py:2672:         cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high, tariff_cfg=tariff_cfg)
+   planner_core.py:2673:         cutoff_soc = cutoff_soc_raw + (float(buffer_percent) / 100.0)
+   planner_core.py:2674: 
+   planner_core.py:2675:         old_cutoff_soc = cutoff_soc
+   planner_core.py:2728:     consumption_kwh: "pd.Series",
+   planner_core.py:2729:     soc_at_22_percent: float,
+   planner_core.py:2730:     buffer_percent: float,
+   planner_core.py:2731:     max_ac_charge_power_kw: float,
+   planner_core.py:2732: ) -> tuple["pd.DataFrame", "pd.DataFrame", "pd.Series", float, float, str, str, bool, str]:
+   planner_core.py:2733:     """Legacy backend API entrypoint retained for compatibility."""
+   planner_core.py:2734:     total_consumption_kwh = float(pd.to_numeric(consumption_kwh, errors="coerce").fillna(0.0).sum())
+   planner_core.py:2735: 
+>> planner_core.py:2736:     pv = pv_df.copy()
+   planner_core.py:2737:     if "load_kwh" not in pv.columns:
+   planner_core.py:2738:         pv = add_load_and_surplus_columns(pv, total_consumption_kwh)
+   planner_core.py:2739: 
+   planner_core.py:2740:     tariff_cfg = EFFECTIVE_CFG.get("tariff", DEFAULT_CONFIG["tariff"]) if isinstance(EFFECTIVE_CFG, dict) else DEFAULT_CONFIG["tariff"]
+   planner_core.py:2741:     pv_col = "pv_total_decision_kwh" if "pv_total_decision_kwh" in pv.columns else "pv_total_kwh"
+   planner_core.py:2742:     soc_low = compute_soc_low_timing_aware(pv, total_consumption_kwh, target_date, tariff_cfg=tariff_cfg, pv_col=pv_col)
+   planner_core.py:2743:     _, soc_high = compute_soc_high_headroom(
+   planner_core.py:2744:         pv,
+   planner_core.py:2745:         total_consumption_kwh,
+   planner_core.py:2746:         target_date,
+   planner_core.py:2747:         sunrise=weather.sunrise,
+   planner_core.py:2748:         sunset=weather.sunset,
+   planner_core.py:2749:     )
+   planner_core.py:2750:     cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high, tariff_cfg=tariff_cfg)
+
+==============================================================================================================
+planner_core.py — hits for pattern: build_pv_forecast\(
+==============================================================================================================
+   planner_core.py:2332: 
+   planner_core.py:2333:     return (
+   planner_core.py:2334:         east_ac_kwh_clipped.astype(float),
+   planner_core.py:2335:         south_ac_kwh_clipped.astype(float),
+   planner_core.py:2336:         total_ac_kwh_unclipped.astype(float),
+   planner_core.py:2337:         total_ac_kwh_clipped.astype(float),
+   planner_core.py:2338:     )
+   planner_core.py:2339: 
+>> planner_core.py:2340: def build_pv_forecast(
+   planner_core.py:2341:     df: "pd.DataFrame",
+   planner_core.py:2342:     loc: Location,
+   planner_core.py:2343:     tz: str | None = None,
+   planner_core.py:2344:     *,
+   planner_core.py:2345:     allow_synthetic_ghi_mask: "pd.Series | None" = None,
+   planner_core.py:2346: ) -> "pd.DataFrame":
+   planner_core.py:2347:     if not PVLIB_AVAILABLE:
+   planner_core.py:2348:         raise SystemExit("pvlib is required. Install with: pip install pvlib")
+   planner_core.py:2349: 
+   planner_core.py:2350:     (
+   planner_core.py:2351:         east_ac_kwh_clipped,
+   planner_core.py:2352:         south_ac_kwh_clipped,
+   planner_core.py:2353:         total_ac_kwh_unclipped,
+   planner_core.py:2354:         total_ac_kwh_clipped,
+   planner_core.py:2650:         loc = Location(
+   planner_core.py:2651:             name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
+   planner_core.py:2652:             latitude=float(loc_cfg["latitude"]),
+   planner_core.py:2653:             longitude=float(loc_cfg["longitude"]),
+   planner_core.py:2654:             elevation_m=float(loc_cfg["elevation_m"]) if loc_cfg.get("elevation_m") is not None else None,
+   planner_core.py:2655:         )
+   planner_core.py:2656: 
+   planner_core.py:2657:         weather = fetch_weather_for_date(loc, target_date, tz=tz)
+>> planner_core.py:2658:         pv = build_pv_forecast(weather.df, loc, tz=tz)
+   planner_core.py:2659:         pv = apply_soft_daylight_gating(pv, loc).sort_index()
+   planner_core.py:2660:         pv = add_sun_percent(pv, weather.sunrise, weather.sunset)
+   planner_core.py:2661:         pv = add_load_and_surplus_columns(pv, yesterday_kwh)
+   planner_core.py:2662: 
+   planner_core.py:2663:         tariff_cfg = effective_cfg.get("tariff", DEFAULT_CONFIG["tariff"])
+   planner_core.py:2664:         soc_low = compute_soc_low_timing_aware(pv, yesterday_kwh, target_date, tariff_cfg=tariff_cfg)
+   planner_core.py:2665:         _, soc_high = compute_soc_high_headroom(
+   planner_core.py:2666:             pv,
+   planner_core.py:2667:             yesterday_kwh,
+   planner_core.py:2668:             target_date,
+   planner_core.py:2669:             sunrise=weather.sunrise,
+   planner_core.py:2670:             sunset=weather.sunset,
+   planner_core.py:2671:         )
+   planner_core.py:2672:         cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high, tariff_cfg=tariff_cfg)
+
+==============================================================================================================
+2) planner_core.py — build_pv_forecast definition (units/index/gating/clipping)
+==============================================================================================================
+   planner_core.py:2330:     total_ac_kwh_clipped = total_ac_kwh_clipped.where(daylight | total_ac_kwh_clipped.isna(), 0.0)
+   planner_core.py:2331:     total_ac_kwh_unclipped = total_ac_kwh_unclipped.where(daylight | total_ac_kwh_unclipped.isna(), 0.0)
+   planner_core.py:2332: 
+   planner_core.py:2333:     return (
+   planner_core.py:2334:         east_ac_kwh_clipped.astype(float),
+   planner_core.py:2335:         south_ac_kwh_clipped.astype(float),
+   planner_core.py:2336:         total_ac_kwh_unclipped.astype(float),
+   planner_core.py:2337:         total_ac_kwh_clipped.astype(float),
+   planner_core.py:2338:     )
+   planner_core.py:2339: 
+>> planner_core.py:2340: def build_pv_forecast(
+   planner_core.py:2341:     df: "pd.DataFrame",
+   planner_core.py:2342:     loc: Location,
+   planner_core.py:2343:     tz: str | None = None,
+   planner_core.py:2344:     *,
+   planner_core.py:2345:     allow_synthetic_ghi_mask: "pd.Series | None" = None,
+   planner_core.py:2346: ) -> "pd.DataFrame":
+   planner_core.py:2347:     if not PVLIB_AVAILABLE:
+   planner_core.py:2348:         raise SystemExit("pvlib is required. Install with: pip install pvlib")
+   planner_core.py:2349: 
+   planner_core.py:2350:     (
+   planner_core.py:2351:         east_ac_kwh_clipped,
+   planner_core.py:2352:         south_ac_kwh_clipped,
+   planner_core.py:2353:         total_ac_kwh_unclipped,
+   planner_core.py:2354:         total_ac_kwh_clipped,
+   planner_core.py:2355:     ) = estimate_pv_with_pvlib(
+   planner_core.py:2356:         df,
+   planner_core.py:2357:         loc,
+   planner_core.py:2358:         tz=tz,
+
+==============================================================================================================
+planner_core.py — hits for pattern: _integrate_hourly_power_trapezoid
+==============================================================================================================
+   planner_core.py:2025:                     f"irradiance anomaly model={model_id}: daily_ghi_integral_whm2={measured_wh:.1f} "
+   planner_core.py:2026:                     f"clear_sky_whm2={clear_wh:.1f} ratio={ratio:.2f} limit={IRRADIANCE_DAILY_CLEARSKY_FACTOR:.2f}"
+   planner_core.py:2027:                 )
+   planner_core.py:2028:         except Exception:
+   planner_core.py:2029:             pass
+   planner_core.py:2030: 
+   planner_core.py:2031:     return warnings_out
+   planner_core.py:2032: 
+>> planner_core.py:2033: def _integrate_hourly_power_trapezoid(power_kw: "pd.Series") -> "pd.Series":
+   planner_core.py:2034:     """
+   planner_core.py:2035:     Convert power at hour-start timestamps to hourly kWh using trapezoid:
+   planner_core.py:2036:     e[t] = 0.5*(p[t] + p[t+1]) for all but last; last uses p[last].
+   planner_core.py:2037:     Preserve NaN (if p[t] is NaN => e[t] NaN). Clamp negatives to 0.
+   planner_core.py:2038:     """
+   planner_core.py:2039:     p = pd.to_numeric(power_kw, errors="coerce")
+   planner_core.py:2040:     next_p = p.shift(-1)
+   planner_core.py:2041:     energy = 0.5 * (p + next_p)
+   planner_core.py:2042:     if len(energy) > 0:
+   planner_core.py:2043:         energy.iloc[-1] = p.iloc[-1]
+   planner_core.py:2044:     energy = energy.where(p.notna(), np.nan)
+   planner_core.py:2045:     return energy.clip(lower=0.0)
+   planner_core.py:2046: 
+   planner_core.py:2047: 
+   planner_core.py:2304:     south_share = (south_dc_kw / total_dc_kw_unclipped.clip(lower=dc_eps)).fillna(0.0).clip(lower=0.0, upper=1.0)
+   planner_core.py:2305:     share_sum = (east_share + south_share).replace(0.0, float("nan"))
+   planner_core.py:2306:     east_share = (east_share / share_sum).fillna(0.0)
+   planner_core.py:2307:     south_share = (south_share / share_sum).fillna(0.0)
+   planner_core.py:2308: 
+   planner_core.py:2309:     east_ac_kw_clipped = (total_ac_kw_clipped * east_share).fillna(0.0).clip(lower=0.0)
+   planner_core.py:2310:     south_ac_kw_clipped = (total_ac_kw_clipped * south_share).fillna(0.0).clip(lower=0.0)
+   planner_core.py:2311:     if has_inst:
+>> planner_core.py:2312:         east_ac_kwh_clipped = _integrate_hourly_power_trapezoid(east_ac_kw_clipped)
+   planner_core.py:2313:         south_ac_kwh_clipped = _integrate_hourly_power_trapezoid(south_ac_kw_clipped)
+   planner_core.py:2314:         total_ac_kwh_unclipped = _integrate_hourly_power_trapezoid(total_ac_kw_unclipped)
+   planner_core.py:2315:         total_ac_kwh_clipped = _integrate_hourly_power_trapezoid(total_ac_kw_clipped)
+   planner_core.py:2316:     else:
+   planner_core.py:2317:         east_ac_kwh_clipped = (east_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
+   planner_core.py:2318:         south_ac_kwh_clipped = (south_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
+   planner_core.py:2319: 
+   planner_core.py:2320:     east_ac_kwh_clipped = east_ac_kwh_clipped.where(avail)
+   planner_core.py:2321:     south_ac_kwh_clipped = south_ac_kwh_clipped.where(avail)
+   planner_core.py:2322:     total_ac_kwh_clipped = total_ac_kwh_clipped.where(avail)
+   planner_core.py:2323:     total_ac_kwh_unclipped = total_ac_kwh_unclipped.where(avail)
+   planner_core.py:2324:     east_ac_kwh_clipped = east_ac_kwh_clipped.mask(missing_inputs, np.nan)
+   planner_core.py:2325:     south_ac_kwh_clipped = south_ac_kwh_clipped.mask(missing_inputs, np.nan)
+   planner_core.py:2326:     total_ac_kwh_clipped = total_ac_kwh_clipped.mask(missing_inputs, np.nan)
+   planner_core.py:2305:     share_sum = (east_share + south_share).replace(0.0, float("nan"))
+   planner_core.py:2306:     east_share = (east_share / share_sum).fillna(0.0)
+   planner_core.py:2307:     south_share = (south_share / share_sum).fillna(0.0)
+   planner_core.py:2308: 
+   planner_core.py:2309:     east_ac_kw_clipped = (total_ac_kw_clipped * east_share).fillna(0.0).clip(lower=0.0)
+   planner_core.py:2310:     south_ac_kw_clipped = (total_ac_kw_clipped * south_share).fillna(0.0).clip(lower=0.0)
+   planner_core.py:2311:     if has_inst:
+   planner_core.py:2312:         east_ac_kwh_clipped = _integrate_hourly_power_trapezoid(east_ac_kw_clipped)
+>> planner_core.py:2313:         south_ac_kwh_clipped = _integrate_hourly_power_trapezoid(south_ac_kw_clipped)
+   planner_core.py:2314:         total_ac_kwh_unclipped = _integrate_hourly_power_trapezoid(total_ac_kw_unclipped)
+   planner_core.py:2315:         total_ac_kwh_clipped = _integrate_hourly_power_trapezoid(total_ac_kw_clipped)
+   planner_core.py:2316:     else:
+   planner_core.py:2317:         east_ac_kwh_clipped = (east_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
+   planner_core.py:2318:         south_ac_kwh_clipped = (south_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
+   planner_core.py:2319: 
+   planner_core.py:2320:     east_ac_kwh_clipped = east_ac_kwh_clipped.where(avail)
+   planner_core.py:2321:     south_ac_kwh_clipped = south_ac_kwh_clipped.where(avail)
+   planner_core.py:2322:     total_ac_kwh_clipped = total_ac_kwh_clipped.where(avail)
+   planner_core.py:2323:     total_ac_kwh_unclipped = total_ac_kwh_unclipped.where(avail)
+   planner_core.py:2324:     east_ac_kwh_clipped = east_ac_kwh_clipped.mask(missing_inputs, np.nan)
+   planner_core.py:2325:     south_ac_kwh_clipped = south_ac_kwh_clipped.mask(missing_inputs, np.nan)
+   planner_core.py:2326:     total_ac_kwh_clipped = total_ac_kwh_clipped.mask(missing_inputs, np.nan)
+   planner_core.py:2327:     total_ac_kwh_unclipped = total_ac_kwh_unclipped.mask(missing_inputs, np.nan)
+   planner_core.py:2306:     east_share = (east_share / share_sum).fillna(0.0)
+   planner_core.py:2307:     south_share = (south_share / share_sum).fillna(0.0)
+   planner_core.py:2308: 
+   planner_core.py:2309:     east_ac_kw_clipped = (total_ac_kw_clipped * east_share).fillna(0.0).clip(lower=0.0)
+   planner_core.py:2310:     south_ac_kw_clipped = (total_ac_kw_clipped * south_share).fillna(0.0).clip(lower=0.0)
+   planner_core.py:2311:     if has_inst:
+   planner_core.py:2312:         east_ac_kwh_clipped = _integrate_hourly_power_trapezoid(east_ac_kw_clipped)
+   planner_core.py:2313:         south_ac_kwh_clipped = _integrate_hourly_power_trapezoid(south_ac_kw_clipped)
+>> planner_core.py:2314:         total_ac_kwh_unclipped = _integrate_hourly_power_trapezoid(total_ac_kw_unclipped)
+   planner_core.py:2315:         total_ac_kwh_clipped = _integrate_hourly_power_trapezoid(total_ac_kw_clipped)
+   planner_core.py:2316:     else:
+   planner_core.py:2317:         east_ac_kwh_clipped = (east_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
+   planner_core.py:2318:         south_ac_kwh_clipped = (south_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
+   planner_core.py:2319: 
+   planner_core.py:2320:     east_ac_kwh_clipped = east_ac_kwh_clipped.where(avail)
+   planner_core.py:2321:     south_ac_kwh_clipped = south_ac_kwh_clipped.where(avail)
+   planner_core.py:2322:     total_ac_kwh_clipped = total_ac_kwh_clipped.where(avail)
+   planner_core.py:2323:     total_ac_kwh_unclipped = total_ac_kwh_unclipped.where(avail)
+   planner_core.py:2324:     east_ac_kwh_clipped = east_ac_kwh_clipped.mask(missing_inputs, np.nan)
+   planner_core.py:2325:     south_ac_kwh_clipped = south_ac_kwh_clipped.mask(missing_inputs, np.nan)
+   planner_core.py:2326:     total_ac_kwh_clipped = total_ac_kwh_clipped.mask(missing_inputs, np.nan)
+   planner_core.py:2327:     total_ac_kwh_unclipped = total_ac_kwh_unclipped.mask(missing_inputs, np.nan)
+   planner_core.py:2328:     east_ac_kwh_clipped = east_ac_kwh_clipped.where(daylight | east_ac_kwh_clipped.isna(), 0.0)
+   planner_core.py:2307:     south_share = (south_share / share_sum).fillna(0.0)
+   planner_core.py:2308: 
+   planner_core.py:2309:     east_ac_kw_clipped = (total_ac_kw_clipped * east_share).fillna(0.0).clip(lower=0.0)
+   planner_core.py:2310:     south_ac_kw_clipped = (total_ac_kw_clipped * south_share).fillna(0.0).clip(lower=0.0)
+   planner_core.py:2311:     if has_inst:
+   planner_core.py:2312:         east_ac_kwh_clipped = _integrate_hourly_power_trapezoid(east_ac_kw_clipped)
+   planner_core.py:2313:         south_ac_kwh_clipped = _integrate_hourly_power_trapezoid(south_ac_kw_clipped)
+   planner_core.py:2314:         total_ac_kwh_unclipped = _integrate_hourly_power_trapezoid(total_ac_kw_unclipped)
+>> planner_core.py:2315:         total_ac_kwh_clipped = _integrate_hourly_power_trapezoid(total_ac_kw_clipped)
+   planner_core.py:2316:     else:
+   planner_core.py:2317:         east_ac_kwh_clipped = (east_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
+   planner_core.py:2318:         south_ac_kwh_clipped = (south_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
+   planner_core.py:2319: 
+   planner_core.py:2320:     east_ac_kwh_clipped = east_ac_kwh_clipped.where(avail)
+   planner_core.py:2321:     south_ac_kwh_clipped = south_ac_kwh_clipped.where(avail)
+   planner_core.py:2322:     total_ac_kwh_clipped = total_ac_kwh_clipped.where(avail)
+   planner_core.py:2323:     total_ac_kwh_unclipped = total_ac_kwh_unclipped.where(avail)
+   planner_core.py:2324:     east_ac_kwh_clipped = east_ac_kwh_clipped.mask(missing_inputs, np.nan)
+   planner_core.py:2325:     south_ac_kwh_clipped = south_ac_kwh_clipped.mask(missing_inputs, np.nan)
+   planner_core.py:2326:     total_ac_kwh_clipped = total_ac_kwh_clipped.mask(missing_inputs, np.nan)
+   planner_core.py:2327:     total_ac_kwh_unclipped = total_ac_kwh_unclipped.mask(missing_inputs, np.nan)
+   planner_core.py:2328:     east_ac_kwh_clipped = east_ac_kwh_clipped.where(daylight | east_ac_kwh_clipped.isna(), 0.0)
+   planner_core.py:2329:     south_ac_kwh_clipped = south_ac_kwh_clipped.where(daylight | south_ac_kwh_clipped.isna(), 0.0)
+
+==============================================================================================================
+planner_core.py — hits for pattern: build_local_day_hour_index
+==============================================================================================================
+   planner_core.py:1937:     aware timestamps.
+   planner_core.py:1938:     """
+   planner_core.py:1939:     tz = ZoneInfo(str(tzname))
+   planner_core.py:1940:     day_start = dt.datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0, tzinfo=tz)
+   planner_core.py:1941:     next_day = day_start + dt.timedelta(days=1)
+   planner_core.py:1942:     return pd.date_range(start=day_start, end=next_day, freq="h", inclusive="left")
+   planner_core.py:1943: 
+   planner_core.py:1944: 
+>> planner_core.py:1945: def build_local_day_hour_index(day: dt.date, tz: str) -> tuple[pd.DatetimeIndex, bool]:
+   planner_core.py:1946:     """Backward-compatible wrapper around :func:`local_day_hourly_index`."""
+   planner_core.py:1947:     idx = local_day_hourly_index(day, tz)
+   planner_core.py:1948:     return idx, len(idx) != 24
+   planner_core.py:1949: 
+   planner_core.py:1950: 
+   planner_core.py:1951: def normalize_hourly_forecast_index(df: "pd.DataFrame", date: dt.date, tz: str) -> "pd.DataFrame":
+   planner_core.py:1952:     if df.empty:
+   planner_core.py:1953:         raise RuntimeError("Open-Meteo hourly forecast is empty.")
+   planner_core.py:1954: 
+   planner_core.py:1955:     out = df.copy()
+   planner_core.py:1956:     idx = pd.to_datetime(out.index, errors="coerce")
+   planner_core.py:1957:     if idx.isna().all():
+   planner_core.py:1958:         raise RuntimeError("Open-Meteo hourly forecast index is invalid.")
+   planner_core.py:1959:     if idx.tz is None:
+
+==============================================================================================================
+planner_core.py — hits for pattern: align_timestamp_to_index_tz
+==============================================================================================================
+   planner_core.py:2517:         col for col in out.columns
+   planner_core.py:2518:         if isinstance(col, str) and col.startswith("pv_") and col.endswith("_kwh")
+   planner_core.py:2519:     ]
+   planner_core.py:2520:     for col in pv_cols:
+   planner_core.py:2521:         out.loc[~daylight_mask, col] = 0.0
+   planner_core.py:2522:     return out
+   planner_core.py:2523: 
+   planner_core.py:2524: 
+>> planner_core.py:2525: def align_timestamp_to_index_tz(value: dt.datetime, index: "pd.DatetimeIndex") -> "pd.Timestamp":
+   planner_core.py:2526:     ts = pd.Timestamp(value)
+   planner_core.py:2527:     tz = index.tz
+   planner_core.py:2528:     if tz is None:
+   planner_core.py:2529:         return ts.tz_localize(None) if ts.tzinfo is not None else ts
+   planner_core.py:2530:     if ts.tzinfo is None:
+   planner_core.py:2531:         return ts.tz_localize(tz)
+   planner_core.py:2532:     return ts.tz_convert(tz)
+   planner_core.py:2533: 
+   planner_core.py:2534: 
+   planner_core.py:2535: def normalize_daylight_window(
+   planner_core.py:2536:     df_index: "pd.DatetimeIndex",
+   planner_core.py:2537:     sunrise: dt.datetime,
+   planner_core.py:2538:     sunset: dt.datetime
+   planner_core.py:2539: ) -> Tuple["pd.Timestamp", "pd.Timestamp", "pd.Series"]:
+   planner_core.py:2535: def normalize_daylight_window(
+   planner_core.py:2536:     df_index: "pd.DatetimeIndex",
+   planner_core.py:2537:     sunrise: dt.datetime,
+   planner_core.py:2538:     sunset: dt.datetime
+   planner_core.py:2539: ) -> Tuple["pd.Timestamp", "pd.Timestamp", "pd.Series"]:
+   planner_core.py:2540:     if getattr(df_index, "tz", None) is None:
+   planner_core.py:2541:         raise ValueError("Forecast times index must be timezone-aware for daylight normalization.")
+   planner_core.py:2542: 
+>> planner_core.py:2543:     sunrise_ts = align_timestamp_to_index_tz(sunrise, df_index)
+   planner_core.py:2544:     sunset_ts = align_timestamp_to_index_tz(sunset, df_index)
+   planner_core.py:2545:     daylight_mask = pd.Series((df_index >= sunrise_ts) & (df_index <= sunset_ts), index=df_index)
+   planner_core.py:2546:     return sunrise_ts, sunset_ts, daylight_mask
+   planner_core.py:2547: 
+   planner_core.py:2548: 
+   planner_core.py:2549: def add_sun_percent(out: "pd.DataFrame", sunrise: dt.datetime, sunset: dt.datetime) -> "pd.DataFrame":
+   planner_core.py:2550:     df = out.copy()
+   planner_core.py:2551:     _, _, daylight_mask = normalize_daylight_window(df.index, sunrise, sunset)
+   planner_core.py:2552:     max_pv = df.loc[daylight_mask, "pv_total_kwh"].max() if daylight_mask.any() else 0.0
+   planner_core.py:2553:     df["sun_percent"] = 0
+   planner_core.py:2554:     if max_pv and max_pv > 0:
+   planner_core.py:2555:         df.loc[daylight_mask, "sun_percent"] = (df.loc[daylight_mask, "pv_total_kwh"] / max_pv * 100.0).round(0).astype(int)
+   planner_core.py:2556:     df.loc[~daylight_mask, "sun_percent"] = 0
+   planner_core.py:2557:     df.loc[df["pv_total_kwh"] < 0.001, "sun_percent"] = 0
+   planner_core.py:2536:     df_index: "pd.DatetimeIndex",
+   planner_core.py:2537:     sunrise: dt.datetime,
+   planner_core.py:2538:     sunset: dt.datetime
+   planner_core.py:2539: ) -> Tuple["pd.Timestamp", "pd.Timestamp", "pd.Series"]:
+   planner_core.py:2540:     if getattr(df_index, "tz", None) is None:
+   planner_core.py:2541:         raise ValueError("Forecast times index must be timezone-aware for daylight normalization.")
+   planner_core.py:2542: 
+   planner_core.py:2543:     sunrise_ts = align_timestamp_to_index_tz(sunrise, df_index)
+>> planner_core.py:2544:     sunset_ts = align_timestamp_to_index_tz(sunset, df_index)
+   planner_core.py:2545:     daylight_mask = pd.Series((df_index >= sunrise_ts) & (df_index <= sunset_ts), index=df_index)
+   planner_core.py:2546:     return sunrise_ts, sunset_ts, daylight_mask
+   planner_core.py:2547: 
+   planner_core.py:2548: 
+   planner_core.py:2549: def add_sun_percent(out: "pd.DataFrame", sunrise: dt.datetime, sunset: dt.datetime) -> "pd.DataFrame":
+   planner_core.py:2550:     df = out.copy()
+   planner_core.py:2551:     _, _, daylight_mask = normalize_daylight_window(df.index, sunrise, sunset)
+   planner_core.py:2552:     max_pv = df.loc[daylight_mask, "pv_total_kwh"].max() if daylight_mask.any() else 0.0
+   planner_core.py:2553:     df["sun_percent"] = 0
+   planner_core.py:2554:     if max_pv and max_pv > 0:
+   planner_core.py:2555:         df.loc[daylight_mask, "sun_percent"] = (df.loc[daylight_mask, "pv_total_kwh"] / max_pv * 100.0).round(0).astype(int)
+   planner_core.py:2556:     df.loc[~daylight_mask, "sun_percent"] = 0
+   planner_core.py:2557:     df.loc[df["pv_total_kwh"] < 0.001, "sun_percent"] = 0
+   planner_core.py:2558:     return df
+
+==============================================================================================================
+planner_core.py — hits for pattern: apply_soft_daylight_gating|apply_daylight_clamp|twilight
+==============================================================================================================
+   planner_core.py:2479:         raise RuntimeError("pvlib is required for solar elevation daylight gating")
+   planner_core.py:2480:     latitude = float(loc.latitude)
+   planner_core.py:2481:     longitude = float(loc.longitude)
+   planner_core.py:2482:     solpos = pvlib.solarposition.get_solarposition(index, latitude, longitude, altitude=loc.elevation_m)
+   planner_core.py:2483:     elev = pd.to_numeric(solpos.get("apparent_elevation"), errors="coerce")
+   planner_core.py:2484:     return pd.Series(elev.values, index=index, dtype=float)
+   planner_core.py:2485: 
+   planner_core.py:2486: 
+>> planner_core.py:2487: def _apply_soft_daylight_factor_and_twilight_clamp(df: "pd.DataFrame", factor: "pd.Series") -> "pd.DataFrame":
+   planner_core.py:2488:     out = df.copy()
+   planner_core.py:2489:     pv_cols = [
+   planner_core.py:2490:         col for col in out.columns
+   planner_core.py:2491:         if isinstance(col, str) and col.startswith("pv_") and col.endswith("_kwh")
+   planner_core.py:2492:     ]
+   planner_core.py:2493:     if not pv_cols:
+   planner_core.py:2494:         return out
+   planner_core.py:2495: 
+   planner_core.py:2496:     aligned_factor = pd.to_numeric(factor.reindex(out.index), errors="coerce")
+   planner_core.py:2497:     for col in pv_cols:
+   planner_core.py:2498:         values = pd.to_numeric(out[col], errors="coerce")
+   planner_core.py:2499:         gated = values * aligned_factor
+   planner_core.py:2500:         twilight_mask = (aligned_factor < 0.25) & gated.notna() & (gated.abs() < 0.01)
+   planner_core.py:2501:         gated.loc[twilight_mask] = 0.0
+   planner_core.py:2492:     ]
+   planner_core.py:2493:     if not pv_cols:
+   planner_core.py:2494:         return out
+   planner_core.py:2495: 
+   planner_core.py:2496:     aligned_factor = pd.to_numeric(factor.reindex(out.index), errors="coerce")
+   planner_core.py:2497:     for col in pv_cols:
+   planner_core.py:2498:         values = pd.to_numeric(out[col], errors="coerce")
+   planner_core.py:2499:         gated = values * aligned_factor
+>> planner_core.py:2500:         twilight_mask = (aligned_factor < 0.25) & gated.notna() & (gated.abs() < 0.01)
+   planner_core.py:2501:         gated.loc[twilight_mask] = 0.0
+   planner_core.py:2502:         out[col] = gated
+   planner_core.py:2503:     return out
+   planner_core.py:2504: 
+   planner_core.py:2505: 
+   planner_core.py:2506: def apply_soft_daylight_gating(df: "pd.DataFrame", loc: Location) -> "pd.DataFrame":
+   planner_core.py:2507:     elev = compute_solar_elevation_series(df.index, loc)
+   planner_core.py:2508:     factor = elev.apply(_soft_daylight_factor_from_elevation)
+   planner_core.py:2509:     return _apply_soft_daylight_factor_and_twilight_clamp(df, factor)
+   planner_core.py:2510: 
+   planner_core.py:2511: 
+   planner_core.py:2512: def apply_daylight_clamp(df: "pd.DataFrame", sunrise: dt.datetime, sunset: dt.datetime) -> "pd.DataFrame":
+   planner_core.py:2513:     """Backward-compatible hard clamp kept for legacy callers/tests."""
+   planner_core.py:2514:     out = df.copy()
+   planner_core.py:2493:     if not pv_cols:
+   planner_core.py:2494:         return out
+   planner_core.py:2495: 
+   planner_core.py:2496:     aligned_factor = pd.to_numeric(factor.reindex(out.index), errors="coerce")
+   planner_core.py:2497:     for col in pv_cols:
+   planner_core.py:2498:         values = pd.to_numeric(out[col], errors="coerce")
+   planner_core.py:2499:         gated = values * aligned_factor
+   planner_core.py:2500:         twilight_mask = (aligned_factor < 0.25) & gated.notna() & (gated.abs() < 0.01)
+>> planner_core.py:2501:         gated.loc[twilight_mask] = 0.0
+   planner_core.py:2502:         out[col] = gated
+   planner_core.py:2503:     return out
+   planner_core.py:2504: 
+   planner_core.py:2505: 
+   planner_core.py:2506: def apply_soft_daylight_gating(df: "pd.DataFrame", loc: Location) -> "pd.DataFrame":
+   planner_core.py:2507:     elev = compute_solar_elevation_series(df.index, loc)
+   planner_core.py:2508:     factor = elev.apply(_soft_daylight_factor_from_elevation)
+   planner_core.py:2509:     return _apply_soft_daylight_factor_and_twilight_clamp(df, factor)
+   planner_core.py:2510: 
+   planner_core.py:2511: 
+   planner_core.py:2512: def apply_daylight_clamp(df: "pd.DataFrame", sunrise: dt.datetime, sunset: dt.datetime) -> "pd.DataFrame":
+   planner_core.py:2513:     """Backward-compatible hard clamp kept for legacy callers/tests."""
+   planner_core.py:2514:     out = df.copy()
+   planner_core.py:2515:     _, _, daylight_mask = normalize_daylight_window(out.index, sunrise, sunset)
+   planner_core.py:2498:         values = pd.to_numeric(out[col], errors="coerce")
+   planner_core.py:2499:         gated = values * aligned_factor
+   planner_core.py:2500:         twilight_mask = (aligned_factor < 0.25) & gated.notna() & (gated.abs() < 0.01)
+   planner_core.py:2501:         gated.loc[twilight_mask] = 0.0
+   planner_core.py:2502:         out[col] = gated
+   planner_core.py:2503:     return out
+   planner_core.py:2504: 
+   planner_core.py:2505: 
+>> planner_core.py:2506: def apply_soft_daylight_gating(df: "pd.DataFrame", loc: Location) -> "pd.DataFrame":
+   planner_core.py:2507:     elev = compute_solar_elevation_series(df.index, loc)
+   planner_core.py:2508:     factor = elev.apply(_soft_daylight_factor_from_elevation)
+   planner_core.py:2509:     return _apply_soft_daylight_factor_and_twilight_clamp(df, factor)
+   planner_core.py:2510: 
+   planner_core.py:2511: 
+   planner_core.py:2512: def apply_daylight_clamp(df: "pd.DataFrame", sunrise: dt.datetime, sunset: dt.datetime) -> "pd.DataFrame":
+   planner_core.py:2513:     """Backward-compatible hard clamp kept for legacy callers/tests."""
+   planner_core.py:2514:     out = df.copy()
+   planner_core.py:2515:     _, _, daylight_mask = normalize_daylight_window(out.index, sunrise, sunset)
+   planner_core.py:2516:     pv_cols = [
+   planner_core.py:2517:         col for col in out.columns
+   planner_core.py:2518:         if isinstance(col, str) and col.startswith("pv_") and col.endswith("_kwh")
+   planner_core.py:2519:     ]
+   planner_core.py:2520:     for col in pv_cols:
+   planner_core.py:2501:         gated.loc[twilight_mask] = 0.0
+   planner_core.py:2502:         out[col] = gated
+   planner_core.py:2503:     return out
+   planner_core.py:2504: 
+   planner_core.py:2505: 
+   planner_core.py:2506: def apply_soft_daylight_gating(df: "pd.DataFrame", loc: Location) -> "pd.DataFrame":
+   planner_core.py:2507:     elev = compute_solar_elevation_series(df.index, loc)
+   planner_core.py:2508:     factor = elev.apply(_soft_daylight_factor_from_elevation)
+>> planner_core.py:2509:     return _apply_soft_daylight_factor_and_twilight_clamp(df, factor)
+   planner_core.py:2510: 
+   planner_core.py:2511: 
+   planner_core.py:2512: def apply_daylight_clamp(df: "pd.DataFrame", sunrise: dt.datetime, sunset: dt.datetime) -> "pd.DataFrame":
+   planner_core.py:2513:     """Backward-compatible hard clamp kept for legacy callers/tests."""
+   planner_core.py:2514:     out = df.copy()
+   planner_core.py:2515:     _, _, daylight_mask = normalize_daylight_window(out.index, sunrise, sunset)
+   planner_core.py:2516:     pv_cols = [
+   planner_core.py:2517:         col for col in out.columns
+   planner_core.py:2518:         if isinstance(col, str) and col.startswith("pv_") and col.endswith("_kwh")
+   planner_core.py:2519:     ]
+   planner_core.py:2520:     for col in pv_cols:
+   planner_core.py:2521:         out.loc[~daylight_mask, col] = 0.0
+   planner_core.py:2522:     return out
+   planner_core.py:2523: 
+   planner_core.py:2504: 
+   planner_core.py:2505: 
+   planner_core.py:2506: def apply_soft_daylight_gating(df: "pd.DataFrame", loc: Location) -> "pd.DataFrame":
+   planner_core.py:2507:     elev = compute_solar_elevation_series(df.index, loc)
+   planner_core.py:2508:     factor = elev.apply(_soft_daylight_factor_from_elevation)
+   planner_core.py:2509:     return _apply_soft_daylight_factor_and_twilight_clamp(df, factor)
+   planner_core.py:2510: 
+   planner_core.py:2511: 
+>> planner_core.py:2512: def apply_daylight_clamp(df: "pd.DataFrame", sunrise: dt.datetime, sunset: dt.datetime) -> "pd.DataFrame":
+   planner_core.py:2513:     """Backward-compatible hard clamp kept for legacy callers/tests."""
+   planner_core.py:2514:     out = df.copy()
+   planner_core.py:2515:     _, _, daylight_mask = normalize_daylight_window(out.index, sunrise, sunset)
+   planner_core.py:2516:     pv_cols = [
+   planner_core.py:2517:         col for col in out.columns
+   planner_core.py:2518:         if isinstance(col, str) and col.startswith("pv_") and col.endswith("_kwh")
+   planner_core.py:2519:     ]
+   planner_core.py:2520:     for col in pv_cols:
+   planner_core.py:2521:         out.loc[~daylight_mask, col] = 0.0
+   planner_core.py:2522:     return out
+   planner_core.py:2523: 
+   planner_core.py:2524: 
+   planner_core.py:2525: def align_timestamp_to_index_tz(value: dt.datetime, index: "pd.DatetimeIndex") -> "pd.Timestamp":
+   planner_core.py:2526:     ts = pd.Timestamp(value)
+
+==============================================================================================================
+planner_core.py — hits for pattern: pvwatts|ac_limit|inverter
+==============================================================================================================
+   planner_core.py:74: # Dakhoeken/richting (pvlib conventie: N=0, E=90, S=180, W=270)
+   planner_core.py:75: TILT_EAST_DEG = 35.0
+   planner_core.py:76: TILT_SOUTH_DEG = 35.0
+   planner_core.py:77: AZIMUTH_EAST_DEG = 90.0
+   planner_core.py:78: AZIMUTH_SOUTH_DEG = 180.0
+   planner_core.py:79: 
+   planner_core.py:80: # Systeemfactoren (tunen met eigen metingen)
+   planner_core.py:81: PERFORMANCE_RATIO = 0.82
+>> planner_core.py:82: INVERTER_EFF = 0.97
+   planner_core.py:83: PV_LOSS_MODEL = "split"
+   planner_core.py:84: PV_IAM_MODEL = "ashrae"
+   planner_core.py:85: PV_IAM_ASHRAE_B = 0.05
+   planner_core.py:86: PV_ALBEDO: float | None = 0.20
+   planner_core.py:87: INVERTER_AC_MODEL = "pvwatts"
+   planner_core.py:88: PV_CALIBRATION_FACTOR_EAST = 1.00
+   planner_core.py:89: PV_CALIBRATION_FACTOR_SOUTH = 1.00
+   planner_core.py:90: PV_GAMMA_PDC = -0.003
+   planner_core.py:91: 
+   planner_core.py:92: # Irradiance consistency controls
+   planner_core.py:93: IRR_REL_ERR_MEDIAN_THRESHOLD = 0.25
+   planner_core.py:94: IRR_REL_ERR_POINT_THRESHOLD = 0.35
+   planner_core.py:95: IRR_BAD_POINT_FRACTION = 0.40
+   planner_core.py:96: IRR_MIN_GHI_WM2 = 5.0
+   planner_core.py:79: 
+   planner_core.py:80: # Systeemfactoren (tunen met eigen metingen)
+   planner_core.py:81: PERFORMANCE_RATIO = 0.82
+   planner_core.py:82: INVERTER_EFF = 0.97
+   planner_core.py:83: PV_LOSS_MODEL = "split"
+   planner_core.py:84: PV_IAM_MODEL = "ashrae"
+   planner_core.py:85: PV_IAM_ASHRAE_B = 0.05
+   planner_core.py:86: PV_ALBEDO: float | None = 0.20
+>> planner_core.py:87: INVERTER_AC_MODEL = "pvwatts"
+   planner_core.py:88: PV_CALIBRATION_FACTOR_EAST = 1.00
+   planner_core.py:89: PV_CALIBRATION_FACTOR_SOUTH = 1.00
+   planner_core.py:90: PV_GAMMA_PDC = -0.003
+   planner_core.py:91: 
+   planner_core.py:92: # Irradiance consistency controls
+   planner_core.py:93: IRR_REL_ERR_MEDIAN_THRESHOLD = 0.25
+   planner_core.py:94: IRR_REL_ERR_POINT_THRESHOLD = 0.35
+   planner_core.py:95: IRR_BAD_POINT_FRACTION = 0.40
+   planner_core.py:96: IRR_MIN_GHI_WM2 = 5.0
+   planner_core.py:97: IRR_REPAIR_METHOD = "disc"  # or "erbs"
+   planner_core.py:98: IRRADIANCE_HOURLY_MAX_WM2 = 1400.0
+   planner_core.py:99: IRRADIANCE_HOURLY_EXTREME_WM2 = 2500.0
+   planner_core.py:100: IRRADIANCE_DAILY_CLEARSKY_FACTOR = 1.35
+   planner_core.py:101: CLOUD_ATTENUATION_EXPONENT = 3.4
+   planner_core.py:111: 
+   planner_core.py:112: # Efficiënties (simulatie)
+   planner_core.py:113: BATTERY_AC_CHARGE_EFF = 0.93  # net -> batterij
+   planner_core.py:114: BATTERY_PV_CHARGE_EFF = 0.95  # PV -> batterij
+   planner_core.py:115: BATTERY_DISCHARGE_EFF = 0.95  # batterij -> load
+   planner_core.py:116: 
+   planner_core.py:117: # Hard safety limit for automatically computed AC charge power
+   planner_core.py:118: MAX_AC_CHARGE_KW_HARD_LIMIT = 5.0
+>> planner_core.py:119: INVERTER_AC_KW_LIMIT = 4.6
+   planner_core.py:120: BATTERY_MAX_CHARGE_KW = 5.0
+   planner_core.py:121: BATTERY_MAX_DISCHARGE_KW = 5.0
+   planner_core.py:122: 
+   planner_core.py:123: # Tariff prices (all-in €/kWh)
+   planner_core.py:124: PEAK_GRID_PRICE_EUR_PER_KWH = 0.30
+   planner_core.py:125: OFFPEAK_GRID_PRICE_EUR_PER_KWH = 0.20
+   planner_core.py:126: INJECTION_GRID_PRICE_EUR_PER_KWH = 0.05
+   planner_core.py:127: 
+   planner_core.py:128: # Load profile (24 uur): verdeling van "gisteren verbruik" over de uren
+   planner_core.py:129: # Wordt genormaliseerd (som hoeft niet exact 1 te zijn)
+   planner_core.py:130: LOAD_PROFILE = [
+   planner_core.py:131:     0.035, 0.030, 0.028, 0.026, 0.026, 0.030,  # 00-05
+   planner_core.py:132:     0.040, 0.050, 0.045, 0.040, 0.038, 0.038,  # 06-11
+   planner_core.py:133:     0.040, 0.040, 0.040, 0.042, 0.045, 0.055,  # 12-17
+   planner_core.py:157:         "array_south_panels": ARRAY_SOUTH_PANELS,
+   planner_core.py:158:         "array_east_panels": ARRAY_EAST_PANELS,
+   planner_core.py:159:         "tilt_east_deg": TILT_EAST_DEG,
+   planner_core.py:160:         "tilt_south_deg": TILT_SOUTH_DEG,
+   planner_core.py:161:         "azimuth_east_deg": AZIMUTH_EAST_DEG,
+   planner_core.py:162:         "azimuth_south_deg": AZIMUTH_SOUTH_DEG,
+   planner_core.py:163:         "loss_model": PV_LOSS_MODEL,
+   planner_core.py:164:         "performance_ratio": PERFORMANCE_RATIO,
+>> planner_core.py:165:         "inverter_eff": INVERTER_EFF,
+   planner_core.py:166:         "pv_loss_model": PV_LOSS_MODEL,
+   planner_core.py:167:         "iam_model": PV_IAM_MODEL,
+   planner_core.py:168:         "iam_ashrae_b": PV_IAM_ASHRAE_B,
+   planner_core.py:169:         "albedo": PV_ALBEDO,
+   planner_core.py:170:         "inverter_ac_model": INVERTER_AC_MODEL,
+   planner_core.py:171:         "pv_calibration_factor_east": PV_CALIBRATION_FACTOR_EAST,
+   planner_core.py:172:         "pv_calibration_factor_south": PV_CALIBRATION_FACTOR_SOUTH,
+   planner_core.py:173:         "inverter_ac_kw_limit": INVERTER_AC_KW_LIMIT,
+   planner_core.py:174:     },
+   planner_core.py:175:     "battery": {
+   planner_core.py:176:         "battery_kwh": BATTERY_KWH,
+   planner_core.py:177:         "min_soc_percent": MIN_SOC_PERCENT,
+   planner_core.py:178:         "max_cutoff_soc_percent": MAX_CUTOFF_SOC_PERCENT,
+   planner_core.py:179:         "battery_max_charge_kw": BATTERY_MAX_CHARGE_KW,
+   planner_core.py:162:         "azimuth_south_deg": AZIMUTH_SOUTH_DEG,
+   planner_core.py:163:         "loss_model": PV_LOSS_MODEL,
+   planner_core.py:164:         "performance_ratio": PERFORMANCE_RATIO,
+   planner_core.py:165:         "inverter_eff": INVERTER_EFF,
+   planner_core.py:166:         "pv_loss_model": PV_LOSS_MODEL,
+   planner_core.py:167:         "iam_model": PV_IAM_MODEL,
+   planner_core.py:168:         "iam_ashrae_b": PV_IAM_ASHRAE_B,
+   planner_core.py:169:         "albedo": PV_ALBEDO,
+>> planner_core.py:170:         "inverter_ac_model": INVERTER_AC_MODEL,
+   planner_core.py:171:         "pv_calibration_factor_east": PV_CALIBRATION_FACTOR_EAST,
+   planner_core.py:172:         "pv_calibration_factor_south": PV_CALIBRATION_FACTOR_SOUTH,
+   planner_core.py:173:         "inverter_ac_kw_limit": INVERTER_AC_KW_LIMIT,
+   planner_core.py:174:     },
+   planner_core.py:175:     "battery": {
+   planner_core.py:176:         "battery_kwh": BATTERY_KWH,
+   planner_core.py:177:         "min_soc_percent": MIN_SOC_PERCENT,
+   planner_core.py:178:         "max_cutoff_soc_percent": MAX_CUTOFF_SOC_PERCENT,
+   planner_core.py:179:         "battery_max_charge_kw": BATTERY_MAX_CHARGE_KW,
+   planner_core.py:180:         "battery_max_discharge_kw": BATTERY_MAX_DISCHARGE_KW,
+   planner_core.py:181:         "max_ac_charge_kw_hard_limit": MAX_AC_CHARGE_KW_HARD_LIMIT,
+   planner_core.py:182:     },
+   planner_core.py:183:     "car_charger": {
+   planner_core.py:184:         "enabled": False,
+   planner_core.py:165:         "inverter_eff": INVERTER_EFF,
+   planner_core.py:166:         "pv_loss_model": PV_LOSS_MODEL,
+   planner_core.py:167:         "iam_model": PV_IAM_MODEL,
+   planner_core.py:168:         "iam_ashrae_b": PV_IAM_ASHRAE_B,
+   planner_core.py:169:         "albedo": PV_ALBEDO,
+   planner_core.py:170:         "inverter_ac_model": INVERTER_AC_MODEL,
+   planner_core.py:171:         "pv_calibration_factor_east": PV_CALIBRATION_FACTOR_EAST,
+   planner_core.py:172:         "pv_calibration_factor_south": PV_CALIBRATION_FACTOR_SOUTH,
+>> planner_core.py:173:         "inverter_ac_kw_limit": INVERTER_AC_KW_LIMIT,
+   planner_core.py:174:     },
+   planner_core.py:175:     "battery": {
+   planner_core.py:176:         "battery_kwh": BATTERY_KWH,
+   planner_core.py:177:         "min_soc_percent": MIN_SOC_PERCENT,
+   planner_core.py:178:         "max_cutoff_soc_percent": MAX_CUTOFF_SOC_PERCENT,
+   planner_core.py:179:         "battery_max_charge_kw": BATTERY_MAX_CHARGE_KW,
+   planner_core.py:180:         "battery_max_discharge_kw": BATTERY_MAX_DISCHARGE_KW,
+   planner_core.py:181:         "max_ac_charge_kw_hard_limit": MAX_AC_CHARGE_KW_HARD_LIMIT,
+   planner_core.py:182:     },
+   planner_core.py:183:     "car_charger": {
+   planner_core.py:184:         "enabled": False,
+   planner_core.py:185:         "basic_user": "",
+   planner_core.py:186:         "basic_pass": "",
+   planner_core.py:187:     },
+
+==============================================================================================================
+planner_core.py — hits for pattern: pv_total_kwh|pv_kwh|pv_kwh_p50
+==============================================================================================================
+   planner_core.py:1379: 
+   planner_core.py:1380: def add_load_and_surplus_columns(
+   planner_core.py:1381:     df: "pd.DataFrame",
+   planner_core.py:1382:     total_consumption_kwh: float,
+   planner_core.py:1383: ) -> "pd.DataFrame":
+   planner_core.py:1384:     out = df.copy()
+   planner_core.py:1385:     load_series = build_hourly_load_series(out.index, total_consumption_kwh)
+   planner_core.py:1386:     out["load_kwh"] = load_series.astype(float)
+>> planner_core.py:1387:     pv_total = out["pv_total_kwh"].fillna(0.0)
+   planner_core.py:1388:     load = out["load_kwh"].fillna(0.0)
+   planner_core.py:1389:     out["pv_surplus_kwh"] = (pv_total - load).clip(lower=0.0)
+   planner_core.py:1390:     out["pv_deficit_kwh"] = (load - pv_total).clip(lower=0.0)
+   planner_core.py:1391:     return out
+   planner_core.py:1392: 
+   planner_core.py:1393: 
+   planner_core.py:1394: def compute_euro_savings_no_battery_vs_plan(
+   planner_core.py:1395:     pv_df: pd.DataFrame,
+   planner_core.py:1396:     flows_df: pd.DataFrame,
+   planner_core.py:1397:     soc_at_22: float,
+   planner_core.py:1398:     charge_kw: float,
+   planner_core.py:1399:     cutoff_soc: float,
+   planner_core.py:1400:     today_date: dt.date,
+   planner_core.py:1401:     tomorrow_date: dt.date,
+   planner_core.py:1416:     cycle_start = window_start
+   planner_core.py:1417:     cycle_end = next_window_start
+   planner_core.py:1418:     if cycle_end <= cycle_start:
+   planner_core.py:1419:         cycle_end = cycle_start + dt.timedelta(hours=24)
+   planner_core.py:1420: 
+   planner_core.py:1421:     idx_cycle = pd.date_range(cycle_start, cycle_end, freq="h", inclusive="left", tz=TIMEZONE)
+   planner_core.py:1422: 
+   planner_core.py:1423:     dt_h_cycle = timestep_hours(idx_cycle)
+>> planner_core.py:1424:     pv_cycle = pv_df["pv_total_kwh"].reindex(idx_cycle).fillna(0.0).astype(float)
+   planner_core.py:1425:     load_cycle = pd.Series(
+   planner_core.py:1426:         [load_kwh_at(ts, total_consumption_kwh, float(dt_h_cycle.loc[ts])) for ts in idx_cycle],
+   planner_core.py:1427:         index=idx_cycle,
+   planner_core.py:1428:         dtype=float,
+   planner_core.py:1429:     )
+   planner_core.py:1430:     base_import_cycle = (load_cycle - pv_cycle).clip(lower=0.0)
+   planner_core.py:1431:     base_export_cycle = (pv_cycle - load_cycle).clip(lower=0.0)
+   planner_core.py:1432:     base_price_cycle = pd.Series([import_price_eur_per_kwh(ts, tariff_cfg) for ts in idx_cycle], index=idx_cycle)
+   planner_core.py:1433:     base_cost_cycle = base_import_cycle * base_price_cycle - base_export_cycle * inj
+   planner_core.py:1434: 
+   planner_core.py:1435:     plan_import_cycle = pd.Series(0.0, index=idx_cycle, dtype=float)
+   planner_core.py:1436:     plan_export_cycle = pd.Series(0.0, index=idx_cycle, dtype=float)
+   planner_core.py:1437:     plan_soc_end_cycle = pd.Series(np.nan, index=idx_cycle, dtype=float)
+   planner_core.py:1438: 
+   planner_core.py:1464:             plan_soc_end_cycle.loc[idx_post] = pd.to_numeric(
+   planner_core.py:1465:                 flows_df["soc_end_pct"].reindex(idx_post), errors="coerce"
+   planner_core.py:1466:             )
+   planner_core.py:1467: 
+   planner_core.py:1468:     plan_cost_cycle_cash = plan_import_cycle * base_price_cycle - plan_export_cycle * inj
+   planner_core.py:1469:     hourly_savings_cycle = (base_cost_cycle - plan_cost_cycle_cash).reindex(idx_cycle).fillna(0.0)
+   planner_core.py:1470: 
+   planner_core.py:1471:     dt_h_tom = timestep_hours(idx_tomorrow)
+>> planner_core.py:1472:     pv_tom = pv_df["pv_total_kwh"].reindex(idx_tomorrow).fillna(0.0).astype(float)
+   planner_core.py:1473:     load_tom = pd.Series(
+   planner_core.py:1474:         [load_kwh_at(ts, total_consumption_kwh, float(dt_h_tom.loc[ts])) for ts in idx_tomorrow],
+   planner_core.py:1475:         index=idx_tomorrow,
+   planner_core.py:1476:         dtype=float,
+   planner_core.py:1477:     )
+   planner_core.py:1478:     base_import_tom = (load_tom - pv_tom).clip(lower=0.0)
+   planner_core.py:1479:     base_export_tom = (pv_tom - load_tom).clip(lower=0.0)
+   planner_core.py:1480:     price_tom = pd.Series([import_price_eur_per_kwh(ts, tariff_cfg) for ts in idx_tomorrow], index=idx_tomorrow)
+   planner_core.py:1481:     base_cost_tom = base_import_tom * price_tom - base_export_tom * inj
+   planner_core.py:1482: 
+   planner_core.py:1483:     plan_import_tom = flows_df["grid_import_kwh"].reindex(idx_tomorrow).fillna(0.0).astype(float)
+   planner_core.py:1484:     plan_export_tom = flows_df["grid_export_kwh"].reindex(idx_tomorrow).fillna(0.0).astype(float)
+   planner_core.py:1485:     plan_cost_tom = plan_import_tom * price_tom - plan_export_tom * inj
+   planner_core.py:1486: 
+   planner_core.py:2360:     )
+   planner_core.py:2361: 
+   planner_core.py:2362:     out = df.copy()
+   planner_core.py:2363:     dt_h = timestep_hours(out.index)
+   planner_core.py:2364: 
+   planner_core.py:2365:     out["pv_east_kwh"] = east_ac_kwh_clipped.where(east_ac_kwh_clipped.isna() | (east_ac_kwh_clipped >= 0.0))
+   planner_core.py:2366:     out["pv_south_kwh"] = south_ac_kwh_clipped.where(south_ac_kwh_clipped.isna() | (south_ac_kwh_clipped >= 0.0))
+   planner_core.py:2367:     out["pv_total_unclipped_kwh"] = total_ac_kwh_unclipped.where(total_ac_kwh_unclipped.isna() | (total_ac_kwh_unclipped >= 0.0))
+>> planner_core.py:2368:     out["pv_total_kwh"] = total_ac_kwh_clipped.where(total_ac_kwh_clipped.isna() | (total_ac_kwh_clipped >= 0.0))
+   planner_core.py:2369: 
+   planner_core.py:2370:     out["pv_total_unclipped_kw"] = (out["pv_total_unclipped_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0)
+   planner_core.py:2371:     out["pv_total_kw"] = (out["pv_total_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0, upper=INVERTER_AC_KW_LIMIT)
+   planner_core.py:2372: 
+   planner_core.py:2373:     # Legacy aliases kept for backward compatibility with existing UI/flow logic.
+   planner_core.py:2374:     out["pv_dc_available_kwh"] = out["pv_total_unclipped_kwh"]
+   planner_core.py:2375:     out["pv_ac_limited_kwh"] = out["pv_total_kwh"]
+   planner_core.py:2376:     out["pv_dc_available_kw"] = out["pv_total_unclipped_kw"]
+   planner_core.py:2377:     out["pv_ac_limited_kw"] = out["pv_total_kw"]
+   planner_core.py:2378: 
+   planner_core.py:2379:     out["pv_clipped_kwh"] = (out["pv_total_unclipped_kwh"] - out["pv_total_kwh"]).clip(lower=0.0)
+   planner_core.py:2380: 
+   planner_core.py:2381:     out["pv_east_kw"] = (out["pv_east_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0)
+   planner_core.py:2382:     out["pv_south_kw"] = (out["pv_south_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0)
+   planner_core.py:2363:     dt_h = timestep_hours(out.index)
+   planner_core.py:2364: 
+   planner_core.py:2365:     out["pv_east_kwh"] = east_ac_kwh_clipped.where(east_ac_kwh_clipped.isna() | (east_ac_kwh_clipped >= 0.0))
+   planner_core.py:2366:     out["pv_south_kwh"] = south_ac_kwh_clipped.where(south_ac_kwh_clipped.isna() | (south_ac_kwh_clipped >= 0.0))
+   planner_core.py:2367:     out["pv_total_unclipped_kwh"] = total_ac_kwh_unclipped.where(total_ac_kwh_unclipped.isna() | (total_ac_kwh_unclipped >= 0.0))
+   planner_core.py:2368:     out["pv_total_kwh"] = total_ac_kwh_clipped.where(total_ac_kwh_clipped.isna() | (total_ac_kwh_clipped >= 0.0))
+   planner_core.py:2369: 
+   planner_core.py:2370:     out["pv_total_unclipped_kw"] = (out["pv_total_unclipped_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0)
+>> planner_core.py:2371:     out["pv_total_kw"] = (out["pv_total_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0, upper=INVERTER_AC_KW_LIMIT)
+   planner_core.py:2372: 
+   planner_core.py:2373:     # Legacy aliases kept for backward compatibility with existing UI/flow logic.
+   planner_core.py:2374:     out["pv_dc_available_kwh"] = out["pv_total_unclipped_kwh"]
+   planner_core.py:2375:     out["pv_ac_limited_kwh"] = out["pv_total_kwh"]
+   planner_core.py:2376:     out["pv_dc_available_kw"] = out["pv_total_unclipped_kw"]
+   planner_core.py:2377:     out["pv_ac_limited_kw"] = out["pv_total_kw"]
+   planner_core.py:2378: 
+   planner_core.py:2379:     out["pv_clipped_kwh"] = (out["pv_total_unclipped_kwh"] - out["pv_total_kwh"]).clip(lower=0.0)
+   planner_core.py:2380: 
+   planner_core.py:2381:     out["pv_east_kw"] = (out["pv_east_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0)
+   planner_core.py:2382:     out["pv_south_kw"] = (out["pv_south_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0)
+   planner_core.py:2383: 
+   planner_core.py:2384:     out = ensure_pv_columns(out, split_ratio=(0.5, 0.5))
+   planner_core.py:2385:     validate_pv_outputs(out)
+   planner_core.py:2367:     out["pv_total_unclipped_kwh"] = total_ac_kwh_unclipped.where(total_ac_kwh_unclipped.isna() | (total_ac_kwh_unclipped >= 0.0))
+   planner_core.py:2368:     out["pv_total_kwh"] = total_ac_kwh_clipped.where(total_ac_kwh_clipped.isna() | (total_ac_kwh_clipped >= 0.0))
+   planner_core.py:2369: 
+   planner_core.py:2370:     out["pv_total_unclipped_kw"] = (out["pv_total_unclipped_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0)
+   planner_core.py:2371:     out["pv_total_kw"] = (out["pv_total_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0, upper=INVERTER_AC_KW_LIMIT)
+   planner_core.py:2372: 
+   planner_core.py:2373:     # Legacy aliases kept for backward compatibility with existing UI/flow logic.
+   planner_core.py:2374:     out["pv_dc_available_kwh"] = out["pv_total_unclipped_kwh"]
+>> planner_core.py:2375:     out["pv_ac_limited_kwh"] = out["pv_total_kwh"]
+   planner_core.py:2376:     out["pv_dc_available_kw"] = out["pv_total_unclipped_kw"]
+   planner_core.py:2377:     out["pv_ac_limited_kw"] = out["pv_total_kw"]
+   planner_core.py:2378: 
+   planner_core.py:2379:     out["pv_clipped_kwh"] = (out["pv_total_unclipped_kwh"] - out["pv_total_kwh"]).clip(lower=0.0)
+   planner_core.py:2380: 
+   planner_core.py:2381:     out["pv_east_kw"] = (out["pv_east_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0)
+   planner_core.py:2382:     out["pv_south_kw"] = (out["pv_south_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0)
+   planner_core.py:2383: 
+   planner_core.py:2384:     out = ensure_pv_columns(out, split_ratio=(0.5, 0.5))
+   planner_core.py:2385:     validate_pv_outputs(out)
+   planner_core.py:2386:     out.attrs["pv_method"] = "pvlib"
+   planner_core.py:2387:     return out
+   planner_core.py:2388: 
+   planner_core.py:2389: 
+
+==============================================================================================================
+3) weather_ensemble.py — where PV ensemble p10/p25/p50/p90 are defined/produced
+==============================================================================================================
+
+==============================================================================================================
+weather_ensemble.py — hits for pattern: pv_ensemble_p50
+==============================================================================================================
+   weather_ensemble.py:528: IRRADIANCE_HOURLY_EXTREME_WM2 = 2500.0
+   weather_ensemble.py:529: IRRADIANCE_DAILY_CLEARSKY_FACTOR = 1.35
+   weather_ensemble.py:530: MAX_PROVIDER_RESPONSE_CHARS = 250_000
+   weather_ensemble.py:531: 
+   weather_ensemble.py:532: 
+   weather_ensemble.py:533: @dataclass
+   weather_ensemble.py:534: class EnsembleWeatherResult:
+   weather_ensemble.py:535:     weather_primary: core.ForecastResult
+>> weather_ensemble.py:536:     pv_ensemble_p50: pd.Series
+   weather_ensemble.py:537:     pv_ensemble_unclipped_p50: pd.Series
+   weather_ensemble.py:538:     pv_ensemble_clipped_p50: pd.Series
+   weather_ensemble.py:539:     pv_ensemble_east_p50: pd.Series
+   weather_ensemble.py:540:     pv_ensemble_south_p50: pd.Series
+   weather_ensemble.py:541:     pv_ensemble_p10: pd.Series | None
+   weather_ensemble.py:542:     pv_ensemble_p25: pd.Series | None
+   weather_ensemble.py:543:     pv_ensemble_p90: pd.Series | None
+   weather_ensemble.py:544:     per_model_pv_totals_kwh: dict[str, float]
+   weather_ensemble.py:545:     missing_vars_by_model: dict[str, list[str]]
+   weather_ensemble.py:546:     derived_irradiance_by_model: dict[str, bool]
+   weather_ensemble.py:547:     derived_weather_code_by_model: dict[str, bool]
+   weather_ensemble.py:548:     derived_irradiance_hours_by_model: dict[str, int]
+   weather_ensemble.py:549:     quality_weight_factors_by_model: dict[str, float]
+   weather_ensemble.py:550:     failed_models: list[str]
+   weather_ensemble.py:2574:     pv_tomorrow_model_spread_kwh = compute_pv_tomorrow_model_spread_kwh(
+   weather_ensemble.py:2575:         pv_by_model=pv_by_model,
+   weather_ensemble.py:2576:         target_date=target_date,
+   weather_ensemble.py:2577:         tz=tz,
+   weather_ensemble.py:2578:     )
+   weather_ensemble.py:2579: 
+   weather_ensemble.py:2580:     return EnsembleWeatherResult(
+   weather_ensemble.py:2581:         weather_primary=weather_ok[primary_model],
+>> weather_ensemble.py:2582:         pv_ensemble_p50=ensemble_ac_p50.astype(float),
+   weather_ensemble.py:2583:         pv_ensemble_unclipped_p50=ensemble_unclipped_p50.astype(float),
+   weather_ensemble.py:2584:         pv_ensemble_clipped_p50=ensemble_clipped_p50.astype(float),
+   weather_ensemble.py:2585:         pv_ensemble_east_p50=ensemble_east_p50.astype(float),
+   weather_ensemble.py:2586:         pv_ensemble_south_p50=ensemble_south_p50.astype(float),
+   weather_ensemble.py:2587:         pv_ensemble_p10=p10.astype(float) if p10 is not None else None,
+   weather_ensemble.py:2588:         pv_ensemble_p25=p25.astype(float) if p25 is not None else None,
+   weather_ensemble.py:2589:         pv_ensemble_p90=p90.astype(float) if p90 is not None else None,
+   weather_ensemble.py:2590:         per_model_pv_totals_kwh=per_model_pv_totals,
+   weather_ensemble.py:2591:         missing_vars_by_model=missing_vars_by_model,
+   weather_ensemble.py:2592:         derived_irradiance_by_model=derived_irradiance_by_model,
+   weather_ensemble.py:2593:         derived_weather_code_by_model=derived_weather_code_by_model,
+   weather_ensemble.py:2594:         derived_irradiance_hours_by_model=derived_irradiance_hours_by_model,
+   weather_ensemble.py:2595:         quality_weight_factors_by_model=quality_weight_factors_by_model,
+   weather_ensemble.py:2596:         failed_models=failed_models,
+
+==============================================================================================================
+weather_ensemble.py — hits for pattern: pv_ensemble_p10|pv_ensemble_p25|pv_ensemble_p90
+==============================================================================================================
+   weather_ensemble.py:533: @dataclass
+   weather_ensemble.py:534: class EnsembleWeatherResult:
+   weather_ensemble.py:535:     weather_primary: core.ForecastResult
+   weather_ensemble.py:536:     pv_ensemble_p50: pd.Series
+   weather_ensemble.py:537:     pv_ensemble_unclipped_p50: pd.Series
+   weather_ensemble.py:538:     pv_ensemble_clipped_p50: pd.Series
+   weather_ensemble.py:539:     pv_ensemble_east_p50: pd.Series
+   weather_ensemble.py:540:     pv_ensemble_south_p50: pd.Series
+>> weather_ensemble.py:541:     pv_ensemble_p10: pd.Series | None
+   weather_ensemble.py:542:     pv_ensemble_p25: pd.Series | None
+   weather_ensemble.py:543:     pv_ensemble_p90: pd.Series | None
+   weather_ensemble.py:544:     per_model_pv_totals_kwh: dict[str, float]
+   weather_ensemble.py:545:     missing_vars_by_model: dict[str, list[str]]
+   weather_ensemble.py:546:     derived_irradiance_by_model: dict[str, bool]
+   weather_ensemble.py:547:     derived_weather_code_by_model: dict[str, bool]
+   weather_ensemble.py:548:     derived_irradiance_hours_by_model: dict[str, int]
+   weather_ensemble.py:549:     quality_weight_factors_by_model: dict[str, float]
+   weather_ensemble.py:550:     failed_models: list[str]
+   weather_ensemble.py:551:     failed_model_reasons: dict[str, dict[str, Any]]
+   weather_ensemble.py:552:     model_live_failed_used_cached: dict[str, bool]
+   weather_ensemble.py:553:     selected_models: list[str]
+   weather_ensemble.py:554:     weights_used: dict[str, float] | None
+   weather_ensemble.py:555:     weather_primary_model_id: str
+   weather_ensemble.py:534: class EnsembleWeatherResult:
+   weather_ensemble.py:535:     weather_primary: core.ForecastResult
+   weather_ensemble.py:536:     pv_ensemble_p50: pd.Series
+   weather_ensemble.py:537:     pv_ensemble_unclipped_p50: pd.Series
+   weather_ensemble.py:538:     pv_ensemble_clipped_p50: pd.Series
+   weather_ensemble.py:539:     pv_ensemble_east_p50: pd.Series
+   weather_ensemble.py:540:     pv_ensemble_south_p50: pd.Series
+   weather_ensemble.py:541:     pv_ensemble_p10: pd.Series | None
+>> weather_ensemble.py:542:     pv_ensemble_p25: pd.Series | None
+   weather_ensemble.py:543:     pv_ensemble_p90: pd.Series | None
+   weather_ensemble.py:544:     per_model_pv_totals_kwh: dict[str, float]
+   weather_ensemble.py:545:     missing_vars_by_model: dict[str, list[str]]
+   weather_ensemble.py:546:     derived_irradiance_by_model: dict[str, bool]
+   weather_ensemble.py:547:     derived_weather_code_by_model: dict[str, bool]
+   weather_ensemble.py:548:     derived_irradiance_hours_by_model: dict[str, int]
+   weather_ensemble.py:549:     quality_weight_factors_by_model: dict[str, float]
+   weather_ensemble.py:550:     failed_models: list[str]
+   weather_ensemble.py:551:     failed_model_reasons: dict[str, dict[str, Any]]
+   weather_ensemble.py:552:     model_live_failed_used_cached: dict[str, bool]
+   weather_ensemble.py:553:     selected_models: list[str]
+   weather_ensemble.py:554:     weights_used: dict[str, float] | None
+   weather_ensemble.py:555:     weather_primary_model_id: str
+   weather_ensemble.py:556:     weather_by_model: dict[str, core.ForecastResult]
+   weather_ensemble.py:535:     weather_primary: core.ForecastResult
+   weather_ensemble.py:536:     pv_ensemble_p50: pd.Series
+   weather_ensemble.py:537:     pv_ensemble_unclipped_p50: pd.Series
+   weather_ensemble.py:538:     pv_ensemble_clipped_p50: pd.Series
+   weather_ensemble.py:539:     pv_ensemble_east_p50: pd.Series
+   weather_ensemble.py:540:     pv_ensemble_south_p50: pd.Series
+   weather_ensemble.py:541:     pv_ensemble_p10: pd.Series | None
+   weather_ensemble.py:542:     pv_ensemble_p25: pd.Series | None
+>> weather_ensemble.py:543:     pv_ensemble_p90: pd.Series | None
+   weather_ensemble.py:544:     per_model_pv_totals_kwh: dict[str, float]
+   weather_ensemble.py:545:     missing_vars_by_model: dict[str, list[str]]
+   weather_ensemble.py:546:     derived_irradiance_by_model: dict[str, bool]
+   weather_ensemble.py:547:     derived_weather_code_by_model: dict[str, bool]
+   weather_ensemble.py:548:     derived_irradiance_hours_by_model: dict[str, int]
+   weather_ensemble.py:549:     quality_weight_factors_by_model: dict[str, float]
+   weather_ensemble.py:550:     failed_models: list[str]
+   weather_ensemble.py:551:     failed_model_reasons: dict[str, dict[str, Any]]
+   weather_ensemble.py:552:     model_live_failed_used_cached: dict[str, bool]
+   weather_ensemble.py:553:     selected_models: list[str]
+   weather_ensemble.py:554:     weights_used: dict[str, float] | None
+   weather_ensemble.py:555:     weather_primary_model_id: str
+   weather_ensemble.py:556:     weather_by_model: dict[str, core.ForecastResult]
+   weather_ensemble.py:557:     pv_by_model: dict[str, pd.DataFrame]
+   weather_ensemble.py:2579: 
+   weather_ensemble.py:2580:     return EnsembleWeatherResult(
+   weather_ensemble.py:2581:         weather_primary=weather_ok[primary_model],
+   weather_ensemble.py:2582:         pv_ensemble_p50=ensemble_ac_p50.astype(float),
+   weather_ensemble.py:2583:         pv_ensemble_unclipped_p50=ensemble_unclipped_p50.astype(float),
+   weather_ensemble.py:2584:         pv_ensemble_clipped_p50=ensemble_clipped_p50.astype(float),
+   weather_ensemble.py:2585:         pv_ensemble_east_p50=ensemble_east_p50.astype(float),
+   weather_ensemble.py:2586:         pv_ensemble_south_p50=ensemble_south_p50.astype(float),
+>> weather_ensemble.py:2587:         pv_ensemble_p10=p10.astype(float) if p10 is not None else None,
+   weather_ensemble.py:2588:         pv_ensemble_p25=p25.astype(float) if p25 is not None else None,
+   weather_ensemble.py:2589:         pv_ensemble_p90=p90.astype(float) if p90 is not None else None,
+   weather_ensemble.py:2590:         per_model_pv_totals_kwh=per_model_pv_totals,
+   weather_ensemble.py:2591:         missing_vars_by_model=missing_vars_by_model,
+   weather_ensemble.py:2592:         derived_irradiance_by_model=derived_irradiance_by_model,
+   weather_ensemble.py:2593:         derived_weather_code_by_model=derived_weather_code_by_model,
+   weather_ensemble.py:2594:         derived_irradiance_hours_by_model=derived_irradiance_hours_by_model,
+   weather_ensemble.py:2595:         quality_weight_factors_by_model=quality_weight_factors_by_model,
+   weather_ensemble.py:2596:         failed_models=failed_models,
+   weather_ensemble.py:2597:         failed_model_reasons=failed_model_reasons,
+   weather_ensemble.py:2598:         model_live_failed_used_cached=model_live_failed_used_cached,
+   weather_ensemble.py:2599:         selected_models=[m for m in selected if m in per_model_pv_columns["pv_total_kwh"]],
+   weather_ensemble.py:2600:         weights_used=weights_used,
+   weather_ensemble.py:2601:         weather_primary_model_id=primary_model,
+   weather_ensemble.py:2580:     return EnsembleWeatherResult(
+   weather_ensemble.py:2581:         weather_primary=weather_ok[primary_model],
+   weather_ensemble.py:2582:         pv_ensemble_p50=ensemble_ac_p50.astype(float),
+   weather_ensemble.py:2583:         pv_ensemble_unclipped_p50=ensemble_unclipped_p50.astype(float),
+   weather_ensemble.py:2584:         pv_ensemble_clipped_p50=ensemble_clipped_p50.astype(float),
+   weather_ensemble.py:2585:         pv_ensemble_east_p50=ensemble_east_p50.astype(float),
+   weather_ensemble.py:2586:         pv_ensemble_south_p50=ensemble_south_p50.astype(float),
+   weather_ensemble.py:2587:         pv_ensemble_p10=p10.astype(float) if p10 is not None else None,
+>> weather_ensemble.py:2588:         pv_ensemble_p25=p25.astype(float) if p25 is not None else None,
+   weather_ensemble.py:2589:         pv_ensemble_p90=p90.astype(float) if p90 is not None else None,
+   weather_ensemble.py:2590:         per_model_pv_totals_kwh=per_model_pv_totals,
+   weather_ensemble.py:2591:         missing_vars_by_model=missing_vars_by_model,
+   weather_ensemble.py:2592:         derived_irradiance_by_model=derived_irradiance_by_model,
+   weather_ensemble.py:2593:         derived_weather_code_by_model=derived_weather_code_by_model,
+   weather_ensemble.py:2594:         derived_irradiance_hours_by_model=derived_irradiance_hours_by_model,
+   weather_ensemble.py:2595:         quality_weight_factors_by_model=quality_weight_factors_by_model,
+   weather_ensemble.py:2596:         failed_models=failed_models,
+   weather_ensemble.py:2597:         failed_model_reasons=failed_model_reasons,
+   weather_ensemble.py:2598:         model_live_failed_used_cached=model_live_failed_used_cached,
+   weather_ensemble.py:2599:         selected_models=[m for m in selected if m in per_model_pv_columns["pv_total_kwh"]],
+   weather_ensemble.py:2600:         weights_used=weights_used,
+   weather_ensemble.py:2601:         weather_primary_model_id=primary_model,
+   weather_ensemble.py:2602:         weather_by_model=weather_ok,
+   weather_ensemble.py:2581:         weather_primary=weather_ok[primary_model],
+   weather_ensemble.py:2582:         pv_ensemble_p50=ensemble_ac_p50.astype(float),
+   weather_ensemble.py:2583:         pv_ensemble_unclipped_p50=ensemble_unclipped_p50.astype(float),
+   weather_ensemble.py:2584:         pv_ensemble_clipped_p50=ensemble_clipped_p50.astype(float),
+   weather_ensemble.py:2585:         pv_ensemble_east_p50=ensemble_east_p50.astype(float),
+   weather_ensemble.py:2586:         pv_ensemble_south_p50=ensemble_south_p50.astype(float),
+   weather_ensemble.py:2587:         pv_ensemble_p10=p10.astype(float) if p10 is not None else None,
+   weather_ensemble.py:2588:         pv_ensemble_p25=p25.astype(float) if p25 is not None else None,
+>> weather_ensemble.py:2589:         pv_ensemble_p90=p90.astype(float) if p90 is not None else None,
+   weather_ensemble.py:2590:         per_model_pv_totals_kwh=per_model_pv_totals,
+   weather_ensemble.py:2591:         missing_vars_by_model=missing_vars_by_model,
+   weather_ensemble.py:2592:         derived_irradiance_by_model=derived_irradiance_by_model,
+   weather_ensemble.py:2593:         derived_weather_code_by_model=derived_weather_code_by_model,
+   weather_ensemble.py:2594:         derived_irradiance_hours_by_model=derived_irradiance_hours_by_model,
+   weather_ensemble.py:2595:         quality_weight_factors_by_model=quality_weight_factors_by_model,
+   weather_ensemble.py:2596:         failed_models=failed_models,
+   weather_ensemble.py:2597:         failed_model_reasons=failed_model_reasons,
+   weather_ensemble.py:2598:         model_live_failed_used_cached=model_live_failed_used_cached,
+   weather_ensemble.py:2599:         selected_models=[m for m in selected if m in per_model_pv_columns["pv_total_kwh"]],
+   weather_ensemble.py:2600:         weights_used=weights_used,
+   weather_ensemble.py:2601:         weather_primary_model_id=primary_model,
+   weather_ensemble.py:2602:         weather_by_model=weather_ok,
+   weather_ensemble.py:2603:         pv_by_model=pv_by_model,
+
+==============================================================================================================
+weather_ensemble.py — hits for pattern: def fetch_satellite_radiation_nowcast
+==============================================================================================================
+   weather_ensemble.py:2033:     weight_series = pd.Series(normalized)
+   weather_ensemble.py:2034:     weighted_values = matrix.mul(weight_series, axis=1)
+   weather_ensemble.py:2035:     numerator = weighted_values.sum(axis=1, skipna=True)
+   weather_ensemble.py:2036:     denominator = matrix.notna().mul(weight_series, axis=1).sum(axis=1)
+   weather_ensemble.py:2037:     out = numerator.div(denominator.where(denominator > 0))
+   weather_ensemble.py:2038:     return out.astype(float), {m: normalized[m] for m in matrix.columns}, {m: quality_factors[m] for m in matrix.columns}
+   weather_ensemble.py:2039: 
+   weather_ensemble.py:2040: 
+>> weather_ensemble.py:2041: def fetch_satellite_radiation_nowcast(lat: float, lon: float, tz: str, forecast_hours: int = 6) -> pd.DataFrame:
+   weather_ensemble.py:2042:     endpoint = "https://satellite-api.open-meteo.com/v1/satellite-radiation"
+   weather_ensemble.py:2043:     params = {
+   weather_ensemble.py:2044:         "latitude": float(lat),
+   weather_ensemble.py:2045:         "longitude": float(lon),
+   weather_ensemble.py:2046:         "timezone": str(tz),
+   weather_ensemble.py:2047:         "hourly": "shortwave_radiation,direct_normal_irradiance,diffuse_radiation",
+   weather_ensemble.py:2048:         "forecast_hours": int(max(1, forecast_hours)),
+   weather_ensemble.py:2049:         "past_hours": 0,
+   weather_ensemble.py:2050:     }
+   weather_ensemble.py:2051:     data, _ = _request_open_meteo(endpoint, params=params, timeout=20)
+   weather_ensemble.py:2052:     hourly = data.get("hourly") if isinstance(data.get("hourly"), dict) else {}
+   weather_ensemble.py:2053:     times = pd.to_datetime(hourly.get("time", []), errors="coerce")
+   weather_ensemble.py:2054:     if len(times) == 0:
+   weather_ensemble.py:2055:         return pd.DataFrame()
+
+==============================================================================================================
+weather_ensemble.py — hits for pattern: def build_weather_ensemble_table
+==============================================================================================================
+   weather_ensemble.py:2059:         times = times.tz_convert(tz)
+   weather_ensemble.py:2060:     df = pd.DataFrame(index=times)
+   weather_ensemble.py:2061:     df["shortwave_radiation"] = pd.to_numeric(pd.Series(hourly.get("shortwave_radiation", []), index=times), errors="coerce")
+   weather_ensemble.py:2062:     df["direct_normal_irradiance"] = pd.to_numeric(pd.Series(hourly.get("direct_normal_irradiance", []), index=times), errors="coerce")
+   weather_ensemble.py:2063:     df["diffuse_radiation"] = pd.to_numeric(pd.Series(hourly.get("diffuse_radiation", []), index=times), errors="coerce")
+   weather_ensemble.py:2064:     return df.sort_index()
+   weather_ensemble.py:2065: 
+   weather_ensemble.py:2066: 
+>> weather_ensemble.py:2067: def build_weather_ensemble_table(
+   weather_ensemble.py:2068:     weather_ok: dict[str, core.ForecastResult],
+   weather_ensemble.py:2069:     index: pd.DatetimeIndex,
+   weather_ensemble.py:2070:     ensemble_method: str,
+   weather_ensemble.py:2071:     weights: dict[str, float] | None,
+   weather_ensemble.py:2072: ) -> pd.DataFrame:
+   weather_ensemble.py:2073:     out = pd.DataFrame(index=index)
+   weather_ensemble.py:2074:     normalized_method = str(ensemble_method).lower().strip()
+   weather_ensemble.py:2075:     for var in WEATHER_DISPLAY_VARS:
+   weather_ensemble.py:2076:         series_by_model: dict[str, pd.Series] = {}
+   weather_ensemble.py:2077:         for model_id, forecast in weather_ok.items():
+   weather_ensemble.py:2078:             series = forecast.df.get(var)
+   weather_ensemble.py:2079:             if series is None:
+   weather_ensemble.py:2080:                 continue
+   weather_ensemble.py:2081:             series_by_model[model_id] = pd.to_numeric(series, errors="coerce").reindex(index)
+
+==============================================================================================================
+weather_ensemble.py — hits for pattern: p10:|p50:|p90:
+==============================================================================================================
+   weather_ensemble.py:528: IRRADIANCE_HOURLY_EXTREME_WM2 = 2500.0
+   weather_ensemble.py:529: IRRADIANCE_DAILY_CLEARSKY_FACTOR = 1.35
+   weather_ensemble.py:530: MAX_PROVIDER_RESPONSE_CHARS = 250_000
+   weather_ensemble.py:531: 
+   weather_ensemble.py:532: 
+   weather_ensemble.py:533: @dataclass
+   weather_ensemble.py:534: class EnsembleWeatherResult:
+   weather_ensemble.py:535:     weather_primary: core.ForecastResult
+>> weather_ensemble.py:536:     pv_ensemble_p50: pd.Series
+   weather_ensemble.py:537:     pv_ensemble_unclipped_p50: pd.Series
+   weather_ensemble.py:538:     pv_ensemble_clipped_p50: pd.Series
+   weather_ensemble.py:539:     pv_ensemble_east_p50: pd.Series
+   weather_ensemble.py:540:     pv_ensemble_south_p50: pd.Series
+   weather_ensemble.py:541:     pv_ensemble_p10: pd.Series | None
+   weather_ensemble.py:542:     pv_ensemble_p25: pd.Series | None
+   weather_ensemble.py:543:     pv_ensemble_p90: pd.Series | None
+   weather_ensemble.py:544:     per_model_pv_totals_kwh: dict[str, float]
+   weather_ensemble.py:545:     missing_vars_by_model: dict[str, list[str]]
+   weather_ensemble.py:546:     derived_irradiance_by_model: dict[str, bool]
+   weather_ensemble.py:547:     derived_weather_code_by_model: dict[str, bool]
+   weather_ensemble.py:548:     derived_irradiance_hours_by_model: dict[str, int]
+   weather_ensemble.py:549:     quality_weight_factors_by_model: dict[str, float]
+   weather_ensemble.py:550:     failed_models: list[str]
+   weather_ensemble.py:529: IRRADIANCE_DAILY_CLEARSKY_FACTOR = 1.35
+   weather_ensemble.py:530: MAX_PROVIDER_RESPONSE_CHARS = 250_000
+   weather_ensemble.py:531: 
+   weather_ensemble.py:532: 
+   weather_ensemble.py:533: @dataclass
+   weather_ensemble.py:534: class EnsembleWeatherResult:
+   weather_ensemble.py:535:     weather_primary: core.ForecastResult
+   weather_ensemble.py:536:     pv_ensemble_p50: pd.Series
+>> weather_ensemble.py:537:     pv_ensemble_unclipped_p50: pd.Series
+   weather_ensemble.py:538:     pv_ensemble_clipped_p50: pd.Series
+   weather_ensemble.py:539:     pv_ensemble_east_p50: pd.Series
+   weather_ensemble.py:540:     pv_ensemble_south_p50: pd.Series
+   weather_ensemble.py:541:     pv_ensemble_p10: pd.Series | None
+   weather_ensemble.py:542:     pv_ensemble_p25: pd.Series | None
+   weather_ensemble.py:543:     pv_ensemble_p90: pd.Series | None
+   weather_ensemble.py:544:     per_model_pv_totals_kwh: dict[str, float]
+   weather_ensemble.py:545:     missing_vars_by_model: dict[str, list[str]]
+   weather_ensemble.py:546:     derived_irradiance_by_model: dict[str, bool]
+   weather_ensemble.py:547:     derived_weather_code_by_model: dict[str, bool]
+   weather_ensemble.py:548:     derived_irradiance_hours_by_model: dict[str, int]
+   weather_ensemble.py:549:     quality_weight_factors_by_model: dict[str, float]
+   weather_ensemble.py:550:     failed_models: list[str]
+   weather_ensemble.py:551:     failed_model_reasons: dict[str, dict[str, Any]]
+   weather_ensemble.py:530: MAX_PROVIDER_RESPONSE_CHARS = 250_000
+   weather_ensemble.py:531: 
+   weather_ensemble.py:532: 
+   weather_ensemble.py:533: @dataclass
+   weather_ensemble.py:534: class EnsembleWeatherResult:
+   weather_ensemble.py:535:     weather_primary: core.ForecastResult
+   weather_ensemble.py:536:     pv_ensemble_p50: pd.Series
+   weather_ensemble.py:537:     pv_ensemble_unclipped_p50: pd.Series
+>> weather_ensemble.py:538:     pv_ensemble_clipped_p50: pd.Series
+   weather_ensemble.py:539:     pv_ensemble_east_p50: pd.Series
+   weather_ensemble.py:540:     pv_ensemble_south_p50: pd.Series
+   weather_ensemble.py:541:     pv_ensemble_p10: pd.Series | None
+   weather_ensemble.py:542:     pv_ensemble_p25: pd.Series | None
+   weather_ensemble.py:543:     pv_ensemble_p90: pd.Series | None
+   weather_ensemble.py:544:     per_model_pv_totals_kwh: dict[str, float]
+   weather_ensemble.py:545:     missing_vars_by_model: dict[str, list[str]]
+   weather_ensemble.py:546:     derived_irradiance_by_model: dict[str, bool]
+   weather_ensemble.py:547:     derived_weather_code_by_model: dict[str, bool]
+   weather_ensemble.py:548:     derived_irradiance_hours_by_model: dict[str, int]
+   weather_ensemble.py:549:     quality_weight_factors_by_model: dict[str, float]
+   weather_ensemble.py:550:     failed_models: list[str]
+   weather_ensemble.py:551:     failed_model_reasons: dict[str, dict[str, Any]]
+   weather_ensemble.py:552:     model_live_failed_used_cached: dict[str, bool]
+   weather_ensemble.py:531: 
+   weather_ensemble.py:532: 
+   weather_ensemble.py:533: @dataclass
+   weather_ensemble.py:534: class EnsembleWeatherResult:
+   weather_ensemble.py:535:     weather_primary: core.ForecastResult
+   weather_ensemble.py:536:     pv_ensemble_p50: pd.Series
+   weather_ensemble.py:537:     pv_ensemble_unclipped_p50: pd.Series
+   weather_ensemble.py:538:     pv_ensemble_clipped_p50: pd.Series
+>> weather_ensemble.py:539:     pv_ensemble_east_p50: pd.Series
+   weather_ensemble.py:540:     pv_ensemble_south_p50: pd.Series
+   weather_ensemble.py:541:     pv_ensemble_p10: pd.Series | None
+   weather_ensemble.py:542:     pv_ensemble_p25: pd.Series | None
+   weather_ensemble.py:543:     pv_ensemble_p90: pd.Series | None
+   weather_ensemble.py:544:     per_model_pv_totals_kwh: dict[str, float]
+   weather_ensemble.py:545:     missing_vars_by_model: dict[str, list[str]]
+   weather_ensemble.py:546:     derived_irradiance_by_model: dict[str, bool]
+   weather_ensemble.py:547:     derived_weather_code_by_model: dict[str, bool]
+   weather_ensemble.py:548:     derived_irradiance_hours_by_model: dict[str, int]
+   weather_ensemble.py:549:     quality_weight_factors_by_model: dict[str, float]
+   weather_ensemble.py:550:     failed_models: list[str]
+   weather_ensemble.py:551:     failed_model_reasons: dict[str, dict[str, Any]]
+   weather_ensemble.py:552:     model_live_failed_used_cached: dict[str, bool]
+   weather_ensemble.py:553:     selected_models: list[str]
+   weather_ensemble.py:532: 
+   weather_ensemble.py:533: @dataclass
+   weather_ensemble.py:534: class EnsembleWeatherResult:
+   weather_ensemble.py:535:     weather_primary: core.ForecastResult
+   weather_ensemble.py:536:     pv_ensemble_p50: pd.Series
+   weather_ensemble.py:537:     pv_ensemble_unclipped_p50: pd.Series
+   weather_ensemble.py:538:     pv_ensemble_clipped_p50: pd.Series
+   weather_ensemble.py:539:     pv_ensemble_east_p50: pd.Series
+>> weather_ensemble.py:540:     pv_ensemble_south_p50: pd.Series
+   weather_ensemble.py:541:     pv_ensemble_p10: pd.Series | None
+   weather_ensemble.py:542:     pv_ensemble_p25: pd.Series | None
+   weather_ensemble.py:543:     pv_ensemble_p90: pd.Series | None
+   weather_ensemble.py:544:     per_model_pv_totals_kwh: dict[str, float]
+   weather_ensemble.py:545:     missing_vars_by_model: dict[str, list[str]]
+   weather_ensemble.py:546:     derived_irradiance_by_model: dict[str, bool]
+   weather_ensemble.py:547:     derived_weather_code_by_model: dict[str, bool]
+   weather_ensemble.py:548:     derived_irradiance_hours_by_model: dict[str, int]
+   weather_ensemble.py:549:     quality_weight_factors_by_model: dict[str, float]
+   weather_ensemble.py:550:     failed_models: list[str]
+   weather_ensemble.py:551:     failed_model_reasons: dict[str, dict[str, Any]]
+   weather_ensemble.py:552:     model_live_failed_used_cached: dict[str, bool]
+   weather_ensemble.py:553:     selected_models: list[str]
+   weather_ensemble.py:554:     weights_used: dict[str, float] | None
+   weather_ensemble.py:533: @dataclass
+   weather_ensemble.py:534: class EnsembleWeatherResult:
+   weather_ensemble.py:535:     weather_primary: core.ForecastResult
+   weather_ensemble.py:536:     pv_ensemble_p50: pd.Series
+   weather_ensemble.py:537:     pv_ensemble_unclipped_p50: pd.Series
+   weather_ensemble.py:538:     pv_ensemble_clipped_p50: pd.Series
+   weather_ensemble.py:539:     pv_ensemble_east_p50: pd.Series
+   weather_ensemble.py:540:     pv_ensemble_south_p50: pd.Series
+>> weather_ensemble.py:541:     pv_ensemble_p10: pd.Series | None
+   weather_ensemble.py:542:     pv_ensemble_p25: pd.Series | None
+   weather_ensemble.py:543:     pv_ensemble_p90: pd.Series | None
+   weather_ensemble.py:544:     per_model_pv_totals_kwh: dict[str, float]
+   weather_ensemble.py:545:     missing_vars_by_model: dict[str, list[str]]
+   weather_ensemble.py:546:     derived_irradiance_by_model: dict[str, bool]
+   weather_ensemble.py:547:     derived_weather_code_by_model: dict[str, bool]
+   weather_ensemble.py:548:     derived_irradiance_hours_by_model: dict[str, int]
+   weather_ensemble.py:549:     quality_weight_factors_by_model: dict[str, float]
+   weather_ensemble.py:550:     failed_models: list[str]
+   weather_ensemble.py:551:     failed_model_reasons: dict[str, dict[str, Any]]
+   weather_ensemble.py:552:     model_live_failed_used_cached: dict[str, bool]
+   weather_ensemble.py:553:     selected_models: list[str]
+   weather_ensemble.py:554:     weights_used: dict[str, float] | None
+   weather_ensemble.py:555:     weather_primary_model_id: str
+
+==============================================================================================================
+4) backend_api.py — show RunNowPayload PV fields + where they are applied to cfg/effective_cfg
+==============================================================================================================
+   backend_api.py:210:     timezone: str = "Europe/Brussels"
+   backend_api.py:211:     max_ac_charge_power_kw_default: float = DEFAULT_MAX_AC_CAP
+   backend_api.py:212: 
+   backend_api.py:213: 
+   backend_api.py:214: class InputsPayload(BaseModel):
+   backend_api.py:215:     soc_now_percent: float | None = None
+   backend_api.py:216:     soc_at_22_percent: float | None = None
+   backend_api.py:217:     yesterday_consumption_kwh: float = Field(..., gt=0.0)
+   backend_api.py:218: 
+   backend_api.py:219: 
+>> backend_api.py:220: class RunNowPayload(BaseModel):
+   backend_api.py:221:     soc_now_percent: float | None = None
+   backend_api.py:222:     soc_at_22_percent: float | None = None
+   backend_api.py:223:     yesterday_consumption_kwh: float | None = Field(default=None, gt=0.0)
+   backend_api.py:224:     buffer_percent: float = Field(default=0.0, ge=0.0, le=10.0)
+   backend_api.py:225:     user_max_ac_kw: float | None = Field(default=None, ge=0.0)
+   backend_api.py:226:     weather_models: list[str] | None = None
+   backend_api.py:227:     forecast_mode: str | None = None
+   backend_api.py:228:     ensemble_method: str = Field(default="weighted")
+   backend_api.py:229:     pv_uncertainty: bool = False
+   backend_api.py:230:     fast_mode: bool = False
+   backend_api.py:231:     use_satellite_nowcast_0_6h: bool | None = None
+   backend_api.py:232: 
+   backend_api.py:233: 
+   backend_api.py:234: class NightlyTickPayload(BaseModel):
+   backend_api.py:235:     force: bool = False
+   backend_api.py:236: 
+   backend_api.py:237: 
+   backend_api.py:238: def _resolve_soc_percent(
+
+==============================================================================================================
+backend_api.py — hits for pattern: payload\.weather_models|payload\.forecast_mode|payload\.ensemble_method|payload\.pv_uncertainty|payload\.fast_mode|payload\.use_satellite_nowcast_0_6h
+==============================================================================================================
+   backend_api.py:1838:             local_today = dt.datetime.now(self._tzinfo()).date()
+   backend_api.py:1839:             target_date = local_today + dt.timedelta(days=1)
+   backend_api.py:1840:             result = self._run(
+   backend_api.py:1841:                 target_date,
+   backend_api.py:1842:                 soc,
+   backend_api.py:1843:                 ykwh,
+   backend_api.py:1844:                 float(payload.buffer_percent),
+   backend_api.py:1845:                 cap,
+>> backend_api.py:1846:                 payload.weather_models,
+   backend_api.py:1847:                 payload.forecast_mode,
+   backend_api.py:1848:                 payload.ensemble_method,
+   backend_api.py:1849:                 payload.pv_uncertainty,
+   backend_api.py:1850:                 payload.fast_mode,
+   backend_api.py:1851:                 use_satellite_nowcast_0_6h_override=payload.use_satellite_nowcast_0_6h,
+   backend_api.py:1852:             )
+   backend_api.py:1853:             result["run_type"] = "manual"
+   backend_api.py:1854:             if warnings:
+   backend_api.py:1855:                 existing = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+   backend_api.py:1856:                 result["warnings"] = [*existing, *warnings]
+   backend_api.py:1857:                 result["input_warnings"] = warnings
+   backend_api.py:1858:             self.latest_result = result
+   backend_api.py:1859:             if self.history:
+   backend_api.py:1860:                 self.history[-1]["run_type"] = "manual"
+   backend_api.py:1839:             target_date = local_today + dt.timedelta(days=1)
+   backend_api.py:1840:             result = self._run(
+   backend_api.py:1841:                 target_date,
+   backend_api.py:1842:                 soc,
+   backend_api.py:1843:                 ykwh,
+   backend_api.py:1844:                 float(payload.buffer_percent),
+   backend_api.py:1845:                 cap,
+   backend_api.py:1846:                 payload.weather_models,
+>> backend_api.py:1847:                 payload.forecast_mode,
+   backend_api.py:1848:                 payload.ensemble_method,
+   backend_api.py:1849:                 payload.pv_uncertainty,
+   backend_api.py:1850:                 payload.fast_mode,
+   backend_api.py:1851:                 use_satellite_nowcast_0_6h_override=payload.use_satellite_nowcast_0_6h,
+   backend_api.py:1852:             )
+   backend_api.py:1853:             result["run_type"] = "manual"
+   backend_api.py:1854:             if warnings:
+   backend_api.py:1855:                 existing = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+   backend_api.py:1856:                 result["warnings"] = [*existing, *warnings]
+   backend_api.py:1857:                 result["input_warnings"] = warnings
+   backend_api.py:1858:             self.latest_result = result
+   backend_api.py:1859:             if self.history:
+   backend_api.py:1860:                 self.history[-1]["run_type"] = "manual"
+   backend_api.py:1861:             self._save_results()
+   backend_api.py:1840:             result = self._run(
+   backend_api.py:1841:                 target_date,
+   backend_api.py:1842:                 soc,
+   backend_api.py:1843:                 ykwh,
+   backend_api.py:1844:                 float(payload.buffer_percent),
+   backend_api.py:1845:                 cap,
+   backend_api.py:1846:                 payload.weather_models,
+   backend_api.py:1847:                 payload.forecast_mode,
+>> backend_api.py:1848:                 payload.ensemble_method,
+   backend_api.py:1849:                 payload.pv_uncertainty,
+   backend_api.py:1850:                 payload.fast_mode,
+   backend_api.py:1851:                 use_satellite_nowcast_0_6h_override=payload.use_satellite_nowcast_0_6h,
+   backend_api.py:1852:             )
+   backend_api.py:1853:             result["run_type"] = "manual"
+   backend_api.py:1854:             if warnings:
+   backend_api.py:1855:                 existing = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+   backend_api.py:1856:                 result["warnings"] = [*existing, *warnings]
+   backend_api.py:1857:                 result["input_warnings"] = warnings
+   backend_api.py:1858:             self.latest_result = result
+   backend_api.py:1859:             if self.history:
+   backend_api.py:1860:                 self.history[-1]["run_type"] = "manual"
+   backend_api.py:1861:             self._save_results()
+   backend_api.py:1862:             return {"ran": True, "result": result}
+   backend_api.py:1841:                 target_date,
+   backend_api.py:1842:                 soc,
+   backend_api.py:1843:                 ykwh,
+   backend_api.py:1844:                 float(payload.buffer_percent),
+   backend_api.py:1845:                 cap,
+   backend_api.py:1846:                 payload.weather_models,
+   backend_api.py:1847:                 payload.forecast_mode,
+   backend_api.py:1848:                 payload.ensemble_method,
+>> backend_api.py:1849:                 payload.pv_uncertainty,
+   backend_api.py:1850:                 payload.fast_mode,
+   backend_api.py:1851:                 use_satellite_nowcast_0_6h_override=payload.use_satellite_nowcast_0_6h,
+   backend_api.py:1852:             )
+   backend_api.py:1853:             result["run_type"] = "manual"
+   backend_api.py:1854:             if warnings:
+   backend_api.py:1855:                 existing = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+   backend_api.py:1856:                 result["warnings"] = [*existing, *warnings]
+   backend_api.py:1857:                 result["input_warnings"] = warnings
+   backend_api.py:1858:             self.latest_result = result
+   backend_api.py:1859:             if self.history:
+   backend_api.py:1860:                 self.history[-1]["run_type"] = "manual"
+   backend_api.py:1861:             self._save_results()
+   backend_api.py:1862:             return {"ran": True, "result": result}
+   backend_api.py:1863:         finally:
+   backend_api.py:1842:                 soc,
+   backend_api.py:1843:                 ykwh,
+   backend_api.py:1844:                 float(payload.buffer_percent),
+   backend_api.py:1845:                 cap,
+   backend_api.py:1846:                 payload.weather_models,
+   backend_api.py:1847:                 payload.forecast_mode,
+   backend_api.py:1848:                 payload.ensemble_method,
+   backend_api.py:1849:                 payload.pv_uncertainty,
+>> backend_api.py:1850:                 payload.fast_mode,
+   backend_api.py:1851:                 use_satellite_nowcast_0_6h_override=payload.use_satellite_nowcast_0_6h,
+   backend_api.py:1852:             )
+   backend_api.py:1853:             result["run_type"] = "manual"
+   backend_api.py:1854:             if warnings:
+   backend_api.py:1855:                 existing = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+   backend_api.py:1856:                 result["warnings"] = [*existing, *warnings]
+   backend_api.py:1857:                 result["input_warnings"] = warnings
+   backend_api.py:1858:             self.latest_result = result
+   backend_api.py:1859:             if self.history:
+   backend_api.py:1860:                 self.history[-1]["run_type"] = "manual"
+   backend_api.py:1861:             self._save_results()
+   backend_api.py:1862:             return {"ran": True, "result": result}
+   backend_api.py:1863:         finally:
+   backend_api.py:1864:             self._lock.release()
+   backend_api.py:1843:                 ykwh,
+   backend_api.py:1844:                 float(payload.buffer_percent),
+   backend_api.py:1845:                 cap,
+   backend_api.py:1846:                 payload.weather_models,
+   backend_api.py:1847:                 payload.forecast_mode,
+   backend_api.py:1848:                 payload.ensemble_method,
+   backend_api.py:1849:                 payload.pv_uncertainty,
+   backend_api.py:1850:                 payload.fast_mode,
+>> backend_api.py:1851:                 use_satellite_nowcast_0_6h_override=payload.use_satellite_nowcast_0_6h,
+   backend_api.py:1852:             )
+   backend_api.py:1853:             result["run_type"] = "manual"
+   backend_api.py:1854:             if warnings:
+   backend_api.py:1855:                 existing = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+   backend_api.py:1856:                 result["warnings"] = [*existing, *warnings]
+   backend_api.py:1857:                 result["input_warnings"] = warnings
+   backend_api.py:1858:             self.latest_result = result
+   backend_api.py:1859:             if self.history:
+   backend_api.py:1860:                 self.history[-1]["run_type"] = "manual"
+   backend_api.py:1861:             self._save_results()
+   backend_api.py:1862:             return {"ran": True, "result": result}
+   backend_api.py:1863:         finally:
+   backend_api.py:1864:             self._lock.release()
+   backend_api.py:1865: 
+
+==============================================================================================================
+backend_api.py — hits for pattern: effective_cfg|build_effective_config|apply_config|applied_config
+==============================================================================================================
+   backend_api.py:738:         self.settings = self._load_settings()
+   backend_api.py:739:         self.last_inputs = self._read_json(INPUTS_PATH, default={})
+   backend_api.py:740:         self.last_inputs_sanitized_warnings: list[str] = []
+   backend_api.py:741:         self.settings_sanitized_warnings: list[str] = []
+   backend_api.py:742:         self._sanitize_last_inputs()
+   backend_api.py:743:         self._sanitize_settings()
+   backend_api.py:744:         self.latest_result = self._read_json(LATEST_RESULT_PATH, default={})
+   backend_api.py:745:         self.history = self._load_history()
+>> backend_api.py:746:         self._apply_config(self.settings["config"])
+   backend_api.py:747:         self._migrate_json_history_to_sqlite()
+   backend_api.py:748: 
+   backend_api.py:749:     def _migrate_json_history_to_sqlite(self) -> None:
+   backend_api.py:750:         payloads: list[dict] = []
+   backend_api.py:751:         raw_history = self._read_json(HISTORY_PATH, default=[])
+   backend_api.py:752:         if isinstance(raw_history, list):
+   backend_api.py:753:             payloads.extend([item for item in raw_history if isinstance(item, dict)])
+   backend_api.py:754:         latest_payload = self._read_json(LATEST_RESULT_PATH, default={})
+   backend_api.py:755:         if isinstance(latest_payload, dict) and latest_payload:
+   backend_api.py:756:             payloads.append(latest_payload)
+   backend_api.py:757: 
+   backend_api.py:758:         run_history_log = self._read_json(RUN_HISTORY_PATH, default=[])
+   backend_api.py:759:         fallback_by_date: dict[str, dict] = {}
+   backend_api.py:760:         if isinstance(run_history_log, list):
+   backend_api.py:968:     def _tzinfo(self) -> ZoneInfo:
+   backend_api.py:969:         loc_cfg = self.settings.get("config", {}).get("location", {}) if isinstance(self.settings.get("config"), dict) else {}
+   backend_api.py:970:         tz_name = str(loc_cfg.get("timezone") or self.settings.get("timezone") or "Europe/Brussels")
+   backend_api.py:971:         try:
+   backend_api.py:972:             return ZoneInfo(tz_name)
+   backend_api.py:973:         except Exception:
+   backend_api.py:974:             return ZoneInfo("Europe/Brussels")
+   backend_api.py:975: 
+>> backend_api.py:976:     def _apply_config(self, config: dict) -> dict:
+   backend_api.py:977:         merged = core.set_user_config(config)
+   backend_api.py:978:         self.settings["config"] = merged
+   backend_api.py:979:         return merged
+   backend_api.py:980: 
+   backend_api.py:981:     def update_settings(self, payload: SettingsPayload) -> dict:
+   backend_api.py:982:         _ = ZoneInfo(payload.timezone)
+   backend_api.py:983:         dt.datetime.strptime(payload.nightly_run_time, "%H:%M")
+   backend_api.py:984:         merged = self._apply_config(payload.config)
+   backend_api.py:985:         loc_cfg = merged.get("location", {}) if isinstance(merged, dict) else {}
+   backend_api.py:986:         canonical_tz = str(loc_cfg.get("timezone") or payload.timezone)
+   backend_api.py:987:         self.settings.update(
+   backend_api.py:988:             {
+   backend_api.py:989:                 "config": merged,
+   backend_api.py:990:                 "nightly_run_time": payload.nightly_run_time,
+   backend_api.py:976:     def _apply_config(self, config: dict) -> dict:
+   backend_api.py:977:         merged = core.set_user_config(config)
+   backend_api.py:978:         self.settings["config"] = merged
+   backend_api.py:979:         return merged
+   backend_api.py:980: 
+   backend_api.py:981:     def update_settings(self, payload: SettingsPayload) -> dict:
+   backend_api.py:982:         _ = ZoneInfo(payload.timezone)
+   backend_api.py:983:         dt.datetime.strptime(payload.nightly_run_time, "%H:%M")
+>> backend_api.py:984:         merged = self._apply_config(payload.config)
+   backend_api.py:985:         loc_cfg = merged.get("location", {}) if isinstance(merged, dict) else {}
+   backend_api.py:986:         canonical_tz = str(loc_cfg.get("timezone") or payload.timezone)
+   backend_api.py:987:         self.settings.update(
+   backend_api.py:988:             {
+   backend_api.py:989:                 "config": merged,
+   backend_api.py:990:                 "nightly_run_time": payload.nightly_run_time,
+   backend_api.py:991:                 "timezone": canonical_tz,
+   backend_api.py:992:                 "max_ac_charge_power_kw_default": float(payload.max_ac_charge_power_kw_default),
+   backend_api.py:993:                 "settings_source": SETTINGS_SOURCE_SETTINGS_JSON,
+   backend_api.py:994:             }
+   backend_api.py:995:         )
+   backend_api.py:996:         self._save_settings()
+   backend_api.py:997:         return self.settings
+   backend_api.py:998: 
+   backend_api.py:1001:         self._save_settings()
+   backend_api.py:1002:         return self.settings
+   backend_api.py:1003: 
+   backend_api.py:1004:     def reset_settings_to_factory_defaults(self) -> dict:
+   backend_api.py:1005:         preserved = copy.deepcopy(self.settings.get("config", {}).get("tariff", {}).get("offpeak_windows_by_dow"))
+   backend_api.py:1006:         self.settings = self._build_settings_from_repo_defaults()
+   backend_api.py:1007:         if isinstance(preserved, list):
+   backend_api.py:1008:             self.settings["config"].setdefault("tariff", {})["offpeak_windows_by_dow"] = preserved
+>> backend_api.py:1009:         self._apply_config(self.settings["config"])
+   backend_api.py:1010:         self.settings["timezone"] = str(
+   backend_api.py:1011:             self.settings["config"].get("location", {}).get("timezone")
+   backend_api.py:1012:             or self.settings.get("timezone")
+   backend_api.py:1013:             or "Europe/Brussels"
+   backend_api.py:1014:         )
+   backend_api.py:1015:         self._save_settings()
+   backend_api.py:1016:         return self.settings
+   backend_api.py:1017: 
+   backend_api.py:1018:     def update_inputs(self, payload: InputsPayload) -> dict:
+   backend_api.py:1019:         now_local = dt.datetime.now(self._tzinfo()).isoformat()
+   backend_api.py:1020:         soc = _resolve_soc_percent(
+   backend_api.py:1021:             payload_soc_now=payload.soc_now_percent,
+   backend_api.py:1022:             payload_soc_legacy=payload.soc_at_22_percent,
+   backend_api.py:1023:             source=self.last_inputs,
+
+==============================================================================================================
+END — paste this full output here (or upload the output txt).
+==============================================================================================================
