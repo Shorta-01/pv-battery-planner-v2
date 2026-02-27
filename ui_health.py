@@ -57,3 +57,72 @@ def model_indicators(model_id: str, weather_ensemble: dict | None) -> dict:
         "data": "warn",
         "tooltip": f"missing_hours_overlap={missing_overlap}; pv_missing={pv_missing}",
     }
+
+
+def compute_weather_health(
+    weather_ensemble: dict | None,
+    *,
+    status: str,
+    attempted_models: list[str] | None,
+) -> tuple[str, str]:
+    """
+    returns (level, tooltip_text)
+    level in {"ok","warn","fail","na"}
+    tooltip_text is short multi-line string (<=6 lines)
+    """
+    if not weather_ensemble or not isinstance(weather_ensemble, dict):
+        return ("na", "")
+
+    status_l = (status or "").strip().lower()
+    failed = weather_ensemble.get("failed_model_reasons", {}) or {}
+    fetch_meta = weather_ensemble.get("fetch_meta_by_model", {}) or {}
+    missing_vars = weather_ensemble.get("missing_vars_by_model", {}) or {}
+
+    models = attempted_models or weather_ensemble.get("selected_models") or []
+    models = [str(m) for m in models if isinstance(m, str)]
+
+    critical_vars = {
+        "direct_normal_irradiance",
+        "diffuse_radiation",
+        "shortwave_radiation",
+    }
+
+    detail_lines: list[str] = []
+    has_overlap_or_critical_missing = False
+    for model in models:
+        if model in failed:
+            detail_lines.append(f"{model}: fetch failed ({failed.get(model)})")
+            continue
+
+        meta = fetch_meta.get(model, {}) or {}
+        missing_overlap = meta.get("missing_hours_overlap") or meta.get("missing_overlap") or 0
+        try:
+            missing_overlap_n = int(missing_overlap)
+        except (TypeError, ValueError):
+            missing_overlap_n = 0
+        if missing_overlap_n:
+            has_overlap_or_critical_missing = True
+            detail_lines.append(f"{model}: missing hours overlap: {missing_overlap_n}")
+
+        model_missing_vars = missing_vars.get(model, []) or []
+        model_missing_vars = [str(v) for v in model_missing_vars if isinstance(v, str)]
+        critical_missing = [v for v in model_missing_vars if v in critical_vars]
+        vars_to_report = critical_missing or model_missing_vars[:3]
+        if vars_to_report:
+            if critical_missing:
+                has_overlap_or_critical_missing = True
+            detail_lines.append(f"{model}: missing vars: {','.join(vars_to_report)}")
+
+    if status_l in {"error", "failed"} or (models and len(failed) == len(models)):
+        level = "fail"
+    elif failed or has_overlap_or_critical_missing:
+        level = "warn"
+    else:
+        level = "ok"
+
+    if level == "ok":
+        return ("ok", "Weather: OK")
+
+    header = "Weather: failed" if level == "fail" else "Weather: warnings"
+    lines = [header] + detail_lines[:5]
+    return (level, "\n".join(lines[:6]))
