@@ -1433,6 +1433,9 @@ def compute_euro_savings_no_battery_vs_plan(
     base_import_cycle = (load_cycle - pv_cycle).clip(lower=0.0)
     base_export_cycle = (pv_cycle - load_cycle).clip(lower=0.0)
     base_price_cycle = pd.Series([import_price_eur_per_kwh(ts, tariff_cfg) for ts in idx_cycle], index=idx_cycle)
+    grid_only_import_cycle = load_cycle
+    grid_only_export_cycle = pd.Series(0.0, index=idx_cycle, dtype=float)
+    grid_only_cost_cycle_series = grid_only_import_cycle * base_price_cycle
     base_cost_cycle = base_import_cycle * base_price_cycle - base_export_cycle * inj
 
     plan_import_cycle = pd.Series(0.0, index=idx_cycle, dtype=float)
@@ -1468,8 +1471,12 @@ def compute_euro_savings_no_battery_vs_plan(
                 flows_df["soc_end_pct"].reindex(idx_post), errors="coerce"
             )
 
-    plan_cost_cycle_cash = plan_import_cycle * base_price_cycle - plan_export_cycle * inj
+    plan_cost_cycle_cash_series = plan_import_cycle * base_price_cycle - plan_export_cycle * inj
+    plan_cost_cycle_cash = plan_cost_cycle_cash_series
     hourly_savings_cycle = (base_cost_cycle - plan_cost_cycle_cash).reindex(idx_cycle).fillna(0.0)
+    hourly_benefit_vs_grid_only_cycle_cash = (
+        grid_only_cost_cycle_series - plan_cost_cycle_cash_series
+    ).reindex(idx_cycle).fillna(0.0)
 
     dt_h_tom = timestep_hours(idx_tomorrow)
     pv_tom = pd.to_numeric(pv_df[pv_baseline_col_used].reindex(idx_tomorrow), errors="coerce").fillna(0.0).astype(float)
@@ -1486,13 +1493,20 @@ def compute_euro_savings_no_battery_vs_plan(
     plan_import_tom = flows_df["grid_import_kwh"].reindex(idx_tomorrow).fillna(0.0).astype(float)
     plan_export_tom = flows_df["grid_export_kwh"].reindex(idx_tomorrow).fillna(0.0).astype(float)
     plan_cost_tom = plan_import_tom * price_tom - plan_export_tom * inj
+    grid_only_cost_tom = load_tom * price_tom
+    isystem_cost_tom_cash = plan_cost_tom
+    hourly_benefit_vs_grid_only_tomorrow_cash = (grid_only_cost_tom - isystem_cost_tom_cash).reindex(idx_tomorrow).fillna(0.0)
 
     hourly_savings = (base_cost_tom - plan_cost_tom).reindex(idx_tomorrow).fillna(0.0)
 
     baseline_cycle = float(base_cost_cycle.sum())
     plan_cycle_cash = float(plan_cost_cycle_cash.sum())
+    plan_cycle_cash_recomputed = float(plan_cost_cycle_cash_series.sum())
+    grid_only_cost_eur_cycle = float(grid_only_cost_cycle_series.sum())
     baseline_tom = float(base_cost_tom.sum())
     plan_tom = float(plan_cost_tom.sum())
+    grid_only_cost_eur_tomorrow = float(grid_only_cost_tom.sum())
+    isystem_cost_eur_tomorrow_cash = float(isystem_cost_tom_cash.sum())
 
     cycle_start_soc = max(0.0, min(1.0, float(soc_at_22)))
     cycle_end_soc: float | None = None
@@ -1520,10 +1534,18 @@ def compute_euro_savings_no_battery_vs_plan(
 
     plan_cycle = plan_cycle_cash - terminal_battery_value_eur_cycle
     savings_cycle = baseline_cycle - plan_cycle
+    isystem_cost_eur_cycle = plan_cycle
+    benefit_vs_grid_only_eur_cycle = grid_only_cost_eur_cycle - isystem_cost_eur_cycle
+    benefit_vs_grid_only_eur_tomorrow_cash = grid_only_cost_eur_tomorrow - isystem_cost_eur_tomorrow_cash
 
     hourly_savings_list = [float(hourly_savings.loc[ts]) for ts in idx_tomorrow]
+    hourly_benefit_vs_grid_only_tomorrow_cash_list = [
+        float(hourly_benefit_vs_grid_only_tomorrow_cash.loc[ts]) for ts in idx_tomorrow
+    ]
     if len(hourly_savings_list) != 24:
         hourly_savings_list = (hourly_savings_list + [0.0] * 24)[:24]
+    if len(hourly_benefit_vs_grid_only_tomorrow_cash_list) != 24:
+        hourly_benefit_vs_grid_only_tomorrow_cash_list = (hourly_benefit_vs_grid_only_tomorrow_cash_list + [0.0] * 24)[:24]
 
     def _safe_numeric(value: float) -> float:
         if isinstance(value, (int, float, np.floating)) and np.isfinite(value):
@@ -1532,9 +1554,16 @@ def compute_euro_savings_no_battery_vs_plan(
 
     baseline_cycle = _safe_numeric(baseline_cycle)
     plan_cycle_cash = _safe_numeric(plan_cycle_cash)
+    plan_cycle_cash_recomputed = _safe_numeric(plan_cycle_cash_recomputed)
     plan_cycle = _safe_numeric(plan_cycle)
+    isystem_cost_eur_cycle = _safe_numeric(isystem_cost_eur_cycle)
+    grid_only_cost_eur_cycle = _safe_numeric(grid_only_cost_eur_cycle)
+    benefit_vs_grid_only_eur_cycle = _safe_numeric(benefit_vs_grid_only_eur_cycle)
     baseline_tom = _safe_numeric(baseline_tom)
     plan_tom = _safe_numeric(plan_tom)
+    grid_only_cost_eur_tomorrow = _safe_numeric(grid_only_cost_eur_tomorrow)
+    isystem_cost_eur_tomorrow_cash = _safe_numeric(isystem_cost_eur_tomorrow_cash)
+    benefit_vs_grid_only_eur_tomorrow_cash = _safe_numeric(benefit_vs_grid_only_eur_tomorrow_cash)
     terminal_battery_value_eur_cycle = _safe_numeric(terminal_battery_value_eur_cycle)
     cycle_stored_energy_delta_kwh = _safe_numeric(cycle_stored_energy_delta_kwh)
     cycle_soc_delta_pct = _safe_numeric(cycle_soc_delta_pct)
@@ -1543,8 +1572,13 @@ def compute_euro_savings_no_battery_vs_plan(
     savings_cycle = _safe_numeric(savings_cycle)
     savings_tom = _safe_numeric(float(baseline_tom - plan_tom))
     hourly_savings_cycle_list = [float(hourly_savings_cycle.loc[ts]) for ts in idx_cycle]
+    hourly_benefit_vs_grid_only_cycle_cash_list = [
+        float(hourly_benefit_vs_grid_only_cycle_cash.loc[ts]) for ts in idx_cycle
+    ]
     if len(hourly_savings_cycle_list) != 24:
         hourly_savings_cycle_list = (hourly_savings_cycle_list + [0.0] * 24)[:24]
+    if len(hourly_benefit_vs_grid_only_cycle_cash_list) != 24:
+        hourly_benefit_vs_grid_only_cycle_cash_list = (hourly_benefit_vs_grid_only_cycle_cash_list + [0.0] * 24)[:24]
     hourly_savings_cycle_hour_labels = [ts.strftime("%H:%M") for ts in idx_cycle][:24]
     if len(hourly_savings_cycle_hour_labels) != 24:
         hourly_savings_cycle_hour_labels = [f"{h:02d}:00" for h in range(24)]
@@ -1558,14 +1592,24 @@ def compute_euro_savings_no_battery_vs_plan(
         "savings_eur_cycle": savings_cycle,
         "baseline_cost_eur_cycle_cash": baseline_cycle,
         "plan_cost_eur_cycle_cash": plan_cycle_cash,
+        "grid_only_cost_eur_cycle": grid_only_cost_eur_cycle,
+        "isystem_cost_eur_cycle_cash": plan_cycle_cash,
+        "isystem_cost_eur_cycle": isystem_cost_eur_cycle,
+        "benefit_vs_grid_only_eur_cycle": benefit_vs_grid_only_eur_cycle,
         "terminal_battery_value_eur_cycle": terminal_battery_value_eur_cycle,
         "plan_cost_eur_cycle_adjusted": plan_cycle,
         "baseline_cost_eur_tomorrow": baseline_tom,
         "plan_cost_eur_tomorrow": plan_tom,
         "savings_eur_tomorrow": savings_tom,
+        "grid_only_cost_eur_tomorrow": grid_only_cost_eur_tomorrow,
+        "isystem_cost_eur_tomorrow_cash": isystem_cost_eur_tomorrow_cash,
+        "benefit_vs_grid_only_eur_tomorrow_cash": benefit_vs_grid_only_eur_tomorrow_cash,
         "hourly_savings_eur_cycle": hourly_savings_cycle_list,
+        "hourly_benefit_vs_grid_only_eur_cycle_cash": hourly_benefit_vs_grid_only_cycle_cash_list,
+        "hourly_benefit_cycle_hour_labels": hourly_savings_cycle_hour_labels,
         "hourly_savings_cycle_hour_labels": hourly_savings_cycle_hour_labels,
         "hourly_savings_eur_tomorrow": hourly_savings_list,
+        "hourly_benefit_vs_grid_only_eur_tomorrow_cash": hourly_benefit_vs_grid_only_tomorrow_cash_list,
         "savings_horizon_kind": "offpeak_cycle",
         "savings_horizon_start_iso": cycle_start.isoformat(),
         "savings_horizon_end_iso": cycle_end.isoformat(),
@@ -1597,6 +1641,10 @@ def compute_euro_savings_no_battery_vs_plan(
         "terminal_battery_value_eur_cycle": 0.0,
         "plan_cost_eur_cycle": 0.0,
         "savings_eur_cycle": 0.0,
+        "grid_only_cost_eur_cycle": 0.0,
+        "isystem_cost_eur_cycle_cash": 0.0,
+        "isystem_cost_eur_cycle": 0.0,
+        "benefit_vs_grid_only_eur_cycle": 0.0,
         "cycle_start_soc_pct": 0.0,
         "cycle_end_soc_pct": 0.0,
         "cycle_soc_delta_pct": 0.0,
