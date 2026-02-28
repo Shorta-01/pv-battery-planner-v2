@@ -101,7 +101,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "badges": ["🏅", "📡", "∑"],
         "recommended_for_be": True,
         "max_days": 7,
-        "tier": "short",
+        "tier": "medium",
         "supports_15min_radiation": False,
         "capability": {
             "ghi_native": True,
@@ -1990,12 +1990,12 @@ def _weighted_ensemble(
     missing_vars_by_model: dict[str, list[str]] | None = None,
     derived_irradiance_by_model: dict[str, bool] | None = None,
     derived_irradiance_hours_by_model: dict[str, int] | None = None,
-) -> tuple[pd.Series, dict[str, float] | None, dict[str, float]]:
+) -> tuple[pd.Series, dict[str, float] | None]:
     weighted_subset = dict(dynamic_weights or {})
     if not weighted_subset:
         weighted_subset = {m: DEFAULT_WEIGHTED_BELGIUM[m] for m in selected_models if m in DEFAULT_WEIGHTED_BELGIUM}
     if not weighted_subset:
-        return pd.concat(series_map.values(), axis=1).mean(axis=1), None, {}
+        return pd.concat(series_map.values(), axis=1).mean(axis=1), None
 
     min_weight_factor = 0.20
     quality_factors: dict[str, float] = {}
@@ -2028,17 +2028,23 @@ def _weighted_ensemble(
 
     total = sum(adjusted_weights.values())
     if total <= 0:
-        return pd.concat(series_map.values(), axis=1).mean(axis=1), None, quality_factors
+        out = pd.concat(series_map.values(), axis=1).mean(axis=1)
+        out.attrs["quality_weight_factors_by_model"] = quality_factors
+        return out, None
     normalized = {m: w / total for m, w in adjusted_weights.items()}
     matrix = pd.DataFrame({m: series_map[m] for m in normalized if m in series_map})
     if matrix.empty:
-        return pd.concat(series_map.values(), axis=1).mean(axis=1), None, quality_factors
+        out = pd.concat(series_map.values(), axis=1).mean(axis=1)
+        out.attrs["quality_weight_factors_by_model"] = quality_factors
+        return out, None
     weight_series = pd.Series(normalized)
     weighted_values = matrix.mul(weight_series, axis=1)
     numerator = weighted_values.sum(axis=1, skipna=True)
     denominator = matrix.notna().mul(weight_series, axis=1).sum(axis=1)
     out = numerator.div(denominator.where(denominator > 0))
-    return out.astype(float), {m: normalized[m] for m in matrix.columns}, {m: quality_factors[m] for m in matrix.columns}
+    out = out.astype(float)
+    out.attrs["quality_weight_factors_by_model"] = {m: quality_factors[m] for m in matrix.columns}
+    return out, {m: normalized[m] for m in matrix.columns}
 
 
 def fetch_satellite_radiation_nowcast(lat: float, lon: float, tz: str, forecast_hours: int = 6) -> pd.DataFrame:
@@ -2501,7 +2507,7 @@ def build_ensemble_forecast(
             day_type=day_type,
             expert_mode=expert_mode,
         )
-        return _weighted_ensemble(
+        out, weights = _weighted_ensemble(
             model_series,
             model_keys,
             dynamic_weights=dynamic_weights,
@@ -2509,6 +2515,8 @@ def build_ensemble_forecast(
             derived_irradiance_by_model=derived_irradiance_by_model,
             derived_irradiance_hours_by_model=derived_irradiance_hours_by_model,
         )
+        quality_factors = dict(out.attrs.get("quality_weight_factors_by_model") or {})
+        return out, weights, quality_factors
 
     ensemble_ac_p50, weights_used, quality_weight_factors_by_model = _ensemble_column("pv_total_kwh")
     ensemble_unclipped_p50, _, _ = _ensemble_column("pv_total_unclipped_kwh")
