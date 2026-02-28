@@ -2856,6 +2856,7 @@ def run_detailed_plan(
         achieved_soc_start,
         target_date,
         tariff_cfg=tariff_cfg,
+        pv_col=pv_col_for_planning,
     )
     soc_series, flows_df = simulate_full_day_soc(
         pv,
@@ -3005,7 +3006,11 @@ def simulate_expensive_hours_detailed(
     start_soc: float,
     for_date: dt.date,
     tariff_cfg: Optional[dict] = None,
+    pv_col: str = "pv_total_kwh",
 ) -> Tuple["pd.DataFrame", float, float, float, bool]:
+    if pv_col not in df.columns:
+        raise KeyError(f"simulate_expensive_hours_detailed missing pv_col='{pv_col}' in df columns")
+
     expensive_windows = get_expensive_windows(for_date, tariff_cfg or DEFAULT_CONFIG["tariff"])
     if not expensive_windows:
         detail = df.copy().iloc[0:0]
@@ -3048,10 +3053,10 @@ def simulate_expensive_hours_detailed(
                 df,
                 ts,
                 "pv_total_unclipped_kwh",
-                default=_get_float(df, ts, "pv_ac_limited_kwh", default=_get_float(df, ts, "pv_total_kwh", default=0.0)),
+                default=_get_float(df, ts, "pv_ac_limited_kwh", default=_get_float(df, ts, pv_col, default=0.0)),
             ),
         )
-        pv_ac_limited = _get_float(df, ts, "pv_ac_limited_kwh", default=_get_float(df, ts, "pv_total_kwh", default=0.0))
+        pv_ac_limited = _get_float(df, ts, "pv_ac_limited_kwh", default=_get_float(df, ts, pv_col, default=0.0))
         pv_unclipped = max(pv_unclipped, pv_ac_limited)
         load = float(loads.loc[ts])
 
