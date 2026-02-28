@@ -3345,6 +3345,10 @@ def simulate_full_day_soc(
         pv_surplus_store_econ_enabled = False
 
     use_battery_for_offpeak_load = should_use_battery_for_offpeak_load(cfg)
+    if not get_expensive_windows(tomorrow_date, cfg):
+        # No expensive hours exist (all-day off-peak). Stored PV still displaces
+        # future grid import at off-peak price.
+        use_battery_for_offpeak_load = True
     future_expensive_exists: dict[pd.Timestamp, bool] = {}
     has_future_expensive = False
     for ts in reversed(day_idx):
