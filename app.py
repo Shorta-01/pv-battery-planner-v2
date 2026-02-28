@@ -438,11 +438,18 @@ LOCAL_STATE_DIR = Path("local_state")
 API_BASE_URL = os.getenv("PVBP_BACKEND_URL", "http://127.0.0.1:8787")
 API_TOKEN_FILE = LOCAL_STATE_DIR / "api_token.txt"
 APP_DEBUG = os.getenv("DEBUG", "").strip() in ("1", "true", "True", "yes", "YES")
+SHOW_WARNINGS_UI = False
 UI_ERROR_BUFFER_PATH = LOCAL_STATE_DIR / "ui_error_buffer.jsonl"
 
 st.session_state.setdefault("history_all_runs", False)
 st.session_state.setdefault("history_show_run_at", False)
 st.session_state.setdefault("history_debug_columns", False)
+
+
+def ui_warning(msg: str) -> None:
+    if SHOW_WARNINGS_UI:
+        getattr(st, "warning")(msg)
+
 
 def apply_pending_location_state() -> None:
     pending = st.session_state.pop("_pending_location_state", None)
@@ -2486,9 +2493,9 @@ def _render_run_inspector(filtered_df: pd.DataFrame) -> None:
                 f"**Run type:** {row.get('run_type', 'manual')}"
             )
             if warnings_list:
-                st.warning("\n".join(f"• {w}" for w in warnings_list))
+                ui_warning("\n".join(f"• {w}" for w in warnings_list))
             elif int(row.get("warnings_count") or 0) > 0:
-                st.warning(f"{int(row.get('warnings_count') or 0)} warning(s) were recorded for this run.")
+                ui_warning(f"{int(row.get('warnings_count') or 0)} warning(s) were recorded for this run.")
             else:
                 st.success("No warnings recorded.")
 
@@ -3784,7 +3791,7 @@ with left:
             st.markdown(f"<span title='{_esc(fs_tip)}'>ℹ️</span>", unsafe_allow_html=True)
 
         if cfg_cc_enabled and (cfg_cc_user.strip() == "") and (cfg_cc_pass == ""):
-            st.warning("OCPP authentication is disabled (username/password empty). This is OK on a private LAN only.")
+            ui_warning("OCPP authentication is disabled (username/password empty). This is OK on a private LAN only.")
 
         if cfg_cc_enabled and ((cfg_cc_user.strip() == "") ^ (cfg_cc_pass == "")):
             st.error("OCPP credentials are misconfigured. Set BOTH username and password, or leave BOTH empty.")
@@ -4134,7 +4141,7 @@ with left:
 
     if st.session_state.get("confirm_reset_repo_defaults_open"):
         with st.container(border=True):
-            st.warning("Factory settings will restore default settings, but will keep your Off-peak hours time windows.")
+            ui_warning("Factory settings will restore default settings, but will keep your Off-peak hours time windows.")
             st.caption("This action cannot be undone. Off-peak hours time windows will be preserved.")
             confirm_col, cancel_col = st.columns(2)
             with confirm_col:
@@ -4400,7 +4407,7 @@ if run_clicked or st.session_state.get("last_run_result"):
                 warning_lines = [hard_stop_message] if hard_stop_message else ["Forecast completed with warnings"]
                 if hard_stop_warnings:
                     warning_lines.extend([f"- {str(warning)}" for warning in hard_stop_warnings if str(warning).strip()])
-                st.warning("\n".join(warning_lines))
+                ui_warning("\n".join(warning_lines))
 
             dbg = result.get("weather_ensemble")
             st.session_state["last_weather_ensemble_debug"] = dbg if isinstance(dbg, dict) else {}
@@ -4490,7 +4497,7 @@ if run_clicked or st.session_state.get("last_run_result"):
             with top_left:
                 allow_injection_metric = bool(metrics.get("allow_injection_to_grid", True))
                 if not allow_injection_metric:
-                    st.warning("Grid injection is disabled by settings. Excess PV will be curtailed when battery storage is not available.")
+                    ui_warning("Grid injection is disabled by settings. Excess PV will be curtailed when battery storage is not available.")
                 render_offpeak_plan_summary(
                     st.container(),
                     metrics=metrics,
@@ -4533,9 +4540,9 @@ if run_clicked or st.session_state.get("last_run_result"):
             render_pv_week_ahead_widget(pv_week_ahead_display)
 
             if charge_target_reachable is False and charge_warning_text:
-                st.warning(charge_warning_text)
+                ui_warning(charge_warning_text)
             elif charge_note.startswith("Warning"):
-                st.warning(charge_note)
+                ui_warning(charge_note)
 
             if APP_DEBUG:
                 if pv_low is not None and pv_high is not None:
@@ -4682,9 +4689,9 @@ if run_clicked or st.session_state.get("last_run_result"):
                         if status == 404:
                             st.info("No score yet (ingest actuals + compute score).")
                         else:
-                            st.warning(f"Could not fetch score: HTTP {status}")
+                            ui_warning(f"Could not fetch score: HTTP {status}")
                     except Exception as exc:
-                        st.warning(f"Could not fetch score: {exc}")
+                        ui_warning(f"Could not fetch score: {exc}")
 
                 combined = pv.join(flows_df[["soc_end_pct", "grid_import_kwh", "grid_export_kwh", "curtailed_kwh"]], how="left")
                 if "pv_curtailed_kwh" not in combined.columns and "curtailed_kwh" in combined.columns:
@@ -4719,7 +4726,7 @@ if run_clicked or st.session_state.get("last_run_result"):
                     st.metric("Max |residual| (kWh)", f"{max_res:.3f}")
                     st.caption(f"Mean |residual| (kWh): {mean_res:.3f}")
                     if max_res > 0.05:
-                        st.warning("Energy balance residual is higher than expected; check inputs or rounding.")
+                        ui_warning("Energy balance residual is higher than expected; check inputs or rounding.")
                     if not residual_series.empty:
                         worst = residual_series.reindex(combined.index).dropna().abs().sort_values(ascending=False).head(3)
                         if not worst.empty:
@@ -4745,7 +4752,7 @@ if run_clicked or st.session_state.get("last_run_result"):
             render_history_fragment()
 
             for warning in result.get("warnings", []):
-                st.warning(f"Nightly context warning: {warning}")
+                ui_warning(f"Nightly context warning: {warning}")
     except ImportError as exc:
         st.error(f"Missing dependency: {exc}. Install with: python -m pip install -r requirements.txt")
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
