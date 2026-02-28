@@ -2813,14 +2813,16 @@ def run_detailed_plan(
         pv = add_load_and_surplus_columns(pv, total_consumption_kwh)
 
     tariff_cfg = EFFECTIVE_CFG.get("tariff", DEFAULT_CONFIG["tariff"]) if isinstance(EFFECTIVE_CFG, dict) else DEFAULT_CONFIG["tariff"]
-    pv_col = "pv_total_decision_kwh" if "pv_total_decision_kwh" in pv.columns else "pv_total_kwh"
-    soc_low = compute_soc_low_timing_aware(pv, total_consumption_kwh, target_date, tariff_cfg=tariff_cfg, pv_col=pv_col)
+    # Use the same PV series for both soc_low and soc_high to keep cutoff decision internally consistent.
+    pv_col_for_planning = "pv_total_decision_kwh" if "pv_total_decision_kwh" in pv.columns else "pv_total_kwh"
+    soc_low = compute_soc_low_timing_aware(pv, total_consumption_kwh, target_date, tariff_cfg=tariff_cfg, pv_col=pv_col_for_planning)
     _, soc_high = compute_soc_high_headroom(
         pv,
         total_consumption_kwh,
         target_date,
         sunrise=weather.sunrise,
         sunset=weather.sunset,
+        pv_col=pv_col_for_planning,
     )
     cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high, tariff_cfg=tariff_cfg)
     cutoff_soc = min(max(cutoff_soc_raw + (float(buffer_percent) / 100.0), MIN_SOC), MAX_CUTOFF_SOC)
@@ -2876,12 +2878,15 @@ def compute_soc_high_headroom(
     for_date: dt.date,
     sunrise: dt.datetime,
     sunset: dt.datetime,
+    pv_col: str = "pv_total_kwh",
 ) -> Tuple[float, float]:
     """
     Headroom doel: hoeveel PV-overschot verwacht je BINNEN daglichturen.
     Hoe meer overschot, hoe lager je bij start van hoog tarief wil zitten om injectie te vermijden.
     """
     _ = for_date
+    if pv_col not in df.columns:
+        raise KeyError(f"compute_soc_high_headroom missing pv_col={pv_col!r} in df columns")
 
     _, _, daylight_mask = normalize_daylight_window(df.index, sunrise, sunset)
     if not bool(daylight_mask.any()):
@@ -2896,7 +2901,7 @@ def compute_soc_high_headroom(
         if not bool(daylight_mask.loc[ts]):
             continue
 
-        pv_ac_kwh = float(df.loc[ts, "pv_total_kwh"])
+        pv_ac_kwh = float(df.loc[ts, pv_col])
         load_ac_kwh = float(loads.loc[ts])
         surplus_ac_kwh = max(0.0, pv_ac_kwh - load_ac_kwh)
         surplus_sum_ac += surplus_ac_kwh
