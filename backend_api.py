@@ -1034,6 +1034,8 @@ class BackendState:
             "yesterday_consumption_kwh": float(payload.yesterday_consumption_kwh),
             "last_inputs_updated_at": now_local,
         }
+        if payload.soc_now_percent is not None or payload.soc_at_22_percent is not None:
+            self.last_inputs["soc_at_22_percent"] = float(soc)
         self._save_inputs()
         return self.last_inputs
 
