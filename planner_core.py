@@ -2865,6 +2865,7 @@ def run_detailed_plan(
         cutoff_soc,
         target_date,
         tariff_cfg=tariff_cfg,
+        pv_col=pv_col_for_planning,
     )
     flows_df.attrs["charge_effective_cap_kw"] = float(charge_effective_cap_kw)
     flows_df.attrs["charge_limit_reason_raw"] = str(charge_limit_reason_raw)
@@ -3287,7 +3288,11 @@ def simulate_full_day_soc(
     cutoff_soc: float,
     tomorrow_date: dt.date,
     tariff_cfg: Optional[dict] = None,
+    pv_col: str = "pv_total_kwh",
 ) -> Tuple["pd.Series", "pd.DataFrame"]:
+    if pv_col not in df.columns:
+        raise KeyError(f"simulate_full_day_soc missing pv_col={pv_col!r} in df columns")
+
     tomorrow_start = pd.Timestamp(dt.datetime.combine(tomorrow_date, dt.time(0, 0)), tz=TIMEZONE)
     tomorrow_end = tomorrow_start + dt.timedelta(days=1)
     tomorrow_idx = pd.date_range(tomorrow_start, tomorrow_end, freq="h", inclusive="left", tz=TIMEZONE)
@@ -3314,7 +3319,7 @@ def simulate_full_day_soc(
     day_idx = pd.date_range(day_start_ts, tomorrow_end, freq="h", inclusive="left", tz=TIMEZONE)
     dt_h = timestep_hours(day_idx)
     loads = pd.to_numeric(cycle_loads.reindex(day_idx), errors="coerce").fillna(0.0).astype(float)
-    pv_total = pd.to_numeric(df.get("pv_total_kwh", pd.Series(0.0, index=day_idx)).reindex(day_idx), errors="coerce").fillna(0.0)
+    pv_total = pd.to_numeric(df[pv_col].reindex(day_idx), errors="coerce").fillna(0.0)
     pv_unclipped = pd.to_numeric(df.get("pv_total_unclipped_kwh", pv_total).reindex(day_idx), errors="coerce")
     pv_unclipped = pv_unclipped.combine_first(pv_total).fillna(0.0)
 
