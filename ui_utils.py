@@ -247,9 +247,21 @@ def resolve_pv_outlook_savings(pv_quality_dict: dict | None) -> dict[str, Any]:
         hourly_labels = hourly_cycle_labels
 
     horizon_label = str(data.get("savings_horizon_label") or "").strip() or None
-    detail_note = "Besparing per uur (cycle)"
+    if bars_scope == "tomorrow":
+        detail_note = "⏱️ Bars: tomorrow (00–24)"
+    else:
+        detail_note = "⏱️ Bars: cycle"
+
     if display_scope == "cycle":
-        note = "Grid only vs iSystem Cycle savings shown (24u vanaf start daluren (vast 24u venster))."
+        if bars_scope == "tomorrow":
+            note = (
+                "Grid only vs iSystem Cycle savings shown; bars: tomorrow (00–24). "
+                "(24u vanaf start daluren (vast 24u venster))."
+            )
+        else:
+            note = "Grid only vs iSystem Cycle savings shown (24u vanaf start daluren (vast 24u venster))."
+    elif display_scope == "tomorrow":
+        note = "PV OUTLOOK savings shown (tomorrow only)."
     else:
         note = "PV OUTLOOK savings shown."
 
