@@ -1289,7 +1289,12 @@ def build_cycle_hourly_load_series(
     tariff_cfg: Optional[dict] = None,
 ) -> "pd.Series":
     cfg = tariff_cfg or DEFAULT_CONFIG["tariff"]
-    cycle_start, _ = compute_charging_window_for_target_date(target_date, cfg)
+    windows = normalize_windows(get_offpeak_windows_for_date(target_date, cfg))
+    all_day = windows == [("00:00", "24:00")]
+    if all_day:
+        cycle_start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=TIMEZONE)
+    else:
+        cycle_start, _ = compute_charging_window_for_target_date(target_date, cfg)
     next_cycle_start = cycle_start + dt.timedelta(hours=24)
 
     cycle_idx = pd.date_range(cycle_start, next_cycle_start, freq="h", inclusive="left", tz=TIMEZONE)
@@ -1410,7 +1415,12 @@ def compute_euro_savings_no_battery_vs_plan(
 
     idx_tomorrow = pd.date_range(tomorrow_start, tomorrow_end, freq="h", inclusive="left", tz=TIMEZONE)
     window_start, window_end = compute_charging_window_for_target_date(tomorrow_date, tariff_cfg)
-    cycle_start = window_start
+    windows_tom = normalize_windows(get_offpeak_windows_for_date(tomorrow_date, tariff_cfg))
+    all_day = windows_tom == [("00:00", "24:00")]
+    if all_day:
+        cycle_start = tomorrow_start
+    else:
+        cycle_start = window_start
     cycle_end = cycle_start + dt.timedelta(hours=24)
 
     idx_cycle = pd.date_range(cycle_start, cycle_end, freq="h", inclusive="left", tz=TIMEZONE)
