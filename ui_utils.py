@@ -158,26 +158,51 @@ def resolve_pv_outlook_savings(pv_quality_dict: dict | None) -> dict[str, Any]:
     cycle_plan = _to_float_or_none(data.get("plan_cost_eur_cycle"))
     cycle_savings = _to_float_or_none(data.get("savings_eur_cycle"))
 
+    tomorrow_base = _to_float_or_none(data.get("baseline_cost_eur_tomorrow"))
+    tomorrow_plan = _to_float_or_none(data.get("plan_cost_eur_tomorrow"))
+    tomorrow_savings = _to_float_or_none(data.get("savings_eur_tomorrow"))
+
     total_base = _to_float_or_none(data.get("baseline_cost_eur_total"))
     total_plan = _to_float_or_none(data.get("plan_cost_eur_total"))
     total_savings = _to_float_or_none(data.get("savings_eur_total"))
 
     has_new_cycle = cycle_benefit is not None
-    display_scope = "cycle"
+    has_cycle = (
+        cycle_benefit is not None
+        or cycle_base is not None
+        or cycle_plan is not None
+        or cycle_savings is not None
+        or cycle_grid_only is not None
+        or cycle_isystem is not None
+    )
+    has_tomorrow = tomorrow_base is not None or tomorrow_plan is not None or tomorrow_savings is not None
+    has_total = total_base is not None or total_plan is not None or total_savings is not None
 
-    if has_new_cycle:
-        base_cost = cycle_grid_only
-        plan_cost = cycle_isystem
-        reported_savings = cycle_benefit
+    if has_cycle:
+        display_scope = "cycle"
+        if has_new_cycle:
+            base_cost = cycle_grid_only
+            plan_cost = cycle_isystem
+            reported_savings = cycle_benefit
+        else:
+            base_cost = cycle_base
+            plan_cost = cycle_plan
+            reported_savings = cycle_savings
+    elif has_tomorrow:
+        display_scope = "tomorrow"
+        base_cost = tomorrow_base
+        plan_cost = tomorrow_plan
+        reported_savings = tomorrow_savings
     else:
-        base_cost = cycle_base
-        plan_cost = cycle_plan
-        reported_savings = cycle_savings
-
-    if base_cost is None and plan_cost is None and reported_savings is None:
-        base_cost = total_base
-        plan_cost = total_plan
-        reported_savings = total_savings
+        display_scope = "total"
+        if has_total:
+            base_cost = total_base
+            plan_cost = total_plan
+            reported_savings = total_savings
+        else:
+            base_cost = None
+            plan_cost = None
+            reported_savings = None
 
     if base_cost is not None and plan_cost is not None:
         savings = base_cost - plan_cost
@@ -223,7 +248,10 @@ def resolve_pv_outlook_savings(pv_quality_dict: dict | None) -> dict[str, Any]:
 
     horizon_label = str(data.get("savings_horizon_label") or "").strip() or None
     detail_note = "Besparing per uur (cycle)"
-    note = "Grid only vs iSystem cycle savings shown (24u vanaf start daluren (vast 24u venster))."
+    if display_scope == "cycle":
+        note = "Grid only vs iSystem Cycle savings shown (24u vanaf start daluren (vast 24u venster))."
+    else:
+        note = "PV OUTLOOK savings shown."
 
     return {
         "base_cost": base_cost,
