@@ -3045,6 +3045,12 @@ def simulate_expensive_hours_detailed(
             continue
 
         step_h = float(dt_h.loc[ts])
+        pv_selected = _get_float(df, ts, pv_col, default=0.0)
+        if pv_col == "pv_total_kwh":
+            pv_ac_limited = _get_float(df, ts, "pv_ac_limited_kwh", default=pv_selected)
+        else:
+            pv_ac_limited = pv_selected
+
         pv_unclipped = _get_float(
             df,
             ts,
@@ -3053,10 +3059,9 @@ def simulate_expensive_hours_detailed(
                 df,
                 ts,
                 "pv_total_unclipped_kwh",
-                default=_get_float(df, ts, "pv_ac_limited_kwh", default=_get_float(df, ts, pv_col, default=0.0)),
+                default=pv_ac_limited,
             ),
         )
-        pv_ac_limited = _get_float(df, ts, "pv_ac_limited_kwh", default=_get_float(df, ts, pv_col, default=0.0))
         pv_unclipped = max(pv_unclipped, pv_ac_limited)
         load = float(loads.loc[ts])
 
