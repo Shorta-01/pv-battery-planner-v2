@@ -1487,6 +1487,38 @@ def _pv_quality_signal_html(label: str, color: str, tooltip: str) -> str:
     )
 
 
+def _format_cycle_window_label(start_iso: str | None, end_iso: str | None) -> str | None:
+    if not start_iso or not end_iso:
+        return None
+
+    tz_name = str(st.session_state.get("loc_timezone", core.TIMEZONE) or core.TIMEZONE).strip() or core.TIMEZONE
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = ZoneInfo(core.TIMEZONE)
+
+    def _parse_local(iso_str: str) -> dt.datetime | None:
+        try:
+            parsed = dt.datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
+        except Exception:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=tz)
+        return parsed.astimezone(tz)
+
+    start_local = _parse_local(start_iso)
+    end_local = _parse_local(end_iso)
+    if start_local is None or end_local is None:
+        return None
+
+    start_txt = start_local.strftime("%H:%M")
+    end_txt = end_local.strftime("%H:%M")
+    if start_local.date() != end_local.date():
+        start_txt = start_local.strftime("%d/%m %H:%M")
+        end_txt = end_local.strftime("%d/%m %H:%M")
+    return f"{start_txt} → {end_txt}"
+
+
 def _build_cycle_savings_html(
     pv_quality_dict: dict | None,
     planning_metrics: dict | None = None,
@@ -1498,11 +1530,10 @@ def _build_cycle_savings_html(
     s = sv["savings"]
     hourly = sv["hourly"]
     hourly_labels = sv.get("hourly_labels") or [f"{h:02d}:00" for h in range(24)]
-    bars_scope = str(sv.get("bars_scope") or "tomorrow")
     terminal_cycle_value = _safe_float(sv.get("terminal_battery_value_eur_cycle"), 0.0)
-    scope = str(sv.get("display_scope") or "cycle")
     resolver_note = str(sv.get("note") or "").strip()
     resolver_detail_note = str(sv.get("detail_note") or "").strip()
+    cycle_window = _format_cycle_window_label(sv.get("horizon_start_iso"), sv.get("horizon_end_iso"))
 
     if show_savings_diagnostics is None:
         history_debug_mode = st.session_state.get("history_mode", "Simple") == "Debug"
@@ -1578,8 +1609,6 @@ def _build_cycle_savings_html(
                 + "</div>"
             )
 
-        scope_suffix = "(tomorrow)" if scope == "tomorrow" else "(cycle)"
-        headline_label = "SAVINGS" if scope == "tomorrow" else "CYCLE SAVINGS"
         inventory_chip = ""
         if abs(terminal_cycle_value) >= 0.01:
             chip_col = "#52b788" if terminal_cycle_value >= 0 else "#d62828"
@@ -1598,12 +1627,16 @@ def _build_cycle_savings_html(
                 "</span></div>"
             )
 
-        bars_note_text = resolver_detail_note or ("⏱️ Bars: tomorrow (00–24)" if bars_scope != "cycle" else "")
         bars_note = (
             "<div style='margin-top:0.12rem;font-size:0.68rem;opacity:0.75;'>"
-            f"{_esc_attr(bars_note_text)}"
+            f"{_esc_attr(resolver_detail_note or 'Besparing per uur (cycle)')}"
             "</div>"
-        ) if bars_note_text else ""
+        )
+        cycle_window_html = (
+            "<div style='margin-top:0.10rem;font-size:0.68rem;opacity:0.82;'>"
+            f"Cycle: {_esc_attr(cycle_window)}"
+            "</div>"
+        ) if cycle_window else ""
         scope_note = (
             "<div style='margin-top:0.10rem;font-size:0.67rem;opacity:0.72;'>"
             f"{_esc_attr(resolver_note)}"
@@ -1626,15 +1659,14 @@ def _build_cycle_savings_html(
 
         savings_html = (
             "<div style='margin-top:0.65rem;padding-top:0.55rem;border-top:1px solid rgba(255,255,255,0.10);'>"
-            "<div style='display:flex;align-items:center;justify-content:space-between;'>"
             "<div style='font-size:0.72rem;opacity:0.85;text-transform:uppercase;letter-spacing:0.06em;'>"
-            f"{headline_label}"
+            "CYCLE SAVINGS"
             "</div>"
-            f"<div style='font-size:0.95rem;font-weight:800;color:{pill_color};'>{pill}</div>"
-            "</div>"
-            f"<div style='margin-top:0.22rem;font-size:0.70rem;opacity:0.80;'>"
-            f"Grid only {scope_suffix}: €{float(base_cost):.2f} · iSystem {scope_suffix}: €{float(plan_cost):.2f}"
-            "</div>"
+            f"<div style='margin-top:0.22rem;font-size:0.70rem;opacity:0.88;'>Grid only (cycle): €{float(base_cost):.2f}</div>"
+            f"<div style='margin-top:0.06rem;font-size:0.70rem;opacity:0.88;'>iSystem (cycle): €{float(plan_cost):.2f}</div>"
+            f"<div style='margin-top:0.06rem;font-size:0.76rem;font-weight:800;color:{pill_color};'>Savings (cycle): {pill}</div>"
+            "<div style='margin-top:0.10rem;font-size:0.67rem;opacity:0.72;'>Savings = Grid only − iSystem</div>"
+            + cycle_window_html
             + inventory_chip
             + bars_html
             + bars_note
