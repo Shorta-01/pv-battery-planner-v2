@@ -154,60 +154,30 @@ def resolve_pv_outlook_savings(pv_quality_dict: dict | None) -> dict[str, Any]:
     cycle_isystem = _to_float_or_none(data.get("isystem_cost_eur_cycle"))
     cycle_benefit = _to_float_or_none(data.get("benefit_vs_grid_only_eur_cycle"))
 
-    tomorrow_grid_only = _to_float_or_none(data.get("grid_only_cost_eur_tomorrow"))
-    tomorrow_isystem = _to_float_or_none(data.get("isystem_cost_eur_tomorrow_cash"))
-    tomorrow_benefit = _to_float_or_none(data.get("benefit_vs_grid_only_eur_tomorrow_cash"))
-
     cycle_base = _to_float_or_none(data.get("baseline_cost_eur_cycle"))
     cycle_plan = _to_float_or_none(data.get("plan_cost_eur_cycle"))
     cycle_savings = _to_float_or_none(data.get("savings_eur_cycle"))
-
-    tomorrow_base = _to_float_or_none(data.get("baseline_cost_eur_tomorrow"))
-    tomorrow_plan = _to_float_or_none(data.get("plan_cost_eur_tomorrow"))
-    tomorrow_savings = _to_float_or_none(data.get("savings_eur_tomorrow"))
 
     total_base = _to_float_or_none(data.get("baseline_cost_eur_total"))
     total_plan = _to_float_or_none(data.get("plan_cost_eur_total"))
     total_savings = _to_float_or_none(data.get("savings_eur_total"))
 
     has_new_cycle = cycle_benefit is not None
-    has_new_tomorrow = tomorrow_grid_only is not None or tomorrow_isystem is not None or tomorrow_benefit is not None
+    display_scope = "cycle"
 
-    display_scope = "tomorrow"
-    use_new_scheme = has_new_tomorrow
-    if has_new_cycle or cycle_base is not None or cycle_plan is not None or cycle_savings is not None:
-        display_scope = "cycle"
-        use_new_scheme = has_new_cycle
-    elif has_new_tomorrow or tomorrow_base is not None or tomorrow_plan is not None or tomorrow_savings is not None:
-        display_scope = "tomorrow"
-        use_new_scheme = has_new_tomorrow
-    elif total_base is not None or total_plan is not None or total_savings is not None:
-        display_scope = "total"
-        use_new_scheme = False
+    if has_new_cycle:
+        base_cost = cycle_grid_only
+        plan_cost = cycle_isystem
+        reported_savings = cycle_benefit
+    else:
+        base_cost = cycle_base
+        plan_cost = cycle_plan
+        reported_savings = cycle_savings
 
-    if display_scope == "cycle":
-        if use_new_scheme:
-            base_cost = cycle_grid_only
-            plan_cost = cycle_isystem
-            reported_savings = cycle_benefit
-        else:
-            base_cost = cycle_base
-            plan_cost = cycle_plan
-            reported_savings = cycle_savings
-    elif display_scope == "total":
+    if base_cost is None and plan_cost is None and reported_savings is None:
         base_cost = total_base
         plan_cost = total_plan
         reported_savings = total_savings
-    else:
-        if has_new_tomorrow:
-            base_cost = tomorrow_grid_only
-            plan_cost = tomorrow_isystem
-            reported_savings = tomorrow_benefit
-            use_new_scheme = True
-        else:
-            base_cost = tomorrow_base
-            plan_cost = tomorrow_plan
-            reported_savings = tomorrow_savings
 
     if base_cost is not None and plan_cost is not None:
         savings = base_cost - plan_cost
@@ -242,26 +212,18 @@ def resolve_pv_outlook_savings(pv_quality_dict: dict | None) -> dict[str, Any]:
         else None
     )
 
-    bars_scope = "tomorrow"
-    hourly: list[float] | None = hourly_tomorrow
+    bars_scope = "cycle"
+    hourly: list[float] | None = hourly_cycle
     hourly_labels = [f"{h:02d}:00" for h in range(24)]
-    if display_scope == "cycle" and hourly_cycle is not None:
-        bars_scope = "cycle"
-        hourly = hourly_cycle
-        if hourly_cycle_labels is not None:
-            hourly_labels = hourly_cycle_labels
+    if hourly is None:
+        bars_scope = "tomorrow"
+        hourly = hourly_tomorrow
+    if bars_scope == "cycle" and hourly_cycle_labels is not None:
+        hourly_labels = hourly_cycle_labels
 
     horizon_label = str(data.get("savings_horizon_label") or "").strip() or None
-    detail_note = "⏱️ Bars: tomorrow (00–24)"
-    if display_scope == "cycle" and bars_scope == "cycle":
-        note = "Grid only vs iSystem cycle savings shown (24u vanaf start daluren (vast 24u venster))." if use_new_scheme else "Cycle savings shown (24u vanaf start daluren (vast 24u venster))."
-        detail_note = "⏱️ Bars: cycle (24u vanaf start daluren (vast 24u venster))"
-    elif display_scope in {"cycle", "total"} and hourly is not None:
-        note = "Grid only vs iSystem cycle savings shown (24u vanaf start daluren (vast 24u venster)). Hourly bars show tomorrow (00–24)." if use_new_scheme else "Cycle savings shown (24u vanaf start daluren (vast 24u venster)). Hourly bars show tomorrow (00–24)."
-    elif display_scope in {"cycle", "total"}:
-        note = "Grid only vs iSystem cycle savings shown (24u vanaf start daluren (vast 24u venster))." if use_new_scheme else "Cycle savings shown (24u vanaf start daluren (vast 24u venster))."
-    else:
-        note = "Grid only vs iSystem values shown for tomorrow only." if use_new_scheme else "Values shown are for tomorrow only."
+    detail_note = "Besparing per uur (cycle)"
+    note = "Grid only vs iSystem cycle savings shown (24u vanaf start daluren (vast 24u venster))."
 
     return {
         "base_cost": base_cost,
@@ -277,6 +239,8 @@ def resolve_pv_outlook_savings(pv_quality_dict: dict | None) -> dict[str, Any]:
         "cycle_end_soc_pct": _to_float_or_none(data.get("cycle_end_soc_pct")),
         "savings_cycle_terminal_value_applied": bool(data.get("savings_cycle_terminal_value_applied", False)),
         "horizon_label": horizon_label,
+        "horizon_start_iso": str(data.get("savings_horizon_start_iso") or "").strip() or None,
+        "horizon_end_iso": str(data.get("savings_horizon_end_iso") or "").strip() or None,
         "detail_note": detail_note,
         "note": note,
     }
