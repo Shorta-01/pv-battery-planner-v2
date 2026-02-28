@@ -539,6 +539,17 @@ def build_effective_config(user_cfg: dict) -> dict:
     migrated_cfg = migrate_legacy_tilt_config(user_cfg)
     merged_cfg = deep_update(copy.deepcopy(DEFAULT_CONFIG), migrated_cfg)
     pv_cfg = merged_cfg.get("pv", {}) if isinstance(merged_cfg.get("pv"), dict) else {}
+
+    legacy_global_calibration = pv_cfg.get("pv_calibration_factor")
+    if legacy_global_calibration is not None:
+        global_factor = float(legacy_global_calibration)
+        if global_factor != 1.0:
+            east_factor = pv_cfg.get("pv_calibration_factor_east", 1.0)
+            south_factor = pv_cfg.get("pv_calibration_factor_south", 1.0)
+            pv_cfg["pv_calibration_factor_east"] = float(1.0 if east_factor is None else east_factor) * global_factor
+            pv_cfg["pv_calibration_factor_south"] = float(1.0 if south_factor is None else south_factor) * global_factor
+            pv_cfg.pop("pv_calibration_factor", None)
+
     loss_model = str(pv_cfg.get("loss_model", pv_cfg.get("pv_loss_model", "split"))).strip().lower()
     pv_cfg["loss_model"] = loss_model
     pv_cfg["pv_loss_model"] = loss_model
