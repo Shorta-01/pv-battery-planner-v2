@@ -3426,7 +3426,7 @@ def simulate_full_day_soc(
             curtailed = max(0.0, pv_after_batt - grid_export)
 
         offpeak = in_any_window(ts.time(), get_offpeak_windows_for_date(ts.date(), cfg))
-        allow_batt_for_load = (not offpeak) or should_use_battery_for_offpeak_load(cfg)
+        allow_batt_for_load = (not offpeak) or use_battery_for_offpeak_load
 
         if allow_batt_for_load and remaining_load > 0:
             available = max(0.0, energy - min_energy)
