@@ -90,7 +90,7 @@ def test_dynamic_weights_fall_back_to_static_when_insufficient_days(monkeypatch:
 
     dynamic = we._load_dynamic_weights(["knmi_harmonie_arome", "dwd_icon_d2"])
     assert dynamic is None
-    _, used = we._weighted_ensemble(
+    _, used, _ = we._weighted_ensemble(
         {"knmi_harmonie_arome": s1, "dwd_icon_d2": s2},
         ["knmi_harmonie_arome", "dwd_icon_d2"],
         dynamic_weights=dynamic,

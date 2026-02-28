@@ -1269,8 +1269,7 @@ def _parse_minutely_15_df(minutely_payload: dict[str, Any], tz: str) -> pd.DataF
 
 
 def _align_backward_hourly_mean_to_hour_start(s: pd.Series) -> pd.Series:
-    # Keep Open-Meteo hourly radiation timestamps as provided by the API.
-    return pd.to_numeric(s, errors="coerce")
+    return pd.to_numeric(s, errors="coerce").shift(-1)
 
 def _finalize_irradiance_components(
     *,
@@ -1684,7 +1683,17 @@ def fetch_open_meteo_weather(
         fill_mask = dhi_candidate.isna() & bhi.notna()
         dhi_candidate = dhi_candidate.where(~fill_mask, dhi_from_bhi)
 
-    before_missing_count = int((pd.to_numeric(dni_candidate, errors="coerce").isna() | pd.to_numeric(dhi_candidate, errors="coerce").isna()).sum())
+    dni_candidate = pd.to_numeric(dni_candidate, errors="coerce")
+    dhi_candidate = pd.to_numeric(dhi_candidate, errors="coerce")
+    before_missing_count = int((dni_candidate.isna() | dhi_candidate.isna()).sum())
+    had_partial_irradiance_gaps = False
+    if dni_candidate.notna().any() and dni_candidate.isna().any():
+        had_partial_irradiance_gaps = True
+        dni_candidate = dni_candidate.ffill().bfill()
+    if dhi_candidate.notna().any() and dhi_candidate.isna().any():
+        had_partial_irradiance_gaps = True
+        dhi_candidate = dhi_candidate.ffill().bfill()
+
 
     dni_final, dhi_final, missing_vars, derived_irradiance = _finalize_irradiance_components(
         ghi=df["ghi_wm2"],
@@ -1696,6 +1705,7 @@ def fetch_open_meteo_weather(
     )
     after_missing_count = int((dni_final.isna() | dhi_final.isna()).sum())
     derived_irradiance_hours = max(0, before_missing_count - after_missing_count)
+    derived_irradiance = bool(derived_irradiance or had_partial_irradiance_gaps)
     fetch_meta["derived_irradiance_hours"] = int(derived_irradiance_hours)
     df["dni_wm2"] = dni_final
     df["dhi_wm2"] = dhi_final
@@ -1990,12 +2000,12 @@ def _weighted_ensemble(
     missing_vars_by_model: dict[str, list[str]] | None = None,
     derived_irradiance_by_model: dict[str, bool] | None = None,
     derived_irradiance_hours_by_model: dict[str, int] | None = None,
-) -> tuple[pd.Series, dict[str, float] | None]:
+) -> tuple[pd.Series, dict[str, float] | None, dict[str, float] | None]:
     weighted_subset = dict(dynamic_weights or {})
     if not weighted_subset:
         weighted_subset = {m: DEFAULT_WEIGHTED_BELGIUM[m] for m in selected_models if m in DEFAULT_WEIGHTED_BELGIUM}
     if not weighted_subset:
-        return pd.concat(series_map.values(), axis=1).mean(axis=1), None
+        return pd.concat(series_map.values(), axis=1).mean(axis=1), None, None
 
     min_weight_factor = 0.20
     quality_factors: dict[str, float] = {}
@@ -2030,21 +2040,22 @@ def _weighted_ensemble(
     if total <= 0:
         out = pd.concat(series_map.values(), axis=1).mean(axis=1)
         out.attrs["quality_weight_factors_by_model"] = quality_factors
-        return out, None
+        return out, None, quality_factors
     normalized = {m: w / total for m, w in adjusted_weights.items()}
     matrix = pd.DataFrame({m: series_map[m] for m in normalized if m in series_map})
     if matrix.empty:
         out = pd.concat(series_map.values(), axis=1).mean(axis=1)
         out.attrs["quality_weight_factors_by_model"] = quality_factors
-        return out, None
+        return out, None, quality_factors
     weight_series = pd.Series(normalized)
     weighted_values = matrix.mul(weight_series, axis=1)
     numerator = weighted_values.sum(axis=1, skipna=True)
     denominator = matrix.notna().mul(weight_series, axis=1).sum(axis=1)
     out = numerator.div(denominator.where(denominator > 0))
     out = out.astype(float)
-    out.attrs["quality_weight_factors_by_model"] = {m: quality_factors[m] for m in matrix.columns}
-    return out, {m: normalized[m] for m in matrix.columns}
+    quality_factors_by_model = {m: quality_factors[m] for m in matrix.columns}
+    out.attrs["quality_weight_factors_by_model"] = quality_factors_by_model
+    return out, {m: normalized[m] for m in matrix.columns}, quality_factors_by_model
 
 
 def fetch_satellite_radiation_nowcast(lat: float, lon: float, tz: str, forecast_hours: int = 6) -> pd.DataFrame:
@@ -2507,7 +2518,7 @@ def build_ensemble_forecast(
             day_type=day_type,
             expert_mode=expert_mode,
         )
-        out, weights = _weighted_ensemble(
+        out, weights, quality_factors = _weighted_ensemble(
             model_series,
             model_keys,
             dynamic_weights=dynamic_weights,
@@ -2515,7 +2526,6 @@ def build_ensemble_forecast(
             derived_irradiance_by_model=derived_irradiance_by_model,
             derived_irradiance_hours_by_model=derived_irradiance_hours_by_model,
         )
-        quality_factors = dict(out.attrs.get("quality_weight_factors_by_model") or {})
         return out, weights, quality_factors
 
     ensemble_ac_p50, weights_used, quality_weight_factors_by_model = _ensemble_column("pv_total_kwh")

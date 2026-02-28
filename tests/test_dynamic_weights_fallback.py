@@ -8,7 +8,7 @@ def test_weighted_ensemble_falls_back_to_mean_when_no_weighted_models():
     s1 = pd.Series([1.0, 3.0], index=idx)
     s2 = pd.Series([5.0, 7.0], index=idx)
 
-    out, weights = we._weighted_ensemble({"unknown_a": s1, "unknown_b": s2}, ["unknown_a", "unknown_b"])
+    out, weights, _ = we._weighted_ensemble({"unknown_a": s1, "unknown_b": s2}, ["unknown_a", "unknown_b"])
 
     assert weights is None
     assert out.iloc[0] == 3.0
