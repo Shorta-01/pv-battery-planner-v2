@@ -1686,12 +1686,15 @@ def fetch_open_meteo_weather(
     dni_candidate = pd.to_numeric(dni_candidate, errors="coerce")
     dhi_candidate = pd.to_numeric(dhi_candidate, errors="coerce")
     before_missing_count = int((dni_candidate.isna() | dhi_candidate.isna()).sum())
-    had_partial_irradiance_gaps = False
-    if dni_candidate.notna().any() and dni_candidate.isna().any():
-        had_partial_irradiance_gaps = True
+    derived_physical = False
+    filled_gaps = False
+    dni_mixed_present_missing = dni_candidate.notna().any() and dni_candidate.isna().any()
+    if dni_mixed_present_missing:
+        filled_gaps = True
         dni_candidate = dni_candidate.ffill().bfill()
-    if dhi_candidate.notna().any() and dhi_candidate.isna().any():
-        had_partial_irradiance_gaps = True
+    dhi_mixed_present_missing = dhi_candidate.notna().any() and dhi_candidate.isna().any()
+    if dhi_mixed_present_missing:
+        filled_gaps = True
         dhi_candidate = dhi_candidate.ffill().bfill()
 
 
@@ -1705,8 +1708,9 @@ def fetch_open_meteo_weather(
     )
     after_missing_count = int((dni_final.isna() | dhi_final.isna()).sum())
     derived_irradiance_hours = max(0, before_missing_count - after_missing_count)
-    derived_irradiance = bool(derived_irradiance or had_partial_irradiance_gaps)
+    derived_physical = bool(derived_irradiance)
     fetch_meta["derived_irradiance_hours"] = int(derived_irradiance_hours)
+    fetch_meta["filled_irradiance_gaps"] = bool(filled_gaps)
     df["dni_wm2"] = dni_final
     df["dhi_wm2"] = dhi_final
 
@@ -1805,15 +1809,16 @@ def fetch_open_meteo_weather(
         time.time(),
         forecast,
         list(set(missing_vars)),
-        bool(derived_irradiance),
+        bool(derived_physical),
         {
             "derived_irradiance_hours": int(derived_irradiance_hours),
+            "filled_irradiance_gaps": bool(filled_gaps),
             "requested_days": int(requested_days_int),
             "horizon_days": int(horizon_days),
             "model_max_days": int(model_max_days),
         },
     )
-    return forecast, list(set(missing_vars)), bool(derived_irradiance), fetch_meta
+    return forecast, list(set(missing_vars)), bool(derived_physical), fetch_meta
 
 
 
