@@ -9,12 +9,12 @@ def weather_code_to_icon(weather_code: int | float | str | None) -> str:
     Explicitly keep common WMO codes on fully visible glyphs (no blank variation selectors).
     """
     if weather_code is None:
-        return "☁️"
+        return "❓"
 
     if isinstance(weather_code, str):
         raw = weather_code.strip()
         if not raw:
-            return "☁️"
+            return "❓"
 
         try:
             return weather_code_to_icon(int(float(raw)))
@@ -41,12 +41,12 @@ def weather_code_to_icon(weather_code: int | float | str | None) -> str:
             "sleet": "🌨️",
             "thunderstorm": "⛈️",
         }
-        return label_map.get(key, "☁️")
+        return label_map.get(key, "❓")
 
     try:
         code = int(weather_code)
     except Exception:
-        return "☁️"
+        return "❓"
 
     if code == 0:
         return "☀️"
@@ -70,7 +70,7 @@ def weather_code_to_icon(weather_code: int | float | str | None) -> str:
         return "🌨️"
     if code in (95, 96, 99):
         return "⛈️"
-    return "☁️"
+    return "❓"
 
 
 def weather_code_to_label(weather_code: int | float | str | None) -> str:

@@ -1269,9 +1269,8 @@ def _parse_minutely_15_df(minutely_payload: dict[str, Any], tz: str) -> pd.DataF
 
 
 def _align_backward_hourly_mean_to_hour_start(s: pd.Series) -> pd.Series:
-    # Open-Meteo radiation series are preceding-hour means timestamped at hour-end.
-    # We want hour-start labeling for planning tables and PV-per-hour.
-    return pd.to_numeric(s, errors="coerce").shift(-1)
+    # Keep Open-Meteo hourly radiation timestamps as provided by the API.
+    return pd.to_numeric(s, errors="coerce")
 
 def _finalize_irradiance_components(
     *,
@@ -1281,7 +1280,7 @@ def _finalize_irradiance_components(
     loc: core.Location,
     tz: str,
     missing_vars: list[str],
-) -> tuple[pd.Series, pd.Series, list[str], bool, int]:
+) -> tuple[pd.Series, pd.Series, list[str], bool]:
     dni_out = pd.to_numeric(dni, errors="coerce")
     dhi_out = pd.to_numeric(dhi, errors="coerce")
     ghi_out = pd.to_numeric(ghi, errors="coerce")
@@ -1324,7 +1323,7 @@ def _finalize_irradiance_components(
         else:
             missing_set.discard(field)
 
-    return dni_out, dhi_out, sorted(missing_set), derived_irradiance, int(derived_irradiance_hours)
+    return dni_out, dhi_out, sorted(missing_set), derived_irradiance
 
 
 
@@ -1685,7 +1684,9 @@ def fetch_open_meteo_weather(
         fill_mask = dhi_candidate.isna() & bhi.notna()
         dhi_candidate = dhi_candidate.where(~fill_mask, dhi_from_bhi)
 
-    dni_final, dhi_final, missing_vars, derived_irradiance, derived_irradiance_hours = _finalize_irradiance_components(
+    before_missing_count = int((pd.to_numeric(dni_candidate, errors="coerce").isna() | pd.to_numeric(dhi_candidate, errors="coerce").isna()).sum())
+
+    dni_final, dhi_final, missing_vars, derived_irradiance = _finalize_irradiance_components(
         ghi=df["ghi_wm2"],
         dni=dni_candidate,
         dhi=dhi_candidate,
@@ -1693,6 +1694,8 @@ def fetch_open_meteo_weather(
         tz=tz,
         missing_vars=missing_vars,
     )
+    after_missing_count = int((dni_final.isna() | dhi_final.isna()).sum())
+    derived_irradiance_hours = max(0, before_missing_count - after_missing_count)
     fetch_meta["derived_irradiance_hours"] = int(derived_irradiance_hours)
     df["dni_wm2"] = dni_final
     df["dhi_wm2"] = dhi_final
