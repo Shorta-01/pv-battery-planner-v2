@@ -3392,9 +3392,7 @@ def simulate_full_day_soc(
 
             prefer_export = False
             if allow_injection and pv_surplus_store_econ_enabled and max_pv_to_store > 0:
-                expected_displacement_price = peak_price if future_expensive_exists.get(ts, False) else (
-                    offpeak_price if use_battery_for_offpeak_load else 0.0
-                )
+                expected_displacement_price = peak_price if future_expensive_exists.get(ts, False) else offpeak_price
                 stored_value_per_kwh_pv = expected_displacement_price * BATTERY_PV_CHARGE_EFF * BATTERY_DISCHARGE_EFF
                 prefer_export = export_price_now >= (stored_value_per_kwh_pv + econ_eps)
                 pv_store_vs_export_decisions_count += 1
