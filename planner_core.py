@@ -85,6 +85,7 @@ PV_IAM_MODEL = "ashrae"
 PV_IAM_ASHRAE_B = 0.05
 PV_ALBEDO: float | None = 0.20
 INVERTER_AC_MODEL = "pvwatts"
+PV_CALIBRATION_FACTOR = 1.00
 PV_CALIBRATION_FACTOR_EAST = 1.00
 PV_CALIBRATION_FACTOR_SOUTH = 1.00
 PV_GAMMA_PDC = -0.003
@@ -168,6 +169,7 @@ DEFAULT_CONFIG = {
         "iam_ashrae_b": PV_IAM_ASHRAE_B,
         "albedo": PV_ALBEDO,
         "inverter_ac_model": INVERTER_AC_MODEL,
+        "pv_calibration_factor": PV_CALIBRATION_FACTOR,
         "pv_calibration_factor_east": PV_CALIBRATION_FACTOR_EAST,
         "pv_calibration_factor_south": PV_CALIBRATION_FACTOR_SOUTH,
         "inverter_ac_kw_limit": INVERTER_AC_KW_LIMIT,
@@ -472,7 +474,7 @@ def apply_config(cfg: dict) -> None:
     global PANEL_WP, ARRAY_SOUTH_PANELS, ARRAY_EAST_PANELS
     global TILT_EAST_DEG, TILT_SOUTH_DEG, AZIMUTH_EAST_DEG, AZIMUTH_SOUTH_DEG
     global PERFORMANCE_RATIO, INVERTER_EFF, PV_LOSS_MODEL, PV_IAM_MODEL, PV_IAM_ASHRAE_B, PV_ALBEDO, INVERTER_AC_MODEL
-    global PV_CALIBRATION_FACTOR_EAST, PV_CALIBRATION_FACTOR_SOUTH, INVERTER_AC_KW_LIMIT
+    global PV_CALIBRATION_FACTOR, PV_CALIBRATION_FACTOR_EAST, PV_CALIBRATION_FACTOR_SOUTH, INVERTER_AC_KW_LIMIT
     global BATTERY_KWH, MIN_SOC_PERCENT, MAX_CUTOFF_SOC_PERCENT
     global BATTERY_MAX_CHARGE_KW, BATTERY_MAX_DISCHARGE_KW, MAX_AC_CHARGE_KW_HARD_LIMIT
     global LOAD_PROFILE, MIN_SOC, MAX_CUTOFF_SOC, EFFECTIVE_CFG, OFFPEAK_WINDOWS_BY_DOW
@@ -506,10 +508,13 @@ def apply_config(cfg: dict) -> None:
     PV_IAM_ASHRAE_B = 0.05
     PV_ALBEDO = 0.20
     INVERTER_AC_MODEL = "pvwatts"
+    PV_CALIBRATION_FACTOR = float(pv.get("pv_calibration_factor", 1.0) or 1.0)
     base_calibration_factor_east_raw = pv.get("pv_calibration_factor_east", 1.0)
     base_calibration_factor_south_raw = pv.get("pv_calibration_factor_south", 1.0)
-    PV_CALIBRATION_FACTOR_EAST = 1.0 if base_calibration_factor_east_raw is None else float(base_calibration_factor_east_raw)
-    PV_CALIBRATION_FACTOR_SOUTH = 1.0 if base_calibration_factor_south_raw is None else float(base_calibration_factor_south_raw)
+    base_calibration_factor_east = 1.0 if base_calibration_factor_east_raw is None else float(base_calibration_factor_east_raw)
+    base_calibration_factor_south = 1.0 if base_calibration_factor_south_raw is None else float(base_calibration_factor_south_raw)
+    PV_CALIBRATION_FACTOR_EAST = PV_CALIBRATION_FACTOR * base_calibration_factor_east
+    PV_CALIBRATION_FACTOR_SOUTH = PV_CALIBRATION_FACTOR * base_calibration_factor_south
     INVERTER_AC_KW_LIMIT = float(pv["inverter_ac_kw_limit"])
 
     BATTERY_KWH = float(battery["battery_kwh"])
@@ -534,13 +539,6 @@ def build_effective_config(user_cfg: dict) -> dict:
     migrated_cfg = migrate_legacy_tilt_config(user_cfg)
     merged_cfg = deep_update(copy.deepcopy(DEFAULT_CONFIG), migrated_cfg)
     pv_cfg = merged_cfg.get("pv", {}) if isinstance(merged_cfg.get("pv"), dict) else {}
-    if "pv_calibration_factor" in pv_cfg:
-        g = float(pv_cfg.get("pv_calibration_factor", 1.0) or 1.0)
-        east_rel = float(pv_cfg.get("pv_calibration_factor_east", 1.0) or 1.0)
-        south_rel = float(pv_cfg.get("pv_calibration_factor_south", 1.0) or 1.0)
-        pv_cfg["pv_calibration_factor_east"] = g * east_rel
-        pv_cfg["pv_calibration_factor_south"] = g * south_rel
-        del pv_cfg["pv_calibration_factor"]
     loss_model = str(pv_cfg.get("loss_model", pv_cfg.get("pv_loss_model", "split"))).strip().lower()
     pv_cfg["loss_model"] = loss_model
     pv_cfg["pv_loss_model"] = loss_model
@@ -929,7 +927,11 @@ def get_offpeak_mask(index: pd.DatetimeIndex, cfg: Optional[dict] = None) -> pd.
         return pd.Series(False, index=normalized, dtype=bool)
 
     if isinstance(cfg, dt.date):
-        return get_offpeak_mask_for_date(normalized, cfg, None)
+        start_dt, end_dt, _hours = _night_offpeak_window_for_charge_date(cfg, None)
+        start_ts = pd.Timestamp(start_dt)
+        end_ts = pd.Timestamp(end_dt)
+        values = (normalized >= start_ts) & (normalized < end_ts)
+        return pd.Series(values, index=normalized, dtype=bool)
 
     values = [in_any_window(ts.time(), get_offpeak_windows_for_date(ts.date(), cfg)) for ts in normalized]
     return pd.Series(values, index=normalized, dtype=bool)
@@ -969,51 +971,59 @@ def get_charge_session_index(charge_date: dt.date, cfg: Optional[dict] = None, s
     hh, mm = (int(v) for v in str(start_hhmm).split(":"))
     session_start = pd.Timestamp(dt.datetime.combine(charge_date, dt.time(hh, mm)), tz=TIMEZONE)
     session_end = session_start + dt.timedelta(days=1)
-    idx = pd.date_range(session_start, session_end, freq="h", inclusive="left", tz=TIMEZONE)
+    idx = pd.date_range(session_start, session_end, freq="h", inclusive="left")
     mask = get_offpeak_mask(idx, cfg)
     return idx[mask.to_numpy()]
 
 
-def compute_charging_window_for_target_date(target_date: dt.date, tariff_cfg: dict) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """
-    Returns (start_ts, end_ts) tz-aware in TIMEZONE for the off-peak window that should be used
-    to charge before target_date.
-    """
-    target_midnight = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=TIMEZONE)
-    charge_date = target_date - dt.timedelta(days=1)
-    charge_midnight = pd.Timestamp(dt.datetime.combine(charge_date, dt.time(0, 0)), tz=TIMEZONE)
+def _night_offpeak_window_for_charge_date(
+    charge_date: dt.date,
+    tariff_cfg: Optional[dict] = None,
+) -> tuple[dt.datetime, dt.datetime, int]:
+    cfg = tariff_cfg or EFFECTIVE_CFG.get("tariff", {})
+    charge_midnight_ts = pd.Timestamp(dt.datetime.combine(charge_date, dt.time(0, 0)), tz=TIMEZONE)
+    next_midnight_ts = charge_midnight_ts + dt.timedelta(days=1)
 
-    def _window_to_interval(base_midnight: pd.Timestamp, start_hhmm: str, end_hhmm: str) -> tuple[pd.Timestamp, pd.Timestamp]:
+    charge_windows = normalize_windows(get_offpeak_windows_for_date(charge_date, cfg))
+    if ("00:00", "24:00") in charge_windows:
+        return charge_midnight_ts.to_pydatetime(), next_midnight_ts.to_pydatetime(), 24
+
+    def _interval_from_base(base: pd.Timestamp, start_hhmm: str, end_hhmm: str) -> tuple[pd.Timestamp, pd.Timestamp]:
         smin = to_minutes(start_hhmm)
         emin = to_minutes(end_hhmm)
-        start_dt = base_midnight + dt.timedelta(minutes=smin)
+        start_dt = base + dt.timedelta(minutes=smin)
         if smin == 0 and emin == 1440:
-            return start_dt, base_midnight + dt.timedelta(days=1)
+            return start_dt, base + dt.timedelta(days=1)
         if smin < emin:
-            end_dt = base_midnight + dt.timedelta(minutes=emin)
-        else:
-            end_dt = base_midnight + dt.timedelta(days=1) + dt.timedelta(minutes=emin)
-        return start_dt, end_dt
+            return start_dt, base + dt.timedelta(minutes=emin)
+        return start_dt, base + dt.timedelta(days=1) + dt.timedelta(minutes=emin)
 
-    charge_windows = normalize_windows(get_offpeak_windows_for_date(charge_date, tariff_cfg))
-    if ("00:00", "24:00") in charge_windows:
-        return charge_midnight, target_midnight
+    crossing_midnight: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    for start_hhmm, end_hhmm in charge_windows:
+        smin = to_minutes(start_hhmm)
+        emin = to_minutes(end_hhmm)
+        if smin > emin:
+            crossing_midnight.append(_interval_from_base(charge_midnight_ts, start_hhmm, end_hhmm))
 
-    intervals = [
-        _window_to_interval(charge_midnight, start_hhmm, end_hhmm)
-        for start_hhmm, end_hhmm in charge_windows
-    ]
-
-    crossing_midnight = [(start_ts, end_ts) for start_ts, end_ts in intervals if start_ts < target_midnight < end_ts]
     if crossing_midnight:
-        return max(crossing_midnight, key=lambda x: x[0])
-
-    target_windows = normalize_windows(get_offpeak_windows_for_date(target_date, tariff_cfg))
-    if target_windows:
+        start_dt, end_dt = max(crossing_midnight, key=lambda interval: interval[0])
+    else:
+        target_date = charge_date + dt.timedelta(days=1)
+        target_windows = normalize_windows(get_offpeak_windows_for_date(target_date, cfg))
+        if not target_windows:
+            return next_midnight_ts.to_pydatetime(), next_midnight_ts.to_pydatetime(), 0
         earliest_start_hhmm, earliest_end_hhmm = min(target_windows, key=lambda x: to_minutes(x[0]))
-        return _window_to_interval(target_midnight, earliest_start_hhmm, earliest_end_hhmm)
+        start_dt, end_dt = _interval_from_base(next_midnight_ts, earliest_start_hhmm, earliest_end_hhmm)
 
-    return target_midnight, target_midnight
+    hours = int(max(0.0, (end_dt - start_dt).total_seconds() // 3600))
+    return start_dt.to_pydatetime(), end_dt.to_pydatetime(), hours
+
+
+
+def compute_charging_window_for_target_date(target_date: dt.date, tariff_cfg: dict) -> tuple[pd.Timestamp, pd.Timestamp]:
+    charge_date = target_date - dt.timedelta(days=1)
+    start_dt, end_dt, _hours = _night_offpeak_window_for_charge_date(charge_date, tariff_cfg)
+    return pd.Timestamp(start_dt), pd.Timestamp(end_dt)
 
 
 def estimate_soc_at_offpeak_start(
@@ -1181,10 +1191,8 @@ def fmt_windows(windows: List[Tuple[str, str]]) -> str:
 
 
 def overnight_charge_hours_summary(charge_date: dt.date, cfg: Optional[dict] = None) -> tuple[float, str]:
-    target_date = charge_date + dt.timedelta(days=1)
-    window_start, window_end = compute_charging_window_for_target_date(target_date, cfg or EFFECTIVE_CFG["tariff"])
-    session_idx = get_charge_session_index_from_window(window_start, window_end)
-    available_charge_hours = float(len(session_idx))
+    window_start, window_end, hours = _night_offpeak_window_for_charge_date(charge_date, cfg)
+    available_charge_hours = float(hours)
     return available_charge_hours, f"{window_start.strftime('%H:%M')}–{window_end.strftime('%H:%M')}: {available_charge_hours:.1f}h off-peak"
 
 
@@ -1288,7 +1296,7 @@ def build_cycle_hourly_load_series(
     total_consumption_kwh: float,
     tariff_cfg: Optional[dict] = None,
 ) -> "pd.Series":
-    cfg = tariff_cfg or DEFAULT_CONFIG["tariff"]
+    cfg = tariff_cfg or EFFECTIVE_CFG["tariff"]
     windows = normalize_windows(get_offpeak_windows_for_date(target_date, cfg))
     all_day = windows == [("00:00", "24:00")]
     if all_day:
@@ -2940,7 +2948,7 @@ def plan_charge_power(
     user_cap_kw: Optional[float] = None,
     tariff_cfg: Optional[dict] = None,
 ) -> Tuple[float, float, str, float]:
-    cfg = tariff_cfg or DEFAULT_CONFIG["tariff"]
+    cfg = tariff_cfg or EFFECTIVE_CFG["tariff"]
     target_date = charge_date + dt.timedelta(days=1)
     window_start, window_end = compute_charging_window_for_target_date(target_date, cfg)
     session_idx = get_charge_session_index_from_window(window_start, window_end)
@@ -3200,12 +3208,15 @@ def simulate_night_charging_series(
     tomorrow_date: Optional[dt.date] = None,
     precomputed_loads: Optional[pd.Series] = None,
 ) -> "pd.DataFrame":
-    cfg = tariff_cfg or DEFAULT_CONFIG["tariff"]
+    cfg = tariff_cfg or EFFECTIVE_CFG["tariff"]
     if session_start is None or session_end is None:
         if tomorrow_date is None:
             raise ValueError("tomorrow_date is required when session_start/session_end are not provided.")
-        session_start, session_end = compute_charging_window_for_target_date(tomorrow_date, cfg)
-    idx = pd.date_range(session_start, session_end, freq="h", inclusive="left", tz=TIMEZONE)
+        charge_date = tomorrow_date - dt.timedelta(days=1)
+        window_start, window_end, _hours = _night_offpeak_window_for_charge_date(charge_date, cfg)
+        session_start = pd.Timestamp(window_start)
+        session_end = pd.Timestamp(window_end)
+    idx = pd.date_range(session_start, session_end, freq="h", inclusive="left")
     if precomputed_loads is not None:
         loads = pd.to_numeric(precomputed_loads.reindex(idx), errors="coerce").fillna(0.0).astype(float)
     else:
@@ -3244,7 +3255,8 @@ def simulate_night_charging_series(
             delivered = discharge * BATTERY_DISCHARGE_EFF
             remaining_load = max(0.0, remaining_load - delivered)
 
-        if bool(get_offpeak_mask(pd.DatetimeIndex([ts]), cfg).iloc[0]) and energy < charge_cutoff_energy - 1e-9:
+        in_overnight_window = (ts >= pd.Timestamp(session_start)) and (ts < pd.Timestamp(session_end))
+        if in_overnight_window and energy < charge_cutoff_energy - 1e-9:
             charge_grid_kwh = min(charge_kw * step_h, BATTERY_MAX_CHARGE_KW * step_h)
             room = max(0.0, min(max_energy, charge_cutoff_energy) - energy)
             charge_to_battery = min(room, charge_grid_kwh * BATTERY_AC_CHARGE_EFF)
@@ -3307,7 +3319,7 @@ def simulate_full_day_soc(
     tomorrow_end = tomorrow_start + dt.timedelta(days=1)
     tomorrow_idx = pd.date_range(tomorrow_start, tomorrow_end, freq="h", inclusive="left", tz=TIMEZONE)
 
-    cfg = tariff_cfg or DEFAULT_CONFIG["tariff"]
+    cfg = tariff_cfg or EFFECTIVE_CFG["tariff"]
     window_start, window_end = compute_charging_window_for_target_date(tomorrow_date, cfg)
 
     cycle_loads = build_cycle_hourly_load_series(tomorrow_date, total_consumption_kwh, tariff_cfg=cfg)
