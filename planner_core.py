@@ -109,6 +109,8 @@ MIN_SOC_PERCENT = 5.0  # minimum SOC (End-of-discharge SOC)
 MIN_SOC = MIN_SOC_PERCENT / 100.0
 MAX_CUTOFF_SOC_PERCENT = 95.0
 MAX_CUTOFF_SOC = MAX_CUTOFF_SOC_PERCENT / 100.0
+BATTERY_MAX_SOC_PERCENT = 100.0
+BATTERY_MAX_SOC = BATTERY_MAX_SOC_PERCENT / 100.0
 
 # Efficiënties (simulatie)
 BATTERY_AC_CHARGE_EFF = 0.93  # net -> batterij
@@ -178,6 +180,7 @@ DEFAULT_CONFIG = {
         "battery_kwh": BATTERY_KWH,
         "min_soc_percent": MIN_SOC_PERCENT,
         "max_cutoff_soc_percent": MAX_CUTOFF_SOC_PERCENT,
+        "battery_max_soc_percent": BATTERY_MAX_SOC_PERCENT,
         "battery_max_charge_kw": BATTERY_MAX_CHARGE_KW,
         "battery_max_discharge_kw": BATTERY_MAX_DISCHARGE_KW,
         "max_ac_charge_kw_hard_limit": MAX_AC_CHARGE_KW_HARD_LIMIT,
@@ -400,12 +403,17 @@ def validate_config(cfg: dict) -> None:
 
     min_soc_percent = float(battery["min_soc_percent"])
     max_cutoff_soc_percent = float(battery["max_cutoff_soc_percent"])
+    battery_max_soc_percent = float(battery.get("battery_max_soc_percent", 100.0))
     if not (0.0 <= min_soc_percent <= 100.0):
         raise ValueError("battery.min_soc_percent must be in [0, 100].")
     if not (0.0 <= max_cutoff_soc_percent <= 100.0):
         raise ValueError("battery.max_cutoff_soc_percent must be in [0, 100].")
+    if not (0.0 <= battery_max_soc_percent <= 100.0):
+        raise ValueError("battery.battery_max_soc_percent must be in [0, 100].")
     if min_soc_percent > max_cutoff_soc_percent:
         raise ValueError("battery.min_soc_percent must be <= battery.max_cutoff_soc_percent.")
+    if max_cutoff_soc_percent > battery_max_soc_percent:
+        raise ValueError("battery.max_cutoff_soc_percent must be <= battery.battery_max_soc_percent.")
 
     profile = load_profile["load_profile_24h"]
     if not isinstance(profile, list) or len(profile) != 24:
@@ -475,9 +483,9 @@ def apply_config(cfg: dict) -> None:
     global TILT_EAST_DEG, TILT_SOUTH_DEG, AZIMUTH_EAST_DEG, AZIMUTH_SOUTH_DEG
     global PERFORMANCE_RATIO, INVERTER_EFF, PV_LOSS_MODEL, PV_IAM_MODEL, PV_IAM_ASHRAE_B, PV_ALBEDO, INVERTER_AC_MODEL
     global PV_CALIBRATION_FACTOR, PV_CALIBRATION_FACTOR_EAST, PV_CALIBRATION_FACTOR_SOUTH, INVERTER_AC_KW_LIMIT
-    global BATTERY_KWH, MIN_SOC_PERCENT, MAX_CUTOFF_SOC_PERCENT
+    global BATTERY_KWH, MIN_SOC_PERCENT, MAX_CUTOFF_SOC_PERCENT, BATTERY_MAX_SOC_PERCENT
     global BATTERY_MAX_CHARGE_KW, BATTERY_MAX_DISCHARGE_KW, MAX_AC_CHARGE_KW_HARD_LIMIT
-    global LOAD_PROFILE, MIN_SOC, MAX_CUTOFF_SOC, EFFECTIVE_CFG, OFFPEAK_WINDOWS_BY_DOW
+    global LOAD_PROFILE, MIN_SOC, MAX_CUTOFF_SOC, BATTERY_MAX_SOC, EFFECTIVE_CFG, OFFPEAK_WINDOWS_BY_DOW
     global PEAK_GRID_PRICE_EUR_PER_KWH, OFFPEAK_GRID_PRICE_EUR_PER_KWH, INJECTION_GRID_PRICE_EUR_PER_KWH
     global ENABLE_INVARIANT_CHECKS
 
@@ -502,12 +510,18 @@ def apply_config(cfg: dict) -> None:
     AZIMUTH_EAST_DEG = float(pv["azimuth_east_deg"])
     AZIMUTH_SOUTH_DEG = float(pv["azimuth_south_deg"])
     PERFORMANCE_RATIO = float(pv["performance_ratio"])
-    INVERTER_EFF = 0.97
-    PV_LOSS_MODEL = "split"
-    PV_IAM_MODEL = "ashrae"
-    PV_IAM_ASHRAE_B = 0.05
-    PV_ALBEDO = 0.20
-    INVERTER_AC_MODEL = "pvwatts"
+    INVERTER_EFF = float(pv.get("inverter_eff", INVERTER_EFF))
+    PV_LOSS_MODEL = str(pv.get("pv_loss_model", pv.get("loss_model", PV_LOSS_MODEL))).strip().lower()
+    PV_IAM_MODEL = str(pv.get("iam_model", PV_IAM_MODEL)).strip().lower()
+    PV_IAM_ASHRAE_B = float(pv.get("iam_ashrae_b", PV_IAM_ASHRAE_B) or PV_IAM_ASHRAE_B)
+    PV_ALBEDO = None if pv.get("albedo") is None else float(pv.get("albedo"))
+    INVERTER_AC_MODEL = str(pv.get("inverter_ac_model", INVERTER_AC_MODEL)).strip().lower()
+    if PV_LOSS_MODEL not in {"split", "combined"}:
+        raise ValueError("pv.pv_loss_model must be one of {'split', 'combined'}.")
+    if INVERTER_AC_MODEL not in {"linear", "pvwatts"}:
+        raise ValueError("pv.inverter_ac_model must be one of {'linear', 'pvwatts'}.")
+    if PV_IAM_MODEL not in {"none", "ashrae"}:
+        raise ValueError("pv.iam_model must be one of {'none', 'ashrae'}.")
     PV_CALIBRATION_FACTOR = float(pv.get("pv_calibration_factor", 1.0) or 1.0)
     base_calibration_factor_east_raw = pv.get("pv_calibration_factor_east", 1.0)
     base_calibration_factor_south_raw = pv.get("pv_calibration_factor_south", 1.0)
@@ -520,6 +534,7 @@ def apply_config(cfg: dict) -> None:
     BATTERY_KWH = float(battery["battery_kwh"])
     MIN_SOC_PERCENT = float(battery["min_soc_percent"])
     MAX_CUTOFF_SOC_PERCENT = float(battery["max_cutoff_soc_percent"])
+    BATTERY_MAX_SOC_PERCENT = float(battery.get("battery_max_soc_percent", 100.0))
     BATTERY_MAX_CHARGE_KW = float(battery["battery_max_charge_kw"])
     BATTERY_MAX_DISCHARGE_KW = float(battery["battery_max_discharge_kw"])
     MAX_AC_CHARGE_KW_HARD_LIMIT = float(battery["max_ac_charge_kw_hard_limit"])
@@ -532,6 +547,7 @@ def apply_config(cfg: dict) -> None:
     ENABLE_INVARIANT_CHECKS = bool(system.get("enable_invariant_checks", ENABLE_INVARIANT_CHECKS))
     MIN_SOC = MIN_SOC_PERCENT / 100.0
     MAX_CUTOFF_SOC = MAX_CUTOFF_SOC_PERCENT / 100.0
+    BATTERY_MAX_SOC = BATTERY_MAX_SOC_PERCENT / 100.0
     EFFECTIVE_CFG = copy.deepcopy(cfg)
 
 
@@ -609,7 +625,7 @@ def validate_flow_invariants(flows_df: "pd.DataFrame", context: str, *, tol: flo
         return
 
     soc_lo = (MIN_SOC * 100.0) - tol
-    soc_hi = (MAX_CUTOFF_SOC * 100.0) + tol
+    soc_hi = (BATTERY_MAX_SOC * 100.0) + tol
 
     def _as_float(row: "pd.Series", col: str) -> float:
         return float(row[col]) if col in row else 0.0
@@ -1714,7 +1730,7 @@ def quick_sanity_checks() -> None:
         assert BATTERY_MAX_CHARGE_KW > 0
         assert BATTERY_MAX_DISCHARGE_KW > 0
         assert 0 <= MIN_SOC < 1
-        assert MIN_SOC <= MAX_CUTOFF_SOC <= 1
+        assert MIN_SOC <= MAX_CUTOFF_SOC <= BATTERY_MAX_SOC <= 1
         assert len(LOAD_PROFILE) == 24
         assert sum(LOAD_PROFILE) > 0
     except AssertionError as exc:
@@ -3040,7 +3056,7 @@ def simulate_expensive_hours_detailed(
 
     energy = max(min(start_soc, 1.0), 0.0) * BATTERY_KWH
     min_energy = MIN_SOC * BATTERY_KWH
-    max_energy = MAX_CUTOFF_SOC * BATTERY_KWH
+    max_energy = BATTERY_MAX_SOC * BATTERY_KWH
 
     rows = []
     grid_import_total = 0.0
@@ -3237,7 +3253,7 @@ def simulate_night_charging_series(
         loads = pd.to_numeric(cycle_loads.reindex(idx), errors="coerce").fillna(0.0).astype(float)
     energy = max(0.0, min(1.0, soc_at_22)) * BATTERY_KWH
     min_energy = MIN_SOC * BATTERY_KWH
-    max_energy = MAX_CUTOFF_SOC * BATTERY_KWH
+    max_energy = BATTERY_MAX_SOC * BATTERY_KWH
     charge_cutoff_energy = min(MAX_CUTOFF_SOC, max(MIN_SOC, cutoff_soc)) * BATTERY_KWH
     night_load_from_battery = should_use_battery_for_offpeak_load(cfg)
     max_grid_import_kw = float((cfg or {}).get("max_grid_import_kw", 0.0))
@@ -3367,7 +3383,7 @@ def simulate_full_day_soc(
 
     energy = max(0.0, min(1.0, soc_day_start)) * BATTERY_KWH
     min_energy = MIN_SOC * BATTERY_KWH
-    max_energy = MAX_CUTOFF_SOC * BATTERY_KWH
+    max_energy = BATTERY_MAX_SOC * BATTERY_KWH
     charge_cutoff_energy = min(MAX_CUTOFF_SOC, max(MIN_SOC, cutoff_soc)) * BATTERY_KWH
 
     rows = []
