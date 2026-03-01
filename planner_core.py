@@ -2245,7 +2245,7 @@ def estimate_pv_with_pvlib(
 
             return _agg_hour(e15), _agg_hour(s15), _agg_hour(t15u), _agg_hour(t15c)
         except Exception as exc:
-            warnings.warn(f"15-min PV aggregation failed, falling back to hourly path: {exc}", RuntimeWarning)
+            logger.warning("15-min PV aggregation failed, falling back to hourly path: %s", exc)
 
     solpos = pvloc.get_solarposition(times)
     dni_extra = pvlib.irradiance.get_extra_radiation(times)

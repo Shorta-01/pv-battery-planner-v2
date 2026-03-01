@@ -1357,7 +1357,7 @@ def _compute_allow_synth_mask(weather_ok: dict, canonical_index: pd.DatetimeInde
 
     if any_native_ghi is None:
         return pd.Series(True, index=canonical_index, dtype=bool)
-    return (~any_native_ghi).reindex(canonical_index).fillna(False).astype(bool)
+    return (~any_native_ghi).reindex(canonical_index, fill_value=False).astype(bool)
 
 
 def historical_forecast_params(model_id: str) -> tuple[str, dict[str, Any]]:
@@ -2398,7 +2398,7 @@ def build_ensemble_forecast(
         overlap_hours_by_model[model_id] = int(len(overlap_index))
         model_weather_df = weather.df.reindex(canonical_index).copy()
         pv_input_df = model_weather_df.loc[overlap_index].copy() if len(overlap_index) else model_weather_df.iloc[:0].copy()
-        allow_mask_for_model = allow_synth_mask.reindex(pv_input_df.index).fillna(False).astype(bool)
+        allow_mask_for_model = allow_synth_mask.reindex(pv_input_df.index, fill_value=False).astype(bool)
         try:
             model_pv = core.build_pv_forecast(
                 pv_input_df,
