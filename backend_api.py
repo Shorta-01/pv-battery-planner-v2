@@ -944,23 +944,8 @@ class BackendState:
             self.settings["nightly_run_time"] = DEFAULT_NIGHTLY_TIME
             changed = True
 
-        cfg = self.settings.get("config") if isinstance(self.settings, dict) else None
-        loc_cfg = cfg.get("location") if isinstance(cfg, dict) else None
-        if isinstance(loc_cfg, dict):
-            raw_lat = loc_cfg.get("latitude")
-            raw_lon = loc_cfg.get("longitude")
-            try:
-                lat = float(raw_lat)
-                lon = float(raw_lon)
-            except (TypeError, ValueError):
-                lat = None
-                lon = None
-            has_elevation = loc_cfg.get("elevation_m") is not None
-            if lat is not None and lon is not None and not has_elevation:
-                elevation_m = _fetch_elevation_m(lat, lon)
-                if elevation_m is not None:
-                    loc_cfg["elevation_m"] = float(elevation_m)
-                    changed = True
+        # Do not auto-fetch elevation here. Settings sanitization should be deterministic and
+        # free of network side effects during BackendState initialization.
 
         self.settings_sanitized_warnings = warnings
         if changed:
