@@ -23,6 +23,7 @@ import copy
 import os
 import tempfile
 import warnings
+import logging
 import datetime as dt
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -51,6 +52,7 @@ except Exception:
     PVLIB_AVAILABLE = False
 
 PRINT_MODE = "compact"
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # CONSTANTS
@@ -388,11 +390,9 @@ def validate_config(cfg: dict) -> None:
 
     loss_combo = float(pv["performance_ratio"]) * float(pv["inverter_eff"])
     if loss_combo < 0.65 or loss_combo > 0.95:
-        warnings.warn(
-            "Suspicious PV loss settings: performance_ratio * inverter_eff "
-            f"= {loss_combo:.3f} (expected about 0.65..0.95).",
-            RuntimeWarning,
-            stacklevel=2,
+        logger.warning(
+            "Suspicious PV loss settings: performance_ratio * inverter_eff = %.3f (expected about 0.65..0.95).",
+            loss_combo,
         )
     array_south_panels = int(pv["array_south_panels"])
     array_east_panels = int(pv["array_east_panels"])
@@ -597,10 +597,8 @@ def build_effective_config(user_cfg: dict) -> dict:
     pv_cfg["loss_model"] = loss_model
     pv_cfg["pv_loss_model"] = loss_model
     if loss_model == "combined" and abs(float(pv_cfg.get("inverter_eff", 1.0)) - 1.0) > 1e-9:
-        warnings.warn(
-            "pv.loss_model='combined' already includes inverter losses; forcing pv.inverter_eff=1.0 to avoid double-counting.",
-            RuntimeWarning,
-            stacklevel=2,
+        logger.warning(
+            "pv.loss_model='combined' already includes inverter losses; forcing pv.inverter_eff=1.0 to avoid double-counting."
         )
         pv_cfg["inverter_eff"] = 1.0
     validate_config(merged_cfg)

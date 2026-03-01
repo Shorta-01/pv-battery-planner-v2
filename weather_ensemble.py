@@ -1756,7 +1756,7 @@ def fetch_open_meteo_weather(
     expected_index = local_horizon_hourly_index(target_date, tz, horizon_days)
     df = df.reindex(expected_index)
 
-    availability = availability.reindex(df.index).fillna(False).astype(bool)
+    availability = availability.reindex(df.index, fill_value=False).astype(bool)
     for col in ["ghi_wm2", "dni_wm2", "dhi_wm2"]:
         df.loc[~availability[col], col] = np.nan
 
