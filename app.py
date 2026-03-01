@@ -140,26 +140,26 @@ WEATHER_MODEL_HOVERTEXT = {
 }
 
 BADGE_META = {
-    "🏅": {"label": "CORE", "tip": "Core model. Recommended default for Belgium."},
+    "\U0001F3C5": {"label": "CORE", "tip": "Core model. Recommended default for Belgium."},
     "📡": {"label": "HI-RES", "tip": "High-resolution (local). Best for short-term local cloud timing, which often improves PV ramps and hour-to-hour changes."},
     "🇪🇺": {"label": "EU", "tip": "Regional (Europe-scale). A good second opinion that is usually smoother and more stable than high-resolution models."},
     "🌐": {"label": "GLOBAL", "tip": "Global. Stable big-picture baseline for fronts and the overall weather pattern."},
     "☀": {"label": "SOLAR+", "tip": "Best PV inputs. This model provides the main solar irradiance fields directly, which usually improves PV accuracy."},
     "∑": {"label": "SOLAR∼", "tip": "Derived PV inputs. Some solar irradiance fields are missing, so we estimate them. PV still works, but accuracy can drop on difficult cloud days."},
-    "⏱": {"label": "15m", "tip": "Uses 15-minute solar radiation (then aggregated to hourly). Can improve the PV curve shape when clouds change quickly."},
+    "\u23F1": {"label": "15m", "tip": "Uses 15-minute solar radiation (then aggregated to hourly). Can improve the PV curve shape when clouds change quickly."},
     "🗓": {"label": "LONG RANGE", "tip": "Long range horizon. This model can provide forecasts far beyond tomorrow (up to its max days)."},
 }
 
 BADGE_ALIASES = {
-    "⭐": "🏅",
+    "⭐": "\U0001F3C5",
     "🔎": "📡",
     "🗺": "🇪🇺",
     "🌍": "🌐",
     "🟩": "☀",
     "🧩": "∑",
-    "☀️": "☀",
-    "⏱️": "⏱",
-    "🗓️": "🗓",
+    "☀": "☀",
+    "\u23F1": "\u23F1",
+    "🗓": "🗓",
 }
 
 
@@ -1327,14 +1327,14 @@ def _limiter_icons_html(
         ("user", "👤", f"User cap: {float(user_cap_kw):.2f} kW"),
         ("inverter", "🔌", f"Inverter limit: {float(inverter_ac_kw_limit):.2f} kW"),
         ("battery", "🔋", f"Battery limit: {float(battery_max_charge_kw):.2f} kW"),
-        ("hard limit", "🛡️", f"Hard limit: {float(hard_limit_kw):.2f} kW"),
+        ("hard limit", "🛡", f"Hard limit: {float(hard_limit_kw):.2f} kW"),
     ]
     icons = [
         _icon_html(icon, tip, dim=(active != key))
         for key, icon, tip in icon_specs
     ]
     info_tip = f"Effective limit: {float(effective_limit):.2f} kW; Limiter: {limiter_reason or 'unknown'}"
-    icons.append(_icon_html("ℹ️", info_tip))
+    icons.append(_icon_html("ℹ", info_tip))
     return (
         "<div style='display:flex;align-items:center;gap:0.40rem;font-size:0.90rem;'>"
         + "".join(icons)
@@ -1921,7 +1921,7 @@ def render_offpeak_plan_summary(
         status=forecast_status,
         attempted_models=attempted_models,
     )
-    weather_icon = {"ok": "✅", "warn": "⚠️", "fail": "❌"}.get(weather_level)
+    weather_icon = {"ok": "✅", "warn": "⚠", "fail": "❌"}.get(weather_level)
     weather_status_html = (
         f"<span title=\"{_esc_attr(weather_tip)}\" style='font-size:1.00rem;cursor:help;line-height:1;'>{weather_icon}</span>"
         if weather_icon
@@ -3820,7 +3820,7 @@ with left:
         with fs_label_col:
             st.caption("FusionSolar setup")
         with fs_icon_col:
-            st.markdown(f"<span title='{_esc(fs_tip)}'>ℹ️</span>", unsafe_allow_html=True)
+            st.markdown(f"<span title='{_esc(fs_tip)}'>ℹ</span>", unsafe_allow_html=True)
 
         if cfg_cc_enabled and (cfg_cc_user.strip() == "") and (cfg_cc_pass == ""):
             ui_warning("OCPP authentication is disabled (username/password empty). This is OK on a private LAN only.")
@@ -4009,7 +4009,7 @@ with left:
                         f"""
                         <div style='display:inline-flex;align-items:center;gap:0.30rem;line-height:1.2;'>
                           <span><strong>OCPP:</strong> {html.escape(ocpp_badge)} · <strong>State:</strong> {html.escape(state_label)}</span>
-                          <span class='pvbp-tip' tabindex='0' style='display:inline-flex;align-items:center;line-height:1;font-size:0.90rem;'>ℹ️
+                          <span class='pvbp-tip' tabindex='0' style='display:inline-flex;align-items:center;line-height:1;font-size:0.90rem;'>ℹ
                             <span class='pvbp-tiptext'>{disconnected_tip}</span>
                           </span>
                         </div>
