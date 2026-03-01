@@ -1038,6 +1038,24 @@ def _night_offpeak_window_for_charge_date(
 
     charge_windows = normalize_windows(get_offpeak_windows_for_date(charge_date, cfg))
     if ("00:00", "24:00") in charge_windows:
+        target_date = charge_date + dt.timedelta(days=1)
+        target_windows = normalize_windows(get_offpeak_windows_for_date(target_date, cfg))
+        if ("00:00", "24:00") not in target_windows:
+            target_crossing_midnight: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+            for start_hhmm, end_hhmm in target_windows:
+                smin = to_minutes(start_hhmm)
+                emin = to_minutes(end_hhmm)
+                if smin > emin:
+                    target_crossing_midnight.append(
+                        (
+                            charge_midnight_ts + dt.timedelta(minutes=smin),
+                            next_midnight_ts + dt.timedelta(minutes=emin),
+                        )
+                    )
+            if target_crossing_midnight:
+                start_dt, end_dt = max(target_crossing_midnight, key=lambda interval: interval[0])
+                hours = int(max(0.0, (end_dt - start_dt).total_seconds() // 3600))
+                return start_dt.to_pydatetime(), end_dt.to_pydatetime(), hours
         return charge_midnight_ts.to_pydatetime(), next_midnight_ts.to_pydatetime(), 24
 
     def _interval_from_base(base: pd.Timestamp, start_hhmm: str, end_hhmm: str) -> tuple[pd.Timestamp, pd.Timestamp]:
@@ -1491,7 +1509,46 @@ def compute_euro_savings_no_battery_vs_plan(
     pv_plan_col_used = "pv_total_decision_kwh" if "pv_total_decision_kwh" in pv_df.columns else "pv_total_kwh"
 
     dt_h_cycle = timestep_hours(idx_cycle)
-    pv_cycle = pd.to_numeric(pv_df[pv_baseline_col_used].reindex(idx_cycle), errors="coerce").fillna(0.0).astype(float)
+    pv_raw_cycle = pd.to_numeric(pv_df[pv_baseline_col_used].reindex(idx_cycle), errors="coerce")
+    missing_cycle = pv_raw_cycle.isna()
+
+    savings_cycle_valid = True
+    savings_cycle_invalid_reason = ""
+    savings_preferred_scope = "cycle"
+
+    missing_cycle_daylight = pd.Series(False, index=idx_cycle, dtype=bool)
+    if bool(missing_cycle.any()):
+        missing_idx = idx_cycle[missing_cycle]
+        if PVLIB_AVAILABLE and len(missing_idx) > 0:
+            loc_cfg = EFFECTIVE_CFG.get("location", {})
+            loc = Location(
+                name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
+                latitude=float(loc_cfg.get("latitude", LATITUDE)),
+                longitude=float(loc_cfg.get("longitude", LONGITUDE)),
+                elevation_m=float(loc_cfg["elevation_m"]) if loc_cfg.get("elevation_m") is not None else None,
+            )
+            missing_elevation = compute_solar_elevation_series(missing_idx, loc)
+            missing_cycle_daylight.loc[missing_idx] = pd.to_numeric(missing_elevation, errors="coerce").fillna(-90.0) > 0.0
+        else:
+            for ts in missing_idx:
+                missing_cycle_daylight.loc[ts] = int(ts.hour) not in {0, 1, 2, 3, 4, 5, 21, 22, 23}
+
+    missing_cycle_daylight_count = int(missing_cycle_daylight.sum())
+    if missing_cycle_daylight_count > 0:
+        savings_cycle_valid = False
+        savings_preferred_scope = "tomorrow"
+        savings_cycle_invalid_reason = "Missing PV forecast for daylight hours in savings horizon"
+
+    idx_post = idx_cycle[idx_cycle >= tomorrow_start]
+    if len(idx_post) == 0:
+        savings_cycle_valid = False
+        savings_preferred_scope = "tomorrow"
+        savings_cycle_invalid_reason = "Cycle horizon contains no target_date hours; cannot use tomorrow PV forecast"
+
+    pv_cycle = pv_raw_cycle.copy()
+    night_missing_mask = missing_cycle & ~missing_cycle_daylight
+    pv_cycle.loc[night_missing_mask] = 0.0
+    pv_cycle = pv_cycle.fillna(0.0).astype(float)
     load_cycle = pd.Series(
         [load_kwh_at(ts, total_consumption_kwh, float(dt_h_cycle.loc[ts])) for ts in idx_cycle],
         index=idx_cycle,
@@ -1509,7 +1566,6 @@ def compute_euro_savings_no_battery_vs_plan(
     plan_soc_end_cycle = pd.Series(np.nan, index=idx_cycle, dtype=float)
 
     idx_pre = idx_cycle[idx_cycle < tomorrow_start]
-    idx_post = idx_cycle[idx_cycle >= tomorrow_start]
 
     night_df = simulate_night_charging_series(
         soc_at_22,
@@ -1709,6 +1765,11 @@ def compute_euro_savings_no_battery_vs_plan(
         "savings_night_load_from_battery_used": bool(should_use_battery_for_offpeak_load(tariff_cfg)),
         "savings_cycle_window_start_local": cycle_start.isoformat(),
         "savings_cycle_window_end_local": cycle_end.isoformat(),
+        "savings_cycle_valid": bool(savings_cycle_valid),
+        "savings_cycle_invalid_reason": str(savings_cycle_invalid_reason),
+        "savings_preferred_scope": str(savings_preferred_scope),
+        "savings_cycle_missing_pv_hours": int(missing_cycle.sum()),
+        "savings_cycle_missing_pv_daylight_hours": int(missing_cycle_daylight_count),
     }
 
     diagnostics_defaults = {
