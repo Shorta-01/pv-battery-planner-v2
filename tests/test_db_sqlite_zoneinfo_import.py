@@ -26,7 +26,8 @@ def test_fetch_effective_daily_kwh_works_without_zoneinfo_nameerror():
             ),
         ]
 
-        with sqlite3.connect(path) as conn:
+        conn = sqlite3.connect(path)
+        try:
             conn.executemany(
                 """
                 INSERT INTO forecast_runs (
@@ -36,6 +37,8 @@ def test_fetch_effective_daily_kwh_works_without_zoneinfo_nameerror():
                 [(rid, run_at[:10], run_at, ykwh) for rid, run_at, ykwh in rows],
             )
             conn.commit()
+        finally:
+            conn.close()
 
         value, meta = fetch_effective_daily_kwh(path, lookback_runs=14)
 
