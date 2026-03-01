@@ -85,6 +85,14 @@ PV_IAM_MODEL = "ashrae"
 PV_IAM_ASHRAE_B = 0.05
 PV_ALBEDO: float | None = 0.20
 INVERTER_AC_MODEL = "pvwatts"
+ENFORCED_PV_DEFAULTS = {
+    "inverter_eff": 0.97,
+    "pv_loss_model": "split",
+    "iam_model": "ashrae",
+    "iam_ashrae_b": 0.05,
+    "albedo": 0.20,
+    "inverter_ac_model": "pvwatts",
+}
 PV_CALIBRATION_FACTOR = 1.00
 PV_CALIBRATION_FACTOR_EAST = 1.00
 PV_CALIBRATION_FACTOR_SOUTH = 1.00
@@ -477,7 +485,7 @@ def validate_config(cfg: dict) -> None:
         raise ValueError("weather.dynamic_weights.min_days must be > 0.")
 
 
-def apply_config(cfg: dict) -> None:
+def _apply_config_impl(cfg: dict, enforce_pv_defaults: bool) -> None:
     global USE_GEOCODING, ADDRESS_QUERY, LATITUDE, LONGITUDE, TIMEZONE
     global PANEL_WP, ARRAY_SOUTH_PANELS, ARRAY_EAST_PANELS
     global TILT_EAST_DEG, TILT_SOUTH_DEG, AZIMUTH_EAST_DEG, AZIMUTH_SOUTH_DEG
@@ -510,12 +518,27 @@ def apply_config(cfg: dict) -> None:
     AZIMUTH_EAST_DEG = float(pv["azimuth_east_deg"])
     AZIMUTH_SOUTH_DEG = float(pv["azimuth_south_deg"])
     PERFORMANCE_RATIO = float(pv["performance_ratio"])
-    INVERTER_EFF = float(pv.get("inverter_eff", INVERTER_EFF))
-    PV_LOSS_MODEL = str(pv.get("pv_loss_model", pv.get("loss_model", PV_LOSS_MODEL))).strip().lower()
-    PV_IAM_MODEL = str(pv.get("iam_model", PV_IAM_MODEL)).strip().lower()
-    PV_IAM_ASHRAE_B = float(pv.get("iam_ashrae_b", PV_IAM_ASHRAE_B) or PV_IAM_ASHRAE_B)
-    PV_ALBEDO = None if pv.get("albedo") is None else float(pv.get("albedo"))
-    INVERTER_AC_MODEL = str(pv.get("inverter_ac_model", INVERTER_AC_MODEL)).strip().lower()
+    if enforce_pv_defaults:
+        INVERTER_EFF = float(ENFORCED_PV_DEFAULTS["inverter_eff"])
+        PV_LOSS_MODEL = str(ENFORCED_PV_DEFAULTS["pv_loss_model"]).strip().lower()
+        PV_IAM_MODEL = str(ENFORCED_PV_DEFAULTS["iam_model"]).strip().lower()
+        PV_IAM_ASHRAE_B = float(ENFORCED_PV_DEFAULTS["iam_ashrae_b"])
+        PV_ALBEDO = float(ENFORCED_PV_DEFAULTS["albedo"])
+        INVERTER_AC_MODEL = str(ENFORCED_PV_DEFAULTS["inverter_ac_model"]).strip().lower()
+        pv["inverter_eff"] = INVERTER_EFF
+        pv["loss_model"] = PV_LOSS_MODEL
+        pv["pv_loss_model"] = PV_LOSS_MODEL
+        pv["iam_model"] = PV_IAM_MODEL
+        pv["iam_ashrae_b"] = PV_IAM_ASHRAE_B
+        pv["albedo"] = PV_ALBEDO
+        pv["inverter_ac_model"] = INVERTER_AC_MODEL
+    else:
+        INVERTER_EFF = float(pv.get("inverter_eff", INVERTER_EFF))
+        PV_LOSS_MODEL = str(pv.get("pv_loss_model", pv.get("loss_model", PV_LOSS_MODEL))).strip().lower()
+        PV_IAM_MODEL = str(pv.get("iam_model", PV_IAM_MODEL)).strip().lower()
+        PV_IAM_ASHRAE_B = float(pv.get("iam_ashrae_b", PV_IAM_ASHRAE_B) or ENFORCED_PV_DEFAULTS["iam_ashrae_b"])
+        PV_ALBEDO = None if pv.get("albedo") is None else float(pv.get("albedo"))
+        INVERTER_AC_MODEL = str(pv.get("inverter_ac_model", INVERTER_AC_MODEL)).strip().lower()
     if PV_LOSS_MODEL not in {"split", "combined"}:
         raise ValueError("pv.pv_loss_model must be one of {'split', 'combined'}.")
     if INVERTER_AC_MODEL not in {"linear", "pvwatts"}:
@@ -549,6 +572,10 @@ def apply_config(cfg: dict) -> None:
     MAX_CUTOFF_SOC = MAX_CUTOFF_SOC_PERCENT / 100.0
     BATTERY_MAX_SOC = BATTERY_MAX_SOC_PERCENT / 100.0
     EFFECTIVE_CFG = copy.deepcopy(cfg)
+
+
+def apply_config(cfg: dict) -> None:
+    _apply_config_impl(cfg, True)
 
 
 def build_effective_config(user_cfg: dict) -> dict:
@@ -595,11 +622,11 @@ def applied_config(cfg: dict):
     effective_cfg = build_effective_config(cfg)
     with _CONFIG_STATE_LOCK:
         previous_cfg = get_effective_config()
-        apply_config(effective_cfg)
+        _apply_config_impl(effective_cfg, False)
         try:
             yield effective_cfg
         finally:
-            apply_config(previous_cfg)
+            _apply_config_impl(previous_cfg, False)
 
 
 def get_effective_config() -> dict:
