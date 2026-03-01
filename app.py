@@ -143,7 +143,7 @@ BADGE_META = {
     "\U0001F3C5": {"label": "CORE", "tip": "Core model. Recommended default for Belgium."},
     "📡": {"label": "HI-RES", "tip": "High-resolution (local). Best for short-term local cloud timing, which often improves PV ramps and hour-to-hour changes."},
     "🇪🇺": {"label": "EU", "tip": "Regional (Europe-scale). A good second opinion that is usually smoother and more stable than high-resolution models."},
-    "🌐": {"label": "GLOBAL", "tip": "Global. Stable big-picture baseline for fronts and the overall weather pattern."},
+    "\U0001F310": {"label": "GLOBAL", "tip": "Global. Stable big-picture baseline for fronts and the overall weather pattern."},
     "☀": {"label": "SOLAR+", "tip": "Best PV inputs. This model provides the main solar irradiance fields directly, which usually improves PV accuracy."},
     "∑": {"label": "SOLAR∼", "tip": "Derived PV inputs. Some solar irradiance fields are missing, so we estimate them. PV still works, but accuracy can drop on difficult cloud days."},
     "\u23F1": {"label": "15m", "tip": "Uses 15-minute solar radiation (then aggregated to hourly). Can improve the PV curve shape when clouds change quickly."},
@@ -151,10 +151,10 @@ BADGE_META = {
 }
 
 BADGE_ALIASES = {
-    "⭐": "\U0001F3C5",
+    "\u2B50": "\U0001F3C5",
     "🔎": "📡",
     "🗺": "🇪🇺",
-    "🌍": "🌐",
+    "\U0001F30D": "\U0001F310",
     "🟩": "☀",
     "🧩": "∑",
     "☀": "☀",
@@ -774,7 +774,7 @@ def last_run_status_badge(model_id: str) -> tuple[str | None, str]:
         parts.append(f"Category: {category}")
         if status is not None:
             parts.append(f"HTTP status: {status}")
-        return ("❌", " ".join(parts))
+        return ("\u274C", " ".join(parts))
 
     missing = list(missing_by.get(model_id) or [])
     derived = bool(derived_by.get(model_id))
@@ -785,7 +785,7 @@ def last_run_status_badge(model_id: str) -> tuple[str | None, str]:
             parts.append("Missing: " + ", ".join(missing) + ".")
         if derived:
             parts.append("Solar irradiance components were derived/approximated.")
-        return ("⚠", " ".join(parts))
+        return ("\u26A0", " ".join(parts))
 
     return (None, "")
 
@@ -1041,7 +1041,7 @@ def render_pv_week_ahead_widget(items: list[dict]) -> None:
         models_used = item.get("weather_icon_models_used")
 
         label_txt = weather_code_to_label(code_value)
-        icon = weather_code_to_icon(code_value) or "❔"
+        icon = weather_code_to_icon(code_value) or "\u2754"
 
         icon_tooltip = (
             f"WMO: {code_value} ({label_txt})"
@@ -1921,7 +1921,7 @@ def render_offpeak_plan_summary(
         status=forecast_status,
         attempted_models=attempted_models,
     )
-    weather_icon = {"ok": "✅", "warn": "⚠", "fail": "❌"}.get(weather_level)
+    weather_icon = {"ok": "\u2705", "warn": "\u26A0", "fail": "\u274C"}.get(weather_level)
     weather_status_html = (
         f"<span title=\"{_esc_attr(weather_tip)}\" style='font-size:1.00rem;cursor:help;line-height:1;'>{weather_icon}</span>"
         if weather_icon
@@ -2192,11 +2192,11 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
         status_raw = str(item.get("status") or "").strip().lower()
         warnings_count = int(item.get("warnings_count") or 0)
         if status_raw == "error":
-            status_label = "❌ Error"
+            status_label = "\u274C Error"
         elif status_raw == "degraded" or warnings_count > 0:
-            status_label = "⚠ Degraded"
+            status_label = "\u26A0 Degraded"
         else:
-            status_label = "✅ OK"
+            status_label = "\u2705 OK"
 
         models_summary = item.get("models_summary") if isinstance(item.get("models_summary"), dict) else {}
         models_list = models_summary.get("selected_models") if isinstance(models_summary, dict) else []
@@ -2971,7 +2971,7 @@ def _render_history_log_block() -> None:
             with f1:
                 selected_date_range = st.date_input("Date range", value=(date_min, date_max), min_value=date_min, max_value=date_max)
             with f2:
-                status_options = ["✅ OK", "⚠ Degraded", "❌ Error"]
+                status_options = ["\u2705 OK", "\u26A0 Degraded", "\u274C Error"]
                 status_filter = st.multiselect("Status", options=status_options, default=status_options)
 
             run_type_filter: list[str] | None = None
@@ -3043,7 +3043,7 @@ def _render_history_log_block() -> None:
                     display_df = display_df.drop(columns=["Run at"])
 
             display_df["Allowed AC charge power"] = display_df["Charge"]
-            display_df["Warnings badge"] = display_df["warnings_count"].apply(lambda n: f"⚠ {int(n)}" if int(n or 0) > 0 else "✅ 0")
+            display_df["Warnings badge"] = display_df["warnings_count"].apply(lambda n: f"\u26A0 {int(n)}" if int(n or 0) > 0 else "\u2705 0")
             pv_p10_vals = pd.to_numeric(display_df["PV p10"], errors="coerce")
             pv_p90_vals = pd.to_numeric(display_df["PV p90"], errors="coerce")
             pv_range_width = (pv_p90_vals - pv_p10_vals).round(2)
@@ -3667,7 +3667,7 @@ with left:
             except ValueError as exc:
                 message = html.escape(f"{day_name}: {exc}", quote=True)
                 to_inner[1].markdown(
-                    f'<span title="{message}" style="cursor: help; color: #ff6b6b;">❌</span>',
+                    f'<span title="{message}" style="cursor: help; color: #ff6b6b;">\u274C</span>',
                     unsafe_allow_html=True,
                 )
 
@@ -3991,7 +3991,7 @@ with left:
                 status = str(evse.get("status") or "unknown")
 
                 # --- Modern status headline (single line) ---
-                ocpp_badge = "Connected ✅" if connected else "Disconnected ❌"
+                ocpp_badge = "Connected \u2705" if connected else "Disconnected \u274C"
                 state_label = status if status else "unknown"
                 plugged_label = "Yes" if plugged else "No"
                 charging_label = "Yes" if charging else "No"
@@ -4105,9 +4105,9 @@ with left:
     summary_parts = []
     for key in ["Inputs", "Location", "Tariffs", "PV", "Battery", "Weather"]:
         if readiness_issues[key]:
-            summary_parts.append(f"⚠ {key}: {readiness_issues[key][0]}")
+            summary_parts.append(f"\u26A0 {key}: {readiness_issues[key][0]}")
         else:
-            summary_parts.append(f"✅ {key}")
+            summary_parts.append(f"\u2705 {key}")
     summary_text = " | ".join(summary_parts)
     st.markdown(
         (
@@ -4151,7 +4151,7 @@ with left:
             '<div style="display:flex; justify-content:flex-end; align-items:center; min-height:1.3rem; margin-top:0.1rem;">'
             f'<span id="{save_badge_id}" style="white-space:nowrap; font-size:0.8rem; line-height:1.15; '
             'padding:0.08rem 0.38rem; border-radius:999px; background:rgba(46,125,50,0.10); '
-            f'color:#2e7d32; visibility:{save_badge_visibility}; opacity:{save_badge_opacity};">✅ Settings saved</span>'
+            f'color:#2e7d32; visibility:{save_badge_visibility}; opacity:{save_badge_opacity};">\u2705 Settings saved</span>'
             '</div>'
         ),
         unsafe_allow_html=True,
@@ -4302,7 +4302,7 @@ with left:
                     title_col, badge_col = st.columns([7.4, 2.6], vertical_alignment="center")
                     title_col.markdown(f"**{title_txt or 'Untitled error'}**")
                     if fixed_val:
-                        badge_col.caption("Resolved ✅")
+                        badge_col.caption("Resolved \u2705")
                     else:
                         badge_col.write("")
 
@@ -4321,7 +4321,7 @@ with left:
 
                     with action_fixed:
                         fixed_target = not fixed_val
-                        fixed_label = "↩ Mark open" if fixed_val else "✅ Mark resolved"
+                        fixed_label = "↩ Mark open" if fixed_val else "\u2705 Mark resolved"
                         if st.button(fixed_label, key=f"err_fixed_btn_{error_id}", width="stretch"):
                             api_post(f"/v1/errors/{error_id}/fixed", {"fixed": fixed_target})
                             st.session_state["err_delete_arm"] = None
@@ -4330,7 +4330,7 @@ with left:
                     armed_id = st.session_state.get("err_delete_arm")
                     with action_delete:
                         if armed_id != error_id:
-                            if st.button("❌ Dismiss", key=f"err_del_arm_{error_id}", width="stretch"):
+                            if st.button("\u274C Dismiss", key=f"err_del_arm_{error_id}", width="stretch"):
                                 st.session_state["err_delete_arm"] = error_id
                                 st.rerun()
                         else:
