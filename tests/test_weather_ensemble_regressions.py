@@ -185,7 +185,7 @@ def test_fetch_open_meteo_sets_derived_flag_from_missing_dni_dhi(monkeypatch: py
         tz="Europe/Brussels",
         target_date=dt.date(2026, 1, 10),
     )
-    assert derived is False
+    assert derived is True
 
     payload_missing = {
         "hourly": {
@@ -350,7 +350,7 @@ def test_fetch_open_meteo_retries_404_with_forecast_endpoint(monkeypatch: pytest
     assert calls[0][0] == we.WEATHER_MODELS["knmi_harmonie_arome"]["endpoint"]
     assert calls[1][0] == "https://api.open-meteo.com/v1/forecast"
     assert calls[1][1] == "knmi_seamless"
-    assert derived is False
+    assert derived is True
     assert forecast.df["ghi_wm2"].iloc[0] == pytest.approx(100.0)
 
 
@@ -395,7 +395,7 @@ def test_fetch_open_meteo_retries_400_with_forecast_endpoint_for_model_support_e
     assert calls[0][0] == we.WEATHER_MODELS["knmi_harmonie_arome"]["endpoint"]
     assert calls[1][0] == "https://api.open-meteo.com/v1/forecast"
     assert calls[1][1] == "knmi_seamless"
-    assert derived is False
+    assert derived is True
     assert forecast.df["ghi_wm2"].iloc[0] == pytest.approx(100.0)
 
 

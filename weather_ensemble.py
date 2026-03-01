@@ -1816,11 +1816,13 @@ def fetch_open_meteo_weather(
         sunset = sunset.tz_convert(tz)
 
     forecast = core.ForecastResult(df=df, sunrise=sunrise.to_pydatetime(), sunset=sunset.to_pydatetime())
+    derived_public = bool(derived_physical) or bool(filled_gaps)
+
     _WEATHER_CACHE[key] = (
         time.time(),
         forecast,
         list(set(missing_vars)),
-        bool(derived_physical),
+        bool(derived_public),
         {
             "derived_irradiance_hours": int(derived_irradiance_hours),
             "filled_irradiance_gaps": bool(filled_gaps),
@@ -1829,7 +1831,7 @@ def fetch_open_meteo_weather(
             "model_max_days": int(model_max_days),
         },
     )
-    return forecast, list(set(missing_vars)), bool(derived_physical), fetch_meta
+    return forecast, list(set(missing_vars)), bool(derived_public), fetch_meta
 
 
 
