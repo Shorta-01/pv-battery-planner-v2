@@ -36,15 +36,16 @@ def test_resolve_pv_loss_multipliers_split_and_combined() -> None:
     assert ac_eff == pytest.approx(0.95)
 
 
-def test_combined_mode_forces_inverter_eff_to_one() -> None:
+def test_combined_mode_forces_inverter_eff_to_one(caplog: pytest.LogCaptureFixture) -> None:
     cfg = copy.deepcopy(core.DEFAULT_CONFIG)
     cfg["pv"]["loss_model"] = "combined"
     cfg["pv"]["pv_loss_model"] = "combined"
     cfg["pv"]["inverter_eff"] = 0.95
 
-    with pytest.warns(RuntimeWarning, match="forcing pv.inverter_eff=1.0"):
+    with caplog.at_level("WARNING", logger="planner_core"):
         merged = core.build_effective_config(cfg)
 
+    assert "forcing pv.inverter_eff=1.0" in caplog.text
     assert merged["pv"]["inverter_eff"] == pytest.approx(1.0)
 
 
