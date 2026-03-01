@@ -1,12 +1,14 @@
 import datetime as dt
+import os
 import tempfile
 
 from db_sqlite import fetch_effective_daily_kwh, init_db
 
 
 def test_fetch_effective_daily_kwh_works_without_zoneinfo_nameerror():
-    with tempfile.NamedTemporaryFile(suffix='.sqlite') as tmp:
-        init_db(tmp.name)
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'tmp.sqlite')
+        init_db(path)
 
         import sqlite3
 
@@ -24,7 +26,7 @@ def test_fetch_effective_daily_kwh_works_without_zoneinfo_nameerror():
             ),
         ]
 
-        with sqlite3.connect(tmp.name) as conn:
+        with sqlite3.connect(path) as conn:
             conn.executemany(
                 """
                 INSERT INTO forecast_runs (
@@ -35,7 +37,7 @@ def test_fetch_effective_daily_kwh_works_without_zoneinfo_nameerror():
             )
             conn.commit()
 
-        value, meta = fetch_effective_daily_kwh(tmp.name, lookback_runs=14)
+        value, meta = fetch_effective_daily_kwh(path, lookback_runs=14)
 
         assert (value is None) or isinstance(value, float)
         assert isinstance(meta, dict)
