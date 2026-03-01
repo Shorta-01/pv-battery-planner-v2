@@ -10,7 +10,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from threading import RLock
+from threading import Lock, RLock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
@@ -523,6 +523,7 @@ CIRCUIT_BREAKER_OPEN_SECONDS = 10 * 60
 _CIRCUIT_BREAKER_STATE: dict[str, dict[str, float]] = {}
 _CIRCUIT_BREAKER_LOCK = RLock()
 _CIRCUIT_BREAKER_LOADED = False
+_WRITE_JSON_LOCK = Lock()
 
 IRRADIANCE_HOURLY_MAX_WM2 = 1400.0
 IRRADIANCE_HOURLY_EXTREME_WM2 = 2500.0
@@ -813,7 +814,17 @@ def _write_json_file(path: Path, payload: Any) -> None:
             tmp_file.flush()
             os.fsync(tmp_file.fileno())
             tmp_path = tmp_file.name
-        os.replace(tmp_path, path)
+        replace_backoff_schedule_s = (0.01, 0.02, 0.03, 0.04)
+        with _WRITE_JSON_LOCK:
+            for attempt in range(len(replace_backoff_schedule_s) + 1):
+                try:
+                    os.replace(tmp_path, path)
+                    tmp_path = None
+                    break
+                except PermissionError:
+                    if attempt == len(replace_backoff_schedule_s):
+                        raise
+                    time.sleep(replace_backoff_schedule_s[attempt])
     except Exception:
         if tmp_path:
             with contextlib.suppress(OSError):
