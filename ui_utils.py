@@ -166,6 +166,8 @@ def resolve_pv_outlook_savings(pv_quality_dict: dict | None) -> dict[str, Any]:
     total_plan = _to_float_or_none(data.get("plan_cost_eur_total"))
     total_savings = _to_float_or_none(data.get("savings_eur_total"))
 
+    preferred_scope = str(data.get("savings_preferred_scope") or "").strip().lower() or None
+
     has_new_cycle = cycle_benefit is not None
     has_cycle = (
         cycle_benefit is not None
@@ -178,7 +180,12 @@ def resolve_pv_outlook_savings(pv_quality_dict: dict | None) -> dict[str, Any]:
     has_tomorrow = tomorrow_base is not None or tomorrow_plan is not None or tomorrow_savings is not None
     has_total = total_base is not None or total_plan is not None or total_savings is not None
 
-    if has_cycle:
+    if preferred_scope == "tomorrow" and has_tomorrow:
+        display_scope = "tomorrow"
+        base_cost = tomorrow_base
+        plan_cost = tomorrow_plan
+        reported_savings = tomorrow_savings
+    elif has_cycle:
         display_scope = "cycle"
         if has_new_cycle:
             base_cost = cycle_grid_only
@@ -252,7 +259,9 @@ def resolve_pv_outlook_savings(pv_quality_dict: dict | None) -> dict[str, Any]:
     else:
         detail_note = "⏱️ Bars: cycle"
 
-    if display_scope == "cycle":
+    if preferred_scope == "tomorrow":
+        note = "Cycle savings unavailable due to missing PV forecast coverage; showing tomorrow-only savings."
+    elif display_scope == "cycle":
         if bars_scope == "tomorrow":
             note = (
                 "Grid only vs iSystem Cycle savings shown; bars: tomorrow (00–24). "
