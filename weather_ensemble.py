@@ -1636,6 +1636,8 @@ def fetch_open_meteo_weather(
     df["wind_speed_ms"] = _series("wind_speed_10m", 1.0).fillna(1.0).clip(lower=0.0)
     df["cloud_cover_pct"] = _series("cloud_cover", 0.0).fillna(0.0).clip(lower=0.0)
     ghi = _series("shortwave_radiation", np.nan, record_missing=False).clip(lower=0.0)
+    ghi_input_missing_hours = int(ghi.isna().sum())
+    ghi_input_missing = ghi_input_missing_hours == len(ghi.index)
     bhi = _series("direct_radiation", np.nan, record_missing=False)
     dni_api = _series("direct_normal_irradiance", np.nan, record_missing=False)
     dhi_api = _series("diffuse_radiation", np.nan, record_missing=False)
@@ -1768,6 +1770,11 @@ def fetch_open_meteo_weather(
     availability = availability.reindex(df.index, fill_value=False).astype(bool)
     for col in ["ghi_wm2", "dni_wm2", "dhi_wm2"]:
         df.loc[~availability[col], col] = np.nan
+
+    if ghi_input_missing:
+        missing_vars = sorted(set([*missing_vars, "shortwave_radiation"]))
+    fetch_meta["ghi_missing"] = bool(ghi_input_missing)
+    fetch_meta["ghi_missing_hours"] = int(ghi_input_missing_hours)
 
     weather_code_series = pd.to_numeric(weather_code_series, errors="coerce").reindex(df.index)
     derived_weather_code = False
