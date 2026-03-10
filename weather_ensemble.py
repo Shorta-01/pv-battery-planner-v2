@@ -266,7 +266,16 @@ def dedupe_models_by_source(model_ids: list[str]) -> tuple[list[str], list[str]]
             if model_id != winner:
                 dropped_with_idx.append((idx, model_id))
 
-    deduped = [model_id for _, model_id in indexed if model_id in winners]
+    deduped: list[str] = []
+    deduped_seen: set[str] = set()
+    for idx, model_id in indexed:
+        if model_id not in winners:
+            continue
+        if model_id in deduped_seen:
+            dropped_with_idx.append((idx, model_id))
+            continue
+        deduped_seen.add(model_id)
+        deduped.append(model_id)
     dropped = [model_id for _, model_id in sorted(dropped_with_idx, key=lambda item: item[0])]
     return deduped, dropped
 
