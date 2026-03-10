@@ -1,0 +1,3 @@
+-r requirements-backend.txt
+streamlit>=1.41,<2
+plotly>=5.24,<6
