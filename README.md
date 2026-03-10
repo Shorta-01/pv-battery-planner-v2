@@ -41,28 +41,51 @@ python -m venv .venv
 .venv\Scripts\activate
 ```
 
-2. Install dependencies (single source: `requirements.txt`):
+2. Install backend dependencies:
 
 ```powershell
 python -m pip install -U pip
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-backend.txt
 ```
 
 3. Start backend (Terminal 1):
 
 ```powershell
-python -m uvicorn backend_api:app --host 127.0.0.1 --port 8787
+python scripts/start_backend.py
 ```
 
-4. Start Streamlit UI (Terminal 2):
+4. (Optional) Install/start Streamlit UI (Terminal 2):
 
 ```powershell
+python -m pip install -r requirements-frontend.txt
 python -m streamlit run app.py
 ```
 
 Defaults:
 - Backend base URL: `http://127.0.0.1:8787`
 - Streamlit UI: `http://localhost:8501`
+
+## Backend-only run (Raspberry Pi 3)
+
+> Backend-only path (no frontend) uses `requirements-backend.txt`.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -r requirements-backend.txt
+python scripts/start_backend.py
+```
+
+Environment variables supported by `scripts/start_backend.py`:
+- `PVBP_BACKEND_HOST` (default `127.0.0.1`)
+- `PVBP_BACKEND_PORT` (default `8787`)
+
+Example for LAN access on Pi:
+
+```bash
+PVBP_BACKEND_HOST=0.0.0.0 PVBP_BACKEND_PORT=8787 python scripts/start_backend.py
+```
 
 ## Security / API token
 
@@ -110,4 +133,3 @@ You can run this from **Windows Task Scheduler** after your configured nightly t
 - `planner_core.py` — PV + battery planning functions used by backend
 - `db_sqlite.py` — SQLite schema and insert/query helpers
 - `config.json` — default user/system config
-
