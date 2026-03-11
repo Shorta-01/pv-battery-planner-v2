@@ -44,3 +44,10 @@ class BmwService:
             "expires_at": token.to_dict().get("expires_at"),
             "token_status": "valid" if token.is_fresh() else "expiring",
         }
+
+
+    def device_flow_debug_info(self) -> dict[str, str]:
+        return {
+            "device_flow_start_url": self.auth.device_flow_start_url(),
+            "device_flow_poll_url": self.auth.device_flow_poll_url(),
+        }

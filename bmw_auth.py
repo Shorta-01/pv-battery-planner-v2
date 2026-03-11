@@ -20,6 +20,12 @@ class BmwAuthClient:
         self.auth_base_url = auth_base_url.rstrip("/")
         self.token_cache_path.parent.mkdir(parents=True, exist_ok=True)
 
+    def device_flow_start_url(self) -> str:
+        return f"{self.auth_base_url}/device/code"
+
+    def device_flow_poll_url(self) -> str:
+        return f"{self.auth_base_url}/token"
+
     def load_token(self) -> BmwTokenData:
         if not self.token_cache_path.exists():
             return BmwTokenData()
@@ -34,13 +40,22 @@ class BmwAuthClient:
 
     def _raise_http_error(self, endpoint: str, resp: requests.Response, context: str) -> None:
         body_excerpt = resp.text[:300]
+        logger.error(
+            "BMW auth: %s error status=%s endpoint=%s body_excerpt=%s",
+            context,
+            resp.status_code,
+            endpoint,
+            body_excerpt,
+        )
         raise RuntimeError(
             f"BMW {context} failed: status={resp.status_code} endpoint={endpoint} body={body_excerpt}"
         )
 
     def start_device_flow(self, scope: str = "openid") -> dict[str, Any]:
-        url = f"{self.auth_base_url}/device/code"
+        url = self.device_flow_start_url()
+        logger.info("BMW auth: device flow start request endpoint=%s", url)
         resp = requests.post(url, data={"client_id": self.client_id, "scope": scope}, timeout=20)
+        logger.info("BMW auth: device flow start response status=%s endpoint=%s", resp.status_code, url)
         if resp.status_code >= 400:
             self._raise_http_error(url, resp, "device flow start")
         payload = resp.json()
@@ -48,7 +63,8 @@ class BmwAuthClient:
         return payload
 
     def poll_device_token(self, device_code: str, interval_seconds: int = 5) -> BmwTokenData:
-        url = f"{self.auth_base_url}/token"
+        url = self.device_flow_poll_url()
+        logger.info("BMW auth: token poll request endpoint=%s", url)
         resp = requests.post(
             url,
             data={
@@ -58,6 +74,7 @@ class BmwAuthClient:
             },
             timeout=20,
         )
+        logger.info("BMW auth: token poll response status=%s endpoint=%s", resp.status_code, url)
         if resp.status_code >= 400:
             self._raise_http_error(url, resp, "token poll")
         payload = resp.json()

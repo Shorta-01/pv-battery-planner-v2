@@ -6,6 +6,7 @@ import datetime as dt
 import gc
 import json
 import inspect
+import logging
 import os
 import time
 import secrets
@@ -83,6 +84,7 @@ PV_QUALITY_COLORS = {
 
 FULL_RESULT_HEAVY_KEYS = {"weather", "pv", "detail", "flows", "soc"}
 DEBUG = os.getenv("DEBUG", "").strip() in ("1", "true", "True", "yes", "YES")
+logger = logging.getLogger(__name__)
 
 
 def _clamp_score_0_100(value: float) -> int:
@@ -751,6 +753,15 @@ class BackendState:
         self.history = self._load_history()
         self._apply_config(self.settings["config"])
         self.bmw_service.update_config(self.settings.get("config", {}).get("ev_vehicle_data", {}))
+        if DEBUG:
+            bmw_auth_module_file = inspect.getfile(self.bmw_service.auth.__class__)
+            bmw_debug = self.bmw_service.device_flow_debug_info()
+            logger.info(
+                "BMW device-flow debug: module=%s start_url=%s poll_url=%s",
+                bmw_auth_module_file,
+                bmw_debug.get("device_flow_start_url"),
+                bmw_debug.get("device_flow_poll_url"),
+            )
         self._migrate_json_history_to_sqlite()
 
     def _migrate_json_history_to_sqlite(self) -> None:
@@ -2249,6 +2260,17 @@ class BmwDeviceTokenPayload(BaseModel):
 def ev_bmw_device_flow_poll(payload: BmwDeviceTokenPayload, authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
     return state.bmw_service.poll_device_token(payload.device_code)
+
+
+@app.get("/v1/ev/bmw/device_flow/debug")
+def ev_bmw_device_flow_debug(authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    if not DEBUG:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {
+        "bmw_auth_module_path": inspect.getfile(state.bmw_service.auth.__class__),
+        **state.bmw_service.device_flow_debug_info(),
+    }
 
 
 @app.get("/v1/evse/status")
