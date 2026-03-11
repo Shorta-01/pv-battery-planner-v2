@@ -54,6 +54,8 @@ python -m pip install -r requirements-backend.txt
 python scripts/start_backend.py
 ```
 
+> After any backend code change (including BMW auth/device-flow files), stop and restart this backend process so the running server picks up the latest source.
+
 4. (Optional) Install/start Streamlit UI (Terminal 2):
 
 ```powershell

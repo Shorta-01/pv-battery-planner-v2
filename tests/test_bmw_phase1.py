@@ -104,7 +104,7 @@ def test_poll_device_token_uses_token_endpoint(monkeypatch, tmp_path):
     assert captured["data"]["device_code"] == "device-code-1"
 
 
-def test_start_device_flow_never_uses_device_authorization(monkeypatch, tmp_path):
+def test_start_device_flow_uses_exact_start_endpoint(monkeypatch, tmp_path):
     captured = {}
 
     def fake_post(url, data=None, timeout=None):
@@ -116,4 +116,4 @@ def test_start_device_flow_never_uses_device_authorization(monkeypatch, tmp_path
 
     client.start_device_flow()
 
-    assert "/device_authorization" not in captured["url"]
+    assert captured["url"] == "https://customer.bmwgroup.com/gcdm/oauth/device/code"
