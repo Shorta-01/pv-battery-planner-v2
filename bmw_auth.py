@@ -32,10 +32,17 @@ class BmwAuthClient:
     def save_token(self, token: BmwTokenData) -> None:
         self.token_cache_path.write_text(json.dumps(token.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _raise_http_error(self, endpoint: str, resp: requests.Response, context: str) -> None:
+        body_excerpt = resp.text[:300]
+        raise RuntimeError(
+            f"BMW {context} failed: status={resp.status_code} endpoint={endpoint} body={body_excerpt}"
+        )
+
     def start_device_flow(self, scope: str = "openid") -> dict[str, Any]:
-        url = f"{self.auth_base_url}/device_authorization"
+        url = f"{self.auth_base_url}/device/code"
         resp = requests.post(url, data={"client_id": self.client_id, "scope": scope}, timeout=20)
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            self._raise_http_error(url, resp, "device flow start")
         payload = resp.json()
         logger.info("BMW auth: device flow started")
         return payload
@@ -52,8 +59,7 @@ class BmwAuthClient:
             timeout=20,
         )
         if resp.status_code >= 400:
-            body = resp.text[:300]
-            raise RuntimeError(f"BMW token poll failed: {resp.status_code} {body}")
+            self._raise_http_error(url, resp, "token poll")
         payload = resp.json()
         expires_in = int(payload.get("expires_in", 3600))
         token = BmwTokenData(

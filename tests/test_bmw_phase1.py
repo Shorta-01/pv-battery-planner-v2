@@ -4,6 +4,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import datetime as dt
 
+from bmw_auth import BmwAuthClient
 from bmw_mapping import apply_planner_derivations, freshness_bucket, map_bmw_payload_to_vehicle_states
 from bmw_models import BmwTokenData, NormalizedVehicleState
 from bmw_storage import BmwStorage
@@ -56,3 +57,63 @@ def test_multi_vehicle_storage_roundtrip(tmp_path):
     })
     loaded = st.load_vehicle_states()
     assert set(loaded.keys()) == {"a", "b"}
+
+
+class _DummyResponse:
+    def __init__(self, status_code=200, payload=None, text=""):
+        self.status_code = status_code
+        self._payload = payload or {}
+        self.text = text
+
+    def json(self):
+        return self._payload
+
+
+def test_device_flow_start_uses_device_code_endpoint(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_post(url, data=None, timeout=None):
+        captured["url"] = url
+        captured["data"] = data
+        return _DummyResponse(payload={"device_code": "abc"})
+
+    monkeypatch.setattr("bmw_auth.requests.post", fake_post)
+    client = BmwAuthClient(client_id="cid", token_cache_path=str(tmp_path / "token.json"))
+
+    client.start_device_flow()
+
+    assert captured["url"].endswith("/gcdm/oauth/device/code")
+    assert captured["data"]["client_id"] == "cid"
+
+
+def test_poll_device_token_uses_token_endpoint(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_post(url, data=None, timeout=None):
+        captured["url"] = url
+        captured["data"] = data
+        return _DummyResponse(payload={"access_token": "a", "expires_in": 3600})
+
+    monkeypatch.setattr("bmw_auth.requests.post", fake_post)
+    client = BmwAuthClient(client_id="cid", token_cache_path=str(tmp_path / "token.json"))
+
+    client.poll_device_token("device-code-1")
+
+    assert captured["url"].endswith("/gcdm/oauth/token")
+    assert captured["data"]["client_id"] == "cid"
+    assert captured["data"]["device_code"] == "device-code-1"
+
+
+def test_start_device_flow_never_uses_device_authorization(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_post(url, data=None, timeout=None):
+        captured["url"] = url
+        return _DummyResponse(payload={"device_code": "abc"})
+
+    monkeypatch.setattr("bmw_auth.requests.post", fake_post)
+    client = BmwAuthClient(client_id="cid", token_cache_path=str(tmp_path / "token.json"))
+
+    client.start_device_flow()
+
+    assert "/device_authorization" not in captured["url"]
