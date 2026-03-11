@@ -746,10 +746,11 @@ class BackendState:
         self.settings_sanitized_warnings: list[str] = []
         self._sanitize_last_inputs()
         self._sanitize_settings()
+        self.bmw_service = BmwService(core.DEFAULT_CONFIG.get("ev_vehicle_data", {}))
         self.latest_result = self._read_json(LATEST_RESULT_PATH, default={})
         self.history = self._load_history()
         self._apply_config(self.settings["config"])
-        bmw_service.update_config(self.settings.get("config", {}).get("ev_vehicle_data", {}))
+        self.bmw_service.update_config(self.settings.get("config", {}).get("ev_vehicle_data", {}))
         self._migrate_json_history_to_sqlite()
 
     def _migrate_json_history_to_sqlite(self) -> None:
@@ -977,7 +978,7 @@ class BackendState:
         merged = self._apply_config(payload.config)
         loc_cfg = merged.get("location", {}) if isinstance(merged, dict) else {}
         canonical_tz = str(loc_cfg.get("timezone") or payload.timezone)
-        bmw_service.update_config(merged.get("ev_vehicle_data", {}))
+        self.bmw_service.update_config(merged.get("ev_vehicle_data", {}))
         self.settings.update(
             {
                 "config": merged,
@@ -1100,7 +1101,7 @@ class BackendState:
         ev_cfg = cfg.get("ev_vehicle_data", {}) if isinstance(cfg.get("ev_vehicle_data"), dict) else {}
         if bool(ev_cfg.get("enabled", False)) and str(ev_cfg.get("source", "manual")) == "bmw_cardata":
             try:
-                vehicles = bmw_service.vehicles()
+                vehicles = self.bmw_service.vehicles()
                 if vehicles:
                     first = next(iter(vehicles.values()))
                     ev_soc = first.get("soc_pct")
@@ -2055,7 +2056,6 @@ def unhandled_exception_handler(request: Request, exc: Exception):
 
 state = BackendState()
 evse_mgr = ocpp_evse.OcppEvseManager()
-bmw_service = BmwService(core.DEFAULT_CONFIG.get("ev_vehicle_data", {}))
 
 
 @app.websocket("/ocpp")
@@ -2220,25 +2220,25 @@ def get_score_day(date: str, source: str = "manual_csv", authorization: str | No
 @app.get("/v1/ev/vehicles")
 def get_ev_vehicles(authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
-    return {"vehicles": bmw_service.vehicles()}
+    return {"vehicles": state.bmw_service.vehicles()}
 
 
 @app.get("/v1/ev/provider_status")
 def get_ev_provider_status(authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
-    return bmw_service.provider_status()
+    return state.bmw_service.provider_status()
 
 
 @app.post("/v1/ev/manual_refresh")
 def ev_manual_refresh(authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
-    return bmw_service.manual_refresh()
+    return state.bmw_service.manual_refresh()
 
 
 @app.post("/v1/ev/bmw/device_flow/start")
 def ev_bmw_device_flow_start(authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
-    return bmw_service.start_device_flow()
+    return state.bmw_service.start_device_flow()
 
 
 class BmwDeviceTokenPayload(BaseModel):
@@ -2248,7 +2248,7 @@ class BmwDeviceTokenPayload(BaseModel):
 @app.post("/v1/ev/bmw/device_flow/poll")
 def ev_bmw_device_flow_poll(payload: BmwDeviceTokenPayload, authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
-    return bmw_service.poll_device_token(payload.device_code)
+    return state.bmw_service.poll_device_token(payload.device_code)
 
 
 @app.get("/v1/evse/status")
