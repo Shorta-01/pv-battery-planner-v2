@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import datetime as dt
+import base64
+import hashlib
 import json
 import logging
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -14,9 +17,12 @@ logger = logging.getLogger(__name__)
 
 
 class BmwAuthClient:
+    DEVICE_FLOW_SCOPE = "authenticate_user openid cardata:streaming:read cardata:api:read"
+
     def __init__(self, client_id: str, token_cache_path: str, auth_base_url: str = "https://customer.bmwgroup.com/gcdm/oauth") -> None:
         self.client_id = client_id
         self.token_cache_path = Path(token_cache_path)
+        self.device_flow_session_path = self.token_cache_path.with_name(f"{self.token_cache_path.stem}_device_flow_session.json")
         self.auth_base_url = auth_base_url.rstrip("/")
         self.token_cache_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -51,27 +57,87 @@ class BmwAuthClient:
             f"BMW {context} failed: status={resp.status_code} endpoint={endpoint} body={body_excerpt}"
         )
 
-    def start_device_flow(self, scope: str = "openid") -> dict[str, Any]:
+    @staticmethod
+    def _generate_code_verifier() -> str:
+        return secrets.token_urlsafe(64)
+
+    @staticmethod
+    def _pkce_code_challenge(code_verifier: str) -> str:
+        digest = hashlib.sha256(code_verifier.encode("utf-8")).digest()
+        return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+    def _save_device_flow_session(self, payload: dict[str, Any]) -> None:
+        self.device_flow_session_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _load_device_flow_session(self) -> dict[str, Any]:
+        if not self.device_flow_session_path.exists():
+            return {}
+        try:
+            payload = json.loads(self.device_flow_session_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def start_device_flow(self, scope: str = DEVICE_FLOW_SCOPE) -> dict[str, Any]:
         url = self.device_flow_start_url()
-        logger.info("BMW auth: device flow start request endpoint=%s", url)
-        resp = requests.post(url, data={"client_id": self.client_id, "scope": scope}, timeout=20)
+        code_verifier = self._generate_code_verifier()
+        payload = {
+            "client_id": self.client_id,
+            "code_challenge": self._pkce_code_challenge(code_verifier),
+            "code_challenge_method": "S256",
+            "scope": scope,
+        }
+        logger.info(
+            "BMW auth: device flow start request endpoint=%s form_encoded=%s param_keys=%s",
+            url,
+            True,
+            sorted(payload.keys()),
+        )
+        resp = requests.post(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=20,
+        )
         logger.info("BMW auth: device flow start response status=%s endpoint=%s", resp.status_code, url)
         if resp.status_code >= 400:
             self._raise_http_error(url, resp, "device flow start")
-        payload = resp.json()
+        response_payload = resp.json()
+        self._save_device_flow_session(
+            {
+                "client_id": self.client_id,
+                "code_verifier": code_verifier,
+                "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "device_code": response_payload.get("device_code"),
+            }
+        )
         logger.info("BMW auth: device flow started")
-        return payload
+        return response_payload
 
-    def poll_device_token(self, device_code: str, interval_seconds: int = 5) -> BmwTokenData:
+    def poll_device_token(self, device_code: str, interval_seconds: int = 5, scope: str = DEVICE_FLOW_SCOPE) -> BmwTokenData:
+        session = self._load_device_flow_session()
+        code_verifier = session.get("code_verifier")
+        if not code_verifier:
+            raise RuntimeError("BMW token poll failed: missing device flow session code_verifier")
         url = self.device_flow_poll_url()
-        logger.info("BMW auth: token poll request endpoint=%s", url)
+        payload = {
+            "client_id": str(session.get("client_id") or self.client_id),
+            "code_verifier": code_verifier,
+            "device_code": device_code,
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            "scope": scope,
+        }
+        logger.info(
+            "BMW auth: token poll request endpoint=%s form_encoded=%s param_keys=%s verifier_preview=%s",
+            url,
+            True,
+            sorted(payload.keys()),
+            f"{code_verifier[:6]}...",
+        )
         resp = requests.post(
             url,
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": device_code,
-                "client_id": self.client_id,
-            },
+            data=payload,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
             timeout=20,
         )
         logger.info("BMW auth: token poll response status=%s endpoint=%s", resp.status_code, url)
