@@ -1,8 +1,11 @@
+import base64
+import datetime as dt
+import hashlib
+import json
 import pathlib
 import sys
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-import datetime as dt
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from bmw_auth import BmwAuthClient
 from bmw_mapping import apply_planner_derivations, freshness_bucket, map_bmw_payload_to_vehicle_states
@@ -69,47 +72,21 @@ class _DummyResponse:
         return self._payload
 
 
-def test_device_flow_start_uses_device_code_endpoint(monkeypatch, tmp_path):
+def test_pkce_challenge_generation_matches_s256():
+    verifier = "abc123verifier"
+    expected = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("utf-8")).digest()).decode("ascii").rstrip("=")
+    assert BmwAuthClient._pkce_code_challenge(verifier) == expected
+
+
+def test_device_flow_start_builds_form_encoded_payload_and_session(monkeypatch, tmp_path):
     captured = {}
 
-    def fake_post(url, data=None, timeout=None):
+    def fake_post(url, data=None, headers=None, json=None, timeout=None):
         captured["url"] = url
         captured["data"] = data
-        return _DummyResponse(payload={"device_code": "abc"})
-
-    monkeypatch.setattr("bmw_auth.requests.post", fake_post)
-    client = BmwAuthClient(client_id="cid", token_cache_path=str(tmp_path / "token.json"))
-
-    client.start_device_flow()
-
-    assert captured["url"].endswith("/gcdm/oauth/device/code")
-    assert captured["data"]["client_id"] == "cid"
-
-
-def test_poll_device_token_uses_token_endpoint(monkeypatch, tmp_path):
-    captured = {}
-
-    def fake_post(url, data=None, timeout=None):
-        captured["url"] = url
-        captured["data"] = data
-        return _DummyResponse(payload={"access_token": "a", "expires_in": 3600})
-
-    monkeypatch.setattr("bmw_auth.requests.post", fake_post)
-    client = BmwAuthClient(client_id="cid", token_cache_path=str(tmp_path / "token.json"))
-
-    client.poll_device_token("device-code-1")
-
-    assert captured["url"].endswith("/gcdm/oauth/token")
-    assert captured["data"]["client_id"] == "cid"
-    assert captured["data"]["device_code"] == "device-code-1"
-
-
-def test_start_device_flow_uses_exact_start_endpoint(monkeypatch, tmp_path):
-    captured = {}
-
-    def fake_post(url, data=None, timeout=None):
-        captured["url"] = url
-        return _DummyResponse(payload={"device_code": "abc"})
+        captured["headers"] = headers
+        captured["json"] = json
+        return _DummyResponse(payload={"device_code": "abc", "user_code": "uc", "verification_uri": "https://verify"})
 
     monkeypatch.setattr("bmw_auth.requests.post", fake_post)
     client = BmwAuthClient(client_id="cid", token_cache_path=str(tmp_path / "token.json"))
@@ -117,3 +94,56 @@ def test_start_device_flow_uses_exact_start_endpoint(monkeypatch, tmp_path):
     client.start_device_flow()
 
     assert captured["url"] == "https://customer.bmwgroup.com/gcdm/oauth/device/code"
+    assert captured["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
+    assert captured["json"] is None
+    assert set(captured["data"].keys()) == {"client_id", "code_challenge", "code_challenge_method", "scope"}
+    assert captured["data"]["client_id"] == "cid"
+    assert captured["data"]["code_challenge_method"] == "S256"
+    assert captured["data"]["scope"] == BmwAuthClient.DEVICE_FLOW_SCOPE
+
+    session_data = json.loads((tmp_path / "token_device_flow_session.json").read_text(encoding="utf-8"))
+    assert session_data["client_id"] == "cid"
+    assert session_data["device_code"] == "abc"
+    assert session_data["code_verifier"]
+
+
+def test_poll_device_token_builds_form_encoded_payload(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_post(url, data=None, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["data"] = data
+        captured["headers"] = headers
+        captured["json"] = json
+        return _DummyResponse(payload={"access_token": "a", "expires_in": 3600})
+
+    session_path = tmp_path / "token_device_flow_session.json"
+    session_path.write_text(
+        json.dumps(
+            {
+                "client_id": "cid",
+                "code_verifier": "verifier-1",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "device_code": "device-code-1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("bmw_auth.requests.post", fake_post)
+    client = BmwAuthClient(client_id="cid", token_cache_path=str(tmp_path / "token.json"))
+
+    client.poll_device_token("device-code-1")
+
+    assert captured["url"].endswith("/gcdm/oauth/token")
+    assert captured["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
+    assert captured["json"] is None
+    assert set(captured["data"].keys()) == {"client_id", "code_verifier", "device_code", "grant_type", "scope"}
+    assert captured["data"]["client_id"] == "cid"
+    assert captured["data"]["code_verifier"] == "verifier-1"
+    assert captured["data"]["device_code"] == "device-code-1"
+    assert captured["data"]["grant_type"] == "urn:ietf:params:oauth:grant-type:device_code"
+    assert captured["data"]["scope"] == BmwAuthClient.DEVICE_FLOW_SCOPE
+
+
+def test_device_flow_scope_regression():
+    assert BmwAuthClient.DEVICE_FLOW_SCOPE == "authenticate_user openid cardata:streaming:read cardata:api:read"
