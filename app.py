@@ -236,6 +236,9 @@ def normalize_effective_cfg_to_payload(effective_cfg: dict, valid_model_ids: set
             "basic_user": str((car_charger_cfg or {}).get("basic_user", "")),
             "basic_pass": str((car_charger_cfg or {}).get("basic_pass", "")),
         },
+        "ev_vehicle_data": {
+            **(effective_cfg.get("ev_vehicle_data", {}) if isinstance(effective_cfg.get("ev_vehicle_data"), dict) else {}),
+        },
         "load_profile": {
             "load_profile_24h": [float(v) for v in load_profile_cfg.get("load_profile_24h", core.DEFAULT_CONFIG["load_profile"]["load_profile_24h"])],
         },
@@ -333,6 +336,24 @@ def build_settings_payload(effective_cfg: dict, valid_model_ids: set[str]) -> tu
             "enabled": bool(ui.get("cfg_cc_enabled", False)),
             "basic_user": str(ui.get("cfg_cc_user", "")).strip(),
             "basic_pass": str(ui.get("cfg_cc_pass", "")),
+        },
+        "ev_vehicle_data": {
+            "enabled": bool(ui.get("cfg_ev_enabled", False)),
+            "source": "bmw_cardata" if str(ui.get("cfg_ev_source", "Manual")) == "BMW CarData" else "manual",
+            "bmw_enabled": bool(ui.get("cfg_ev_enabled", False) and str(ui.get("cfg_ev_source", "Manual")) == "BMW CarData"),
+            "bmw_client_id": str(ui.get("cfg_bmw_client_id", "")).strip(),
+            "bmw_stream_enabled": True,
+            "bmw_token_cache_path": str((effective_cfg.get("ev_vehicle_data", {}) or {}).get("bmw_token_cache_path", "local_state/bmw_token.json")),
+            "bmw_raw_event_store_path": str((effective_cfg.get("ev_vehicle_data", {}) or {}).get("bmw_raw_event_store_path", "local_state/bmw_raw_events.jsonl")),
+            "bmw_vehicle_state_store_path": str((effective_cfg.get("ev_vehicle_data", {}) or {}).get("bmw_vehicle_state_store_path", "local_state/bmw_vehicle_state.json")),
+            "bmw_poll_active_seconds": 60,
+            "bmw_poll_idle_seconds": 900,
+            "bmw_healthcheck_seconds": 300,
+            "bmw_debug": False,
+            "charger_max_power_kw": float(ui["cfg_ev_charger_max_power_kw"]) if ui.get("cfg_ev_charger_max_power_kw") not in (None, "") else None,
+            "petrol_price_eur_per_l": float(ui["cfg_ev_petrol_price"]) if ui.get("cfg_ev_petrol_price") not in (None, "") else None,
+            "petrol_consumption_l_per_100km": float(ui["cfg_ev_petrol_consumption"]) if ui.get("cfg_ev_petrol_consumption") not in (None, "") else None,
+            "ready_by_time": str(ui.get("cfg_ev_ready_by_time") or "").strip() or None,
         },
         "load_profile": {
             "load_profile_24h": [float(v) for v in ui["cfg_load_profile"]],
@@ -3828,6 +3849,56 @@ with left:
         if cfg_cc_enabled and ((cfg_cc_user.strip() == "") ^ (cfg_cc_pass == "")):
             st.error("OCPP credentials are misconfigured. Set BOTH username and password, or leave BOTH empty.")
 
+        st.markdown("#### EV Vehicle Data")
+        ev_cfg = (effective_cfg.get("ev_vehicle_data", {}) or {}) if isinstance(effective_cfg, dict) else {}
+        cfg_ev_enabled = st.checkbox("EV integration enabled", value=bool(ev_cfg.get("enabled", False)))
+        cfg_ev_source = st.selectbox("Vehicle data source", options=["Manual", "BMW CarData"], index=1 if str(ev_cfg.get("source", "manual")) == "bmw_cardata" else 0)
+        cfg_bmw_client_id = st.text_input("BMW client id", value=str(ev_cfg.get("bmw_client_id", "")), type="password")
+        ev_col1, ev_col2, ev_col3 = st.columns(3, vertical_alignment="bottom")
+        with ev_col1:
+            cfg_ev_charger_max_power_kw = st.number_input("Charger max power (kW)", min_value=0.0, value=float(ev_cfg.get("charger_max_power_kw") or 0.0), step=0.1)
+        with ev_col2:
+            cfg_ev_petrol_price = st.number_input("Petrol price (€/L)", min_value=0.0, value=float(ev_cfg.get("petrol_price_eur_per_l") or 0.0), step=0.01)
+        with ev_col3:
+            cfg_ev_petrol_consumption = st.number_input("Petrol consumption (L/100 km)", min_value=0.0, value=float(ev_cfg.get("petrol_consumption_l_per_100km") or 0.0), step=0.1)
+        cfg_ev_ready_by_time = st.text_input("Optional ready-by time (HH:MM)", value=str(ev_cfg.get("ready_by_time") or ""))
+
+        provider_status = {}
+        vehicles_payload = {}
+        try:
+            provider_status = api_get("/v1/ev/provider_status")
+            vehicles_payload = api_get("/v1/ev/vehicles")
+        except Exception:
+            provider_status = {}
+            vehicles_payload = {}
+
+        status_cols = st.columns(2)
+        status_cols[0].caption(f"Provider status: {provider_status.get('provider_status', 'unknown')}")
+        status_cols[1].caption(f"Data status: {provider_status.get('data_status', 'unknown')}")
+        vehicle_map = vehicles_payload.get("vehicles", {}) if isinstance(vehicles_payload, dict) else {}
+        first_vehicle = next(iter(vehicle_map.values()), {}) if isinstance(vehicle_map, dict) else {}
+        if first_vehicle:
+            st.caption(f"Linked vehicle: {first_vehicle.get('display_name') or '-'} · {first_vehicle.get('vehicle_id')}")
+            st.caption(f"Last vehicle update: {first_vehicle.get('last_update_ts')} · Freshness: {first_vehicle.get('freshness_seconds')}")
+        st.caption(f"Stream connected: {'yes' if provider_status.get('stream_connected') else 'no'}")
+        if st.button("Manual refresh", key="btn_ev_manual_refresh_settings"):
+            try:
+                api_post("/v1/ev/manual_refresh", {})
+                st.success("EV refresh triggered.")
+            except Exception as exc:
+                st.error(f"EV refresh failed: {exc}")
+
+        with st.expander("Advanced BMW connection details", expanded=False):
+            st.write("Configuration status: ready")
+            st.write("Last configuration update: 2026-03-11T14:32:48.079Z")
+            st.write("Host: customer.streaming-cardata.bmwgroup.com")
+            st.write("Port: 9000")
+            st.write("Topic: WBA51EH0X0CR89778")
+            st.write("Username: db9854dc-0db7-4a2a-9233-0de9eb762610")
+            st.write(f"Token status: {provider_status.get('provider_status', 'unknown')}")
+            st.write(f"Last auth refresh: {provider_status.get('last_auth_refresh')}")
+            st.write(f"Last raw event received: {provider_status.get('last_raw_event_received')}")
+
         cfg_load_profile = [float(v) for v in effective_cfg["load_profile"]["load_profile_24h"]]
 
         if st.session_state.get("_geo_success"):
@@ -3865,6 +3936,13 @@ with left:
             "cfg_cc_enabled": bool(cfg_cc_enabled),
             "cfg_cc_user": str(cfg_cc_user),
             "cfg_cc_pass": str(cfg_cc_pass),
+            "cfg_ev_enabled": bool(cfg_ev_enabled),
+            "cfg_ev_source": str(cfg_ev_source),
+            "cfg_bmw_client_id": str(cfg_bmw_client_id),
+            "cfg_ev_charger_max_power_kw": float(cfg_ev_charger_max_power_kw),
+            "cfg_ev_petrol_price": float(cfg_ev_petrol_price),
+            "cfg_ev_petrol_consumption": float(cfg_ev_petrol_consumption),
+            "cfg_ev_ready_by_time": str(cfg_ev_ready_by_time),
             "cfg_load_profile": cfg_load_profile,
             "saved_sat": bool((effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}).get("use_satellite_nowcast_0_6h", False)),
             "cfg_max_grid_charge_power_kw": float(user_max_ac_kw),
@@ -4071,9 +4149,68 @@ with left:
                         log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:car_charger_stop", title="Frontend error: car charger stop", exc=exc)
                         st.error(f"Stop failed: {exc}")
 
+    def render_ev_car_status_panel() -> None:
+        with st.expander("EV / Car Status", expanded=True):
+            try:
+                provider_status = api_get("/v1/ev/provider_status")
+                vehicles_payload = api_get("/v1/ev/vehicles")
+            except Exception as exc:
+                st.warning(f"EV status unavailable: {exc}")
+                return
+            vehicles = vehicles_payload.get("vehicles", {}) if isinstance(vehicles_payload, dict) else {}
+            if not vehicles:
+                st.info("No EV vehicle data available yet.")
+                return
+            v = next(iter(vehicles.values()))
+            st.markdown("**Vehicle status**")
+            st.write({
+                "Car display name": v.get("display_name"),
+                "Data source": v.get("data_provider"),
+                "Data status": v.get("data_status"),
+                "Last update": v.get("last_update_ts"),
+                "Freshness age": v.get("freshness_seconds"),
+                "SoC": v.get("soc_pct"),
+                "Range": v.get("range_km"),
+                "Plugged in": v.get("is_plugged"),
+                "Charging now": v.get("is_charging"),
+                "Charge power": v.get("charge_power_kw"),
+                "Time to full": v.get("time_to_full_min"),
+            })
+            st.markdown("**Charging settings detected from car**")
+            st.write({
+                "AC current limit": v.get("ac_current_limit_a"),
+                "Charging mode": v.get("charging_mode"),
+                "Optimized charging preference": v.get("optimized_charging_preference"),
+                "Car-side charge window": f"{v.get('charge_window_start')} - {v.get('charge_window_end')}",
+            })
+            st.markdown("**Planner interpretation**")
+            st.write({
+                "Energy still needed": v.get("energy_needed_kwh"),
+                "Effective charge power limit": v.get("effective_charge_power_limit_kw"),
+                "Planner demand active": v.get("planner_demand_active"),
+                "Max reachable SoC in current window": v.get("max_reachable_soc_pct"),
+                "Planned EV energy": v.get("planned_energy_kwh"),
+                "Planned EV charging cost": v.get("planned_charge_cost_eur"),
+                "Avoided petrol cost": v.get("avoided_petrol_cost_eur"),
+                "Net economic benefit": v.get("net_economic_benefit_eur"),
+                "Expected full-charge time": v.get("expected_full_charge_ts"),
+                "Planner status text": v.get("planner_status_text"),
+                "Planner priority": v.get("planner_priority"),
+            })
+            st.markdown("**Diagnostics**")
+            st.write({
+                "Raw plug status": v.get("plug_status_raw"),
+                "Flap lock status": v.get("flap_lock_status_raw"),
+                "Charge error": v.get("charge_error_raw"),
+                "Vehicle id": v.get("vehicle_id"),
+                "Missing fields": [k for k, val in v.items() if val is None],
+                "Provider status": provider_status,
+            })
+
     forecast_mode, selected_models, sat_nowcast_for_run = render_weather_models_panel()
 
     render_car_charger_panel()
+    render_ev_car_status_panel()
 
     readiness_issues = validate_sidebar_readiness(
         st.session_state.get("_cfg_ui_snapshot", {}),

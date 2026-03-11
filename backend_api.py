@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 import planner_core as core
 import ocpp_evse
 import scoring
+from bmw_service import BmwService
 
 from error_logging import compute_dedupe_key, format_exception_body
 from db_sqlite import (
@@ -748,6 +749,7 @@ class BackendState:
         self.latest_result = self._read_json(LATEST_RESULT_PATH, default={})
         self.history = self._load_history()
         self._apply_config(self.settings["config"])
+        bmw_service.update_config(self.settings.get("config", {}).get("ev_vehicle_data", {}))
         self._migrate_json_history_to_sqlite()
 
     def _migrate_json_history_to_sqlite(self) -> None:
@@ -975,6 +977,7 @@ class BackendState:
         merged = self._apply_config(payload.config)
         loc_cfg = merged.get("location", {}) if isinstance(merged, dict) else {}
         canonical_tz = str(loc_cfg.get("timezone") or payload.timezone)
+        bmw_service.update_config(merged.get("ev_vehicle_data", {}))
         self.settings.update(
             {
                 "config": merged,
@@ -1093,6 +1096,19 @@ class BackendState:
             effective_use_sat = bool(use_satellite_nowcast_0_6h_override)
         else:
             effective_use_sat = requested_use_sat
+
+        ev_cfg = cfg.get("ev_vehicle_data", {}) if isinstance(cfg.get("ev_vehicle_data"), dict) else {}
+        if bool(ev_cfg.get("enabled", False)) and str(ev_cfg.get("source", "manual")) == "bmw_cardata":
+            try:
+                vehicles = bmw_service.vehicles()
+                if vehicles:
+                    first = next(iter(vehicles.values()))
+                    ev_soc = first.get("soc_pct")
+                    ev_status = str(first.get("data_status") or "")
+                    if ev_soc is not None and ev_status in {"fresh", "aging", "fallback"}:
+                        soc_percent = float(ev_soc)
+            except Exception:
+                pass
 
         run_at_utc = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
         run_id = str(uuid.uuid4())
@@ -2039,6 +2055,7 @@ def unhandled_exception_handler(request: Request, exc: Exception):
 
 state = BackendState()
 evse_mgr = ocpp_evse.OcppEvseManager()
+bmw_service = BmwService(core.DEFAULT_CONFIG.get("ev_vehicle_data", {}))
 
 
 @app.websocket("/ocpp")
@@ -2198,6 +2215,40 @@ def get_score_day(date: str, source: str = "manual_csv", authorization: str | No
     if row is None:
         raise HTTPException(status_code=404, detail="Daily score not found")
     return row
+
+
+@app.get("/v1/ev/vehicles")
+def get_ev_vehicles(authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return {"vehicles": bmw_service.vehicles()}
+
+
+@app.get("/v1/ev/provider_status")
+def get_ev_provider_status(authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return bmw_service.provider_status()
+
+
+@app.post("/v1/ev/manual_refresh")
+def ev_manual_refresh(authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return bmw_service.manual_refresh()
+
+
+@app.post("/v1/ev/bmw/device_flow/start")
+def ev_bmw_device_flow_start(authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return bmw_service.start_device_flow()
+
+
+class BmwDeviceTokenPayload(BaseModel):
+    device_code: str
+
+
+@app.post("/v1/ev/bmw/device_flow/poll")
+def ev_bmw_device_flow_poll(payload: BmwDeviceTokenPayload, authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return bmw_service.poll_device_token(payload.device_code)
 
 
 @app.get("/v1/evse/status")
