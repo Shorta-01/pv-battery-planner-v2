@@ -4,6 +4,7 @@ import datetime as dt
 import hashlib
 import json
 import math
+import os
 import sqlite3
 import uuid
 from io import StringIO
@@ -20,9 +21,70 @@ DEFAULT_TIMEZONE = "Europe/Brussels"
 CURRENT_CONFIG_SCHEMA_VERSION = 1
 MAX_PROVIDER_RESPONSE_CHARS = 250_000
 
+_SQLITE_PROFILE_ENV_VAR = "PVBP_SQLITE_PROFILE"
+_SQLITE_DEFAULT_PROFILE = "laptop"
+_SQLITE_PROFILE_ALIASES = {
+    "": _SQLITE_DEFAULT_PROFILE,
+    "laptop": "laptop",
+    "default": "laptop",
+    "pi": "pi",
+    "rpi": "pi",
+    "raspberrypi": "pi",
+    "raspberry_pi": "pi",
+}
+_SQLITE_PROFILE_PRAGMAS: dict[str, dict[str, int]] = {
+    "pi": {
+        "cache_size": -32768,
+        "mmap_size": 33554432,
+        "wal_autocheckpoint": 256,
+        "journal_size_limit": 67108864,
+    },
+    "laptop": {
+        "cache_size": -131072,
+        "mmap_size": 268435456,
+        "wal_autocheckpoint": 1000,
+        "journal_size_limit": 134217728,
+    },
+}
+
 
 def _ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _resolve_sqlite_profile() -> str:
+    raw = os.getenv(_SQLITE_PROFILE_ENV_VAR, "")
+    return _SQLITE_PROFILE_ALIASES.get(str(raw).strip().lower(), _SQLITE_DEFAULT_PROFILE)
+
+
+def _apply_sqlite_pragmas(conn: sqlite3.Connection, *, profile: str) -> None:
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=5000;")
+    conn.execute("PRAGMA temp_store=MEMORY;")
+    conn.execute("PRAGMA foreign_keys=ON;")
+
+    profile_pragmas = _SQLITE_PROFILE_PRAGMAS[profile]
+    conn.execute(f"PRAGMA cache_size={int(profile_pragmas['cache_size'])};")
+    conn.execute(f"PRAGMA mmap_size={int(profile_pragmas['mmap_size'])};")
+    conn.execute(f"PRAGMA wal_autocheckpoint={int(profile_pragmas['wal_autocheckpoint'])};")
+    conn.execute(f"PRAGMA journal_size_limit={int(profile_pragmas['journal_size_limit'])};")
+
+
+def get_sqlite_pragma_snapshot(db_path: str) -> dict[str, Any]:
+    with _connect(db_path) as conn:
+        return {
+            "profile": _resolve_sqlite_profile(),
+            "journal_mode": str(conn.execute("PRAGMA journal_mode;").fetchone()[0]),
+            "synchronous": int(conn.execute("PRAGMA synchronous;").fetchone()[0]),
+            "busy_timeout": int(conn.execute("PRAGMA busy_timeout;").fetchone()[0]),
+            "temp_store": int(conn.execute("PRAGMA temp_store;").fetchone()[0]),
+            "cache_size": int(conn.execute("PRAGMA cache_size;").fetchone()[0]),
+            "mmap_size": int(conn.execute("PRAGMA mmap_size;").fetchone()[0]),
+            "wal_autocheckpoint": int(conn.execute("PRAGMA wal_autocheckpoint;").fetchone()[0]),
+            "journal_size_limit": int(conn.execute("PRAGMA journal_size_limit;").fetchone()[0]),
+            "foreign_keys": int(conn.execute("PRAGMA foreign_keys;").fetchone()[0]),
+        }
 
 
 @contextmanager
@@ -30,8 +92,7 @@ def _connect(db_path: str) -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(db_path)
     try:
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
+        _apply_sqlite_pragmas(conn, profile=_resolve_sqlite_profile())
         with conn:
             yield conn
     finally:
@@ -325,6 +386,7 @@ def init_db(db_path: str) -> None:
                 OR pv_clipped_kwh IS NULL
             """
         )
+        conn.execute("PRAGMA optimize;")
 
 
 def compute_config_hash(config: dict) -> str:
