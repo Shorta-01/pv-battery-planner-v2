@@ -16,16 +16,27 @@ logger = logging.getLogger(__name__)
 
 PHASE1_CONTAINER_DEFINITION: dict[str, Any] = {
     "name": "pvbp_phase1_ev_telematics",
-    "description": "PV Battery Planner phase 1 EV telemetry",
-    "descriptors": [
-        "CBATTERYSTATUS",
-        "CRANGEELECTRIC",
-        "CCHARGINGSTATUS",
-        "CCHARGINGTIME",
-        "CCHARGINGPOWER",
-        "CPLUGSTATUS",
-        "CACCURRENTLIMIT",
-    ],
+    "purpose": "PV Battery Planner phase 1 EV/PHEV telematics",
+    "descriptor_catalog": {
+        "CBATTERYSTATUS": {"signals": ["soc_pct"], "required": True},
+        "CRANGEELECTRIC": {"signals": ["range_km"], "required": True},
+        "CCHARGINGSTATUS": {"signals": ["is_charging", "raw_charging_status"], "required": True},
+        "CCHARGINGTIME": {"signals": ["time_to_full_min"], "required": False},
+        "CCHARGINGPOWER": {"signals": ["charge_power_kw"], "required": False},
+        "CPLUGSTATUS": {"signals": ["is_plugged", "raw_plug_status"], "required": True},
+        "CACCURRENTLIMIT": {"signals": ["ac_current_limit_a"], "required": False},
+    },
+    "profiles": {
+        "bmw_phev": [
+            "CBATTERYSTATUS",
+            "CRANGEELECTRIC",
+            "CCHARGINGSTATUS",
+            "CCHARGINGTIME",
+            "CCHARGINGPOWER",
+            "CPLUGSTATUS",
+            "CACCURRENTLIMIT",
+        ]
+    },
 }
 
 
@@ -173,10 +184,13 @@ class BmwCarDataProvider:
 
     def _phase1_container_create_payload(self) -> dict[str, Any]:
         profile = dict(PHASE1_CONTAINER_DEFINITION)
+        descriptor_catalog = profile.get("descriptor_catalog") if isinstance(profile.get("descriptor_catalog"), dict) else {}
+        selected_profile = profile.get("profiles", {}).get("bmw_phev", []) if isinstance(profile.get("profiles"), dict) else []
+        descriptors = [str(x) for x in selected_profile if str(x) in descriptor_catalog]
         return {
             "name": profile["name"],
-            "description": profile["description"],
-            "dataPoint": list(profile["descriptors"]),
+            "purpose": profile["purpose"],
+            "descriptors": descriptors,
         }
 
     def _load_persisted_container(self) -> tuple[str | None, list[dict[str, Any]]]:
@@ -210,10 +224,13 @@ class BmwCarDataProvider:
         payload = self._phase1_container_create_payload()
         create_headers = dict(headers)
         create_headers["Content-Type"] = "application/json"
+        endpoint_path = "/customers/containers"
+        request_field_names = sorted(payload.keys())
+        descriptor_count = len(payload.get("descriptors", [])) if isinstance(payload.get("descriptors"), list) else 0
         response = self._request_json(
             method="POST",
             base=base,
-            path="/customers/containers",
+            path=endpoint_path,
             headers=create_headers,
             aggregate_payload=aggregate_payload,
             capture_paths=capture_paths,
@@ -222,8 +239,31 @@ class BmwCarDataProvider:
             capture_endpoint_path="/customers/containers_create",
             json_body=payload,
         )
+        error_node = aggregate_payload.get(f"POST {endpoint_path}") if isinstance(aggregate_payload.get(f"POST {endpoint_path}"), dict) else {}
+        create_request_diag = {
+            "endpoint": f"{base}{endpoint_path}",
+            "method": "POST",
+            "content_type": create_headers.get("Content-Type"),
+            "request_field_names": request_field_names,
+            "descriptors_included": descriptor_count > 0,
+            "descriptors_count": descriptor_count,
+            "attempted": True,
+            "status": (error_node.get("_error") or {}).get("status"),
+            "response_excerpt": (error_node.get("_error") or {}).get("excerpt"),
+        }
         if not isinstance(response, dict):
-            return None, None
+            diag = {
+                "container_id": None,
+                "state": "",
+                "name": payload.get("name"),
+                "purpose": payload.get("purpose"),
+                "created_at": utcnow().replace(microsecond=0).isoformat(),
+                "updated_at": None,
+                "descriptor_profile": payload,
+                "create_request": create_request_diag,
+                "raw": None,
+            }
+            return None, diag
         container_id = str(response.get("containerId") or response.get("id") or response.get("identifier") or "").strip() or None
         if container_id:
             self.status.container_auto_create_succeeded = True
@@ -235,6 +275,7 @@ class BmwCarDataProvider:
             "created_at": response.get("createdAt") or utcnow().replace(microsecond=0).isoformat(),
             "updated_at": response.get("updatedAt"),
             "descriptor_profile": payload,
+            "create_request": create_request_diag,
             "raw": response,
         }
         return container_id, diag

@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from bmw_auth import BmwAuthClient
-from bmw_cardata_provider import BmwCarDataProvider
+from bmw_cardata_provider import BmwCarDataProvider, PHASE1_CONTAINER_DEFINITION
 from bmw_mapping import apply_planner_derivations, freshness_bucket, map_bmw_payload_to_vehicle_states
 from bmw_models import BmwTokenData, NormalizedVehicleState
 from bmw_service import BmwService
@@ -631,6 +631,11 @@ def test_refresh_auto_creates_container_when_empty(monkeypatch, tmp_path):
     assert any(u.endswith("/customers/vehicles/VINNC1/telematicData?containerId=AUTOC1") for u in seen_urls)
     assert seen_posts[0]["url"].endswith("/customers/containers")
     assert seen_posts[0]["json"]["name"] == "pvbp_phase1_ev_telematics"
+    assert seen_posts[0]["json"]["purpose"] == "PV Battery Planner phase 1 EV/PHEV telematics"
+    assert sorted(seen_posts[0]["json"].keys()) == ["descriptors", "name", "purpose"]
+    assert isinstance(seen_posts[0]["json"]["descriptors"], list)
+    assert len(seen_posts[0]["json"]["descriptors"]) >= 1
+    assert seen_posts[0]["headers"]["Content-Type"] == "application/json"
 
 
 def test_capture_files_include_containers_and_telematics(monkeypatch, tmp_path):
@@ -766,3 +771,55 @@ def test_capture_files_include_container_create(monkeypatch, tmp_path):
     out = provider.refresh_once()
     assert out["ok"] is True
     assert any("customers_containers_create" in Path(p).name for p in out["capture_files"])
+
+
+def test_phase1_container_definition_uses_descriptor_catalog_for_bmw_phev():
+    provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=BmwStorage("/tmp/raw.jsonl", "/tmp/state.json"), auth=None)
+    payload = provider._phase1_container_create_payload()
+    assert sorted(payload.keys()) == ["descriptors", "name", "purpose"]
+    assert payload["name"] == PHASE1_CONTAINER_DEFINITION["name"]
+    assert payload["purpose"] == PHASE1_CONTAINER_DEFINITION["purpose"]
+    assert payload["descriptors"] == PHASE1_CONTAINER_DEFINITION["profiles"]["bmw_phev"]
+
+
+def test_container_create_failure_reports_request_shape_in_diagnostics(monkeypatch, tmp_path):
+    class _Auth:
+        def load_token(self):
+            return BmwTokenData(access_token="access-1", obtained_at=dt.datetime.now(dt.timezone.utc))
+
+        def refresh_if_possible(self, tok):
+            return tok
+
+    def fake_get(url, headers=None, timeout=None):
+        if url.endswith("/customers/vehicles/mappings"):
+            return _DummyResponse(payload={"vehicleMappings": [{"vin": "VINDF1"}]})
+        if url.endswith("/customers/vehicles/VINDF1/basicData"):
+            return _DummyResponse(payload={"vin": "VINDF1", "lastUpdatedAt": "2026-03-11T10:00:00Z", "battery": {"socPercent": 66}})
+        if url.endswith("/customers/containers"):
+            return _DummyResponse(payload={"containers": []})
+        return _DummyResponse(status_code=500, text="unexpected")
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        return _DummyResponse(status_code=400, payload={}, text='{"error":"bad_request"}')
+
+    monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
+    monkeypatch.setattr("bmw_cardata_provider.requests.post", fake_post)
+    provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json")), auth=_Auth())
+
+    out = provider.refresh_once()
+    assert out["ok"] is True
+    assert provider.status.container_auto_create_attempted is True
+    assert provider.status.container_auto_create_succeeded is False
+    assert provider.status.vehicle_data_mode == "static_only"
+    assert provider.status.active_container_id is None
+    assert provider.status.container_diagnostics
+    create_diag = provider.status.container_diagnostics[-1]["create_request"]
+    assert create_diag["endpoint"].endswith("/customers/containers")
+    assert create_diag["method"] == "POST"
+    assert create_diag["content_type"] == "application/json"
+    assert create_diag["request_field_names"] == ["descriptors", "name", "purpose"]
+    assert create_diag["descriptors_included"] is True
+    assert create_diag["descriptors_count"] >= 1
+    assert create_diag["attempted"] is True
+    assert create_diag["status"] == 400
+    assert "bad_request" in (create_diag["response_excerpt"] or "")
