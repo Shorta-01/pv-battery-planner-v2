@@ -636,7 +636,9 @@ def test_refresh_auto_creates_container_when_empty(monkeypatch, tmp_path):
     assert "descriptors" not in seen_posts[0]["json"]
     assert isinstance(seen_posts[0]["json"]["technicalDescriptors"], list)
     assert len(seen_posts[0]["json"]["technicalDescriptors"]) >= 1
-    assert all("." in td for td in seen_posts[0]["json"]["technicalDescriptors"])
+    assert all(isinstance(td, dict) for td in seen_posts[0]["json"]["technicalDescriptors"])
+    assert all(sorted(td.keys()) == ["id"] for td in seen_posts[0]["json"]["technicalDescriptors"])
+    assert all("." in str(td.get("id") or "") for td in seen_posts[0]["json"]["technicalDescriptors"])
     assert seen_posts[0]["headers"]["Content-Type"] == "application/json"
 
 
@@ -781,9 +783,10 @@ def test_phase1_container_definition_uses_technical_descriptors_for_bmw_phev():
     assert sorted(payload.keys()) == ["name", "purpose", "technicalDescriptors"]
     assert payload["name"] == PHASE1_CONTAINER_DEFINITION["name"]
     assert payload["purpose"] == PHASE1_CONTAINER_DEFINITION["purpose"]
-    assert payload["technicalDescriptors"] == PHASE1_CONTAINER_DEFINITION["technical_descriptor_ids"]
+    assert payload["technicalDescriptors"] == [{"id": x} for x in PHASE1_CONTAINER_DEFINITION["technical_descriptor_ids"]]
     assert "descriptors" not in payload
-    assert all("." in td for td in payload["technicalDescriptors"])
+    assert all(sorted(td.keys()) == ["id"] for td in payload["technicalDescriptors"])
+    assert all("." in str(td.get("id") or "") for td in payload["technicalDescriptors"])
 
 
 def test_container_create_failure_reports_request_shape_in_diagnostics(monkeypatch, tmp_path):
@@ -824,7 +827,9 @@ def test_container_create_failure_reports_request_shape_in_diagnostics(monkeypat
     assert create_diag["request_field_names"] == ["name", "purpose", "technicalDescriptors"]
     assert create_diag["technical_descriptors_included"] is True
     assert create_diag["technical_descriptor_count"] >= 1
-    assert all("." in td for td in create_diag["technical_descriptor_sample"])
+    assert create_diag["technical_descriptor_shape_summary"] == "dict(keys=['id'])"
+    assert all(sorted(td.keys()) == ["id"] for td in create_diag["technical_descriptor_sample"])
+    assert all("." in str(td.get("id") or "") for td in create_diag["technical_descriptor_sample"])
     assert create_diag["attempted"] is True
     assert create_diag["status"] == 400
     assert "bad_request" in (create_diag["response_excerpt"] or "")
@@ -842,4 +847,4 @@ def test_phase1_descriptors_do_not_use_legacy_shorthand_aliases(tmp_path):
         "CPLUGSTATUS",
         "CACCURRENTLIMIT",
     }
-    assert set(payload["technicalDescriptors"]).isdisjoint(legacy_aliases)
+    assert set(str(td.get("id") or "") for td in payload["technicalDescriptors"]).isdisjoint(legacy_aliases)
