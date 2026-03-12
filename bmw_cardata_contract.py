@@ -23,11 +23,19 @@ class CreateContainerRequest:
     purpose: str
     technicalDescriptors: list[str]
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not isinstance(self.purpose, str):
+            raise TypeError("CreateContainerRequest.name and .purpose must be strings")
+        if not isinstance(self.technicalDescriptors, list):
+            raise TypeError("CreateContainerRequest.technicalDescriptors must be a list[str]")
+        if any(not isinstance(descriptor, str) for descriptor in self.technicalDescriptors):
+            raise TypeError("CreateContainerRequest.technicalDescriptors must contain only strings")
+
     def to_wire(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "purpose": self.purpose,
-            "technicalDescriptors": [str(descriptor) for descriptor in self.technicalDescriptors],
+            "technicalDescriptors": list(self.technicalDescriptors),
         }
 
     def to_json_body(self) -> dict[str, Any]:

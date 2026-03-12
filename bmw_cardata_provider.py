@@ -192,10 +192,14 @@ class BmwCarDataProvider:
     def _technical_descriptor_shape_summary(self, technical_descriptors: list[Any]) -> str:
         if not technical_descriptors:
             return "empty"
-        first = technical_descriptors[0]
-        if isinstance(first, dict):
-            return f"dict(keys={sorted(first.keys())})"
-        return type(first).__name__
+        summaries: list[str] = []
+        for item in technical_descriptors:
+            if isinstance(item, dict):
+                summaries.append(f"dict(keys={sorted(item.keys())})")
+            else:
+                summaries.append(type(item).__name__)
+        uniq = sorted(set(summaries))
+        return uniq[0] if len(uniq) == 1 else f"mixed({','.join(uniq)})"
 
     def _load_persisted_container(self) -> tuple[str | None, list[dict[str, Any]]]:
         persisted = self.storage.load_container_state()

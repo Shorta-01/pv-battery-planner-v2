@@ -6,6 +6,8 @@ import pathlib
 from pathlib import Path
 import sys
 
+import pytest
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from bmw_auth import BmwAuthClient
@@ -796,7 +798,17 @@ def test_phase1_container_definition_uses_technical_descriptors_for_bmw_phev():
     assert payload["technicalDescriptors"] == PHASE1_CONTAINER_DEFINITION["technical_descriptor_ids"]
     assert "descriptors" not in payload
     assert all(isinstance(td, str) for td in payload["technicalDescriptors"])
+    assert all(not isinstance(td, dict) for td in payload["technicalDescriptors"])
     assert all("." in td for td in payload["technicalDescriptors"])
+    assert provider._phase1_container_create_request().to_json_string() == json.dumps(
+        {
+            "name": PHASE1_CONTAINER_DEFINITION["name"],
+            "purpose": PHASE1_CONTAINER_DEFINITION["purpose"],
+            "technicalDescriptors": PHASE1_CONTAINER_DEFINITION["technical_descriptor_ids"],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def test_container_create_failure_reports_request_shape_in_diagnostics(monkeypatch, tmp_path):
@@ -858,6 +870,12 @@ def test_container_create_failure_reports_request_shape_in_diagnostics(monkeypat
     assert isinstance(create_capture["payload"]["json_body"]["technicalDescriptors"][0], str)
     assert create_capture["payload"]["descriptor_item_type_summary"] == "str"
     assert "technicalDescriptorId" not in create_capture["payload"]["serialized_body"]
+
+
+
+def test_create_container_contract_rejects_non_string_descriptors():
+    with pytest.raises(TypeError):
+        CreateContainerRequest(name="n", purpose="p", technicalDescriptors=[{"id": "x"}])  # type: ignore[list-item]
 
 
 def test_phase1_descriptors_do_not_use_legacy_shorthand_aliases(tmp_path):
