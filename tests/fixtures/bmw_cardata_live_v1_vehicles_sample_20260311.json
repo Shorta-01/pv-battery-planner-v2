@@ -1,0 +1,16 @@
+{
+  "endpoint": "/v1/vehicles",
+  "captured_at": "2026-03-11T10:05:00+00:00",
+  "payload": {
+    "vehicles": [
+      {
+        "vin": "WBY98765432100002",
+        "model": "iX1",
+        "lastUpdatedAt": "2026-03-11T10:00:00Z",
+        "battery": {
+          "socPercent": 71
+        }
+      }
+    ]
+  }
+}

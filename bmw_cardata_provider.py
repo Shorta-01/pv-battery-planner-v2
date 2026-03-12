@@ -24,6 +24,11 @@ class BmwCarDataProvider:
         self.vehicles: dict[str, NormalizedVehicleState] = storage.load_vehicle_states()
         self.status.provider_status = "ready"
 
+    def update_runtime(self, *, config: dict[str, Any], storage: BmwStorage, auth: BmwAuthClient) -> None:
+        self.config = config
+        self.storage = storage
+        self.auth = auth
+
     def rest_base_url(self) -> str:
         return str(self.config.get("bmw_api_base_url", self.REST_BASE_URL)).rstrip("/")
 
@@ -41,7 +46,9 @@ class BmwCarDataProvider:
             resp.status_code,
             body_excerpt,
         )
-        raise RuntimeError(f"BMW REST call failed: status={resp.status_code} endpoint={endpoint} body={body_excerpt}")
+        raise RuntimeError(
+            f"BMW REST call failed: status={resp.status_code} endpoint={endpoint} body={body_excerpt} auth_mode=Bearer access_token"
+        )
 
     def refresh_once(self) -> dict[str, Any]:
         if not bool(self.config.get("bmw_enabled", False)):
@@ -56,20 +63,28 @@ class BmwCarDataProvider:
         headers = {"Authorization": f"Bearer {token.access_token}"}
         self.status.stream_connected = False
         self.status.provider_status = "polling"
-        self.status.stream_status = "not_implemented"
+        self.status.stream_status = "disabled" if not bool(self.config.get("bmw_stream_enabled", False)) else "not_implemented"
         try:
             aggregate_payload: dict[str, Any] = {}
             base = self.rest_base_url()
+            capture_paths: list[str] = []
             for path in self.rest_endpoints():
                 endpoint = f"{base}{path}"
                 resp = requests.get(endpoint, headers=headers, timeout=20)
                 if resp.status_code >= 400:
                     self._raise_http_error(endpoint, resp)
-                aggregate_payload[path] = resp.json()
+                endpoint_payload = resp.json()
+                aggregate_payload[path] = endpoint_payload
+                capture_paths.append(str(self.storage.store_raw_capture(path, endpoint_payload)))
             self.status.last_auth_refresh = token.obtained_at
             self._ingest_payload(aggregate_payload)
             self.status.provider_status = "healthy"
-            return {"ok": True, "vehicles": len(self.vehicles), "endpoints": self.rest_endpoints()}
+            return {
+                "ok": True,
+                "vehicles": len(self.vehicles),
+                "endpoints": self.rest_endpoints(),
+                "capture_files": capture_paths,
+            }
         except Exception as exc:
             self.status.last_error = str(exc)
             self.status.provider_status = "degraded"

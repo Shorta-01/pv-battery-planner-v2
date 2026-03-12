@@ -754,16 +754,18 @@ class BackendState:
         self._apply_config(self.settings["config"])
         self.bmw_service.update_config(self.settings.get("config", {}).get("ev_vehicle_data", {}))
         if DEBUG:
-            bmw_auth_module_file = inspect.getfile(self.bmw_service.auth.__class__)
             bmw_debug = self.bmw_service.device_flow_debug_info()
             logger.info(
-                "BMW device-flow debug: module=%s start_url=%s poll_url=%s rest_base=%s rest_token_mode=%s stream_status=%s",
-                bmw_auth_module_file,
+                "BMW runtime debug: module=%s client_id_masked=%s auth_base=%s start_url=%s poll_url=%s rest_base=%s rest_token_mode=%s stream_enabled=%s rebuilt=%s",
+                bmw_debug.get("bmw_auth_module_path"),
+                bmw_debug.get("active_client_id_masked"),
+                bmw_debug.get("active_auth_base_url"),
                 bmw_debug.get("device_flow_start_url"),
                 bmw_debug.get("device_flow_poll_url"),
                 bmw_debug.get("rest_api_base_url"),
                 bmw_debug.get("rest_token_mode"),
-                bmw_debug.get("stream_status"),
+                bmw_debug.get("stream_enabled"),
+                bmw_debug.get("provider_rebuilt_after_config_update"),
             )
         self._migrate_json_history_to_sqlite()
 
@@ -2270,10 +2272,7 @@ def ev_bmw_device_flow_debug(authorization: str | None = Header(default=None)) -
     _require_token(authorization)
     if not DEBUG:
         raise HTTPException(status_code=404, detail="Not found")
-    return {
-        "bmw_auth_module_path": inspect.getfile(state.bmw_service.auth.__class__),
-        **state.bmw_service.device_flow_debug_info(),
-    }
+    return state.bmw_service.device_flow_debug_info()
 
 
 @app.get("/v1/evse/status")

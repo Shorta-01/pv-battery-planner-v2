@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import datetime as dt
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -41,6 +42,30 @@ class BmwStorage:
                 if isinstance(row, dict):
                     out[str(vid)] = NormalizedVehicleState.from_dict(row)
             return out
+
+
+
+    def store_raw_capture(self, endpoint_path: str, payload: dict[str, Any]) -> Path:
+        safe_endpoint = endpoint_path.strip().strip("/").replace("/", "_") or "root"
+        ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out_name = f"bmw_cardata_live_{safe_endpoint}_{ts}.json"
+        out_path = self.raw_path.parent / "bmw_payload_captures" / out_name
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        wrapped = {
+            "captured_at": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
+            "endpoint": endpoint_path,
+            "payload": payload,
+        }
+        with self._lock:
+            out_path.write_text(json.dumps(wrapped, ensure_ascii=False, indent=2), encoding="utf-8")
+        return out_path
+
+    def list_raw_captures(self, limit: int = 20) -> list[str]:
+        capture_dir = self.raw_path.parent / "bmw_payload_captures"
+        if not capture_dir.exists():
+            return []
+        items = sorted(capture_dir.glob("bmw_cardata_live_*.json"), key=lambda x: x.stat().st_mtime, reverse=True)
+        return [str(path) for path in items[: max(1, limit)]]
 
     def load_recent_raw_events(self, limit: int = 50) -> list[dict[str, Any]]:
         with self._lock:
