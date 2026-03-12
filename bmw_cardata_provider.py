@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlencode
 
 import requests
 
@@ -20,18 +21,14 @@ PHASE1_CONTAINER_DEFINITION: dict[str, Any] = {
     "purpose": "PV Battery Planner phase 1 EV/PHEV telematics",
     # Validated against BMW CarData generated descriptor catalog naming used during
     # this integration hardening cycle.
-    "validated_phase1_descriptors": [
-        "vehicle.drivetrain.electricEngine.charging.status",
-        "vehicle.body.chargingPort.status",
-        "vehicle.powertrain.electric.battery.charging.acLimit.selected",
-    ],
-    # Desired for richer UX, but intentionally excluded from active create flow
-    # until explicitly validated against BMW's descriptor catalog.
-    "unverified_candidate_descriptors": [
+    "candidate_phase1_descriptors": [
         "vehicle.drivetrain.electricEngine.battery.stateOfCharge",
         "vehicle.drivetrain.electricEngine.range.electric",
+        "vehicle.drivetrain.electricEngine.charging.status",
         "vehicle.drivetrain.electricEngine.charging.timeToComplete",
         "vehicle.drivetrain.electricEngine.charging.power",
+        "vehicle.body.chargingPort.status",
+        "vehicle.powertrain.electric.battery.charging.acLimit.selected",
     ],
 }
 
@@ -182,14 +179,18 @@ class BmwCarDataProvider:
         capture_paths.append(str(self.storage.store_raw_capture(capture_endpoint_path or path, node, status_code=resp.status_code)))
         return node
 
-    def _phase1_container_create_request(self) -> CreateContainerRequest:
+    def _phase1_candidate_descriptors(self) -> list[str]:
         profile = dict(PHASE1_CONTAINER_DEFINITION)
-        validated_descriptor_ids = profile.get("validated_phase1_descriptors") if isinstance(profile.get("validated_phase1_descriptors"), list) else []
-        technical_descriptors = self._build_technical_descriptors(validated_descriptor_ids)
+        candidate_descriptor_ids = profile.get("candidate_phase1_descriptors") if isinstance(profile.get("candidate_phase1_descriptors"), list) else []
+        return self._build_technical_descriptors(candidate_descriptor_ids)
+
+    def _phase1_container_create_request(self, technical_descriptors: list[str] | None = None) -> CreateContainerRequest:
+        profile = dict(PHASE1_CONTAINER_DEFINITION)
+        descriptors = list(technical_descriptors) if isinstance(technical_descriptors, list) else self._phase1_candidate_descriptors()
         return CreateContainerRequest(
             name=str(profile.get("name") or ""),
             purpose=str(profile.get("purpose") or ""),
-            technicalDescriptors=technical_descriptors,
+            technicalDescriptors=self._build_technical_descriptors(descriptors),
         )
 
     def _build_technical_descriptors(self, descriptor_ids: list[Any]) -> list[str]:
@@ -200,10 +201,7 @@ class BmwCarDataProvider:
             return "empty"
         summaries: list[str] = []
         for item in technical_descriptors:
-            if isinstance(item, dict):
-                summaries.append(f"dict(keys={sorted(item.keys())})")
-            else:
-                summaries.append(type(item).__name__)
+            summaries.append(type(item).__name__)
         uniq = sorted(set(summaries))
         return uniq[0] if len(uniq) == 1 else f"mixed({','.join(uniq)})"
 
@@ -215,16 +213,187 @@ class BmwCarDataProvider:
             diagnostics = [x for x in persisted.get("containers") if isinstance(x, dict)]
         return (container_id or None), diagnostics
 
-    def _persist_container_state(self, *, active_container_id: str | None, diagnostics: list[dict[str, Any]], source: str) -> None:
+    def _load_descriptor_validation_state(self) -> dict[str, Any]:
+        state = self.storage.load_descriptor_validation_state()
+        return state if isinstance(state, dict) else {}
+
+    def _persist_descriptor_validation_state(
+        self,
+        *,
+        accepted_descriptors: list[str],
+        rejected_descriptors: dict[str, Any],
+        probe_results: list[dict[str, Any]],
+    ) -> None:
+        payload = {
+            "accepted_descriptors": list(accepted_descriptors),
+            "rejected_descriptors": rejected_descriptors,
+            "probe_results": probe_results,
+            "last_tested_at": utcnow().replace(microsecond=0).isoformat(),
+        }
+        self.storage.save_descriptor_validation_state(payload)
+
+    def _persist_container_state(
+        self,
+        *,
+        active_container_id: str | None,
+        diagnostics: list[dict[str, Any]],
+        source: str,
+        accepted_descriptors: list[str] | None = None,
+    ) -> None:
+        descriptor_state = self._load_descriptor_validation_state()
+        persisted_accepted = descriptor_state.get("accepted_descriptors") if isinstance(descriptor_state.get("accepted_descriptors"), list) else []
+        final_accepted = self._build_technical_descriptors(accepted_descriptors) if isinstance(accepted_descriptors, list) else self._build_technical_descriptors(persisted_accepted)
         self.storage.save_container_state(
             {
                 "active_container_id": active_container_id,
                 "containers": diagnostics,
                 "source": source,
                 "updated_at": utcnow().replace(microsecond=0).isoformat(),
-                "descriptor_profile": self._phase1_container_create_request().to_json_body(),
+                "accepted_descriptors": final_accepted,
+                "descriptor_profile": self._phase1_container_create_request(final_accepted).to_json_body(),
             }
         )
+
+    def _execute_container_create_attempt(
+        self,
+        *,
+        base: str,
+        headers: dict[str, str],
+        aggregate_payload: dict[str, Any],
+        capture_paths: list[str],
+        technical_descriptors: list[str],
+        mode: str,
+        capture_endpoint_path: str,
+    ) -> tuple[str | None, dict[str, Any], Any]:
+        create_request_model = self._phase1_container_create_request(technical_descriptors)
+        payload = create_request_model.to_json_body()
+        serialized_body = create_request_model.to_json_string()
+        create_headers = dict(headers)
+        create_headers["Content-Type"] = "application/json"
+        endpoint_path = "/customers/containers"
+        request_field_names = sorted(payload.keys())
+        descriptor_count = len(payload.get("technicalDescriptors", []))
+        descriptor_sample = list(payload.get("technicalDescriptors", []))[:3]
+        descriptor_shape_summary = self._technical_descriptor_shape_summary(list(payload.get("technicalDescriptors", [])))
+        serialized_body_sample = serialized_body[:600]
+
+        response = self._request_json(
+            method="POST",
+            base=base,
+            path=endpoint_path,
+            headers=create_headers,
+            aggregate_payload=aggregate_payload,
+            capture_paths=capture_paths,
+            stage="discover",
+            optional=True,
+            capture_endpoint_path=capture_endpoint_path,
+            raw_body=serialized_body,
+        )
+        error_node = aggregate_payload.get(f"POST {endpoint_path}") if isinstance(aggregate_payload.get(f"POST {endpoint_path}"), dict) else {}
+        status = (error_node.get("_error") or {}).get("status")
+        if status is None:
+            status = self.status.last_rest_status_code
+        response_excerpt = (error_node.get("_error") or {}).get("excerpt")
+
+        create_request_diag = {
+            "mode": mode,
+            "endpoint": f"{base}{endpoint_path}",
+            "method": "POST",
+            "content_type": create_headers.get("Content-Type"),
+            "serialized_body": serialized_body,
+            "top_level_field_names": request_field_names,
+            "descriptor_count": descriptor_count,
+            "descriptor_item_type_summary": descriptor_shape_summary,
+            "descriptor_sample": descriptor_sample,
+            "technical_descriptors": list(payload.get("technicalDescriptors", [])),
+            "status": status,
+            "response_excerpt": response_excerpt,
+        }
+        capture_payload = {
+            "attempt_mode": mode,
+            "endpoint": f"{base}{endpoint_path}",
+            "method": "POST",
+            "content_type": create_headers.get("Content-Type"),
+            "serialized_body": serialized_body,
+            "top_level_field_names": request_field_names,
+            "descriptor_count": descriptor_count,
+            "descriptor_item_type_summary": descriptor_shape_summary,
+            "descriptor_sample": descriptor_sample,
+            "technical_descriptors": list(payload.get("technicalDescriptors", [])),
+            "status": status,
+            "response_excerpt": response_excerpt,
+            "response_payload": response,
+        }
+        capture_paths.append(str(self.storage.store_raw_capture(f"/customers/containers_create_attempt_{mode}", capture_payload, status_code=status)))
+
+        container_id = None
+        if isinstance(response, dict):
+            container_id = str(response.get("containerId") or response.get("id") or response.get("identifier") or "").strip() or None
+        diag = {
+            "container_id": container_id,
+            "state": str(response.get("state") or "") if isinstance(response, dict) else "",
+            "name": (response.get("name") if isinstance(response, dict) else None) or payload.get("name"),
+            "purpose": (response.get("purpose") if isinstance(response, dict) else None) or payload.get("purpose"),
+            "created_at": (response.get("createdAt") if isinstance(response, dict) else None) or utcnow().replace(microsecond=0).isoformat(),
+            "updated_at": response.get("updatedAt") if isinstance(response, dict) else None,
+            "descriptor_profile": payload,
+            "create_request": create_request_diag,
+            "raw": response if isinstance(response, dict) else None,
+        }
+        return container_id, diag, response
+
+    def _delete_probe_container(self, *, base: str, headers: dict[str, str], container_id: str) -> dict[str, Any]:
+        endpoint_path = f"/customers/containers/{container_id}"
+        endpoint = f"{base}{endpoint_path}"
+        try:
+            resp = requests.delete(endpoint, headers=headers, timeout=20)
+            ok = resp.status_code < 400
+            excerpt = self._safe_error_excerpt(resp) if not ok else ""
+            return {"endpoint": endpoint, "status": resp.status_code, "ok": ok, "response_excerpt": excerpt}
+        except Exception as exc:
+            return {"endpoint": endpoint, "status": None, "ok": False, "response_excerpt": str(exc)[:300]}
+
+    def _probe_descriptors(
+        self,
+        *,
+        base: str,
+        headers: dict[str, str],
+        aggregate_payload: dict[str, Any],
+        capture_paths: list[str],
+        candidates: list[str],
+    ) -> tuple[list[str], dict[str, Any], list[dict[str, Any]]]:
+        accepted: list[str] = []
+        rejected: dict[str, Any] = {}
+        probe_results: list[dict[str, Any]] = []
+        for descriptor in candidates:
+            container_id, create_diag, _ = self._execute_container_create_attempt(
+                base=base,
+                headers=headers,
+                aggregate_payload=aggregate_payload,
+                capture_paths=capture_paths,
+                technical_descriptors=[descriptor],
+                mode="probe",
+                capture_endpoint_path="/customers/containers_probe_create",
+            )
+            status = create_diag.get("create_request", {}).get("status")
+            result = {
+                "tested_descriptors": [descriptor],
+                "status": status,
+                "success": bool(container_id),
+                "container_id": container_id,
+                "response_excerpt": create_diag.get("create_request", {}).get("response_excerpt"),
+            }
+            if container_id:
+                accepted.append(descriptor)
+                deletion = self._delete_probe_container(base=base, headers=headers, container_id=container_id)
+                result["probe_container_deleted"] = deletion
+            else:
+                rejected[descriptor] = {
+                    "status": status,
+                    "response_excerpt": create_diag.get("create_request", {}).get("response_excerpt"),
+                }
+            probe_results.append(result)
+        return accepted, rejected, probe_results
 
     def _create_container_if_needed(
         self,
@@ -235,144 +404,71 @@ class BmwCarDataProvider:
         capture_paths: list[str],
     ) -> tuple[str | None, dict[str, Any] | None]:
         self.status.container_auto_create_attempted = True
-        create_request_model = self._phase1_container_create_request()
-        payload = create_request_model.to_json_body()
-        serialized_body = create_request_model.to_json_string()
-        create_headers = dict(headers)
-        create_headers["Content-Type"] = "application/json"
-        endpoint_path = "/customers/containers"
-        request_field_names = sorted(payload.keys())
-        technical_descriptors = payload.get("technicalDescriptors", []) if isinstance(payload.get("technicalDescriptors"), list) else []
-        configured_validated = self._build_technical_descriptors(
-            PHASE1_CONTAINER_DEFINITION.get("validated_phase1_descriptors") if isinstance(PHASE1_CONTAINER_DEFINITION.get("validated_phase1_descriptors"), list) else []
+
+        descriptor_state = self._load_descriptor_validation_state()
+        persisted_accepted = self._build_technical_descriptors(
+            descriptor_state.get("accepted_descriptors") if isinstance(descriptor_state.get("accepted_descriptors"), list) else []
         )
-        configured_unverified = self._build_technical_descriptors(
-            PHASE1_CONTAINER_DEFINITION.get("unverified_candidate_descriptors")
-            if isinstance(PHASE1_CONTAINER_DEFINITION.get("unverified_candidate_descriptors"), list)
-            else []
-        )
-        removed_unverified = [d for d in configured_unverified if d not in technical_descriptors]
-        descriptor_count = len(technical_descriptors)
-        descriptor_sample = technical_descriptors[:3]
-        descriptor_shape_summary = self._technical_descriptor_shape_summary(technical_descriptors)
-        descriptor_item_type_summary = descriptor_shape_summary
-        serialized_body_sample = serialized_body[:600]
-        logger.info(
-            "BMW container create request endpoint=%s%s method=POST is_json=%s content_type=%s request_fields=%s technical_descriptor_count=%s technical_descriptor_shape=%s technical_descriptor_sample=%s body_sample=%s",
-            base,
-            endpoint_path,
-            True,
-            create_headers.get("Content-Type"),
-            request_field_names,
-            descriptor_count,
-            descriptor_shape_summary,
-            descriptor_sample,
-            serialized_body_sample,
-        )
-        response = self._request_json(
-            method="POST",
+        candidate_descriptors = self._phase1_candidate_descriptors()
+        initial_descriptors = persisted_accepted or candidate_descriptors
+
+        container_id, diag, _ = self._execute_container_create_attempt(
             base=base,
-            path=endpoint_path,
-            headers=create_headers,
+            headers=headers,
             aggregate_payload=aggregate_payload,
             capture_paths=capture_paths,
-            stage="discover",
-            optional=True,
+            technical_descriptors=initial_descriptors,
+            mode="production_initial",
             capture_endpoint_path="/customers/containers_create",
-            raw_body=serialized_body,
         )
-        error_node = aggregate_payload.get(f"POST {endpoint_path}") if isinstance(aggregate_payload.get(f"POST {endpoint_path}"), dict) else {}
-        create_status = (error_node.get("_error") or {}).get("status")
-        if create_status is None:
-            create_status = self.status.last_rest_status_code
-        create_excerpt = (error_node.get("_error") or {}).get("excerpt")
-        create_request_diag = {
-            "endpoint": f"{base}{endpoint_path}",
-            "method": "POST",
-            "content_type": create_headers.get("Content-Type"),
-            "is_json_body": True,
-            "request_field_names": request_field_names,
-            "serialized_body": serialized_body,
-            "serialized_body_sample": serialized_body_sample,
-            "technical_descriptors_included": descriptor_count > 0,
-            "technical_descriptor_count": descriptor_count,
-            "validated_descriptor_list": list(technical_descriptors),
-            "validated_descriptor_count": descriptor_count,
-            "removed_unverified_descriptors": removed_unverified,
-            "technical_descriptor_shape_summary": descriptor_shape_summary,
-            "descriptor_item_type_summary": descriptor_item_type_summary,
-            "technical_descriptor_sample": descriptor_sample,
-            "attempted": True,
-            "status": create_status,
-            "response_excerpt": create_excerpt,
-        }
-        capture_payload = {
-            "endpoint": f"{base}{endpoint_path}",
-            "method": "POST",
-            "headers": {k: v for k, v in create_headers.items() if k in {"Accept", "Content-Type", "X-Version"}},
-            "is_json_body": True,
-            "serialized_body": serialized_body,
-            "json_body": payload,
-            "serialized_body_sample": serialized_body_sample,
-            "top_level_field_names": request_field_names,
-            "technical_descriptor_count": descriptor_count,
-            "validated_descriptor_list": list(technical_descriptors),
-            "validated_descriptor_count": descriptor_count,
-            "removed_unverified_descriptors": removed_unverified,
-            "configured_validated_descriptors": configured_validated,
-            "configured_unverified_candidates": configured_unverified,
-            "technical_descriptor_shape_summary": descriptor_shape_summary,
-            "descriptor_item_type_summary": descriptor_item_type_summary,
-            "technical_descriptor_sample": descriptor_sample,
-            "status": create_request_diag.get("status"),
-            "response_excerpt": create_request_diag.get("response_excerpt"),
-            "response_payload": response,
-        }
-        capture_paths.append(str(self.storage.store_raw_capture("/customers/containers_create_attempt", capture_payload, status_code=create_request_diag.get("status"))))
 
-        if not isinstance(response, dict):
-            logger.warning(
-                "BMW container create failed endpoint=%s%s status=%s response_excerpt=%s",
-                base,
-                endpoint_path,
-                create_request_diag.get("status"),
-                create_request_diag.get("response_excerpt"),
-            )
-            diag = {
-                "container_id": None,
-                "state": "",
-                "name": payload.get("name"),
-                "purpose": payload.get("purpose"),
-                "created_at": utcnow().replace(microsecond=0).isoformat(),
-                "updated_at": None,
-                "descriptor_profile": payload,
-                "create_request": create_request_diag,
-                "raw": None,
-            }
-            return None, diag
-        container_id = str(response.get("containerId") or response.get("id") or response.get("identifier") or "").strip() or None
         if container_id:
             self.status.container_auto_create_succeeded = True
-        logger.info(
-            "BMW container create response endpoint=%s%s status=%s container_id=%s response_excerpt=%s",
-            base,
-            endpoint_path,
-            create_request_diag.get("status"),
-            container_id,
-            create_request_diag.get("response_excerpt"),
+            self._persist_descriptor_validation_state(
+                accepted_descriptors=initial_descriptors,
+                rejected_descriptors=descriptor_state.get("rejected_descriptors") if isinstance(descriptor_state.get("rejected_descriptors"), dict) else {},
+                probe_results=descriptor_state.get("probe_results") if isinstance(descriptor_state.get("probe_results"), list) else [],
+            )
+            return container_id, diag
+
+        status = diag.get("create_request", {}).get("status")
+        if status != 400:
+            return None, diag
+
+        accepted, rejected, probe_results = self._probe_descriptors(
+            base=base,
+            headers=headers,
+            aggregate_payload=aggregate_payload,
+            capture_paths=capture_paths,
+            candidates=candidate_descriptors,
         )
-        diag = {
-            "container_id": container_id,
-            "state": str(response.get("state") or ""),
-            "name": response.get("name") or payload.get("name"),
-            "purpose": response.get("purpose") or response.get("type"),
-            "created_at": response.get("createdAt") or utcnow().replace(microsecond=0).isoformat(),
-            "updated_at": response.get("updatedAt"),
-            "descriptor_profile": payload,
-            "create_request": create_request_diag,
-            "raw": response,
+        self._persist_descriptor_validation_state(
+            accepted_descriptors=accepted,
+            rejected_descriptors=rejected,
+            probe_results=probe_results,
+        )
+        diag["bootstrap_probe"] = {
+            "triggered": True,
+            "accepted_descriptors": accepted,
+            "rejected_descriptors": rejected,
+            "probe_results": probe_results,
         }
-        return container_id, diag
+        if not accepted:
+            return None, diag
+
+        final_container_id, final_diag, _ = self._execute_container_create_attempt(
+            base=base,
+            headers=headers,
+            aggregate_payload=aggregate_payload,
+            capture_paths=capture_paths,
+            technical_descriptors=accepted,
+            mode="production_final",
+            capture_endpoint_path="/customers/containers_create_final",
+        )
+        final_diag["bootstrap_probe"] = diag.get("bootstrap_probe")
+        if final_container_id:
+            self.status.container_auto_create_succeeded = True
+        return final_container_id, final_diag
 
     def refresh_once(self) -> dict[str, Any]:
         if not bool(self.config.get("bmw_enabled", False)):
@@ -500,7 +596,8 @@ class BmwCarDataProvider:
             self._persist_container_state(active_container_id=active_container_id, diagnostics=container_diags, source="refresh")
 
             if active_container_id:
-                telematic_path = f"/customers/vehicles/{target_vehicle_id}/telematicData?containerId={active_container_id}"
+                telematic_query = urlencode({"containerId": active_container_id})
+                telematic_path = f"/customers/vehicles/{target_vehicle_id}/telematicData?{telematic_query}"
                 self.status.last_telematic_url = f"{base}{telematic_path}"
                 self._request_json(
                     method="GET",
@@ -538,6 +635,8 @@ class BmwCarDataProvider:
             telematic_key = f"GET /customers/vehicles/{target_vehicle_id}/telematicData?containerId={active_container_id}" if active_container_id else None
             telematic_node = aggregate_payload.get(telematic_key) if telematic_key else None
             self.status.vehicle_data_mode = "live_telematics" if isinstance(telematic_node, dict) and "_error" not in telematic_node else "static_only"
+            if self.status.vehicle_data_mode != "live_telematics":
+                self.status.data_status = "partial"
             return {
                 "ok": bool(self.vehicles),
                 "vehicles": len(self.vehicles),
