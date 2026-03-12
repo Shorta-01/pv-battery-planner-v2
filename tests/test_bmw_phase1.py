@@ -606,6 +606,8 @@ def test_refresh_graceful_when_no_containers(monkeypatch, tmp_path):
             return _DummyResponse(payload={"vin": "VINNC1", "lastUpdatedAt": "2026-03-11T10:00:00Z", "battery": {"socPercent": 81}})
         if url.endswith("/customers/containers"):
             return _DummyResponse(payload={"containers": []})
+        if url.endswith("/customers/vehicles/VINNC1/telematicData"):
+            return _DummyResponse(payload={"charging": {"plugConnectionState": "CONNECTED", "chargingState": "CHARGING"}})
         return _DummyResponse(status_code=500, text="unexpected")
 
     monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
@@ -614,8 +616,9 @@ def test_refresh_graceful_when_no_containers(monkeypatch, tmp_path):
     out = provider.refresh_once()
     assert out["ok"] is True
     assert provider.status.active_container_id is None
-    assert provider.status.vehicle_data_mode == "static_only"
+    assert provider.status.vehicle_data_mode == "live_telematics"
     assert provider.vehicles["VINNC1"].soc_pct == 81
+    assert any(u.endswith("/customers/vehicles/VINNC1/telematicData") for u in seen_urls)
     assert all("telematicData?containerId=" not in u for u in seen_urls)
 
 

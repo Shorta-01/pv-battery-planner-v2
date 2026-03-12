@@ -248,31 +248,16 @@ class BmwCarDataProvider:
                 telematic_path = f"{telematic_path}?containerId={active_container_id}"
             self.status.last_telematic_url = f"{base}{telematic_path}"
 
-            if active_container_id:
-                self._request_json(
-                    base=base,
-                    path=telematic_path,
-                    headers=headers,
-                    aggregate_payload=aggregate_payload,
-                    capture_paths=capture_paths,
-                    stage="vehicle",
-                    optional=True,
-                    capture_endpoint_path=f"/customers/vehicles/{target_vehicle_id}/telematicData",
-                )
-            else:
-                aggregate_payload[telematic_path] = {"_error": {"status": None, "excerpt": "missing active containerId"}}
-                aggregate_payload["sequence"].append(
-                    {
-                        "stage": "vehicle",
-                        "endpoint": telematic_path,
-                        "ok": False,
-                        "status": None,
-                        "error_excerpt": "missing active containerId",
-                        "optional": True,
-                    }
-                )
-                self.status.refresh_sequence_endpoints.append(telematic_path)
-                self.status.last_telematic_status_code = None
+            self._request_json(
+                base=base,
+                path=telematic_path,
+                headers=headers,
+                aggregate_payload=aggregate_payload,
+                capture_paths=capture_paths,
+                stage="vehicle",
+                optional=True,
+                capture_endpoint_path=f"/customers/vehicles/{target_vehicle_id}/telematicData",
+            )
 
             for op in self.rest_operations():
                 if op.name != "vehicle_charging_profile":
