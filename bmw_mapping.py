@@ -20,6 +20,34 @@ def _as_int(v: Any) -> int | None:
     return None if f is None else int(f)
 
 
+
+
+def _dig(node: Any, *path: str) -> Any:
+    cur = node
+    for part in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    return cur
+
+
+def _first(*values: Any) -> Any:
+    for v in values:
+        if v is not None and v != "":
+            return v
+    return None
+
+
+def _as_bool_from_states(value: Any, *, true_values: set[str], false_values: set[str]) -> bool | None:
+    if value is None:
+        return None
+    s = str(value).strip().upper()
+    if s in true_values:
+        return True
+    if s in false_values:
+        return False
+    return None
+
 def freshness_bucket(last_update_ts: dt.datetime | None, now: dt.datetime | None = None) -> tuple[str, int | None]:
     if last_update_ts is None:
         return "error", None
@@ -78,6 +106,8 @@ def _extract_vehicles_list(payload: dict[str, Any]) -> list[dict[str, Any]]:
         merged = out.get(vin, {"vin": vin, "vehicleId": vin})
         if key.endswith("/basicData"):
             merged["basicData"] = node
+        elif key.endswith("/telematicData"):
+            merged["telematicData"] = node
         elif key.endswith("/chargingprofile"):
             merged["chargingProfile"] = node
         elif key.endswith("/charging"):
@@ -98,6 +128,8 @@ def _extract_vehicles_list(payload: dict[str, Any]) -> list[dict[str, Any]]:
                     merged["basicData"] = first if isinstance(first, dict) else wrapped_payload
                 else:
                     merged["basicData"] = wrapped_payload
+            elif endpoint.endswith("/telematicData"):
+                merged["telematicData"] = wrapped_payload
             elif endpoint.endswith("/chargingprofile"):
                 merged["chargingProfile"] = wrapped_payload
             else:
@@ -121,6 +153,7 @@ def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[Normalize
 
         basic = row.get("basicData") if isinstance(row.get("basicData"), dict) else row
         mapped = mappings_by_vin.get(vehicle_id, row.get("_mapping") if isinstance(row.get("_mapping"), dict) else {})
+        telematic = row.get("telematicData") if isinstance(row.get("telematicData"), dict) else {}
         charging_profile = row.get("chargingProfile") if isinstance(row.get("chargingProfile"), dict) else {}
 
         charging = basic.get("charging") if isinstance(basic.get("charging"), dict) else {}
@@ -128,34 +161,66 @@ def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[Normalize
         range_data = basic.get("range") if isinstance(basic.get("range"), dict) else {}
         charge_settings = basic.get("chargeSettings") if isinstance(basic.get("chargeSettings"), dict) else {}
 
+        tele_charging = telematic.get("charging") if isinstance(telematic.get("charging"), dict) else {}
+        tele_battery = telematic.get("battery") if isinstance(telematic.get("battery"), dict) else {}
+        tele_range = telematic.get("range") if isinstance(telematic.get("range"), dict) else {}
+        tele_charge_settings = telematic.get("chargeSettings") if isinstance(telematic.get("chargeSettings"), dict) else {}
+
+        if not charging and tele_charging:
+            charging = tele_charging
         if not charging and isinstance(charging_profile.get("charging"), dict):
             charging = charging_profile.get("charging")
+        if not charge_settings and tele_charge_settings:
+            charge_settings = tele_charge_settings
         if not charge_settings and isinstance(charging_profile.get("chargeSettings"), dict):
             charge_settings = charging_profile.get("chargeSettings")
 
-        plug_status_raw = charging.get("plugConnectionState")
-        is_plugged = True if plug_status_raw in {"CONNECTED", "PLUGGED"} else False if plug_status_raw in {"DISCONNECTED", "UNPLUGGED"} else None
+        plug_status_raw = _first(
+            _dig(telematic, "plugStatus"),
+            _dig(telematic, "plugConnectionState"),
+            _dig(tele_charging, "plugConnectionState"),
+            _dig(tele_charging, "plugState"),
+            charging.get("plugConnectionState"),
+        )
+        is_plugged = _as_bool_from_states(plug_status_raw, true_values={"CONNECTED", "PLUGGED", "PLUGGED_IN"}, false_values={"DISCONNECTED", "UNPLUGGED", "NOT_PLUGGED"})
+        if is_plugged is None:
+            is_plugged = _as_bool_from_states(_first(_dig(telematic, "isPlugged"), _dig(tele_charging, "isPlugged")), true_values={"TRUE", "1"}, false_values={"FALSE", "0"})
 
-        charging_state = charging.get("chargingState")
-        is_charging = True if charging_state in {"CHARGING", "ACTIVE"} else False if charging_state in {"NOT_CHARGING", "COMPLETED", "ERROR"} else None
+        charging_state = _first(
+            _dig(telematic, "chargingStatus"),
+            _dig(telematic, "chargingState"),
+            _dig(tele_charging, "chargingState"),
+            charging.get("chargingState"),
+        )
+        is_charging = _as_bool_from_states(charging_state, true_values={"CHARGING", "ACTIVE", "IN_PROGRESS"}, false_values={"NOT_CHARGING", "COMPLETED", "ERROR", "IDLE"})
+        if is_charging is None:
+            is_charging = _as_bool_from_states(_first(_dig(telematic, "isCharging"), _dig(tele_charging, "isCharging")), true_values={"TRUE", "1"}, false_values={"FALSE", "0"})
 
-        ts = parse_dt(basic.get("lastUpdatedAt") or basic.get("statusUpdatedAt") or basic.get("updateTime"))
-        status, age = freshness_bucket(ts)
+        ts = parse_dt(_first(
+            _dig(telematic, "lastUpdatedAt"),
+            _dig(telematic, "statusUpdatedAt"),
+            _dig(telematic, "updateTime"),
+            _dig(telematic, "timestamp"),
+            basic.get("lastUpdatedAt"),
+            basic.get("statusUpdatedAt"),
+            basic.get("updateTime"),
+        ))
+        status, age = freshness_bucket(ts) if ts else ("partial", None)
 
         state = NormalizedVehicleState(
             vehicle_id=vehicle_id,
-            display_name=mapped.get("displayName") or mapped.get("name") or basic.get("displayName") or basic.get("model"),
+            display_name=_first(basic.get("modelName"), basic.get("model"), mapped.get("displayName"), mapped.get("name"), basic.get("displayName")),
             data_status=status,
             last_update_ts=ts,
             freshness_seconds=age,
-            soc_pct=_as_float(battery.get("socPercent")),
+            soc_pct=_as_float(_first(_dig(telematic, "socPct"), _dig(telematic, "soc"), _dig(tele_battery, "socPercent"), _dig(tele_battery, "socPct"), battery.get("socPercent"))),
             is_plugged=is_plugged,
             is_charging=is_charging,
-            range_km=_as_float(range_data.get("electricKm")),
-            time_to_full_min=_as_int(charging.get("remainingTimeToFullMinutes")),
-            charge_power_kw=_as_float(charging.get("chargePowerKw")),
-            ac_current_limit_a=_as_float(charge_settings.get("acCurrentLimitA")),
-            battery_capacity_kwh=_as_float(battery.get("capacityKwh")),
+            range_km=_as_float(_first(_dig(telematic, "rangeKm"), _dig(telematic, "remainingRangeKm"), _dig(tele_range, "electricKm"), range_data.get("electricKm"))),
+            time_to_full_min=_as_int(_first(_dig(telematic, "timeToFullMin"), _dig(telematic, "remainingTimeToFullMinutes"), _dig(tele_charging, "remainingTimeToFullMinutes"), charging.get("remainingTimeToFullMinutes"))),
+            charge_power_kw=_as_float(_first(_dig(telematic, "chargePowerKw"), _dig(tele_charging, "chargePowerKw"), charging.get("chargePowerKw"))),
+            ac_current_limit_a=_as_float(_first(_dig(telematic, "acCurrentLimitA"), _dig(tele_charge_settings, "acCurrentLimitA"), charge_settings.get("acCurrentLimitA"))),
+            battery_capacity_kwh=_as_float(_first(_dig(tele_battery, "capacityKwh"), battery.get("capacityKwh"))),
             charging_mode=charge_settings.get("chargingMode"),
             optimized_charging_preference=charge_settings.get("optimizedChargingPreference"),
             charge_window_start=charge_settings.get("chargeWindowStart"),
@@ -164,7 +229,7 @@ def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[Normalize
             travelled_distance_km=_as_float(basic.get("travelledDistanceKm")),
             plug_status_raw=str(plug_status_raw) if plug_status_raw is not None else None,
             flap_lock_status_raw=charging.get("flapLockStatus"),
-            charge_error_raw=charging.get("chargeError") or charging.get("errorCode"),
+            charge_error_raw=_first(_dig(telematic, "chargeError"), _dig(telematic, "errorCode"), _dig(tele_charging, "chargeError"), charging.get("chargeError"), charging.get("errorCode")),
             raw_fields=row,
         )
         state.charge_session_active = bool(is_plugged and is_charging and not state.charge_error_raw) if None not in (is_plugged, is_charging) else None

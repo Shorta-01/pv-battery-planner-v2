@@ -115,5 +115,7 @@ class BmwService:
             "vehicle_state_store_path": str(self.storage.state_path) if self.storage else None,
             "recent_capture_files": self.storage.list_raw_captures(limit=5) if self.storage else [],
             "capture_files_written": list(self.provider.status.capture_files_written),
+            "vehicle_data_mode": self.provider.status.vehicle_data_mode,
+            "has_live_telematics": self.provider.status.vehicle_data_mode == "live_telematics",
             "device_flow_session": safe_session,
         }

@@ -4,7 +4,7 @@
       {
         "vehicleId": "WBY12345678900001",
         "vin": "WBY12345678900001",
-        "displayName": "i4 eDrive40",
+        "displayName": "Old Mapping Name",
         "brand": "BMW",
         "mappingType": "PRIMARY"
       }
@@ -14,6 +14,7 @@
     "vehicleId": "WBY12345678900001",
     "vin": "WBY12345678900001",
     "model": "i4",
+    "modelName": "i4 eDrive40",
     "lastUpdatedAt": "2026-03-11T10:00:00Z",
     "odometerKm": 12345.6,
     "travelledDistanceKm": 44.1,
@@ -25,13 +26,13 @@
       "electricKm": 310
     }
   },
-  "/customers/vehicles/WBY12345678900001/chargingprofile": {
-    "chargeSettings": {
-      "acCurrentLimitA": 16,
-      "chargingMode": "IMMEDIATE_CHARGING",
-      "optimizedChargingPreference": "OFF",
-      "chargeWindowStart": "22:00",
-      "chargeWindowEnd": "06:00"
+  "/customers/vehicles/WBY12345678900001/telematicData": {
+    "lastUpdatedAt": "2026-03-11T10:00:00Z",
+    "battery": {
+      "socPercent": 62.5
+    },
+    "range": {
+      "electricKm": 310
     },
     "charging": {
       "plugConnectionState": "CONNECTED",
@@ -40,6 +41,13 @@
       "chargePowerKw": 9.8,
       "flapLockStatus": "UNLOCKED",
       "chargeError": null
+    },
+    "chargeSettings": {
+      "acCurrentLimitA": 16,
+      "chargingMode": "IMMEDIATE_CHARGING",
+      "optimizedChargingPreference": "OFF",
+      "chargeWindowStart": "22:00",
+      "chargeWindowEnd": "06:00"
     }
   }
 }
