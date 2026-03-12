@@ -1,5 +1,5 @@
 {
-  "endpoint": "/v1/vehicles/WBY98765432100002",
+  "endpoint": "/customers/vehicles/WBY98765432100002/basicData",
   "captured_at": "2026-03-11T10:05:00+00:00",
   "status_code": 200,
   "payload": {
