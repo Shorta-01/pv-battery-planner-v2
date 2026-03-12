@@ -80,6 +80,8 @@ class BmwProviderStatus:
     active_vehicle_id: str | None = None
     discovered_vehicle_ids: list[str] = field(default_factory=list)
     refresh_sequence_endpoints: list[str] = field(default_factory=list)
+    mapping_diagnostics: list[dict[str, Any]] = field(default_factory=list)
+    capture_files_written: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -99,6 +101,8 @@ class BmwProviderStatus:
             "active_vehicle_id": self.active_vehicle_id,
             "discovered_vehicle_ids": list(self.discovered_vehicle_ids),
             "refresh_sequence_endpoints": list(self.refresh_sequence_endpoints),
+            "mapping_diagnostics": list(self.mapping_diagnostics),
+            "capture_files_written": list(self.capture_files_written),
         }
 
 
