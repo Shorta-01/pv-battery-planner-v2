@@ -7,7 +7,7 @@ from typing import Any
 import requests
 
 from bmw_auth import BmwAuthClient
-from bmw_cardata_contract import BmwCreateContainerRequest, BmwTechnicalDescriptor
+from bmw_openapi_create_container import CreateContainerRequest, CreateContainerTechnicalDescriptor
 from bmw_mapping import apply_planner_derivations, map_bmw_payload_to_vehicle_states
 from bmw_models import BmwProviderStatus, NormalizedVehicleState, RawEventRecord, parse_dt, utcnow
 from bmw_storage import BmwStorage
@@ -126,12 +126,16 @@ class BmwCarDataProvider:
         optional: bool,
         capture_endpoint_path: str | None = None,
         json_body: dict[str, Any] | None = None,
+        raw_body: str | None = None,
     ) -> Any:
         endpoint = f"{base}{path}"
         self.status.refresh_sequence_endpoints.append(f"{method.upper()} {path}")
         try:
             if method.upper() == "POST":
-                resp = requests.post(endpoint, headers=headers, json=json_body, timeout=20)
+                if raw_body is not None:
+                    resp = requests.post(endpoint, headers=headers, data=raw_body, timeout=20)
+                else:
+                    resp = requests.post(endpoint, headers=headers, json=json_body, timeout=20)
             else:
                 resp = requests.get(endpoint, headers=headers, timeout=20)
         except Exception as exc:
@@ -172,19 +176,19 @@ class BmwCarDataProvider:
         capture_paths.append(str(self.storage.store_raw_capture(capture_endpoint_path or path, node, status_code=resp.status_code)))
         return node
 
-    def _phase1_container_create_request(self) -> BmwCreateContainerRequest:
+    def _phase1_container_create_request(self) -> CreateContainerRequest:
         profile = dict(PHASE1_CONTAINER_DEFINITION)
         descriptor_ids = profile.get("technical_descriptor_ids") if isinstance(profile.get("technical_descriptor_ids"), list) else []
         technical_descriptors = self._build_technical_descriptors(descriptor_ids)
-        return BmwCreateContainerRequest(
+        return CreateContainerRequest(
             name=str(profile.get("name") or ""),
             purpose=str(profile.get("purpose") or ""),
-            technical_descriptors=technical_descriptors,
+            technicalDescriptors=technical_descriptors,
         )
 
-    def _build_technical_descriptors(self, descriptor_ids: list[Any]) -> list[BmwTechnicalDescriptor]:
+    def _build_technical_descriptors(self, descriptor_ids: list[Any]) -> list[CreateContainerTechnicalDescriptor]:
         cleaned_ids = [str(x).strip() for x in descriptor_ids if str(x).strip()]
-        return [BmwTechnicalDescriptor(id=descriptor_id) for descriptor_id in cleaned_ids]
+        return [CreateContainerTechnicalDescriptor(technicalDescriptorId=descriptor_id) for descriptor_id in cleaned_ids]
 
     def _technical_descriptor_shape_summary(self, technical_descriptors: list[Any]) -> str:
         if not technical_descriptors:
@@ -224,9 +228,10 @@ class BmwCarDataProvider:
         self.status.container_auto_create_attempted = True
         create_request_model = self._phase1_container_create_request()
         descriptor_element_type = (
-            type(create_request_model.technical_descriptors[0]).__name__ if create_request_model.technical_descriptors else "empty"
+            type(create_request_model.technicalDescriptors[0]).__name__ if create_request_model.technicalDescriptors else "empty"
         )
         payload = create_request_model.to_json_body()
+        serialized_body = create_request_model.to_json_string()
         create_headers = dict(headers)
         create_headers["Content-Type"] = "application/json"
         endpoint_path = "/customers/containers"
@@ -235,7 +240,7 @@ class BmwCarDataProvider:
         descriptor_count = len(technical_descriptors)
         descriptor_sample = technical_descriptors[:3]
         descriptor_shape_summary = self._technical_descriptor_shape_summary(technical_descriptors)
-        serialized_body_sample = str(payload)[:600]
+        serialized_body_sample = serialized_body[:600]
         logger.info(
             "BMW container create request endpoint=%s%s method=POST is_json=%s content_type=%s request_fields=%s descriptor_element_type=%s technical_descriptor_count=%s technical_descriptor_shape=%s technical_descriptor_sample=%s body_sample=%s",
             base,
@@ -259,7 +264,7 @@ class BmwCarDataProvider:
             stage="discover",
             optional=True,
             capture_endpoint_path="/customers/containers_create",
-            json_body=payload,
+            raw_body=serialized_body,
         )
         error_node = aggregate_payload.get(f"POST {endpoint_path}") if isinstance(aggregate_payload.get(f"POST {endpoint_path}"), dict) else {}
         create_status = (error_node.get("_error") or {}).get("status")
@@ -273,6 +278,7 @@ class BmwCarDataProvider:
             "is_json_body": True,
             "request_field_names": request_field_names,
             "descriptor_element_type": descriptor_element_type,
+            "serialized_body": serialized_body,
             "serialized_body_sample": serialized_body_sample,
             "technical_descriptors_included": descriptor_count > 0,
             "technical_descriptor_count": descriptor_count,
@@ -287,8 +293,10 @@ class BmwCarDataProvider:
             "method": "POST",
             "headers": {k: v for k, v in create_headers.items() if k in {"Accept", "Content-Type", "X-Version"}},
             "is_json_body": True,
+            "serialized_body": serialized_body,
+            "json_body": payload,
             "serialized_body_sample": serialized_body_sample,
-            "request_field_names": request_field_names,
+            "top_level_field_names": request_field_names,
             "descriptor_element_type": descriptor_element_type,
             "technical_descriptor_count": descriptor_count,
             "technical_descriptor_shape_summary": descriptor_shape_summary,
