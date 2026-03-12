@@ -7,7 +7,7 @@ from typing import Any
 import requests
 
 from bmw_auth import BmwAuthClient
-from bmw_cardata_contract import CreateContainerRequest, CreateContainerTechnicalDescriptor
+from bmw_cardata_contract import CreateContainerRequest
 from bmw_mapping import apply_planner_derivations, map_bmw_payload_to_vehicle_states
 from bmw_models import BmwProviderStatus, NormalizedVehicleState, RawEventRecord, parse_dt, utcnow
 from bmw_storage import BmwStorage
@@ -186,9 +186,8 @@ class BmwCarDataProvider:
             technicalDescriptors=technical_descriptors,
         )
 
-    def _build_technical_descriptors(self, descriptor_ids: list[Any]) -> list[CreateContainerTechnicalDescriptor]:
-        cleaned_ids = [str(x).strip() for x in descriptor_ids if str(x).strip()]
-        return [CreateContainerTechnicalDescriptor(technicalDescriptorId=descriptor_id) for descriptor_id in cleaned_ids]
+    def _build_technical_descriptors(self, descriptor_ids: list[Any]) -> list[str]:
+        return [str(x).strip() for x in descriptor_ids if str(x).strip()]
 
     def _technical_descriptor_shape_summary(self, technical_descriptors: list[Any]) -> str:
         if not technical_descriptors:
@@ -227,9 +226,6 @@ class BmwCarDataProvider:
     ) -> tuple[str | None, dict[str, Any] | None]:
         self.status.container_auto_create_attempted = True
         create_request_model = self._phase1_container_create_request()
-        descriptor_element_type = (
-            type(create_request_model.technicalDescriptors[0]).__name__ if create_request_model.technicalDescriptors else "empty"
-        )
         payload = create_request_model.to_json_body()
         serialized_body = create_request_model.to_json_string()
         create_headers = dict(headers)
@@ -240,15 +236,15 @@ class BmwCarDataProvider:
         descriptor_count = len(technical_descriptors)
         descriptor_sample = technical_descriptors[:3]
         descriptor_shape_summary = self._technical_descriptor_shape_summary(technical_descriptors)
+        descriptor_item_type_summary = descriptor_shape_summary
         serialized_body_sample = serialized_body[:600]
         logger.info(
-            "BMW container create request endpoint=%s%s method=POST is_json=%s content_type=%s request_fields=%s descriptor_element_type=%s technical_descriptor_count=%s technical_descriptor_shape=%s technical_descriptor_sample=%s body_sample=%s",
+            "BMW container create request endpoint=%s%s method=POST is_json=%s content_type=%s request_fields=%s technical_descriptor_count=%s technical_descriptor_shape=%s technical_descriptor_sample=%s body_sample=%s",
             base,
             endpoint_path,
             True,
             create_headers.get("Content-Type"),
             request_field_names,
-            descriptor_element_type,
             descriptor_count,
             descriptor_shape_summary,
             descriptor_sample,
@@ -277,12 +273,12 @@ class BmwCarDataProvider:
             "content_type": create_headers.get("Content-Type"),
             "is_json_body": True,
             "request_field_names": request_field_names,
-            "descriptor_element_type": descriptor_element_type,
             "serialized_body": serialized_body,
             "serialized_body_sample": serialized_body_sample,
             "technical_descriptors_included": descriptor_count > 0,
             "technical_descriptor_count": descriptor_count,
             "technical_descriptor_shape_summary": descriptor_shape_summary,
+            "descriptor_item_type_summary": descriptor_item_type_summary,
             "technical_descriptor_sample": descriptor_sample,
             "attempted": True,
             "status": create_status,
@@ -297,9 +293,9 @@ class BmwCarDataProvider:
             "json_body": payload,
             "serialized_body_sample": serialized_body_sample,
             "top_level_field_names": request_field_names,
-            "descriptor_element_type": descriptor_element_type,
             "technical_descriptor_count": descriptor_count,
             "technical_descriptor_shape_summary": descriptor_shape_summary,
+            "descriptor_item_type_summary": descriptor_item_type_summary,
             "technical_descriptor_sample": descriptor_sample,
             "status": create_request_diag.get("status"),
             "response_excerpt": create_request_diag.get("response_excerpt"),
