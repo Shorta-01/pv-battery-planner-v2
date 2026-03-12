@@ -89,6 +89,13 @@ Example for LAN access on Pi:
 PVBP_BACKEND_HOST=0.0.0.0 PVBP_BACKEND_PORT=8787 python scripts/start_backend.py
 ```
 
+
+## BMW CarData Phase 1 notes
+
+- Current backend Phase 1 supports BMW OAuth device-flow + CarData REST polling.
+- REST polling uses `access_token` on `https://api-cardata.bmwgroup.com`; stream/MQTT is not implemented yet.
+- BMW onboarding is backend/API-driven in this phase (not full GUI guided flow yet).
+
 ## Security / API token
 
 - On first backend start, the backend auto-creates:

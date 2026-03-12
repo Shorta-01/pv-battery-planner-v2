@@ -20,19 +20,6 @@ def _as_int(v: Any) -> int | None:
     return None if f is None else int(f)
 
 
-def _as_bool(v: Any) -> bool | None:
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, str):
-        if v.lower() in {"true", "1", "yes", "plugged", "charging", "connected"}:
-            return True
-        if v.lower() in {"false", "0", "no", "unplugged", "disconnected"}:
-            return False
-    if isinstance(v, (int, float)):
-        return bool(v)
-    return None
-
-
 def freshness_bucket(last_update_ts: dt.datetime | None, now: dt.datetime | None = None) -> tuple[str, int | None]:
     if last_update_ts is None:
         return "error", None
@@ -47,50 +34,79 @@ def freshness_bucket(last_update_ts: dt.datetime | None, now: dt.datetime | None
     return "error", age
 
 
+def _vehicle_mapping_index(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    rows = payload.get("/v1/vehicle-mappings")
+    entries = rows.get("vehicleMappings") if isinstance(rows, dict) else None
+    if not isinstance(entries, list):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        vin = str(entry.get("vin") or "").strip()
+        if vin:
+            out[vin] = entry
+    return out
+
+
 def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[NormalizedVehicleState]:
-    vehicles = payload.get("vehicles") if isinstance(payload.get("vehicles"), list) else [payload]
+    mappings_by_vin = _vehicle_mapping_index(payload)
+    vehicles_resp = payload.get("/v1/vehicles")
+    vehicles = vehicles_resp.get("vehicles") if isinstance(vehicles_resp, dict) else None
+    if not isinstance(vehicles, list):
+        return []
+
     out: list[NormalizedVehicleState] = []
     for row in vehicles:
         if not isinstance(row, dict):
             continue
-        vehicle_id = str(row.get("vehicle_id") or row.get("vin") or row.get("id") or "").strip()
+        vehicle_id = str(row.get("vin") or "").strip()
         if not vehicle_id:
             continue
-        ts = parse_dt(row.get("last_update_ts") or row.get("timestamp") or row.get("event_time"))
-        soc = _as_float(row.get("soc_pct") or row.get("soc") or row.get("battery", {}).get("soc"))
-        battery_capacity = _as_float(row.get("battery_capacity_kwh") or row.get("battery", {}).get("capacity_kwh"))
-        is_plugged = _as_bool(row.get("is_plugged") or row.get("plugged") or row.get("plug_status"))
-        is_charging = _as_bool(row.get("is_charging") or row.get("charging") or row.get("charging_status"))
-        charge_error = row.get("charge_error_raw") or row.get("charging_error")
+
+        charging = row.get("charging") if isinstance(row.get("charging"), dict) else {}
+        battery = row.get("battery") if isinstance(row.get("battery"), dict) else {}
+        range_data = row.get("range") if isinstance(row.get("range"), dict) else {}
+        charge_settings = row.get("chargeSettings") if isinstance(row.get("chargeSettings"), dict) else {}
+        mapped = mappings_by_vin.get(vehicle_id, {})
+
+        plug_status_raw = charging.get("plugConnectionState")
+        is_plugged = True if plug_status_raw in {"CONNECTED", "PLUGGED"} else False if plug_status_raw in {"DISCONNECTED", "UNPLUGGED"} else None
+
+        charging_state = charging.get("chargingState")
+        is_charging = True if charging_state in {"CHARGING", "ACTIVE"} else False if charging_state in {"NOT_CHARGING", "COMPLETED", "ERROR"} else None
+
+        ts = parse_dt(row.get("lastUpdatedAt"))
         status, age = freshness_bucket(ts)
 
         state = NormalizedVehicleState(
             vehicle_id=vehicle_id,
-            display_name=row.get("display_name") or row.get("model") or row.get("vehicle_name"),
+            display_name=mapped.get("displayName") or mapped.get("name") or row.get("model"),
             data_status=status,
             last_update_ts=ts,
             freshness_seconds=age,
-            soc_pct=soc,
+            soc_pct=_as_float(battery.get("socPercent")),
             is_plugged=is_plugged,
             is_charging=is_charging,
-            range_km=_as_float(row.get("range_km") or row.get("remaining_range_km")),
-            time_to_full_min=_as_int(row.get("time_to_full_min") or row.get("remaining_to_full_min")),
-            charge_power_kw=_as_float(row.get("charge_power_kw") or row.get("charging_power_kw")),
-            ac_current_limit_a=_as_float(row.get("ac_current_limit_a") or row.get("ac_limit_a")),
-            battery_capacity_kwh=battery_capacity,
-            charging_mode=row.get("charging_mode"),
-            optimized_charging_preference=row.get("optimized_charging_preference"),
-            charge_window_start=row.get("charge_window_start"),
-            charge_window_end=row.get("charge_window_end"),
-            odometer_km=_as_float(row.get("odometer_km")),
-            travelled_distance_km=_as_float(row.get("travelled_distance_km")),
-            plug_status_raw=row.get("plug_status_raw") or row.get("plug_status"),
-            flap_lock_status_raw=row.get("flap_lock_status_raw") or row.get("flap_status"),
-            charge_error_raw=charge_error,
+            range_km=_as_float(range_data.get("electricKm")),
+            time_to_full_min=_as_int(charging.get("remainingTimeToFullMinutes")),
+            charge_power_kw=_as_float(charging.get("chargePowerKw")),
+            ac_current_limit_a=_as_float(charge_settings.get("acCurrentLimitA")),
+            battery_capacity_kwh=_as_float(battery.get("capacityKwh")),
+            charging_mode=charge_settings.get("chargingMode"),
+            optimized_charging_preference=charge_settings.get("optimizedChargingPreference"),
+            charge_window_start=charge_settings.get("chargeWindowStart"),
+            charge_window_end=charge_settings.get("chargeWindowEnd"),
+            odometer_km=_as_float(row.get("odometerKm")),
+            travelled_distance_km=_as_float(row.get("travelledDistanceKm")),
+            plug_status_raw=str(plug_status_raw) if plug_status_raw is not None else None,
+            flap_lock_status_raw=charging.get("flapLockStatus"),
+            charge_error_raw=charging.get("chargeError") or charging.get("errorCode"),
             raw_fields=row,
         )
-        state.charge_session_active = bool(is_plugged and is_charging and not charge_error) if None not in (is_plugged, is_charging) else None
-        state.energy_needed_kwh = (battery_capacity * (100 - soc) / 100) if battery_capacity is not None and soc is not None else None
+        state.charge_session_active = bool(is_plugged and is_charging and not state.charge_error_raw) if None not in (is_plugged, is_charging) else None
+        if state.battery_capacity_kwh is not None and state.soc_pct is not None:
+            state.energy_needed_kwh = state.battery_capacity_kwh * (100 - state.soc_pct) / 100
         out.append(state)
     return out
 

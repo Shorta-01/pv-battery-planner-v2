@@ -40,14 +40,18 @@ class BmwService:
     def poll_device_token(self, device_code: str) -> dict[str, Any]:
         token = self.auth.poll_device_token(device_code)
         return {
-            "ok": bool(token.id_token),
+            "ok": bool(token.access_token),
             "expires_at": token.to_dict().get("expires_at"),
             "token_status": "valid" if token.is_fresh() else "expiring",
         }
 
 
-    def device_flow_debug_info(self) -> dict[str, str]:
+    def device_flow_debug_info(self) -> dict[str, Any]:
         return {
             "device_flow_start_url": self.auth.device_flow_start_url(),
             "device_flow_poll_url": self.auth.device_flow_poll_url(),
+            "rest_api_base_url": self.provider.rest_base_url(),
+            "rest_token_mode": "access_token",
+            "stream_status": self.provider.status.stream_status,
+            "device_flow_session": self.auth.get_device_flow_session(),
         }
