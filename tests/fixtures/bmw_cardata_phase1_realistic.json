@@ -1,44 +1,42 @@
 {
-  "/v1/vehicle-mappings": {
+  "/v1/vehicles/mappings": {
     "vehicleMappings": [
       {
+        "vehicleId": "WBY12345678900001",
         "vin": "WBY12345678900001",
         "displayName": "i4 eDrive40",
         "brand": "BMW"
       }
     ]
   },
-  "/v1/vehicles": {
-    "vehicles": [
-      {
-        "vin": "WBY12345678900001",
-        "model": "i4",
-        "lastUpdatedAt": "2026-03-11T10:00:00Z",
-        "odometerKm": 12345.6,
-        "travelledDistanceKm": 44.1,
-        "battery": {
-          "socPercent": 62.5,
-          "capacityKwh": 81.2
-        },
-        "range": {
-          "electricKm": 310
-        },
-        "charging": {
-          "plugConnectionState": "CONNECTED",
-          "chargingState": "CHARGING",
-          "remainingTimeToFullMinutes": 115,
-          "chargePowerKw": 9.8,
-          "flapLockStatus": "UNLOCKED",
-          "chargeError": null
-        },
-        "chargeSettings": {
-          "acCurrentLimitA": 16,
-          "chargingMode": "IMMEDIATE_CHARGING",
-          "optimizedChargingPreference": "OFF",
-          "chargeWindowStart": "22:00",
-          "chargeWindowEnd": "06:00"
-        }
-      }
-    ]
+  "/v1/vehicles/WBY12345678900001": {
+    "vehicleId": "WBY12345678900001",
+    "vin": "WBY12345678900001",
+    "model": "i4",
+    "lastUpdatedAt": "2026-03-11T10:00:00Z",
+    "odometerKm": 12345.6,
+    "travelledDistanceKm": 44.1,
+    "battery": {
+      "socPercent": 62.5,
+      "capacityKwh": 81.2
+    },
+    "range": {
+      "electricKm": 310
+    },
+    "chargeSettings": {
+      "acCurrentLimitA": 16,
+      "chargingMode": "IMMEDIATE_CHARGING",
+      "optimizedChargingPreference": "OFF",
+      "chargeWindowStart": "22:00",
+      "chargeWindowEnd": "06:00"
+    }
+  },
+  "/v1/vehicles/WBY12345678900001/charging": {
+    "plugConnectionState": "CONNECTED",
+    "chargingState": "CHARGING",
+    "remainingTimeToFullMinutes": 115,
+    "chargePowerKw": 9.8,
+    "flapLockStatus": "UNLOCKED",
+    "chargeError": null
   }
 }

@@ -45,15 +45,15 @@ class BmwStorage:
 
 
 
-    def store_raw_capture(self, endpoint_path: str, payload: dict[str, Any]) -> Path:
+    def store_raw_capture(self, endpoint_path: str, payload: dict[str, Any], *, status_code: int | None = None) -> Path:
         safe_endpoint = endpoint_path.strip().strip("/").replace("/", "_") or "root"
         ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        out_name = f"bmw_cardata_live_{safe_endpoint}_{ts}.json"
-        out_path = self.raw_path.parent / "bmw_payload_captures" / out_name
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_name = f"bmw_capture_{safe_endpoint}_{ts}.json"
+        out_path = self.raw_path.parent / out_name
         wrapped = {
             "captured_at": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
             "endpoint": endpoint_path,
+            "status_code": status_code,
             "payload": payload,
         }
         with self._lock:
@@ -61,10 +61,10 @@ class BmwStorage:
         return out_path
 
     def list_raw_captures(self, limit: int = 20) -> list[str]:
-        capture_dir = self.raw_path.parent / "bmw_payload_captures"
+        capture_dir = self.raw_path.parent
         if not capture_dir.exists():
             return []
-        items = sorted(capture_dir.glob("bmw_cardata_live_*.json"), key=lambda x: x.stat().st_mtime, reverse=True)
+        items = sorted(capture_dir.glob("bmw_capture_*.json"), key=lambda x: x.stat().st_mtime, reverse=True)
         return [str(path) for path in items[: max(1, limit)]]
 
     def load_recent_raw_events(self, limit: int = 50) -> list[dict[str, Any]]:

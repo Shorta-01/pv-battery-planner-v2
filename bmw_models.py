@@ -73,6 +73,13 @@ class BmwProviderStatus:
     last_auth_refresh: dt.datetime | None = None
     last_raw_event_received: dt.datetime | None = None
     last_vehicle_update: dt.datetime | None = None
+    last_rest_endpoint: str | None = None
+    last_rest_status_code: int | None = None
+    last_rest_error_excerpt: str | None = None
+    request_versioning_mode: str | None = None
+    active_vehicle_id: str | None = None
+    discovered_vehicle_ids: list[str] = field(default_factory=list)
+    refresh_sequence_endpoints: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -85,6 +92,13 @@ class BmwProviderStatus:
             "last_auth_refresh": iso_or_none(self.last_auth_refresh),
             "last_raw_event_received": iso_or_none(self.last_raw_event_received),
             "last_vehicle_update": iso_or_none(self.last_vehicle_update),
+            "last_rest_endpoint": self.last_rest_endpoint,
+            "last_rest_status_code": self.last_rest_status_code,
+            "last_rest_error_excerpt": self.last_rest_error_excerpt,
+            "request_versioning_mode": self.request_versioning_mode,
+            "active_vehicle_id": self.active_vehicle_id,
+            "discovered_vehicle_ids": list(self.discovered_vehicle_ids),
+            "refresh_sequence_endpoints": list(self.refresh_sequence_endpoints),
         }
 
 
