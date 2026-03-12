@@ -588,7 +588,7 @@ def test_select_active_container_prefers_active_newest(tmp_path):
     assert provider._select_active_container(diags) == "C"
 
 
-def test_refresh_graceful_when_no_containers(monkeypatch, tmp_path):
+def test_refresh_auto_creates_container_when_empty(monkeypatch, tmp_path):
     class _Auth:
         def load_token(self):
             return BmwTokenData(access_token="access-1", obtained_at=dt.datetime.now(dt.timezone.utc))
@@ -597,6 +597,7 @@ def test_refresh_graceful_when_no_containers(monkeypatch, tmp_path):
             return tok
 
     seen_urls = []
+    seen_posts = []
 
     def fake_get(url, headers=None, timeout=None):
         seen_urls.append(url)
@@ -606,20 +607,30 @@ def test_refresh_graceful_when_no_containers(monkeypatch, tmp_path):
             return _DummyResponse(payload={"vin": "VINNC1", "lastUpdatedAt": "2026-03-11T10:00:00Z", "battery": {"socPercent": 81}})
         if url.endswith("/customers/containers"):
             return _DummyResponse(payload={"containers": []})
-        if url.endswith("/customers/vehicles/VINNC1/telematicData"):
+        if url.endswith("/customers/vehicles/VINNC1/telematicData?containerId=AUTOC1"):
             return _DummyResponse(payload={"charging": {"plugConnectionState": "CONNECTED", "chargingState": "CHARGING"}})
         return _DummyResponse(status_code=500, text="unexpected")
 
+    def fake_post(url, headers=None, json=None, timeout=None):
+        seen_posts.append({"url": url, "headers": headers, "json": json})
+        if url.endswith("/customers/containers"):
+            return _DummyResponse(payload={"containerId": "AUTOC1", "state": "ACTIVE", "name": "pvbp_phase1_ev_telematics"})
+        return _DummyResponse(status_code=500, text="unexpected")
+
     monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
+    monkeypatch.setattr("bmw_cardata_provider.requests.post", fake_post)
     provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json")), auth=_Auth())
 
     out = provider.refresh_once()
     assert out["ok"] is True
-    assert provider.status.active_container_id is None
+    assert provider.status.active_container_id == "AUTOC1"
+    assert provider.status.container_auto_create_attempted is True
+    assert provider.status.container_auto_create_succeeded is True
     assert provider.status.vehicle_data_mode == "live_telematics"
     assert provider.vehicles["VINNC1"].soc_pct == 81
-    assert any(u.endswith("/customers/vehicles/VINNC1/telematicData") for u in seen_urls)
-    assert all("telematicData?containerId=" not in u for u in seen_urls)
+    assert any(u.endswith("/customers/vehicles/VINNC1/telematicData?containerId=AUTOC1") for u in seen_urls)
+    assert seen_posts[0]["url"].endswith("/customers/containers")
+    assert seen_posts[0]["json"]["name"] == "pvbp_phase1_ev_telematics"
 
 
 def test_capture_files_include_containers_and_telematics(monkeypatch, tmp_path):
@@ -648,3 +659,110 @@ def test_capture_files_include_containers_and_telematics(monkeypatch, tmp_path):
     assert out["ok"] is True
     assert any("customers_containers" in Path(p).name for p in out["capture_files"])
     assert any("customers_vehicles_VINCAP2_telematicData" in Path(p).name for p in out["capture_files"])
+
+def test_container_create_failure_keeps_basic_data(monkeypatch, tmp_path):
+    class _Auth:
+        def load_token(self):
+            return BmwTokenData(access_token="access-1", obtained_at=dt.datetime.now(dt.timezone.utc))
+
+        def refresh_if_possible(self, tok):
+            return tok
+
+    seen_urls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        seen_urls.append(url)
+        if url.endswith("/customers/vehicles/mappings"):
+            return _DummyResponse(payload={"vehicleMappings": [{"vin": "VINCF1"}]})
+        if url.endswith("/customers/vehicles/VINCF1/basicData"):
+            return _DummyResponse(payload={"vin": "VINCF1", "lastUpdatedAt": "2026-03-11T10:00:00Z", "battery": {"socPercent": 73}})
+        if url.endswith("/customers/containers"):
+            return _DummyResponse(payload={"containers": []})
+        return _DummyResponse(status_code=500, text="unexpected")
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        return _DummyResponse(status_code=500, text="create failed")
+
+    monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
+    monkeypatch.setattr("bmw_cardata_provider.requests.post", fake_post)
+    provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json")), auth=_Auth())
+
+    out = provider.refresh_once()
+    assert out["ok"] is True
+    assert provider.vehicles["VINCF1"].soc_pct == 73
+    assert provider.status.active_container_id is None
+    assert provider.status.vehicle_data_mode == "static_only"
+    assert provider.status.container_auto_create_attempted is True
+    assert provider.status.container_auto_create_succeeded is False
+    assert all("telematicData" not in u for u in seen_urls)
+
+
+def test_created_container_persisted_and_reused(monkeypatch, tmp_path):
+    class _Auth:
+        def load_token(self):
+            return BmwTokenData(access_token="access-1", obtained_at=dt.datetime.now(dt.timezone.utc))
+
+        def refresh_if_possible(self, tok):
+            return tok
+
+    post_calls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        if url.endswith("/customers/vehicles/mappings"):
+            return _DummyResponse(payload={"vehicleMappings": [{"vin": "VINRE1"}]})
+        if url.endswith("/customers/vehicles/VINRE1/basicData"):
+            return _DummyResponse(payload={"vin": "VINRE1", "lastUpdatedAt": "2026-03-11T10:00:00Z", "battery": {"socPercent": 40}})
+        if url.endswith("/customers/containers"):
+            return _DummyResponse(payload={"containers": []})
+        if url.endswith("/customers/vehicles/VINRE1/telematicData?containerId=REUSE1"):
+            return _DummyResponse(payload={"charging": {"plugConnectionState": "CONNECTED", "chargingState": "NOT_CHARGING"}})
+        return _DummyResponse(status_code=500, text="unexpected")
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        post_calls.append(url)
+        return _DummyResponse(payload={"containerId": "REUSE1", "state": "ACTIVE"})
+
+    monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
+    monkeypatch.setattr("bmw_cardata_provider.requests.post", fake_post)
+
+    storage = BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json"))
+    provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=storage, auth=_Auth())
+    out1 = provider.refresh_once()
+    assert out1["ok"] is True
+    assert len(post_calls) == 1
+
+    provider2 = BmwCarDataProvider(config={"bmw_enabled": True}, storage=storage, auth=_Auth())
+    out2 = provider2.refresh_once()
+    assert out2["ok"] is True
+    assert len(post_calls) == 1
+    assert provider2.status.active_container_id == "REUSE1"
+
+
+def test_capture_files_include_container_create(monkeypatch, tmp_path):
+    class _Auth:
+        def load_token(self):
+            return BmwTokenData(access_token="access-1", obtained_at=dt.datetime.now(dt.timezone.utc))
+
+        def refresh_if_possible(self, tok):
+            return tok
+
+    def fake_get(url, headers=None, timeout=None):
+        if url.endswith("/customers/vehicles/mappings"):
+            return _DummyResponse(payload={"vehicleMappings": [{"vin": "VINCP3"}]})
+        if url.endswith("/customers/vehicles/VINCP3/basicData"):
+            return _DummyResponse(payload={"vin": "VINCP3", "lastUpdatedAt": "2026-03-11T10:00:00Z", "battery": {"socPercent": 88}})
+        if url.endswith("/customers/containers"):
+            return _DummyResponse(payload={"containers": []})
+        if url.endswith("/customers/vehicles/VINCP3/telematicData?containerId=CC3"):
+            return _DummyResponse(payload={"charging": {"plugConnectionState": "CONNECTED", "chargingState": "CHARGING"}})
+        return _DummyResponse(status_code=500, text="unexpected")
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        return _DummyResponse(payload={"containerId": "CC3", "state": "ACTIVE"})
+
+    monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
+    monkeypatch.setattr("bmw_cardata_provider.requests.post", fake_post)
+    provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json")), auth=_Auth())
+    out = provider.refresh_once()
+    assert out["ok"] is True
+    assert any("customers_containers_create" in Path(p).name for p in out["capture_files"])

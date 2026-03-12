@@ -14,6 +14,21 @@ from bmw_storage import BmwStorage
 logger = logging.getLogger(__name__)
 
 
+PHASE1_CONTAINER_DEFINITION: dict[str, Any] = {
+    "name": "pvbp_phase1_ev_telematics",
+    "description": "PV Battery Planner phase 1 EV telemetry",
+    "descriptors": [
+        "CBATTERYSTATUS",
+        "CRANGEELECTRIC",
+        "CCHARGINGSTATUS",
+        "CCHARGINGTIME",
+        "CCHARGINGPOWER",
+        "CPLUGSTATUS",
+        "CACCURRENTLIMIT",
+    ],
+}
+
+
 @dataclass(frozen=True)
 class _BmwOperation:
     name: str
@@ -100,6 +115,7 @@ class BmwCarDataProvider:
     def _request_json(
         self,
         *,
+        method: str,
         base: str,
         path: str,
         headers: dict[str, str],
@@ -108,20 +124,36 @@ class BmwCarDataProvider:
         stage: str,
         optional: bool,
         capture_endpoint_path: str | None = None,
+        json_body: dict[str, Any] | None = None,
     ) -> Any:
         endpoint = f"{base}{path}"
-        self.status.refresh_sequence_endpoints.append(path)
-        resp = requests.get(endpoint, headers=headers, timeout=20)
+        self.status.refresh_sequence_endpoints.append(f"{method.upper()} {path}")
+        try:
+            if method.upper() == "POST":
+                resp = requests.post(endpoint, headers=headers, json=json_body, timeout=20)
+            else:
+                resp = requests.get(endpoint, headers=headers, timeout=20)
+        except Exception as exc:
+            safe_error = str(exc)[:300]
+            self._mark_last_rest_result(endpoint, None, safe_error)
+            aggregate_payload[f"{method.upper()} {path}"] = {"_error": {"status": None, "excerpt": safe_error}}
+            aggregate_payload["sequence"].append(
+                {"stage": stage, "method": method.upper(), "endpoint": path, "ok": False, "status": None, "error_excerpt": safe_error, "optional": optional}
+            )
+            if optional:
+                return None
+            raise
         self._mark_last_rest_result(endpoint, resp.status_code)
         if "/telematicData" in path:
             self.status.last_telematic_status_code = resp.status_code
         if resp.status_code >= 400:
             safe_error = self._safe_error_excerpt(resp)
             self._mark_last_rest_result(endpoint, resp.status_code, safe_error)
-            aggregate_payload[path] = {"_error": {"status": resp.status_code, "excerpt": safe_error}}
+            aggregate_payload[f"{method.upper()} {path}"] = {"_error": {"status": resp.status_code, "excerpt": safe_error}}
             aggregate_payload["sequence"].append(
                 {
                     "stage": stage,
+                    "method": method.upper(),
                     "endpoint": path,
                     "ok": False,
                     "status": resp.status_code,
@@ -134,10 +166,78 @@ class BmwCarDataProvider:
             self._raise_http_error(endpoint, resp)
 
         node = resp.json()
-        aggregate_payload[path] = node
-        aggregate_payload["sequence"].append({"stage": stage, "endpoint": path, "ok": True, "optional": optional})
+        aggregate_payload[f"{method.upper()} {path}"] = node
+        aggregate_payload["sequence"].append({"stage": stage, "method": method.upper(), "endpoint": path, "ok": True, "optional": optional})
         capture_paths.append(str(self.storage.store_raw_capture(capture_endpoint_path or path, node, status_code=resp.status_code)))
         return node
+
+    def _phase1_container_create_payload(self) -> dict[str, Any]:
+        profile = dict(PHASE1_CONTAINER_DEFINITION)
+        return {
+            "name": profile["name"],
+            "description": profile["description"],
+            "dataPoint": list(profile["descriptors"]),
+        }
+
+    def _load_persisted_container(self) -> tuple[str | None, list[dict[str, Any]]]:
+        persisted = self.storage.load_container_state()
+        container_id = str(persisted.get("active_container_id") or "").strip() if isinstance(persisted, dict) else ""
+        diagnostics: list[dict[str, Any]] = []
+        if isinstance(persisted, dict) and isinstance(persisted.get("containers"), list):
+            diagnostics = [x for x in persisted.get("containers") if isinstance(x, dict)]
+        return (container_id or None), diagnostics
+
+    def _persist_container_state(self, *, active_container_id: str | None, diagnostics: list[dict[str, Any]], source: str) -> None:
+        self.storage.save_container_state(
+            {
+                "active_container_id": active_container_id,
+                "containers": diagnostics,
+                "source": source,
+                "updated_at": utcnow().replace(microsecond=0).isoformat(),
+                "descriptor_profile": self._phase1_container_create_payload(),
+            }
+        )
+
+    def _create_container_if_needed(
+        self,
+        *,
+        base: str,
+        headers: dict[str, str],
+        aggregate_payload: dict[str, Any],
+        capture_paths: list[str],
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        self.status.container_auto_create_attempted = True
+        payload = self._phase1_container_create_payload()
+        create_headers = dict(headers)
+        create_headers["Content-Type"] = "application/json"
+        response = self._request_json(
+            method="POST",
+            base=base,
+            path="/customers/containers",
+            headers=create_headers,
+            aggregate_payload=aggregate_payload,
+            capture_paths=capture_paths,
+            stage="discover",
+            optional=True,
+            capture_endpoint_path="/customers/containers_create",
+            json_body=payload,
+        )
+        if not isinstance(response, dict):
+            return None, None
+        container_id = str(response.get("containerId") or response.get("id") or response.get("identifier") or "").strip() or None
+        if container_id:
+            self.status.container_auto_create_succeeded = True
+        diag = {
+            "container_id": container_id,
+            "state": str(response.get("state") or ""),
+            "name": response.get("name") or payload.get("name"),
+            "purpose": response.get("purpose") or response.get("type"),
+            "created_at": response.get("createdAt") or utcnow().replace(microsecond=0).isoformat(),
+            "updated_at": response.get("updatedAt"),
+            "descriptor_profile": payload,
+            "raw": response,
+        }
+        return container_id, diag
 
     def refresh_once(self) -> dict[str, Any]:
         if not bool(self.config.get("bmw_enabled", False)):
@@ -169,10 +269,13 @@ class BmwCarDataProvider:
         self.status.last_telematic_status_code = None
         self.status.active_vehicle_id = None
         self.status.vehicle_data_mode = "unknown"
+        self.status.container_auto_create_attempted = False
+        self.status.container_auto_create_succeeded = False
 
         try:
             discovery_op = self.rest_operations()[0]
             mappings_payload = self._request_json(
+                method="GET",
                 base=base,
                 path=discovery_op.resolve(),
                 headers=headers,
@@ -210,15 +313,10 @@ class BmwCarDataProvider:
 
             target_vehicle_id = self._select_active_vehicle(discovered_ids, mapping_diagnostics)
             self.status.active_vehicle_id = target_vehicle_id
-            logger.debug(
-                "BMW mapping discovery discovered_vehicle_ids=%s active_vehicle_id=%s diagnostics=%s",
-                self.status.discovered_vehicle_ids,
-                self.status.active_vehicle_id,
-                self.status.mapping_diagnostics,
-            )
 
-            basic_path = "/customers/vehicles/{vin}/basicData".replace("{vin}", target_vehicle_id)
+            basic_path = f"/customers/vehicles/{target_vehicle_id}/basicData"
             self._request_json(
+                method="GET",
                 base=base,
                 path=basic_path,
                 headers=headers,
@@ -229,6 +327,7 @@ class BmwCarDataProvider:
             )
 
             containers_payload = self._request_json(
+                method="GET",
                 base=base,
                 path="/customers/containers",
                 headers=headers,
@@ -238,32 +337,54 @@ class BmwCarDataProvider:
                 optional=True,
             )
             container_ids, container_diags = self._discover_containers(containers_payload)
+
+            persisted_active_id, persisted_diags = self._load_persisted_container()
+            if persisted_active_id and persisted_active_id not in container_ids:
+                container_ids.append(persisted_active_id)
+            for diag in persisted_diags:
+                if str(diag.get("container_id") or "") and all(str(x.get("container_id") or "") != str(diag.get("container_id") or "") for x in container_diags):
+                    container_diags.append(diag)
+
+            active_container_id = self._select_active_container(container_diags)
+            if not active_container_id:
+                created_container_id, created_diag = self._create_container_if_needed(
+                    base=base,
+                    headers=headers,
+                    aggregate_payload=aggregate_payload,
+                    capture_paths=capture_paths,
+                )
+                if created_diag:
+                    container_diags.append(created_diag)
+                if created_container_id and created_container_id not in container_ids:
+                    container_ids.append(created_container_id)
+                active_container_id = created_container_id
+
             self.status.discovered_container_ids = list(container_ids)
             self.status.container_diagnostics = list(container_diags)
-            active_container_id = self._select_active_container(container_diags)
             self.status.active_container_id = active_container_id
+            self._persist_container_state(active_container_id=active_container_id, diagnostics=container_diags, source="refresh")
 
-            telematic_path = f"/customers/vehicles/{target_vehicle_id}/telematicData"
             if active_container_id:
-                telematic_path = f"{telematic_path}?containerId={active_container_id}"
-            self.status.last_telematic_url = f"{base}{telematic_path}"
-
-            self._request_json(
-                base=base,
-                path=telematic_path,
-                headers=headers,
-                aggregate_payload=aggregate_payload,
-                capture_paths=capture_paths,
-                stage="vehicle",
-                optional=True,
-                capture_endpoint_path=f"/customers/vehicles/{target_vehicle_id}/telematicData",
-            )
+                telematic_path = f"/customers/vehicles/{target_vehicle_id}/telematicData?containerId={active_container_id}"
+                self.status.last_telematic_url = f"{base}{telematic_path}"
+                self._request_json(
+                    method="GET",
+                    base=base,
+                    path=telematic_path,
+                    headers=headers,
+                    aggregate_payload=aggregate_payload,
+                    capture_paths=capture_paths,
+                    stage="vehicle",
+                    optional=True,
+                    capture_endpoint_path=f"/customers/vehicles/{target_vehicle_id}/telematicData",
+                )
 
             for op in self.rest_operations():
                 if op.name != "vehicle_charging_profile":
                     continue
                 try:
                     self._request_json(
+                        method="GET",
                         base=base,
                         path=op.resolve(target_vehicle_id),
                         headers=headers,
@@ -279,8 +400,8 @@ class BmwCarDataProvider:
             self.status.capture_files_written = list(capture_paths)
             self._ingest_payload(aggregate_payload)
             self.status.provider_status = "healthy" if self.vehicles else "degraded"
-            telematic_path_prefix = f"/customers/vehicles/{target_vehicle_id}/telematicData"
-            telematic_node = next((v for k, v in aggregate_payload.items() if isinstance(k, str) and k.startswith(telematic_path_prefix)), None)
+            telematic_key = f"GET /customers/vehicles/{target_vehicle_id}/telematicData?containerId={active_container_id}" if active_container_id else None
+            telematic_node = aggregate_payload.get(telematic_key) if telematic_key else None
             self.status.vehicle_data_mode = "live_telematics" if isinstance(telematic_node, dict) and "_error" not in telematic_node else "static_only"
             return {
                 "ok": bool(self.vehicles),
@@ -295,6 +416,8 @@ class BmwCarDataProvider:
                 "discovered_container_ids": list(self.status.discovered_container_ids),
                 "active_container_id": self.status.active_container_id,
                 "container_diagnostics": list(self.status.container_diagnostics),
+                "container_auto_create_attempted": self.status.container_auto_create_attempted,
+                "container_auto_create_succeeded": self.status.container_auto_create_succeeded,
             }
         except Exception as exc:
             self.status.last_error = str(exc)
@@ -315,6 +438,8 @@ class BmwCarDataProvider:
                 "active_container_id": self.status.active_container_id,
                 "container_diagnostics": list(self.status.container_diagnostics),
                 "capture_files": capture_paths,
+                "container_auto_create_attempted": self.status.container_auto_create_attempted,
+                "container_auto_create_succeeded": self.status.container_auto_create_succeeded,
             }
 
     def _discover_vehicle_ids(self, discovery_payload: Any) -> tuple[list[str], list[dict[str, Any]]]:
@@ -362,7 +487,6 @@ class BmwCarDataProvider:
         ]
         return primary_ids[0] if primary_ids else discovered_ids[0]
 
-
     def _discover_containers(self, payload: Any) -> tuple[list[str], list[dict[str, Any]]]:
         rows: list[dict[str, Any]] = []
         if isinstance(payload, list):
@@ -371,7 +495,7 @@ class BmwCarDataProvider:
             for key in ("containers", "customerContainers", "items", "data"):
                 if isinstance(payload.get(key), list):
                     rows.extend(x for x in payload.get(key) if isinstance(x, dict))
-            if not rows:
+            if not rows and any(payload.get(k) is not None for k in ("containerId", "id", "identifier")):
                 rows.append(payload)
 
         seen: list[str] = []
@@ -390,6 +514,7 @@ class BmwCarDataProvider:
                     "purpose": row.get("purpose") or row.get("type"),
                     "created_at": row.get("createdAt") or row.get("creationTime") or row.get("created"),
                     "updated_at": row.get("updatedAt") or row.get("lastUpdatedAt") or row.get("updateTime"),
+                    "raw": row,
                 }
             )
         return seen, diagnostics
@@ -397,7 +522,7 @@ class BmwCarDataProvider:
     def _select_active_container(self, diagnostics: list[dict[str, Any]]) -> str | None:
         if not diagnostics:
             return None
-        active = [d for d in diagnostics if str(d.get("state") or "").upper() == "ACTIVE"]
+        active = [d for d in diagnostics if str(d.get("state") or "").upper() in {"ACTIVE", "ENABLED", "READY"}]
         candidates = active if active else diagnostics
         candidates = sorted(
             candidates,

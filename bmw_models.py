@@ -88,6 +88,8 @@ class BmwProviderStatus:
     last_telematic_status_code: int | None = None
     capture_files_written: list[str] = field(default_factory=list)
     vehicle_data_mode: str = "unknown"
+    container_auto_create_attempted: bool = False
+    container_auto_create_succeeded: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -115,6 +117,8 @@ class BmwProviderStatus:
             "last_telematic_status_code": self.last_telematic_status_code,
             "capture_files_written": list(self.capture_files_written),
             "vehicle_data_mode": self.vehicle_data_mode,
+            "container_auto_create_attempted": self.container_auto_create_attempted,
+            "container_auto_create_succeeded": self.container_auto_create_succeeded,
         }
 
 

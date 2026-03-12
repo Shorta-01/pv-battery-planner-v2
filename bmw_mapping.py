@@ -64,6 +64,8 @@ def freshness_bucket(last_update_ts: dt.datetime | None, now: dt.datetime | None
 
 def _extract_endpoint_payload(payload: dict[str, Any], path: str) -> dict[str, Any] | None:
     node = payload.get(path)
+    if node is None:
+        node = payload.get(f"GET {path}")
     if isinstance(node, dict):
         return node
     if isinstance(payload.get("endpoint"), str) and payload.get("endpoint") == path and isinstance(payload.get("payload"), dict):
@@ -94,17 +96,25 @@ def _vehicle_mapping_index(payload: dict[str, Any]) -> dict[str, dict[str, Any]]
     return {}
 
 
+
+
+def _normalize_endpoint_key(key: str) -> str:
+    k = key.strip()
+    if " " in k and k.split(" ", 1)[0] in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+        return k.split(" ", 1)[1]
+    return k
 def _extract_vehicles_list(payload: dict[str, Any]) -> list[dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
 
     for key, node in payload.items():
         if not isinstance(key, str) or not isinstance(node, dict) or "_error" in node:
             continue
-        vin = _path_vin(key)
+        endpoint_key = _normalize_endpoint_key(key)
+        vin = _path_vin(endpoint_key)
         if not vin:
             continue
         merged = out.get(vin, {"vin": vin, "vehicleId": vin})
-        endpoint_no_query = key.split("?", 1)[0]
+        endpoint_no_query = endpoint_key.split("?", 1)[0]
         if endpoint_no_query.endswith("/basicData"):
             merged["basicData"] = node
         elif endpoint_no_query.endswith("/telematicData"):
