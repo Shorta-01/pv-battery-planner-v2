@@ -3,6 +3,7 @@ import datetime as dt
 import hashlib
 import json
 import pathlib
+from pathlib import Path
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -11,6 +12,7 @@ from bmw_auth import BmwAuthClient
 from bmw_cardata_provider import BmwCarDataProvider
 from bmw_mapping import apply_planner_derivations, freshness_bucket, map_bmw_payload_to_vehicle_states
 from bmw_models import BmwTokenData, NormalizedVehicleState
+from bmw_service import BmwService
 from bmw_storage import BmwStorage
 
 
@@ -220,3 +222,101 @@ def test_no_stale_protocol_strings_in_bmw_modules():
         text = fp.read_text(encoding="utf-8")
         assert "device_authorization" not in text
         assert "customer.bmwgroup.com/gcdm/cardata" not in text
+
+
+def test_start_device_flow_fails_fast_without_client_id(tmp_path):
+    client = BmwAuthClient(client_id="", token_cache_path=str(tmp_path / "token.json"))
+    try:
+        client.start_device_flow()
+        assert False, "Expected runtime error for missing client_id"
+    except RuntimeError as exc:
+        assert "BMW client ID not configured" in str(exc)
+
+
+def test_update_config_rebuilds_runtime_and_updates_client_id(tmp_path):
+    service = BmwService({
+        "bmw_enabled": True,
+        "bmw_client_id": "old-client-id-1234",
+        "bmw_token_cache_path": str(tmp_path / "a" / "token.json"),
+        "bmw_raw_event_store_path": str(tmp_path / "a" / "raw.jsonl"),
+        "bmw_vehicle_state_store_path": str(tmp_path / "a" / "state.json"),
+    })
+    first_auth = service.auth
+    first_provider = service.provider
+
+    service.update_config(
+        {
+            "bmw_enabled": True,
+            "bmw_client_id": "new-client-id-9999",
+            "bmw_token_cache_path": str(tmp_path / "b" / "token.json"),
+            "bmw_raw_event_store_path": str(tmp_path / "b" / "raw.jsonl"),
+            "bmw_vehicle_state_store_path": str(tmp_path / "b" / "state.json"),
+            "bmw_auth_base_url": "https://customer.bmwgroup.com/gcdm/oauth",
+            "bmw_api_base_url": "https://api-cardata.bmwgroup.com",
+            "bmw_stream_enabled": False,
+        }
+    )
+
+    assert service.auth is not first_auth
+    assert service.provider is not first_provider
+    assert service.auth.client_id == "new-client-id-9999"
+    debug = service.device_flow_debug_info()
+    assert debug["provider_rebuilt_after_config_update"] is True
+    assert debug["active_client_id_masked"] == "new-cl...9999"
+    assert debug["device_flow_start_url"] == "https://customer.bmwgroup.com/gcdm/oauth/device/code"
+    assert debug["device_flow_poll_url"] == "https://customer.bmwgroup.com/gcdm/oauth/token"
+    assert debug["rest_api_base_url"] == "https://api-cardata.bmwgroup.com"
+    assert debug["rest_token_mode"] == "access_token"
+
+
+def test_mapping_supports_live_capture_wrapper_shape():
+    payload = {
+        "endpoint": "/v1/vehicles",
+        "payload": {
+            "vehicles": [
+                {
+                    "vin": "VINWRAP1",
+                    "lastUpdatedAt": "2026-03-11T10:00:00Z",
+                    "battery": {"socPercent": 77},
+                }
+            ]
+        },
+    }
+    states = map_bmw_payload_to_vehicle_states(payload)
+    assert len(states) == 1
+    assert states[0].vehicle_id == "VINWRAP1"
+    assert states[0].soc_pct == 77
+
+
+def test_provider_refresh_captures_live_payloads(monkeypatch, tmp_path):
+    class _Auth:
+        def load_token(self):
+            return BmwTokenData(access_token="access-1", obtained_at=dt.datetime.now(dt.timezone.utc))
+
+        def refresh_if_possible(self, tok):
+            return tok
+
+    def fake_get(url, headers=None, timeout=None):
+        if url.endswith("/v1/vehicle-mappings"):
+            return _DummyResponse(payload={"vehicleMappings": [{"vin": "VINCAP1", "displayName": "BMW"}]})
+        if url.endswith("/v1/vehicles"):
+            return _DummyResponse(payload={"vehicles": [{"vin": "VINCAP1", "lastUpdatedAt": "2026-03-11T10:00:00Z", "battery": {"socPercent": 55}}]})
+        return _DummyResponse(status_code=404, text="not found")
+
+    monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
+    storage = BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json"))
+    provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=storage, auth=_Auth())
+
+    out = provider.refresh_once()
+    assert out["ok"] is True
+    assert len(out["capture_files"]) == 2
+    assert all(Path(p).exists() for p in out["capture_files"])
+
+
+def test_mapping_live_fixture_file_support():
+    fixture_path = pathlib.Path(__file__).parent / "fixtures" / "bmw_cardata_live_v1_vehicles_sample_20260311.json"
+    payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+    states = map_bmw_payload_to_vehicle_states(payload)
+    assert len(states) == 1
+    assert states[0].vehicle_id == "WBY98765432100002"
+    assert states[0].soc_pct == 71

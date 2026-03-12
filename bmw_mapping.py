@@ -34,8 +34,27 @@ def freshness_bucket(last_update_ts: dt.datetime | None, now: dt.datetime | None
     return "error", age
 
 
+
+
+def _extract_endpoint_payload(payload: dict[str, Any], path: str) -> dict[str, Any] | None:
+    node = payload.get(path)
+    if isinstance(node, dict):
+        return node
+    if isinstance(payload.get("endpoint"), str) and payload.get("endpoint") == path and isinstance(payload.get("payload"), dict):
+        return payload.get("payload")
+    return None
+
+
+def _extract_vehicles_list(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    vehicles_resp = _extract_endpoint_payload(payload, "/v1/vehicles")
+    if isinstance(vehicles_resp, dict) and isinstance(vehicles_resp.get("vehicles"), list):
+        return [row for row in vehicles_resp.get("vehicles") if isinstance(row, dict)]
+    if isinstance(payload.get("vehicles"), list):
+        return [row for row in payload.get("vehicles") if isinstance(row, dict)]
+    return []
+
 def _vehicle_mapping_index(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    rows = payload.get("/v1/vehicle-mappings")
+    rows = _extract_endpoint_payload(payload, "/v1/vehicle-mappings")
     entries = rows.get("vehicleMappings") if isinstance(rows, dict) else None
     if not isinstance(entries, list):
         return {}
@@ -51,15 +70,12 @@ def _vehicle_mapping_index(payload: dict[str, Any]) -> dict[str, dict[str, Any]]
 
 def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[NormalizedVehicleState]:
     mappings_by_vin = _vehicle_mapping_index(payload)
-    vehicles_resp = payload.get("/v1/vehicles")
-    vehicles = vehicles_resp.get("vehicles") if isinstance(vehicles_resp, dict) else None
-    if not isinstance(vehicles, list):
+    vehicles = _extract_vehicles_list(payload)
+    if not vehicles:
         return []
 
     out: list[NormalizedVehicleState] = []
     for row in vehicles:
-        if not isinstance(row, dict):
-            continue
         vehicle_id = str(row.get("vin") or "").strip()
         if not vehicle_id:
             continue

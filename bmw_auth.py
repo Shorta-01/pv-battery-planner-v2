@@ -20,11 +20,24 @@ class BmwAuthClient:
     DEVICE_FLOW_SCOPE = "authenticate_user openid cardata:streaming:read cardata:api:read"
 
     def __init__(self, client_id: str, token_cache_path: str, auth_base_url: str = "https://customer.bmwgroup.com/gcdm/oauth") -> None:
-        self.client_id = client_id
+        self.client_id = ""
         self.token_cache_path = Path(token_cache_path)
         self.device_flow_session_path = self.token_cache_path.with_name(f"{self.token_cache_path.stem}_device_flow_session.json")
         self.auth_base_url = auth_base_url.rstrip("/")
+        self.update_runtime(client_id=client_id, token_cache_path=token_cache_path, auth_base_url=auth_base_url)
+
+    def update_runtime(self, *, client_id: str, token_cache_path: str, auth_base_url: str) -> None:
+        self.client_id = str(client_id or "").strip()
+        self.token_cache_path = Path(token_cache_path)
+        self.device_flow_session_path = self.token_cache_path.with_name(f"{self.token_cache_path.stem}_device_flow_session.json")
+        self.auth_base_url = str(auth_base_url or "https://customer.bmwgroup.com/gcdm/oauth").rstrip("/")
         self.token_cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _validated_client_id(self) -> str:
+        client_id = str(self.client_id or "").strip()
+        if not client_id:
+            raise RuntimeError("BMW client ID not configured in active runtime config")
+        return client_id
 
     def device_flow_start_url(self) -> str:
         return f"{self.auth_base_url}/device/code"
@@ -82,8 +95,9 @@ class BmwAuthClient:
         url = self.device_flow_start_url()
         created_at = dt.datetime.now(dt.timezone.utc)
         code_verifier = self._generate_code_verifier()
+        client_id = self._validated_client_id()
         payload = {
-            "client_id": self.client_id,
+            "client_id": client_id,
             "code_challenge": self._pkce_code_challenge(code_verifier),
             "code_challenge_method": "S256",
             "response_type": "device_code",
@@ -114,7 +128,7 @@ class BmwAuthClient:
                 expires_at = None
         self._save_device_flow_session(
             {
-                "client_id": self.client_id,
+                "client_id": client_id,
                 "code_verifier": code_verifier,
                 "created_at": created_at.isoformat(),
                 "device_code": response_payload.get("device_code"),
@@ -134,8 +148,11 @@ class BmwAuthClient:
         if not code_verifier:
             raise RuntimeError("BMW token poll failed: missing device flow session code_verifier")
         url = self.device_flow_poll_url()
+        client_id = str(session.get("client_id") or self._validated_client_id()).strip()
+        if not client_id:
+            raise RuntimeError("BMW client ID not configured in active runtime config")
         payload = {
-            "client_id": str(session.get("client_id") or self.client_id),
+            "client_id": client_id,
             "code_verifier": code_verifier,
             "device_code": device_code,
             "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
@@ -177,12 +194,16 @@ class BmwAuthClient:
             return token
         if not token.refresh_token:
             return token
+        try:
+            client_id = self._validated_client_id()
+        except RuntimeError:
+            return token
         url = f"{self.auth_base_url}/token"
         resp = requests.post(
             url,
             data={
                 "grant_type": "refresh_token",
-                "client_id": self.client_id,
+                "client_id": client_id,
                 "refresh_token": token.refresh_token,
             },
             timeout=20,
