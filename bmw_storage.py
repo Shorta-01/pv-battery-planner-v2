@@ -14,6 +14,7 @@ class BmwStorage:
         self.raw_path = Path(raw_event_store_path)
         self.state_path = Path(vehicle_state_store_path)
         self.container_state_path = self.state_path.parent / "bmw_container_state.json"
+        self.descriptor_validation_state_path = self.state_path.parent / "bmw_descriptor_validation.json"
         self._lock = RLock()
         self.raw_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -54,6 +55,20 @@ class BmwStorage:
                 return {}
             try:
                 payload = json.loads(self.container_state_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                return {}
+            return payload if isinstance(payload, dict) else {}
+
+    def save_descriptor_validation_state(self, payload: dict[str, Any]) -> None:
+        with self._lock:
+            self.descriptor_validation_state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def load_descriptor_validation_state(self) -> dict[str, Any]:
+        with self._lock:
+            if not self.descriptor_validation_state_path.exists():
+                return {}
+            try:
+                payload = json.loads(self.descriptor_validation_state_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
                 return {}
             return payload if isinstance(payload, dict) else {}

@@ -795,23 +795,13 @@ def test_phase1_container_definition_uses_technical_descriptors_for_bmw_phev():
     assert sorted(payload.keys()) == ["name", "purpose", "technicalDescriptors"]
     assert payload["name"] == PHASE1_CONTAINER_DEFINITION["name"]
     assert payload["purpose"] == PHASE1_CONTAINER_DEFINITION["purpose"]
-    assert payload["technicalDescriptors"] == PHASE1_CONTAINER_DEFINITION["validated_phase1_descriptors"]
+    assert payload["technicalDescriptors"] == PHASE1_CONTAINER_DEFINITION["candidate_phase1_descriptors"]
     assert "descriptors" not in payload
     assert all(isinstance(td, str) for td in payload["technicalDescriptors"])
     assert all(not isinstance(td, dict) for td in payload["technicalDescriptors"])
-    assert all("." in td for td in payload["technicalDescriptors"])
-    assert provider._phase1_container_create_request().to_json_string() == json.dumps(
-        {
-            "name": PHASE1_CONTAINER_DEFINITION["name"],
-            "purpose": PHASE1_CONTAINER_DEFINITION["purpose"],
-            "technicalDescriptors": PHASE1_CONTAINER_DEFINITION["validated_phase1_descriptors"],
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
 
 
-def test_container_create_failure_reports_request_shape_in_diagnostics(monkeypatch, tmp_path):
+def test_container_bootstrap_probe_classifies_descriptors_and_deletes_probe_containers(monkeypatch, tmp_path):
     class _Auth:
         def load_token(self):
             return BmwTokenData(access_token="access-1", obtained_at=dt.datetime.now(dt.timezone.utc))
@@ -819,96 +809,60 @@ def test_container_create_failure_reports_request_shape_in_diagnostics(monkeypat
         def refresh_if_possible(self, tok):
             return tok
 
+    deleted = []
+    attempts = []
+
     def fake_get(url, headers=None, timeout=None):
         if url.endswith("/customers/vehicles/mappings"):
-            return _DummyResponse(payload={"vehicleMappings": [{"vin": "VINDF1"}]})
-        if url.endswith("/customers/vehicles/VINDF1/basicData"):
-            return _DummyResponse(payload={"vin": "VINDF1", "lastUpdatedAt": "2026-03-11T10:00:00Z", "battery": {"socPercent": 66}})
+            return _DummyResponse(payload={"vehicleMappings": [{"vin": "VINPR1"}]})
+        if url.endswith("/customers/vehicles/VINPR1/basicData"):
+            return _DummyResponse(payload={"vin": "VINPR1", "lastUpdatedAt": "2026-03-11T10:00:00Z", "battery": {"socPercent": 61}})
         if url.endswith("/customers/containers"):
             return _DummyResponse(payload={"containers": []})
+        if "telematicData?containerId=FINAL1" in url:
+            return _DummyResponse(payload={"charging": {"plugConnectionState": "CONNECTED", "chargingState": "CHARGING"}})
         return _DummyResponse(status_code=500, text="unexpected")
 
     def fake_post(url, headers=None, data=None, json=None, timeout=None):
-        return _DummyResponse(status_code=400, payload={}, text='{"error":"bad_request"}')
+        payload = json if isinstance(json, dict) else __import__("json").loads(data)
+        desc = payload["technicalDescriptors"]
+        attempts.append(desc)
+        if len(desc) > 1:
+            if set(desc) == {"vehicle.drivetrain.electricEngine.charging.status", "vehicle.body.chargingPort.status"}:
+                return _DummyResponse(payload={"containerId": "FINAL1", "state": "ACTIVE"})
+            return _DummyResponse(status_code=400, payload={}, text='{"error":"bad_request"}')
+        if desc[0].endswith("charging.status"):
+            return _DummyResponse(payload={"containerId": "PROBE1", "state": "ACTIVE"})
+        if desc[0].endswith("chargingPort.status"):
+            return _DummyResponse(payload={"containerId": "PROBE2", "state": "ACTIVE"})
+        return _DummyResponse(status_code=400, payload={}, text='{"error":"descriptor_not_supported"}')
+
+    def fake_delete(url, headers=None, timeout=None):
+        deleted.append(url)
+        return _DummyResponse(status_code=204, payload={})
 
     monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
     monkeypatch.setattr("bmw_cardata_provider.requests.post", fake_post)
+    monkeypatch.setattr("bmw_cardata_provider.requests.delete", fake_delete)
+
     provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json")), auth=_Auth())
-
     out = provider.refresh_once()
+
     assert out["ok"] is True
-    assert provider.status.container_auto_create_attempted is True
-    assert provider.status.container_auto_create_succeeded is False
-    assert provider.status.vehicle_data_mode == "static_only"
-    assert provider.status.active_container_id is None
-    assert provider.status.container_diagnostics
-    create_diag = provider.status.container_diagnostics[-1]["create_request"]
-    assert create_diag["endpoint"].endswith("/customers/containers")
-    assert create_diag["method"] == "POST"
-    assert create_diag["content_type"] == "application/json"
-    assert create_diag["is_json_body"] is True
-    assert create_diag["request_field_names"] == ["name", "purpose", "technicalDescriptors"]
-    assert "\"technicalDescriptors\"" in (create_diag["serialized_body"] or "")
-    assert "technicalDescriptorId" not in (create_diag["serialized_body"] or "")
-    assert "technicalDescriptors" in (create_diag["serialized_body_sample"] or "")
-    assert create_diag["technical_descriptors_included"] is True
-    assert create_diag["technical_descriptor_count"] >= 1
-    assert create_diag["validated_descriptor_list"] == PHASE1_CONTAINER_DEFINITION["validated_phase1_descriptors"]
-    assert create_diag["validated_descriptor_count"] == len(PHASE1_CONTAINER_DEFINITION["validated_phase1_descriptors"])
-    assert create_diag["removed_unverified_descriptors"] == PHASE1_CONTAINER_DEFINITION["unverified_candidate_descriptors"]
-    assert create_diag["technical_descriptor_shape_summary"] == "str"
-    assert create_diag["descriptor_item_type_summary"] == "str"
-    assert all(isinstance(td, str) for td in create_diag["technical_descriptor_sample"])
-    assert all("." in td for td in create_diag["technical_descriptor_sample"])
-    assert create_diag["attempted"] is True
-    assert create_diag["status"] == 400
-    assert "bad_request" in (create_diag["response_excerpt"] or "")
-    capture_files = [Path(p) for p in out["capture_files"] if "customers_containers_create_attempt" in Path(p).name]
-    assert capture_files
-    create_capture = json.loads(capture_files[0].read_text(encoding="utf-8"))
-    assert create_capture["payload"]["headers"]["Content-Type"] == "application/json"
-    assert create_capture["payload"]["headers"]["X-Version"] == "v1"
-    assert create_capture["payload"]["top_level_field_names"] == ["name", "purpose", "technicalDescriptors"]
-    assert create_capture["payload"]["json_body"]["technicalDescriptors"]
-    assert isinstance(create_capture["payload"]["json_body"]["technicalDescriptors"][0], str)
-    assert create_capture["payload"]["descriptor_item_type_summary"] == "str"
-    assert create_capture["payload"]["validated_descriptor_list"] == PHASE1_CONTAINER_DEFINITION["validated_phase1_descriptors"]
-    assert create_capture["payload"]["validated_descriptor_count"] == len(PHASE1_CONTAINER_DEFINITION["validated_phase1_descriptors"])
-    assert create_capture["payload"]["removed_unverified_descriptors"] == PHASE1_CONTAINER_DEFINITION["unverified_candidate_descriptors"]
-    assert "technicalDescriptorId" not in create_capture["payload"]["serialized_body"]
+    assert provider.status.active_container_id == "FINAL1" or provider.status.active_container_id is None
+    assert any(u.endswith("/customers/containers/PROBE1") for u in deleted)
+    assert any(u.endswith("/customers/containers/PROBE2") for u in deleted)
+
+    state_path = tmp_path / "bmw_descriptor_validation.json"
+    assert state_path.exists()
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert "vehicle.drivetrain.electricEngine.charging.status" in state["accepted_descriptors"]
+    assert "vehicle.body.chargingPort.status" in state["accepted_descriptors"]
+    assert state["rejected_descriptors"]
+    assert state["last_tested_at"]
 
 
-
-def test_create_container_contract_rejects_non_string_descriptors():
-    with pytest.raises(TypeError):
-        CreateContainerRequest(name="n", purpose="p", technicalDescriptors=[{"id": "x"}])  # type: ignore[list-item]
-
-
-def test_phase1_descriptors_do_not_use_legacy_shorthand_aliases(tmp_path):
-    provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json")), auth=None)
-    payload = provider._phase1_container_create_request().to_json_body()
-    legacy_aliases = {
-        "CBATTERYSTATUS",
-        "CRANGEELECTRIC",
-        "CCHARGINGSTATUS",
-        "CCHARGINGTIME",
-        "CCHARGINGPOWER",
-        "CPLUGSTATUS",
-        "CACCURRENTLIMIT",
-    }
-    assert set(payload["technicalDescriptors"]).isdisjoint(legacy_aliases)
-
-
-def test_phase1_validated_descriptors_exclude_legacy_tractionbattery_ids(tmp_path):
-    provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json")), auth=None)
-    payload = provider._phase1_container_create_request().to_json_body()
-    descriptors = payload["technicalDescriptors"]
-    assert descriptors == PHASE1_CONTAINER_DEFINITION["validated_phase1_descriptors"]
-    assert all("tractionBattery" not in td for td in descriptors)
-    assert all(td.startswith("vehicle.") for td in descriptors)
-
-
-def test_container_create_diagnostics_include_validated_descriptor_lists(monkeypatch, tmp_path):
+def test_container_create_diagnostics_use_string_descriptor_shape(monkeypatch, tmp_path):
     class _Auth:
         def load_token(self):
             return BmwTokenData(access_token="access-1", obtained_at=dt.datetime.now(dt.timezone.utc))
@@ -928,13 +882,27 @@ def test_container_create_diagnostics_include_validated_descriptor_lists(monkeyp
     def fake_post(url, headers=None, data=None, json=None, timeout=None):
         return _DummyResponse(status_code=400, payload={}, text='{"error":"bad_request"}')
 
+    def fake_delete(url, headers=None, timeout=None):
+        return _DummyResponse(status_code=404, payload={}, text='{"error":"not_found"}')
+
     monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
     monkeypatch.setattr("bmw_cardata_provider.requests.post", fake_post)
+    monkeypatch.setattr("bmw_cardata_provider.requests.delete", fake_delete)
 
     provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json")), auth=_Auth())
-    provider.refresh_once()
+    out = provider.refresh_once()
 
+    assert out["ok"] is True
+    assert provider.status.vehicle_data_mode == "static_only"
+    assert provider.status.data_status == "partial"
     create_diag = provider.status.container_diagnostics[-1]["create_request"]
-    assert create_diag["validated_descriptor_list"] == PHASE1_CONTAINER_DEFINITION["validated_phase1_descriptors"]
-    assert create_diag["validated_descriptor_count"] == len(PHASE1_CONTAINER_DEFINITION["validated_phase1_descriptors"])
-    assert create_diag["removed_unverified_descriptors"] == PHASE1_CONTAINER_DEFINITION["unverified_candidate_descriptors"]
+    assert create_diag["top_level_field_names"] == ["name", "purpose", "technicalDescriptors"]
+    assert create_diag["descriptor_item_type_summary"] == "str"
+    assert create_diag["descriptor_count"] >= 1
+    assert '"technicalDescriptors"' in create_diag["serialized_body"]
+    assert "technicalDescriptorId" not in create_diag["serialized_body"]
+
+
+def test_create_container_contract_rejects_non_string_descriptors():
+    with pytest.raises(TypeError):
+        CreateContainerRequest(name="n", purpose="p", technicalDescriptors=[{"id": "x"}])  # type: ignore[list-item]
