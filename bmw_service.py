@@ -122,5 +122,7 @@ class BmwService:
             "capture_files_written": list(self.provider.status.capture_files_written),
             "vehicle_data_mode": self.provider.status.vehicle_data_mode,
             "has_live_telematics": self.provider.status.vehicle_data_mode == "live_telematics",
+            "container_auto_create_attempted": self.provider.status.container_auto_create_attempted,
+            "container_auto_create_succeeded": self.provider.status.container_auto_create_succeeded,
             "device_flow_session": safe_session,
         }

@@ -13,6 +13,7 @@ class BmwStorage:
     def __init__(self, raw_event_store_path: str, vehicle_state_store_path: str) -> None:
         self.raw_path = Path(raw_event_store_path)
         self.state_path = Path(vehicle_state_store_path)
+        self.container_state_path = self.state_path.parent / "bmw_container_state.json"
         self._lock = RLock()
         self.raw_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -42,6 +43,20 @@ class BmwStorage:
                 if isinstance(row, dict):
                     out[str(vid)] = NormalizedVehicleState.from_dict(row)
             return out
+
+    def save_container_state(self, payload: dict[str, Any]) -> None:
+        with self._lock:
+            self.container_state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def load_container_state(self) -> dict[str, Any]:
+        with self._lock:
+            if not self.container_state_path.exists():
+                return {}
+            try:
+                payload = json.loads(self.container_state_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                return {}
+            return payload if isinstance(payload, dict) else {}
 
 
 
