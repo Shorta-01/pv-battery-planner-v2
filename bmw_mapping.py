@@ -104,13 +104,14 @@ def _extract_vehicles_list(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if not vin:
             continue
         merged = out.get(vin, {"vin": vin, "vehicleId": vin})
-        if key.endswith("/basicData"):
+        endpoint_no_query = key.split("?", 1)[0]
+        if endpoint_no_query.endswith("/basicData"):
             merged["basicData"] = node
-        elif key.endswith("/telematicData"):
+        elif endpoint_no_query.endswith("/telematicData"):
             merged["telematicData"] = node
-        elif key.endswith("/chargingprofile"):
+        elif endpoint_no_query.endswith("/chargingprofile"):
             merged["chargingProfile"] = node
-        elif key.endswith("/charging"):
+        elif endpoint_no_query.endswith("/charging"):
             merged["charging"] = node
         else:
             merged.update(node)
@@ -118,19 +119,20 @@ def _extract_vehicles_list(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
     if isinstance(payload.get("endpoint"), str) and isinstance(payload.get("payload"), dict):
         endpoint = str(payload.get("endpoint"))
+        endpoint_no_query = endpoint.split("?", 1)[0]
         wrapped_payload = dict(payload.get("payload") or {})
-        vin = _path_vin(endpoint)
+        vin = _path_vin(endpoint_no_query)
         if vin:
             merged = out.get(vin, {"vin": vin, "vehicleId": vin})
-            if endpoint.endswith("/basicData"):
+            if endpoint_no_query.endswith("/basicData"):
                 if isinstance(wrapped_payload.get("vehicles"), list) and wrapped_payload.get("vehicles"):
                     first = wrapped_payload.get("vehicles")[0]
                     merged["basicData"] = first if isinstance(first, dict) else wrapped_payload
                 else:
                     merged["basicData"] = wrapped_payload
-            elif endpoint.endswith("/telematicData"):
+            elif endpoint_no_query.endswith("/telematicData"):
                 merged["telematicData"] = wrapped_payload
-            elif endpoint.endswith("/chargingprofile"):
+            elif endpoint_no_query.endswith("/chargingprofile"):
                 merged["chargingProfile"] = wrapped_payload
             else:
                 merged.update(wrapped_payload)
