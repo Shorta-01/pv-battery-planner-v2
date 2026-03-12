@@ -205,7 +205,7 @@ DEFAULT_CONFIG = {
         "source": "manual",
         "bmw_enabled": False,
         "bmw_client_id": "",
-        "bmw_stream_enabled": True,
+        "bmw_stream_enabled": False,
         "bmw_token_cache_path": "local_state/bmw_token.json",
         "bmw_raw_event_store_path": "local_state/bmw_raw_events.jsonl",
         "bmw_vehicle_state_store_path": "local_state/bmw_vehicle_state.json",

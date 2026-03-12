@@ -68,6 +68,7 @@ class BmwProviderStatus:
     provider_status: str = "disabled"
     data_status: str = "stale"
     stream_connected: bool = False
+    stream_status: str = "not_implemented"
     last_error: str | None = None
     last_auth_refresh: dt.datetime | None = None
     last_raw_event_received: dt.datetime | None = None
@@ -79,6 +80,7 @@ class BmwProviderStatus:
             "provider_status": self.provider_status,
             "data_status": self.data_status,
             "stream_connected": self.stream_connected,
+            "stream_status": self.stream_status,
             "last_error": self.last_error,
             "last_auth_refresh": iso_or_none(self.last_auth_refresh),
             "last_raw_event_received": iso_or_none(self.last_raw_event_received),

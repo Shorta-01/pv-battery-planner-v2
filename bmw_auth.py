@@ -85,6 +85,7 @@ class BmwAuthClient:
             "client_id": self.client_id,
             "code_challenge": self._pkce_code_challenge(code_verifier),
             "code_challenge_method": "S256",
+            "response_type": "device_code",
             "scope": scope,
         }
         logger.info(
@@ -109,6 +110,11 @@ class BmwAuthClient:
                 "code_verifier": code_verifier,
                 "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
                 "device_code": response_payload.get("device_code"),
+                "user_code": response_payload.get("user_code"),
+                "verification_uri": response_payload.get("verification_uri") or response_payload.get("verification_uri_complete"),
+                "expires_at": response_payload.get("expires_at"),
+                "expires_in": response_payload.get("expires_in"),
+                "interval": response_payload.get("interval"),
             }
         )
         logger.info("BMW auth: device flow started")
@@ -125,14 +131,12 @@ class BmwAuthClient:
             "code_verifier": code_verifier,
             "device_code": device_code,
             "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-            "scope": scope,
         }
         logger.info(
-            "BMW auth: token poll request endpoint=%s form_encoded=%s param_keys=%s verifier_preview=%s",
+            "BMW auth: token poll request endpoint=%s form_encoded=%s param_keys=%s",
             url,
             True,
             sorted(payload.keys()),
-            f"{code_verifier[:6]}...",
         )
         resp = requests.post(
             url,
@@ -156,6 +160,9 @@ class BmwAuthClient:
         self.save_token(token)
         logger.info("BMW auth: token obtained and cached")
         return token
+
+    def get_device_flow_session(self) -> dict[str, Any]:
+        return self._load_device_flow_session()
 
     def refresh_if_possible(self, token: BmwTokenData) -> BmwTokenData:
         if token.is_fresh():
