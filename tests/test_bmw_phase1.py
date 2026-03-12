@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from bmw_auth import BmwAuthClient
-from bmw_cardata_contract import CreateContainerRequest, CreateContainerTechnicalDescriptor
+from bmw_cardata_contract import CreateContainerRequest
 from bmw_cardata_provider import BmwCarDataProvider, PHASE1_CONTAINER_DEFINITION
 from bmw_mapping import apply_planner_derivations, freshness_bucket, map_bmw_payload_to_vehicle_states
 from bmw_models import BmwTokenData, NormalizedVehicleState
@@ -637,9 +637,8 @@ def test_refresh_auto_creates_container_when_empty(monkeypatch, tmp_path):
     assert "descriptors" not in seen_posts[0]["json"]
     assert isinstance(seen_posts[0]["json"]["technicalDescriptors"], list)
     assert len(seen_posts[0]["json"]["technicalDescriptors"]) >= 1
-    assert all(isinstance(td, dict) for td in seen_posts[0]["json"]["technicalDescriptors"])
-    assert all(sorted(td.keys()) == ["technicalDescriptorId"] for td in seen_posts[0]["json"]["technicalDescriptors"])
-    assert all("." in str(td.get("technicalDescriptorId") or "") for td in seen_posts[0]["json"]["technicalDescriptors"])
+    assert all(isinstance(td, str) for td in seen_posts[0]["json"]["technicalDescriptors"])
+    assert all("." in td for td in seen_posts[0]["json"]["technicalDescriptors"])
     assert seen_posts[0]["headers"]["Content-Type"] == "application/json"
 
 
@@ -785,7 +784,7 @@ def test_phase1_container_request_uses_openapi_contract_model(tmp_path):
     assert req.name == PHASE1_CONTAINER_DEFINITION["name"]
     assert req.purpose == PHASE1_CONTAINER_DEFINITION["purpose"]
     assert req.technicalDescriptors
-    assert all(isinstance(td, CreateContainerTechnicalDescriptor) for td in req.technicalDescriptors)
+    assert all(isinstance(td, str) for td in req.technicalDescriptors)
 
 
 def test_phase1_container_definition_uses_technical_descriptors_for_bmw_phev():
@@ -794,10 +793,10 @@ def test_phase1_container_definition_uses_technical_descriptors_for_bmw_phev():
     assert sorted(payload.keys()) == ["name", "purpose", "technicalDescriptors"]
     assert payload["name"] == PHASE1_CONTAINER_DEFINITION["name"]
     assert payload["purpose"] == PHASE1_CONTAINER_DEFINITION["purpose"]
-    assert payload["technicalDescriptors"] == [{"technicalDescriptorId": x} for x in PHASE1_CONTAINER_DEFINITION["technical_descriptor_ids"]]
+    assert payload["technicalDescriptors"] == PHASE1_CONTAINER_DEFINITION["technical_descriptor_ids"]
     assert "descriptors" not in payload
-    assert all(sorted(td.keys()) == ["technicalDescriptorId"] for td in payload["technicalDescriptors"])
-    assert all("." in str(td.get("technicalDescriptorId") or "") for td in payload["technicalDescriptors"])
+    assert all(isinstance(td, str) for td in payload["technicalDescriptors"])
+    assert all("." in td for td in payload["technicalDescriptors"])
 
 
 def test_container_create_failure_reports_request_shape_in_diagnostics(monkeypatch, tmp_path):
@@ -837,14 +836,15 @@ def test_container_create_failure_reports_request_shape_in_diagnostics(monkeypat
     assert create_diag["content_type"] == "application/json"
     assert create_diag["is_json_body"] is True
     assert create_diag["request_field_names"] == ["name", "purpose", "technicalDescriptors"]
-    assert "\"technicalDescriptorId\"" in (create_diag["serialized_body"] or "")
-    assert create_diag["descriptor_element_type"] in {"CreateContainerTechnicalDescriptor", "BmwTechnicalDescriptor"}
+    assert "\"technicalDescriptors\"" in (create_diag["serialized_body"] or "")
+    assert "technicalDescriptorId" not in (create_diag["serialized_body"] or "")
     assert "technicalDescriptors" in (create_diag["serialized_body_sample"] or "")
     assert create_diag["technical_descriptors_included"] is True
     assert create_diag["technical_descriptor_count"] >= 1
-    assert create_diag["technical_descriptor_shape_summary"] == "dict(keys=['technicalDescriptorId'])"
-    assert all(sorted(td.keys()) == ["technicalDescriptorId"] for td in create_diag["technical_descriptor_sample"])
-    assert all("." in str(td.get("technicalDescriptorId") or "") for td in create_diag["technical_descriptor_sample"])
+    assert create_diag["technical_descriptor_shape_summary"] == "str"
+    assert create_diag["descriptor_item_type_summary"] == "str"
+    assert all(isinstance(td, str) for td in create_diag["technical_descriptor_sample"])
+    assert all("." in td for td in create_diag["technical_descriptor_sample"])
     assert create_diag["attempted"] is True
     assert create_diag["status"] == 400
     assert "bad_request" in (create_diag["response_excerpt"] or "")
@@ -855,8 +855,9 @@ def test_container_create_failure_reports_request_shape_in_diagnostics(monkeypat
     assert create_capture["payload"]["headers"]["X-Version"] == "v1"
     assert create_capture["payload"]["top_level_field_names"] == ["name", "purpose", "technicalDescriptors"]
     assert create_capture["payload"]["json_body"]["technicalDescriptors"]
-    assert sorted(create_capture["payload"]["json_body"]["technicalDescriptors"][0].keys()) == ["technicalDescriptorId"]
-    assert "\"technicalDescriptorId\"" in create_capture["payload"]["serialized_body"]
+    assert isinstance(create_capture["payload"]["json_body"]["technicalDescriptors"][0], str)
+    assert create_capture["payload"]["descriptor_item_type_summary"] == "str"
+    assert "technicalDescriptorId" not in create_capture["payload"]["serialized_body"]
 
 
 def test_phase1_descriptors_do_not_use_legacy_shorthand_aliases(tmp_path):
@@ -871,4 +872,4 @@ def test_phase1_descriptors_do_not_use_legacy_shorthand_aliases(tmp_path):
         "CPLUGSTATUS",
         "CACCURRENTLIMIT",
     }
-    assert set(str(td.get("technicalDescriptorId") or "") for td in payload["technicalDescriptors"]).isdisjoint(legacy_aliases)
+    assert set(payload["technicalDescriptors"]).isdisjoint(legacy_aliases)

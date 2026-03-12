@@ -16,28 +16,18 @@ from typing import Any
 
 
 @dataclass(frozen=True)
-class CreateContainerTechnicalDescriptor:
-    """BMW OpenAPI `TechnicalDescriptor` request item for POST /customers/containers."""
-
-    technicalDescriptorId: str
-
-    def to_wire(self) -> dict[str, str]:
-        return {"technicalDescriptorId": self.technicalDescriptorId}
-
-
-@dataclass(frozen=True)
 class CreateContainerRequest:
     """BMW OpenAPI `CreateContainer` request body for POST /customers/containers."""
 
     name: str
     purpose: str
-    technicalDescriptors: list[CreateContainerTechnicalDescriptor]
+    technicalDescriptors: list[str]
 
     def to_wire(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "purpose": self.purpose,
-            "technicalDescriptors": [descriptor.to_wire() for descriptor in self.technicalDescriptors],
+            "technicalDescriptors": [str(descriptor) for descriptor in self.technicalDescriptors],
         }
 
     def to_json_body(self) -> dict[str, Any]:
@@ -48,6 +38,5 @@ class CreateContainerRequest:
         return json.dumps(self.to_wire(), ensure_ascii=False, separators=(",", ":"))
 
 
-# Backward-compatible names retained for older imports.
-BmwTechnicalDescriptor = CreateContainerTechnicalDescriptor
+# Backward-compatible name retained for older imports.
 BmwCreateContainerRequest = CreateContainerRequest
