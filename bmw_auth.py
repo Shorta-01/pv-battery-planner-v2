@@ -80,6 +80,7 @@ class BmwAuthClient:
 
     def start_device_flow(self, scope: str = DEVICE_FLOW_SCOPE) -> dict[str, Any]:
         url = self.device_flow_start_url()
+        created_at = dt.datetime.now(dt.timezone.utc)
         code_verifier = self._generate_code_verifier()
         payload = {
             "client_id": self.client_id,
@@ -104,23 +105,30 @@ class BmwAuthClient:
         if resp.status_code >= 400:
             self._raise_http_error(url, resp, "device flow start")
         response_payload = resp.json()
+        expires_in = response_payload.get("expires_in")
+        expires_at = response_payload.get("expires_at")
+        if not expires_at and expires_in is not None:
+            try:
+                expires_at = (created_at + dt.timedelta(seconds=int(expires_in))).isoformat()
+            except (TypeError, ValueError):
+                expires_at = None
         self._save_device_flow_session(
             {
                 "client_id": self.client_id,
                 "code_verifier": code_verifier,
-                "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "created_at": created_at.isoformat(),
                 "device_code": response_payload.get("device_code"),
                 "user_code": response_payload.get("user_code"),
                 "verification_uri": response_payload.get("verification_uri") or response_payload.get("verification_uri_complete"),
-                "expires_at": response_payload.get("expires_at"),
-                "expires_in": response_payload.get("expires_in"),
+                "expires_at": expires_at,
+                "expires_in": expires_in,
                 "interval": response_payload.get("interval"),
             }
         )
         logger.info("BMW auth: device flow started")
         return response_payload
 
-    def poll_device_token(self, device_code: str, interval_seconds: int = 5, scope: str = DEVICE_FLOW_SCOPE) -> BmwTokenData:
+    def poll_device_token(self, device_code: str, interval_seconds: int = 5) -> BmwTokenData:
         session = self._load_device_flow_session()
         code_verifier = session.get("code_verifier")
         if not code_verifier:

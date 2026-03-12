@@ -133,6 +133,7 @@ def test_device_flow_start_builds_form_encoded_payload_and_session(monkeypatch, 
     assert session_data["verification_uri"] == "https://verify"
     assert session_data["interval"] == 5
     assert session_data["expires_in"] == 1800
+    assert session_data["expires_at"]
     assert session_data["code_verifier"]
 
 
@@ -171,6 +172,7 @@ def test_poll_device_token_builds_form_encoded_payload(monkeypatch, tmp_path):
     assert captured["data"]["code_verifier"] == "verifier-1"
     assert captured["data"]["device_code"] == "device-code-1"
     assert captured["data"]["grant_type"] == "urn:ietf:params:oauth:grant-type:device_code"
+    assert "scope" not in captured["data"]
 
 
 def test_provider_uses_access_token_and_cardata_base_url(monkeypatch, tmp_path):
