@@ -81,6 +81,11 @@ class BmwProviderStatus:
     discovered_vehicle_ids: list[str] = field(default_factory=list)
     refresh_sequence_endpoints: list[str] = field(default_factory=list)
     mapping_diagnostics: list[dict[str, Any]] = field(default_factory=list)
+    discovered_container_ids: list[str] = field(default_factory=list)
+    active_container_id: str | None = None
+    container_diagnostics: list[dict[str, Any]] = field(default_factory=list)
+    last_telematic_url: str | None = None
+    last_telematic_status_code: int | None = None
     capture_files_written: list[str] = field(default_factory=list)
     vehicle_data_mode: str = "unknown"
 
@@ -103,6 +108,11 @@ class BmwProviderStatus:
             "discovered_vehicle_ids": list(self.discovered_vehicle_ids),
             "refresh_sequence_endpoints": list(self.refresh_sequence_endpoints),
             "mapping_diagnostics": list(self.mapping_diagnostics),
+            "discovered_container_ids": list(self.discovered_container_ids),
+            "active_container_id": self.active_container_id,
+            "container_diagnostics": list(self.container_diagnostics),
+            "last_telematic_url": self.last_telematic_url,
+            "last_telematic_status_code": self.last_telematic_status_code,
             "capture_files_written": list(self.capture_files_written),
             "vehicle_data_mode": self.vehicle_data_mode,
         }

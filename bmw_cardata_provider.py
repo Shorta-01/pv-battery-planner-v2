@@ -8,7 +8,7 @@ import requests
 
 from bmw_auth import BmwAuthClient
 from bmw_mapping import apply_planner_derivations, map_bmw_payload_to_vehicle_states
-from bmw_models import BmwProviderStatus, NormalizedVehicleState, RawEventRecord, utcnow
+from bmw_models import BmwProviderStatus, NormalizedVehicleState, RawEventRecord, parse_dt, utcnow
 from bmw_storage import BmwStorage
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,7 @@ class BmwCarDataProvider:
         ops = [
             _BmwOperation(name="vehicle_mappings", path_template="/customers/vehicles/mappings", stage="discover"),
             _BmwOperation(name="vehicle_basic_data", path_template="/customers/vehicles/{vin}/basicData", stage="vehicle"),
+            _BmwOperation(name="containers", path_template="/customers/containers", stage="discover"),
             _BmwOperation(name="vehicle_telematic_data", path_template="/customers/vehicles/{vin}/telematicData", stage="vehicle"),
         ]
         if bool(self.config.get("bmw_enable_optional_chargingprofile_followup", False)):
@@ -106,11 +107,14 @@ class BmwCarDataProvider:
         capture_paths: list[str],
         stage: str,
         optional: bool,
+        capture_endpoint_path: str | None = None,
     ) -> Any:
         endpoint = f"{base}{path}"
         self.status.refresh_sequence_endpoints.append(path)
         resp = requests.get(endpoint, headers=headers, timeout=20)
         self._mark_last_rest_result(endpoint, resp.status_code)
+        if "/telematicData" in path:
+            self.status.last_telematic_status_code = resp.status_code
         if resp.status_code >= 400:
             safe_error = self._safe_error_excerpt(resp)
             self._mark_last_rest_result(endpoint, resp.status_code, safe_error)
@@ -125,14 +129,14 @@ class BmwCarDataProvider:
                     "optional": optional,
                 }
             )
-            if optional and resp.status_code in {403, 404}:
+            if optional:
                 return None
             self._raise_http_error(endpoint, resp)
 
         node = resp.json()
         aggregate_payload[path] = node
         aggregate_payload["sequence"].append({"stage": stage, "endpoint": path, "ok": True, "optional": optional})
-        capture_paths.append(str(self.storage.store_raw_capture(path, node, status_code=resp.status_code)))
+        capture_paths.append(str(self.storage.store_raw_capture(capture_endpoint_path or path, node, status_code=resp.status_code)))
         return node
 
     def refresh_once(self) -> dict[str, Any]:
@@ -158,6 +162,11 @@ class BmwCarDataProvider:
         self.status.refresh_sequence_endpoints = []
         self.status.capture_files_written = []
         self.status.mapping_diagnostics = []
+        self.status.discovered_container_ids = []
+        self.status.active_container_id = None
+        self.status.container_diagnostics = []
+        self.status.last_telematic_url = None
+        self.status.last_telematic_status_code = None
         self.status.active_vehicle_id = None
         self.status.vehicle_data_mode = "unknown"
 
@@ -194,6 +203,9 @@ class BmwCarDataProvider:
                     "request_versioning_mode": self.status.request_versioning_mode,
                     "rest_token_mode": "access_token",
                     "mapping_diagnostics": list(mapping_diagnostics),
+                    "discovered_container_ids": list(self.status.discovered_container_ids),
+                    "active_container_id": self.status.active_container_id,
+                    "container_diagnostics": list(self.status.container_diagnostics),
                 }
 
             target_vehicle_id = self._select_active_vehicle(discovered_ids, mapping_diagnostics)
@@ -205,8 +217,66 @@ class BmwCarDataProvider:
                 self.status.mapping_diagnostics,
             )
 
-            for op in self.rest_operations()[1:]:
-                optional = op.name != "vehicle_basic_data"
+            basic_path = "/customers/vehicles/{vin}/basicData".replace("{vin}", target_vehicle_id)
+            self._request_json(
+                base=base,
+                path=basic_path,
+                headers=headers,
+                aggregate_payload=aggregate_payload,
+                capture_paths=capture_paths,
+                stage="vehicle",
+                optional=False,
+            )
+
+            containers_payload = self._request_json(
+                base=base,
+                path="/customers/containers",
+                headers=headers,
+                aggregate_payload=aggregate_payload,
+                capture_paths=capture_paths,
+                stage="discover",
+                optional=True,
+            )
+            container_ids, container_diags = self._discover_containers(containers_payload)
+            self.status.discovered_container_ids = list(container_ids)
+            self.status.container_diagnostics = list(container_diags)
+            active_container_id = self._select_active_container(container_diags)
+            self.status.active_container_id = active_container_id
+
+            telematic_path = f"/customers/vehicles/{target_vehicle_id}/telematicData"
+            if active_container_id:
+                telematic_path = f"{telematic_path}?containerId={active_container_id}"
+            self.status.last_telematic_url = f"{base}{telematic_path}"
+
+            if active_container_id:
+                self._request_json(
+                    base=base,
+                    path=telematic_path,
+                    headers=headers,
+                    aggregate_payload=aggregate_payload,
+                    capture_paths=capture_paths,
+                    stage="vehicle",
+                    optional=True,
+                    capture_endpoint_path=f"/customers/vehicles/{target_vehicle_id}/telematicData",
+                )
+            else:
+                aggregate_payload[telematic_path] = {"_error": {"status": None, "excerpt": "missing active containerId"}}
+                aggregate_payload["sequence"].append(
+                    {
+                        "stage": "vehicle",
+                        "endpoint": telematic_path,
+                        "ok": False,
+                        "status": None,
+                        "error_excerpt": "missing active containerId",
+                        "optional": True,
+                    }
+                )
+                self.status.refresh_sequence_endpoints.append(telematic_path)
+                self.status.last_telematic_status_code = None
+
+            for op in self.rest_operations():
+                if op.name != "vehicle_charging_profile":
+                    continue
                 try:
                     self._request_json(
                         base=base,
@@ -215,17 +285,17 @@ class BmwCarDataProvider:
                         aggregate_payload=aggregate_payload,
                         capture_paths=capture_paths,
                         stage=op.stage,
-                        optional=optional,
+                        optional=True,
                     )
                 except Exception:
-                    if not optional:
-                        raise
+                    pass
 
             self.status.last_auth_refresh = token.obtained_at
             self.status.capture_files_written = list(capture_paths)
             self._ingest_payload(aggregate_payload)
             self.status.provider_status = "healthy" if self.vehicles else "degraded"
-            telematic_node = aggregate_payload.get(f"/customers/vehicles/{target_vehicle_id}/telematicData")
+            telematic_path_prefix = f"/customers/vehicles/{target_vehicle_id}/telematicData"
+            telematic_node = next((v for k, v in aggregate_payload.items() if isinstance(k, str) and k.startswith(telematic_path_prefix)), None)
             self.status.vehicle_data_mode = "live_telematics" if isinstance(telematic_node, dict) and "_error" not in telematic_node else "static_only"
             return {
                 "ok": bool(self.vehicles),
@@ -237,6 +307,9 @@ class BmwCarDataProvider:
                 "active_vehicle_id": self.status.active_vehicle_id,
                 "discovered_vehicle_ids": list(self.status.discovered_vehicle_ids),
                 "mapping_diagnostics": list(self.status.mapping_diagnostics),
+                "discovered_container_ids": list(self.status.discovered_container_ids),
+                "active_container_id": self.status.active_container_id,
+                "container_diagnostics": list(self.status.container_diagnostics),
             }
         except Exception as exc:
             self.status.last_error = str(exc)
@@ -253,6 +326,9 @@ class BmwCarDataProvider:
                 "active_vehicle_id": self.status.active_vehicle_id,
                 "discovered_vehicle_ids": list(self.status.discovered_vehicle_ids),
                 "mapping_diagnostics": list(self.status.mapping_diagnostics),
+                "discovered_container_ids": list(self.status.discovered_container_ids),
+                "active_container_id": self.status.active_container_id,
+                "container_diagnostics": list(self.status.container_diagnostics),
                 "capture_files": capture_paths,
             }
 
@@ -300,6 +376,54 @@ class BmwCarDataProvider:
             )
         ]
         return primary_ids[0] if primary_ids else discovered_ids[0]
+
+
+    def _discover_containers(self, payload: Any) -> tuple[list[str], list[dict[str, Any]]]:
+        rows: list[dict[str, Any]] = []
+        if isinstance(payload, list):
+            rows.extend(x for x in payload if isinstance(x, dict))
+        elif isinstance(payload, dict):
+            for key in ("containers", "customerContainers", "items", "data"):
+                if isinstance(payload.get(key), list):
+                    rows.extend(x for x in payload.get(key) if isinstance(x, dict))
+            if not rows:
+                rows.append(payload)
+
+        seen: list[str] = []
+        diagnostics: list[dict[str, Any]] = []
+        for row in rows:
+            container_id = str(row.get("containerId") or row.get("id") or row.get("identifier") or "").strip()
+            if not container_id:
+                continue
+            if container_id not in seen:
+                seen.append(container_id)
+            diagnostics.append(
+                {
+                    "container_id": container_id,
+                    "state": str(row.get("state") or ""),
+                    "name": row.get("name") or row.get("containerName"),
+                    "purpose": row.get("purpose") or row.get("type"),
+                    "created_at": row.get("createdAt") or row.get("creationTime") or row.get("created"),
+                    "updated_at": row.get("updatedAt") or row.get("lastUpdatedAt") or row.get("updateTime"),
+                }
+            )
+        return seen, diagnostics
+
+    def _select_active_container(self, diagnostics: list[dict[str, Any]]) -> str | None:
+        if not diagnostics:
+            return None
+        active = [d for d in diagnostics if str(d.get("state") or "").upper() == "ACTIVE"]
+        candidates = active if active else diagnostics
+        candidates = sorted(
+            candidates,
+            key=lambda d: (
+                parse_dt(d.get("updated_at")) or parse_dt(d.get("created_at")) or utcnow(),
+                str(d.get("container_id") or ""),
+            ),
+            reverse=True,
+        )
+        chosen = candidates[0] if candidates else None
+        return str(chosen.get("container_id")) if chosen else None
 
     def _ingest_payload(self, payload: dict[str, Any]) -> None:
         records = map_bmw_payload_to_vehicle_states(payload)
