@@ -18,14 +18,20 @@ logger = logging.getLogger(__name__)
 PHASE1_CONTAINER_DEFINITION: dict[str, Any] = {
     "name": "pvbp_phase1_ev_telematics",
     "purpose": "PV Battery Planner phase 1 EV/PHEV telematics",
-    "technical_descriptor_ids": [
-        "vehicle.powertrain.tractionBattery.stateOfCharge",
-        "vehicle.range.electric.value",
-        "vehicle.powertrain.tractionBattery.charging.status",
-        "vehicle.powertrain.tractionBattery.charging.timeToComplete",
-        "vehicle.powertrain.tractionBattery.charging.power",
-        "vehicle.powertrain.tractionBattery.charging.port.rearLeft.isPlugged",
+    # Validated against BMW CarData generated descriptor catalog naming used during
+    # this integration hardening cycle.
+    "validated_phase1_descriptors": [
+        "vehicle.drivetrain.electricEngine.charging.status",
+        "vehicle.body.chargingPort.status",
         "vehicle.powertrain.electric.battery.charging.acLimit.selected",
+    ],
+    # Desired for richer UX, but intentionally excluded from active create flow
+    # until explicitly validated against BMW's descriptor catalog.
+    "unverified_candidate_descriptors": [
+        "vehicle.drivetrain.electricEngine.battery.stateOfCharge",
+        "vehicle.drivetrain.electricEngine.range.electric",
+        "vehicle.drivetrain.electricEngine.charging.timeToComplete",
+        "vehicle.drivetrain.electricEngine.charging.power",
     ],
 }
 
@@ -178,8 +184,8 @@ class BmwCarDataProvider:
 
     def _phase1_container_create_request(self) -> CreateContainerRequest:
         profile = dict(PHASE1_CONTAINER_DEFINITION)
-        descriptor_ids = profile.get("technical_descriptor_ids") if isinstance(profile.get("technical_descriptor_ids"), list) else []
-        technical_descriptors = self._build_technical_descriptors(descriptor_ids)
+        validated_descriptor_ids = profile.get("validated_phase1_descriptors") if isinstance(profile.get("validated_phase1_descriptors"), list) else []
+        technical_descriptors = self._build_technical_descriptors(validated_descriptor_ids)
         return CreateContainerRequest(
             name=str(profile.get("name") or ""),
             purpose=str(profile.get("purpose") or ""),
@@ -237,6 +243,15 @@ class BmwCarDataProvider:
         endpoint_path = "/customers/containers"
         request_field_names = sorted(payload.keys())
         technical_descriptors = payload.get("technicalDescriptors", []) if isinstance(payload.get("technicalDescriptors"), list) else []
+        configured_validated = self._build_technical_descriptors(
+            PHASE1_CONTAINER_DEFINITION.get("validated_phase1_descriptors") if isinstance(PHASE1_CONTAINER_DEFINITION.get("validated_phase1_descriptors"), list) else []
+        )
+        configured_unverified = self._build_technical_descriptors(
+            PHASE1_CONTAINER_DEFINITION.get("unverified_candidate_descriptors")
+            if isinstance(PHASE1_CONTAINER_DEFINITION.get("unverified_candidate_descriptors"), list)
+            else []
+        )
+        removed_unverified = [d for d in configured_unverified if d not in technical_descriptors]
         descriptor_count = len(technical_descriptors)
         descriptor_sample = technical_descriptors[:3]
         descriptor_shape_summary = self._technical_descriptor_shape_summary(technical_descriptors)
@@ -281,6 +296,9 @@ class BmwCarDataProvider:
             "serialized_body_sample": serialized_body_sample,
             "technical_descriptors_included": descriptor_count > 0,
             "technical_descriptor_count": descriptor_count,
+            "validated_descriptor_list": list(technical_descriptors),
+            "validated_descriptor_count": descriptor_count,
+            "removed_unverified_descriptors": removed_unverified,
             "technical_descriptor_shape_summary": descriptor_shape_summary,
             "descriptor_item_type_summary": descriptor_item_type_summary,
             "technical_descriptor_sample": descriptor_sample,
@@ -298,6 +316,11 @@ class BmwCarDataProvider:
             "serialized_body_sample": serialized_body_sample,
             "top_level_field_names": request_field_names,
             "technical_descriptor_count": descriptor_count,
+            "validated_descriptor_list": list(technical_descriptors),
+            "validated_descriptor_count": descriptor_count,
+            "removed_unverified_descriptors": removed_unverified,
+            "configured_validated_descriptors": configured_validated,
+            "configured_unverified_candidates": configured_unverified,
             "technical_descriptor_shape_summary": descriptor_shape_summary,
             "descriptor_item_type_summary": descriptor_item_type_summary,
             "technical_descriptor_sample": descriptor_sample,
