@@ -48,12 +48,16 @@ class BmwCarDataProvider:
         return str(self.config.get("bmw_api_base_url", self.REST_BASE_URL)).rstrip("/")
 
     def rest_operations(self) -> list[_BmwOperation]:
-        return [
+        ops = [
             _BmwOperation(name="vehicle_mappings", path_template="/customers/vehicles/mappings", stage="discover"),
             _BmwOperation(name="vehicle_basic_data", path_template="/customers/vehicles/{vin}/basicData", stage="vehicle"),
-            # Optional follow-up endpoint for charging-related state where authorized/available.
-            _BmwOperation(name="vehicle_charging_profile", path_template="/customers/vehicles/{vin}/chargingprofile", stage="vehicle"),
+            _BmwOperation(name="vehicle_telematic_data", path_template="/customers/vehicles/{vin}/telematicData", stage="vehicle"),
         ]
+        if bool(self.config.get("bmw_enable_optional_chargingprofile_followup", False)):
+            ops.append(
+                _BmwOperation(name="vehicle_charging_profile", path_template="/customers/vehicles/{vin}/chargingprofile", stage="vehicle_optional")
+            )
+        return ops
 
     def rest_endpoints(self) -> list[str]:
         return [op.path_template for op in self.rest_operations()]
@@ -155,6 +159,7 @@ class BmwCarDataProvider:
         self.status.capture_files_written = []
         self.status.mapping_diagnostics = []
         self.status.active_vehicle_id = None
+        self.status.vehicle_data_mode = "unknown"
 
         try:
             discovery_op = self.rest_operations()[0]
@@ -176,6 +181,7 @@ class BmwCarDataProvider:
                 msg = "no accessible BMW vehicle mappings"
                 self.status.last_error = msg
                 self.status.capture_files_written = list(capture_paths)
+                self.status.vehicle_data_mode = "none"
                 self.storage.append_raw_event(
                     RawEventRecord(provider="bmw_cardata", received_at=utcnow(), payload=aggregate_payload, parse_ok=False, parse_error=msg)
                 )
@@ -200,20 +206,27 @@ class BmwCarDataProvider:
             )
 
             for op in self.rest_operations()[1:]:
-                self._request_json(
-                    base=base,
-                    path=op.resolve(target_vehicle_id),
-                    headers=headers,
-                    aggregate_payload=aggregate_payload,
-                    capture_paths=capture_paths,
-                    stage=op.stage,
-                    optional=True,
-                )
+                optional = op.name != "vehicle_basic_data"
+                try:
+                    self._request_json(
+                        base=base,
+                        path=op.resolve(target_vehicle_id),
+                        headers=headers,
+                        aggregate_payload=aggregate_payload,
+                        capture_paths=capture_paths,
+                        stage=op.stage,
+                        optional=optional,
+                    )
+                except Exception:
+                    if not optional:
+                        raise
 
             self.status.last_auth_refresh = token.obtained_at
             self.status.capture_files_written = list(capture_paths)
             self._ingest_payload(aggregate_payload)
             self.status.provider_status = "healthy" if self.vehicles else "degraded"
+            telematic_node = aggregate_payload.get(f"/customers/vehicles/{target_vehicle_id}/telematicData")
+            self.status.vehicle_data_mode = "live_telematics" if isinstance(telematic_node, dict) and "_error" not in telematic_node else "static_only"
             return {
                 "ok": bool(self.vehicles),
                 "vehicles": len(self.vehicles),
@@ -322,8 +335,11 @@ class BmwCarDataProvider:
             )
         self.storage.save_vehicle_states(self.vehicles)
         newest = max((v.last_update_ts for v in self.vehicles.values() if v.last_update_ts), default=None)
-        age = int((utcnow() - newest).total_seconds()) if newest else 3600
-        self.status.data_status = "fresh" if age < 120 else "aging" if age < 600 else "stale" if age < 1800 else "error"
+        if newest:
+            age = int((utcnow() - newest).total_seconds())
+            self.status.data_status = "fresh" if age < 120 else "aging" if age < 600 else "stale" if age < 1800 else "partial"
+        else:
+            self.status.data_status = "partial"
 
     def manual_refresh(self) -> dict[str, Any]:
         return self.refresh_once()

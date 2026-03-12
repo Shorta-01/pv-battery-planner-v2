@@ -193,7 +193,7 @@ def test_provider_uses_access_token_and_cardata_base_url(monkeypatch, tmp_path):
             return _DummyResponse(payload={"vehicleMappings": [{"vehicleId": "VIN1", "vin": "VIN1", "displayName": "BMW"}]})
         if url.endswith("/customers/vehicles/VIN1/basicData"):
             return _DummyResponse(payload={"vehicleId": "VIN1", "vin": "VIN1", "lastUpdatedAt": "2026-03-11T10:00:00Z", "battery": {"socPercent": 80}})
-        if url.endswith("/customers/vehicles/VIN1/chargingprofile"):
+        if url.endswith("/customers/vehicles/VIN1/telematicData"):
             return _DummyResponse(payload={"charging": {"plugConnectionState": "CONNECTED", "chargingState": "CHARGING"}})
         return _DummyResponse(status_code=404, text="not found")
 
@@ -273,6 +273,8 @@ def test_update_config_rebuilds_runtime_and_updates_client_id(tmp_path):
     assert debug["rest_token_mode"] == "access_token"
     assert debug["request_versioning_mode"] == "header:X-Version=v1"
     assert isinstance(debug["refresh_sequence_endpoints"], list)
+    assert "vehicle_data_mode" in debug
+    assert "has_live_telematics" in debug
     assert "last_rest_endpoint_attempted" in debug
     assert "last_rest_status_code" in debug
     assert "last_rest_safe_error_excerpt" in debug
@@ -312,7 +314,7 @@ def test_provider_refresh_captures_live_payloads(monkeypatch, tmp_path):
             return _DummyResponse(payload={"vehicleMappings": [{"vehicleId": "VINCAP1", "vin": "VINCAP1", "displayName": "BMW"}]})
         if url.endswith("/customers/vehicles/VINCAP1/basicData"):
             return _DummyResponse(payload={"vehicleId": "VINCAP1", "vin": "VINCAP1", "lastUpdatedAt": "2026-03-11T10:00:00Z", "battery": {"socPercent": 55}})
-        if url.endswith("/customers/vehicles/VINCAP1/chargingprofile"):
+        if url.endswith("/customers/vehicles/VINCAP1/telematicData"):
             return _DummyResponse(payload={"charging": {"plugConnectionState": "CONNECTED", "chargingState": "NOT_CHARGING"}})
         return _DummyResponse(status_code=404, text="not found")
 
@@ -323,6 +325,7 @@ def test_provider_refresh_captures_live_payloads(monkeypatch, tmp_path):
     out = provider.refresh_once()
     assert out["ok"] is True
     assert len(out["capture_files"]) >= 2
+    assert any("telematicData" in str(p) for p in out["capture_files"])
     assert all(Path(p).exists() for p in out["capture_files"])
 
 
@@ -351,7 +354,7 @@ def test_provider_refresh_sequence_and_version_headers(monkeypatch, tmp_path):
             return _DummyResponse(payload={"vehicleMappings": [{"vehicleId": "VINSEQ1", "vin": "VINSEQ1"}]})
         if url.endswith("/customers/vehicles/VINSEQ1/basicData"):
             return _DummyResponse(payload={"vehicleId": "VINSEQ1", "vin": "VINSEQ1", "lastUpdatedAt": "2026-03-11T10:00:00Z", "battery": {"socPercent": 66}})
-        if url.endswith("/customers/vehicles/VINSEQ1/chargingprofile"):
+        if url.endswith("/customers/vehicles/VINSEQ1/telematicData"):
             return _DummyResponse(payload={"charging": {"plugConnectionState": "CONNECTED", "chargingState": "CHARGING"}})
         return _DummyResponse(status_code=404, text="not found")
 
@@ -364,10 +367,10 @@ def test_provider_refresh_sequence_and_version_headers(monkeypatch, tmp_path):
 
     out = provider.refresh_once()
     assert out["ok"] is True
-    assert [u for u, _ in seen] == [
+    assert [u for u, _ in seen][:3] == [
         "https://api-cardata.bmwgroup.com/customers/vehicles/mappings",
         "https://api-cardata.bmwgroup.com/customers/vehicles/VINSEQ1/basicData",
-        "https://api-cardata.bmwgroup.com/customers/vehicles/VINSEQ1/chargingprofile",
+        "https://api-cardata.bmwgroup.com/customers/vehicles/VINSEQ1/telematicData",
     ]
     assert all(h["Authorization"] == "Bearer access-1" for _, h in seen)
     assert all(h["X-Version"] == "v1" for _, h in seen)
@@ -406,7 +409,7 @@ def test_refresh_supports_top_level_array_mappings_payload(monkeypatch, tmp_path
                     "battery": {"socPercent": 64},
                 }
             )
-        if url.endswith("/customers/vehicles/WBA51EH0X0CR89778/chargingprofile"):
+        if url.endswith("/customers/vehicles/WBA51EH0X0CR89778/telematicData"):
             return _DummyResponse(status_code=404, text="not found")
         return _DummyResponse(status_code=500, text="unexpected")
 
@@ -466,7 +469,7 @@ def test_refresh_graceful_vehicle_endpoint_403_and_404(monkeypatch, tmp_path):
             return _DummyResponse(payload={"vehicleMappings": [{"vehicleId": "VINERR1", "vin": "VINERR1"}]})
         if url.endswith("/customers/vehicles/VINERR1/basicData"):
             return _DummyResponse(status_code=403, text="forbidden by API")
-        if url.endswith("/customers/vehicles/VINERR1/chargingprofile"):
+        if url.endswith("/customers/vehicles/VINERR1/telematicData"):
             return _DummyResponse(status_code=404, text="not found")
         return _DummyResponse(status_code=500, text="unexpected")
 
@@ -480,8 +483,8 @@ def test_refresh_graceful_vehicle_endpoint_403_and_404(monkeypatch, tmp_path):
     out = provider.refresh_once()
     assert out["ok"] is False
     assert out.get("reason") in {None, "poll_failed"}
-    assert provider.status.last_rest_status_code == 404
-    assert provider.status.last_rest_error_excerpt in {None, "not found"}
+    assert provider.status.last_rest_status_code == 403
+    assert provider.status.last_rest_error_excerpt in {None, "forbidden by API"}
 
 
 def test_storage_capture_naming_and_listing(tmp_path):
@@ -505,7 +508,7 @@ def test_primary_mapping_is_selected_when_available(monkeypatch, tmp_path):
             return _DummyResponse(payload={"vehicleMappings": [{"vin": "VINSECOND", "mappingType": "SECONDARY"}, {"vin": "VINPRIME", "mappingType": "PRIMARY"}]})
         if url.endswith("/customers/vehicles/VINPRIME/basicData"):
             return _DummyResponse(payload={"vin": "VINPRIME", "lastUpdatedAt": "2026-03-11T10:00:00Z", "battery": {"socPercent": 50}})
-        if url.endswith("/customers/vehicles/VINPRIME/chargingprofile"):
+        if url.endswith("/customers/vehicles/VINPRIME/telematicData"):
             return _DummyResponse(status_code=404, text="not found")
         return _DummyResponse(status_code=500, text="unexpected")
 
@@ -529,12 +532,14 @@ def test_refresh_partial_data_basic_data_success_live_data_forbidden(monkeypatch
         def refresh_if_possible(self, tok):
             return tok
 
+    now_iso = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
     def fake_get(url, headers=None, timeout=None):
         if url.endswith("/customers/vehicles/mappings"):
             return _DummyResponse(payload={"vehicleMappings": [{"vin": "VINPART1"}]})
         if url.endswith("/customers/vehicles/VINPART1/basicData"):
-            return _DummyResponse(payload={"vin": "VINPART1", "lastUpdatedAt": "2026-03-11T10:00:00Z", "battery": {"socPercent": 70}})
-        if url.endswith("/customers/vehicles/VINPART1/chargingprofile"):
+            return _DummyResponse(payload={"vin": "VINPART1", "lastUpdatedAt": now_iso, "battery": {"socPercent": 70}})
+        if url.endswith("/customers/vehicles/VINPART1/telematicData"):
             return _DummyResponse(status_code=403, text="forbidden")
         return _DummyResponse(status_code=500, text="unexpected")
 
@@ -547,7 +552,9 @@ def test_refresh_partial_data_basic_data_success_live_data_forbidden(monkeypatch
     out = provider.refresh_once()
     assert out["ok"] is True
     assert provider.status.last_rest_status_code == 403
+    assert provider.status.vehicle_data_mode == "static_only"
     assert provider.vehicles["VINPART1"].soc_pct == 70
+    assert provider.vehicles["VINPART1"].data_status != "error"
 
 
 def test_no_legacy_v1_vehicle_mappings_endpoint_reference():

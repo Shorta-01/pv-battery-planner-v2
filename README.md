@@ -93,7 +93,7 @@ PVBP_BACKEND_HOST=0.0.0.0 PVBP_BACKEND_PORT=8787 python scripts/start_backend.py
 ## BMW CarData Phase 1 notes
 
 - Current backend Phase 1 supports BMW OAuth device-flow + CarData REST polling.
-- REST polling uses `access_token` on `https://api-cardata.bmwgroup.com` with discovery-first vehicle API sequence (`/customers/vehicles/mappings` -> `/customers/vehicles/{vin}/basicData` -> `/customers/vehicles/{vin}/chargingprofile` when accessible); stream/MQTT is not implemented yet.
+- REST polling uses `access_token` on `https://api-cardata.bmwgroup.com` with discovery-first vehicle API sequence (`/customers/vehicles/mappings` -> `/customers/vehicles/{vin}/basicData` -> `/customers/vehicles/{vin}/telematicData`; `/chargingprofile` is optional/non-blocking when accessible); stream/MQTT is not implemented yet.
 - BMW onboarding is backend/API-driven in this phase (not full GUI guided flow yet).
 - Saving BMW settings updates the live backend runtime immediately (auth/provider are rebuilt from the saved config).
 - Debug endpoint `GET /v1/ev/bmw/device_flow/debug` (when `DEBUG=1`) reports masked active runtime values, including client-id mask and active auth/REST URLs.
