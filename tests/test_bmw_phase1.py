@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from bmw_auth import BmwAuthClient
-from bmw_openapi_create_container import CreateContainerRequest, CreateContainerTechnicalDescriptor
+from bmw_cardata_contract import CreateContainerRequest, CreateContainerTechnicalDescriptor
 from bmw_cardata_provider import BmwCarDataProvider, PHASE1_CONTAINER_DEFINITION
 from bmw_mapping import apply_planner_derivations, freshness_bucket, map_bmw_payload_to_vehicle_states
 from bmw_models import BmwTokenData, NormalizedVehicleState
@@ -838,7 +838,7 @@ def test_container_create_failure_reports_request_shape_in_diagnostics(monkeypat
     assert create_diag["is_json_body"] is True
     assert create_diag["request_field_names"] == ["name", "purpose", "technicalDescriptors"]
     assert "\"technicalDescriptorId\"" in (create_diag["serialized_body"] or "")
-    assert create_diag["descriptor_element_type"] == "CreateContainerTechnicalDescriptor"
+    assert create_diag["descriptor_element_type"] in {"CreateContainerTechnicalDescriptor", "BmwTechnicalDescriptor"}
     assert "technicalDescriptors" in (create_diag["serialized_body_sample"] or "")
     assert create_diag["technical_descriptors_included"] is True
     assert create_diag["technical_descriptor_count"] >= 1
@@ -851,6 +851,8 @@ def test_container_create_failure_reports_request_shape_in_diagnostics(monkeypat
     capture_files = [Path(p) for p in out["capture_files"] if "customers_containers_create_attempt" in Path(p).name]
     assert capture_files
     create_capture = json.loads(capture_files[0].read_text(encoding="utf-8"))
+    assert create_capture["payload"]["headers"]["Content-Type"] == "application/json"
+    assert create_capture["payload"]["headers"]["X-Version"] == "v1"
     assert create_capture["payload"]["top_level_field_names"] == ["name", "purpose", "technicalDescriptors"]
     assert create_capture["payload"]["json_body"]["technicalDescriptors"]
     assert sorted(create_capture["payload"]["json_body"]["technicalDescriptors"][0].keys()) == ["technicalDescriptorId"]

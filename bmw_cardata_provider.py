@@ -7,7 +7,7 @@ from typing import Any
 import requests
 
 from bmw_auth import BmwAuthClient
-from bmw_openapi_create_container import CreateContainerRequest, CreateContainerTechnicalDescriptor
+from bmw_cardata_contract import CreateContainerRequest, CreateContainerTechnicalDescriptor
 from bmw_mapping import apply_planner_derivations, map_bmw_payload_to_vehicle_states
 from bmw_models import BmwProviderStatus, NormalizedVehicleState, RawEventRecord, parse_dt, utcnow
 from bmw_storage import BmwStorage
