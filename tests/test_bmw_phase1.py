@@ -632,9 +632,11 @@ def test_refresh_auto_creates_container_when_empty(monkeypatch, tmp_path):
     assert seen_posts[0]["url"].endswith("/customers/containers")
     assert seen_posts[0]["json"]["name"] == "pvbp_phase1_ev_telematics"
     assert seen_posts[0]["json"]["purpose"] == "PV Battery Planner phase 1 EV/PHEV telematics"
-    assert sorted(seen_posts[0]["json"].keys()) == ["descriptors", "name", "purpose"]
-    assert isinstance(seen_posts[0]["json"]["descriptors"], list)
-    assert len(seen_posts[0]["json"]["descriptors"]) >= 1
+    assert sorted(seen_posts[0]["json"].keys()) == ["name", "purpose", "technicalDescriptors"]
+    assert "descriptors" not in seen_posts[0]["json"]
+    assert isinstance(seen_posts[0]["json"]["technicalDescriptors"], list)
+    assert len(seen_posts[0]["json"]["technicalDescriptors"]) >= 1
+    assert all("." in td for td in seen_posts[0]["json"]["technicalDescriptors"])
     assert seen_posts[0]["headers"]["Content-Type"] == "application/json"
 
 
@@ -773,13 +775,15 @@ def test_capture_files_include_container_create(monkeypatch, tmp_path):
     assert any("customers_containers_create" in Path(p).name for p in out["capture_files"])
 
 
-def test_phase1_container_definition_uses_descriptor_catalog_for_bmw_phev():
+def test_phase1_container_definition_uses_technical_descriptors_for_bmw_phev():
     provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=BmwStorage("/tmp/raw.jsonl", "/tmp/state.json"), auth=None)
     payload = provider._phase1_container_create_payload()
-    assert sorted(payload.keys()) == ["descriptors", "name", "purpose"]
+    assert sorted(payload.keys()) == ["name", "purpose", "technicalDescriptors"]
     assert payload["name"] == PHASE1_CONTAINER_DEFINITION["name"]
     assert payload["purpose"] == PHASE1_CONTAINER_DEFINITION["purpose"]
-    assert payload["descriptors"] == PHASE1_CONTAINER_DEFINITION["profiles"]["bmw_phev"]
+    assert payload["technicalDescriptors"] == PHASE1_CONTAINER_DEFINITION["technical_descriptor_ids"]
+    assert "descriptors" not in payload
+    assert all("." in td for td in payload["technicalDescriptors"])
 
 
 def test_container_create_failure_reports_request_shape_in_diagnostics(monkeypatch, tmp_path):
@@ -817,9 +821,25 @@ def test_container_create_failure_reports_request_shape_in_diagnostics(monkeypat
     assert create_diag["endpoint"].endswith("/customers/containers")
     assert create_diag["method"] == "POST"
     assert create_diag["content_type"] == "application/json"
-    assert create_diag["request_field_names"] == ["descriptors", "name", "purpose"]
-    assert create_diag["descriptors_included"] is True
-    assert create_diag["descriptors_count"] >= 1
+    assert create_diag["request_field_names"] == ["name", "purpose", "technicalDescriptors"]
+    assert create_diag["technical_descriptors_included"] is True
+    assert create_diag["technical_descriptor_count"] >= 1
+    assert all("." in td for td in create_diag["technical_descriptor_sample"])
     assert create_diag["attempted"] is True
     assert create_diag["status"] == 400
     assert "bad_request" in (create_diag["response_excerpt"] or "")
+
+
+def test_phase1_descriptors_do_not_use_legacy_shorthand_aliases(tmp_path):
+    provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json")), auth=None)
+    payload = provider._phase1_container_create_payload()
+    legacy_aliases = {
+        "CBATTERYSTATUS",
+        "CRANGEELECTRIC",
+        "CCHARGINGSTATUS",
+        "CCHARGINGTIME",
+        "CCHARGINGPOWER",
+        "CPLUGSTATUS",
+        "CACCURRENTLIMIT",
+    }
+    assert set(payload["technicalDescriptors"]).isdisjoint(legacy_aliases)
