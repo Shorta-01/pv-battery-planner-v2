@@ -46,25 +46,62 @@ def _extract_endpoint_payload(payload: dict[str, Any], path: str) -> dict[str, A
 
 
 def _extract_vehicles_list(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    vehicles_resp = _extract_endpoint_payload(payload, "/v1/vehicles")
-    if isinstance(vehicles_resp, dict) and isinstance(vehicles_resp.get("vehicles"), list):
-        return [row for row in vehicles_resp.get("vehicles") if isinstance(row, dict)]
+    rows: list[dict[str, Any]] = []
+    mappings_resp = _extract_endpoint_payload(payload, "/v1/vehicles/mappings")
+    if isinstance(mappings_resp, dict) and isinstance(mappings_resp.get("vehicles"), list):
+        rows.extend(row for row in mappings_resp.get("vehicles") if isinstance(row, dict))
     if isinstance(payload.get("vehicles"), list):
-        return [row for row in payload.get("vehicles") if isinstance(row, dict)]
-    return []
+        rows.extend(row for row in payload.get("vehicles") if isinstance(row, dict))
+
+    if isinstance(payload.get("endpoint"), str) and isinstance(payload.get("payload"), dict):
+        endpoint = str(payload.get("endpoint"))
+        wrapped_payload = dict(payload.get("payload") or {})
+        if endpoint.startswith("/v1/vehicles/") and not endpoint.endswith("/charging"):
+            inferred_id = endpoint.split("/")[3] if len(endpoint.split("/")) > 3 else None
+            if isinstance(wrapped_payload.get("vehicles"), list):
+                for row in wrapped_payload.get("vehicles"):
+                    if not isinstance(row, dict):
+                        continue
+                    row_copy = dict(row)
+                    if inferred_id and not row_copy.get("vehicleId") and not row_copy.get("vin"):
+                        row_copy["vehicleId"] = inferred_id
+                    rows.append(row_copy)
+            else:
+                if inferred_id and not wrapped_payload.get("vehicleId") and not wrapped_payload.get("vin"):
+                    wrapped_payload["vehicleId"] = inferred_id
+                rows.append(wrapped_payload)
+
+    for key, node in payload.items():
+        if not isinstance(key, str) or not key.startswith("/v1/vehicles/"):
+            continue
+        if key.endswith("/charging") or key == "/v1/vehicles/mappings":
+            continue
+        if isinstance(node, dict):
+            if "_error" in node:
+                continue
+            merged = dict(node)
+            inferred_id = key.split("/")[3] if len(key.split("/")) > 3 else None
+            if inferred_id and not merged.get("vehicleId") and not merged.get("vin"):
+                merged["vehicleId"] = inferred_id
+            charging_node = payload.get(f"{key}/charging")
+            if isinstance(charging_node, dict) and "charging" not in merged:
+                merged["charging"] = charging_node
+            rows.append(merged)
+    return rows
+
 
 def _vehicle_mapping_index(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    rows = _extract_endpoint_payload(payload, "/v1/vehicle-mappings")
-    entries = rows.get("vehicleMappings") if isinstance(rows, dict) else None
+    rows = _extract_endpoint_payload(payload, "/v1/vehicles/mappings")
+    entries = rows.get("vehicleMappings") if isinstance(rows, dict) else rows.get("vehicles") if isinstance(rows, dict) else None
     if not isinstance(entries, list):
         return {}
     out: dict[str, dict[str, Any]] = {}
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        vin = str(entry.get("vin") or "").strip()
-        if vin:
-            out[vin] = entry
+        vid = str(entry.get("vehicleId") or entry.get("vin") or entry.get("id") or "").strip()
+        if vid:
+            out[vid] = entry
     return out
 
 
@@ -76,7 +113,7 @@ def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[Normalize
 
     out: list[NormalizedVehicleState] = []
     for row in vehicles:
-        vehicle_id = str(row.get("vin") or "").strip()
+        vehicle_id = str(row.get("vehicleId") or row.get("vin") or row.get("id") or "").strip()
         if not vehicle_id:
             continue
 
@@ -92,12 +129,12 @@ def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[Normalize
         charging_state = charging.get("chargingState")
         is_charging = True if charging_state in {"CHARGING", "ACTIVE"} else False if charging_state in {"NOT_CHARGING", "COMPLETED", "ERROR"} else None
 
-        ts = parse_dt(row.get("lastUpdatedAt"))
+        ts = parse_dt(row.get("lastUpdatedAt") or row.get("statusUpdatedAt") or row.get("updateTime"))
         status, age = freshness_bucket(ts)
 
         state = NormalizedVehicleState(
             vehicle_id=vehicle_id,
-            display_name=mapped.get("displayName") or mapped.get("name") or row.get("model"),
+            display_name=mapped.get("displayName") or mapped.get("name") or row.get("displayName") or row.get("model"),
             data_status=status,
             last_update_ts=ts,
             freshness_seconds=age,

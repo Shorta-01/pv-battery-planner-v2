@@ -189,10 +189,12 @@ def test_provider_uses_access_token_and_cardata_base_url(monkeypatch, tmp_path):
 
     def fake_get(url, headers=None, timeout=None):
         captured.append({"url": url, "headers": headers})
-        if url.endswith("/v1/vehicle-mappings"):
-            return _DummyResponse(payload={"vehicleMappings": [{"vin": "VIN1", "displayName": "BMW"}]})
-        if url.endswith("/v1/vehicles"):
-            return _DummyResponse(payload={"vehicles": [{"vin": "VIN1", "lastUpdatedAt": "2026-03-11T10:00:00Z", "battery": {"socPercent": 80}}]})
+        if url.endswith("/v1/vehicles/mappings"):
+            return _DummyResponse(payload={"vehicleMappings": [{"vehicleId": "VIN1", "vin": "VIN1", "displayName": "BMW"}]})
+        if url.endswith("/v1/vehicles/VIN1"):
+            return _DummyResponse(payload={"vehicleId": "VIN1", "vin": "VIN1", "lastUpdatedAt": "2026-03-11T10:00:00Z", "battery": {"socPercent": 80}})
+        if url.endswith("/v1/vehicles/VIN1/charging"):
+            return _DummyResponse(payload={"plugConnectionState": "CONNECTED", "chargingState": "CHARGING"})
         return _DummyResponse(status_code=404, text="not found")
 
     monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
@@ -222,6 +224,8 @@ def test_no_stale_protocol_strings_in_bmw_modules():
         text = fp.read_text(encoding="utf-8")
         assert "device_authorization" not in text
         assert "customer.bmwgroup.com/gcdm/cardata" not in text
+        assert "/v1/vehicle-mappings" not in text
+        assert "\"/v1/vehicles\"" not in text
 
 
 def test_start_device_flow_fails_fast_without_client_id(tmp_path):
@@ -267,11 +271,17 @@ def test_update_config_rebuilds_runtime_and_updates_client_id(tmp_path):
     assert debug["device_flow_poll_url"] == "https://customer.bmwgroup.com/gcdm/oauth/token"
     assert debug["rest_api_base_url"] == "https://api-cardata.bmwgroup.com"
     assert debug["rest_token_mode"] == "access_token"
+    assert debug["request_versioning_mode"] == "header:X-Version=v1"
+    assert isinstance(debug["refresh_sequence_endpoints"], list)
+    assert "last_rest_endpoint_attempted" in debug
+    assert "last_rest_status_code" in debug
+    assert "last_rest_safe_error_excerpt" in debug
+    assert "capture_files_written" in debug
 
 
 def test_mapping_supports_live_capture_wrapper_shape():
     payload = {
-        "endpoint": "/v1/vehicles",
+        "endpoint": "/v1/vehicles/VINWRAP1",
         "payload": {
             "vehicles": [
                 {
@@ -297,10 +307,12 @@ def test_provider_refresh_captures_live_payloads(monkeypatch, tmp_path):
             return tok
 
     def fake_get(url, headers=None, timeout=None):
-        if url.endswith("/v1/vehicle-mappings"):
-            return _DummyResponse(payload={"vehicleMappings": [{"vin": "VINCAP1", "displayName": "BMW"}]})
-        if url.endswith("/v1/vehicles"):
-            return _DummyResponse(payload={"vehicles": [{"vin": "VINCAP1", "lastUpdatedAt": "2026-03-11T10:00:00Z", "battery": {"socPercent": 55}}]})
+        if url.endswith("/v1/vehicles/mappings"):
+            return _DummyResponse(payload={"vehicleMappings": [{"vehicleId": "VINCAP1", "vin": "VINCAP1", "displayName": "BMW"}]})
+        if url.endswith("/v1/vehicles/VINCAP1"):
+            return _DummyResponse(payload={"vehicleId": "VINCAP1", "vin": "VINCAP1", "lastUpdatedAt": "2026-03-11T10:00:00Z", "battery": {"socPercent": 55}})
+        if url.endswith("/v1/vehicles/VINCAP1/charging"):
+            return _DummyResponse(payload={"plugConnectionState": "CONNECTED", "chargingState": "NOT_CHARGING"})
         return _DummyResponse(status_code=404, text="not found")
 
     monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
@@ -309,7 +321,7 @@ def test_provider_refresh_captures_live_payloads(monkeypatch, tmp_path):
 
     out = provider.refresh_once()
     assert out["ok"] is True
-    assert len(out["capture_files"]) == 2
+    assert len(out["capture_files"]) == 3
     assert all(Path(p).exists() for p in out["capture_files"])
 
 
@@ -320,3 +332,109 @@ def test_mapping_live_fixture_file_support():
     assert len(states) == 1
     assert states[0].vehicle_id == "WBY98765432100002"
     assert states[0].soc_pct == 71
+
+
+def test_provider_refresh_sequence_and_version_headers(monkeypatch, tmp_path):
+    class _Auth:
+        def load_token(self):
+            return BmwTokenData(access_token="access-1", obtained_at=dt.datetime.now(dt.timezone.utc))
+
+        def refresh_if_possible(self, tok):
+            return tok
+
+    seen = []
+
+    def fake_get(url, headers=None, timeout=None):
+        seen.append((url, dict(headers or {})))
+        if url.endswith("/v1/vehicles/mappings"):
+            return _DummyResponse(payload={"vehicleMappings": [{"vehicleId": "VINSEQ1", "vin": "VINSEQ1"}]})
+        if url.endswith("/v1/vehicles/VINSEQ1"):
+            return _DummyResponse(payload={"vehicleId": "VINSEQ1", "vin": "VINSEQ1", "lastUpdatedAt": "2026-03-11T10:00:00Z", "battery": {"socPercent": 66}})
+        if url.endswith("/v1/vehicles/VINSEQ1/charging"):
+            return _DummyResponse(payload={"plugConnectionState": "CONNECTED", "chargingState": "CHARGING"})
+        return _DummyResponse(status_code=404, text="not found")
+
+    monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
+    provider = BmwCarDataProvider(
+        config={"bmw_enabled": True},
+        storage=BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json")),
+        auth=_Auth(),
+    )
+
+    out = provider.refresh_once()
+    assert out["ok"] is True
+    assert [u for u, _ in seen] == [
+        "https://api-cardata.bmwgroup.com/v1/vehicles/mappings",
+        "https://api-cardata.bmwgroup.com/v1/vehicles/VINSEQ1",
+        "https://api-cardata.bmwgroup.com/v1/vehicles/VINSEQ1/charging",
+    ]
+    assert all(h["Authorization"] == "Bearer access-1" for _, h in seen)
+    assert all(h["X-Version"] == "v1" for _, h in seen)
+    assert all(h["Accept"] == "application/json" for _, h in seen)
+    assert out["request_versioning_mode"] == "header:X-Version=v1"
+    assert out["rest_token_mode"] == "access_token"
+
+
+def test_refresh_graceful_no_discovered_vehicles(monkeypatch, tmp_path):
+    class _Auth:
+        def load_token(self):
+            return BmwTokenData(access_token="access-1", obtained_at=dt.datetime.now(dt.timezone.utc))
+
+        def refresh_if_possible(self, tok):
+            return tok
+
+    def fake_get(url, headers=None, timeout=None):
+        if url.endswith("/v1/vehicles/mappings"):
+            return _DummyResponse(payload={"vehicleMappings": []})
+        return _DummyResponse(status_code=500, text="should not be called")
+
+    monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
+    provider = BmwCarDataProvider(
+        config={"bmw_enabled": True},
+        storage=BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json")),
+        auth=_Auth(),
+    )
+
+    out = provider.refresh_once()
+    assert out["ok"] is False
+    assert out["reason"] == "no_vehicles"
+    assert "no accessible BMW vehicles returned" in out["message"]
+
+
+def test_refresh_graceful_vehicle_endpoint_403_and_404(monkeypatch, tmp_path):
+    class _Auth:
+        def load_token(self):
+            return BmwTokenData(access_token="access-1", obtained_at=dt.datetime.now(dt.timezone.utc))
+
+        def refresh_if_possible(self, tok):
+            return tok
+
+    def fake_get(url, headers=None, timeout=None):
+        if url.endswith("/v1/vehicles/mappings"):
+            return _DummyResponse(payload={"vehicleMappings": [{"vehicleId": "VINERR1", "vin": "VINERR1"}]})
+        if url.endswith("/v1/vehicles/VINERR1"):
+            return _DummyResponse(status_code=403, text="forbidden by API")
+        if url.endswith("/v1/vehicles/VINERR1/charging"):
+            return _DummyResponse(status_code=404, text="not found")
+        return _DummyResponse(status_code=500, text="unexpected")
+
+    monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
+    provider = BmwCarDataProvider(
+        config={"bmw_enabled": True},
+        storage=BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json")),
+        auth=_Auth(),
+    )
+
+    out = provider.refresh_once()
+    assert out["ok"] is False
+    assert out.get("reason") in {None, "poll_failed"}
+    assert provider.status.last_rest_status_code == 404
+    assert provider.status.last_rest_error_excerpt in {None, "not found"}
+
+
+def test_storage_capture_naming_and_listing(tmp_path):
+    storage = BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json"))
+    capture_path = storage.store_raw_capture("/v1/vehicles/mappings", {"vehicleMappings": []}, status_code=200)
+    assert capture_path.name.startswith("bmw_capture_v1_vehicles_mappings_")
+    listed = storage.list_raw_captures(limit=5)
+    assert str(capture_path) in listed

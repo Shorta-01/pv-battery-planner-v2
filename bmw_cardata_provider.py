@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 import requests
@@ -11,6 +12,19 @@ from bmw_models import BmwProviderStatus, NormalizedVehicleState, RawEventRecord
 from bmw_storage import BmwStorage
 
 logger = logging.getLogger(__name__)
+
+@dataclass(frozen=True)
+class _BmwOperation:
+    name: str
+    path_template: str
+    stage: str
+
+    def resolve(self, vehicle_id: str | None = None) -> str:
+        if "{vehicleId}" in self.path_template:
+            if not vehicle_id:
+                raise ValueError("vehicle_id required for operation")
+            return self.path_template.replace("{vehicleId}", vehicle_id)
+        return self.path_template
 
 
 class BmwCarDataProvider:
@@ -32,14 +46,40 @@ class BmwCarDataProvider:
     def rest_base_url(self) -> str:
         return str(self.config.get("bmw_api_base_url", self.REST_BASE_URL)).rstrip("/")
 
-    def rest_endpoints(self) -> list[str]:
+    def rest_operations(self) -> list[_BmwOperation]:
         return [
-            "/v1/vehicle-mappings",
-            "/v1/vehicles",
+            _BmwOperation(name="vehicle_mappings", path_template="/v1/vehicles/mappings", stage="discover"),
+            _BmwOperation(name="vehicle_status", path_template="/v1/vehicles/{vehicleId}", stage="vehicle"),
+            _BmwOperation(name="vehicle_charging", path_template="/v1/vehicles/{vehicleId}/charging", stage="vehicle"),
         ]
 
+    def rest_endpoints(self) -> list[str]:
+        return [op.path_template for op in self.rest_operations()]
+
+    def request_versioning_mode(self) -> str:
+        return "header:X-Version=v1"
+
+    def rest_headers(self, access_token: str, *, include_json_content_type: bool = False) -> dict[str, str]:
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+            "X-Version": "v1",
+        }
+        if include_json_content_type:
+            headers["Content-Type"] = "application/json"
+        return headers
+
+    def _safe_error_excerpt(self, resp: requests.Response) -> str:
+        return str((resp.text or "")[:300]).replace("\n", " ").strip()
+
+    def _mark_last_rest_result(self, endpoint: str, status_code: int | None, error_excerpt: str | None = None) -> None:
+        self.status.last_rest_endpoint = endpoint
+        self.status.last_rest_status_code = status_code
+        self.status.last_rest_error_excerpt = error_excerpt
+
     def _raise_http_error(self, endpoint: str, resp: requests.Response) -> None:
-        body_excerpt = resp.text[:300]
+        body_excerpt = self._safe_error_excerpt(resp)
+        self._mark_last_rest_result(endpoint, resp.status_code, body_excerpt)
         logger.error(
             "BMW provider REST error endpoint=%s status=%s body_excerpt=%s",
             endpoint,
@@ -47,7 +87,7 @@ class BmwCarDataProvider:
             body_excerpt,
         )
         raise RuntimeError(
-            f"BMW REST call failed: status={resp.status_code} endpoint={endpoint} body={body_excerpt} auth_mode=Bearer access_token"
+            f"BMW REST call failed: status={resp.status_code} endpoint={endpoint} body={body_excerpt} auth_mode=Bearer access_token versioning={self.request_versioning_mode()}"
         )
 
     def refresh_once(self) -> dict[str, Any]:
@@ -60,36 +100,119 @@ class BmwCarDataProvider:
             self.status.last_error = "Missing access_token"
             return {"ok": False, "reason": "auth_required"}
 
-        headers = {"Authorization": f"Bearer {token.access_token}"}
+        headers = self.rest_headers(token.access_token)
         self.status.stream_connected = False
         self.status.provider_status = "polling"
         self.status.stream_status = "disabled" if not bool(self.config.get("bmw_stream_enabled", False)) else "not_implemented"
+        self.status.request_versioning_mode = self.request_versioning_mode()
+
+        aggregate_payload: dict[str, Any] = {"sequence": []}
+        capture_paths: list[str] = []
+        discovered_ids: list[str] = []
+        base = self.rest_base_url()
+        self.status.refresh_sequence_endpoints = []
+        self.status.active_vehicle_id = None
+
         try:
-            aggregate_payload: dict[str, Any] = {}
-            base = self.rest_base_url()
-            capture_paths: list[str] = []
-            for path in self.rest_endpoints():
-                endpoint = f"{base}{path}"
+            discovery_op = self.rest_operations()[0]
+            discovery_path = discovery_op.resolve()
+            discovery_endpoint = f"{base}{discovery_path}"
+            self.status.refresh_sequence_endpoints.append(discovery_path)
+            resp = requests.get(discovery_endpoint, headers=headers, timeout=20)
+            self._mark_last_rest_result(discovery_endpoint, resp.status_code)
+            if resp.status_code >= 400:
+                self._raise_http_error(discovery_endpoint, resp)
+            discovery_payload = resp.json()
+            aggregate_payload[discovery_path] = discovery_payload
+            aggregate_payload["sequence"].append({"stage": discovery_op.stage, "endpoint": discovery_path, "ok": True})
+            capture_paths.append(str(self.storage.store_raw_capture(discovery_path, discovery_payload, status_code=resp.status_code)))
+            discovered_ids = self._discover_vehicle_ids(discovery_payload)
+            self.status.discovered_vehicle_ids = list(discovered_ids)
+            if not discovered_ids:
+                self.status.provider_status = "degraded"
+                msg = "no accessible BMW vehicles returned"
+                self.status.last_error = msg
+                self.storage.append_raw_event(
+                    RawEventRecord(provider="bmw_cardata", received_at=utcnow(), payload=aggregate_payload, parse_ok=False, parse_error=msg)
+                )
+                return {
+                    "ok": False,
+                    "reason": "no_vehicles",
+                    "message": msg,
+                    "endpoints": list(self.status.refresh_sequence_endpoints),
+                    "capture_files": capture_paths,
+                }
+
+            target_vehicle_id = self._select_active_vehicle(discovered_ids)
+            self.status.active_vehicle_id = target_vehicle_id
+
+            for op in self.rest_operations()[1:]:
+                op_path = op.resolve(target_vehicle_id)
+                endpoint = f"{base}{op_path}"
+                self.status.refresh_sequence_endpoints.append(op_path)
                 resp = requests.get(endpoint, headers=headers, timeout=20)
+                self._mark_last_rest_result(endpoint, resp.status_code)
                 if resp.status_code >= 400:
+                    safe_error = self._safe_error_excerpt(resp)
+                    aggregate_payload[op_path] = {"_error": {"status": resp.status_code, "excerpt": safe_error}}
+                    aggregate_payload["sequence"].append({
+                        "stage": op.stage,
+                        "endpoint": op_path,
+                        "ok": False,
+                        "status": resp.status_code,
+                        "error_excerpt": safe_error,
+                    })
+                    if resp.status_code in {403, 404}:
+                        continue
                     self._raise_http_error(endpoint, resp)
-                endpoint_payload = resp.json()
-                aggregate_payload[path] = endpoint_payload
-                capture_paths.append(str(self.storage.store_raw_capture(path, endpoint_payload)))
+                op_payload = resp.json()
+                aggregate_payload[op_path] = op_payload
+                aggregate_payload["sequence"].append({"stage": op.stage, "endpoint": op_path, "ok": True})
+                capture_paths.append(str(self.storage.store_raw_capture(op_path, op_payload, status_code=resp.status_code)))
+
             self.status.last_auth_refresh = token.obtained_at
             self._ingest_payload(aggregate_payload)
-            self.status.provider_status = "healthy"
+            self.status.provider_status = "healthy" if self.vehicles else "degraded"
             return {
-                "ok": True,
+                "ok": bool(self.vehicles),
                 "vehicles": len(self.vehicles),
-                "endpoints": self.rest_endpoints(),
+                "endpoints": list(self.status.refresh_sequence_endpoints),
                 "capture_files": capture_paths,
+                "request_versioning_mode": self.status.request_versioning_mode,
+                "rest_token_mode": "access_token",
+                "active_vehicle_id": self.status.active_vehicle_id,
             }
         except Exception as exc:
             self.status.last_error = str(exc)
             self.status.provider_status = "degraded"
             logger.warning("BMW provider poll failed: %s", exc)
-            return {"ok": False, "reason": "poll_failed", "error": str(exc)}
+            return {
+                "ok": False,
+                "reason": "poll_failed",
+                "error": str(exc),
+                "endpoints": list(self.status.refresh_sequence_endpoints),
+                "request_versioning_mode": self.status.request_versioning_mode,
+                "rest_token_mode": "access_token",
+            }
+
+    def _discover_vehicle_ids(self, discovery_payload: dict[str, Any]) -> list[str]:
+        raw_rows: list[dict[str, Any]] = []
+        if isinstance(discovery_payload.get("vehicleMappings"), list):
+            raw_rows.extend(x for x in discovery_payload.get("vehicleMappings") if isinstance(x, dict))
+        if isinstance(discovery_payload.get("vehicles"), list):
+            raw_rows.extend(x for x in discovery_payload.get("vehicles") if isinstance(x, dict))
+        ids: list[str] = []
+        for row in raw_rows:
+            vehicle_id = str(row.get("vehicleId") or row.get("vin") or row.get("id") or "").strip()
+            if vehicle_id and vehicle_id not in ids:
+                ids.append(vehicle_id)
+        return ids
+
+    def _select_active_vehicle(self, discovered_ids: list[str]) -> str:
+        configured = str(self.config.get("bmw_active_vehicle_id") or "").strip()
+        if configured and configured in discovered_ids:
+            return configured
+        return discovered_ids[0]
 
     def _ingest_payload(self, payload: dict[str, Any]) -> None:
         records = map_bmw_payload_to_vehicle_states(payload)
