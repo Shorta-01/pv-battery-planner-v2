@@ -9,6 +9,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from bmw_auth import BmwAuthClient
+from bmw_cardata_contract import BmwCreateContainerRequest, BmwTechnicalDescriptor
 from bmw_cardata_provider import BmwCarDataProvider, PHASE1_CONTAINER_DEFINITION
 from bmw_mapping import apply_planner_derivations, freshness_bucket, map_bmw_payload_to_vehicle_states
 from bmw_models import BmwTokenData, NormalizedVehicleState
@@ -777,9 +778,19 @@ def test_capture_files_include_container_create(monkeypatch, tmp_path):
     assert any("customers_containers_create" in Path(p).name for p in out["capture_files"])
 
 
+def test_phase1_container_request_uses_typed_contract_model(tmp_path):
+    provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json")), auth=None)
+    req = provider._phase1_container_create_request()
+    assert isinstance(req, BmwCreateContainerRequest)
+    assert req.name == PHASE1_CONTAINER_DEFINITION["name"]
+    assert req.purpose == PHASE1_CONTAINER_DEFINITION["purpose"]
+    assert req.technical_descriptors
+    assert all(isinstance(td, BmwTechnicalDescriptor) for td in req.technical_descriptors)
+
+
 def test_phase1_container_definition_uses_technical_descriptors_for_bmw_phev():
     provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=BmwStorage("/tmp/raw.jsonl", "/tmp/state.json"), auth=None)
-    payload = provider._phase1_container_create_payload()
+    payload = provider._phase1_container_create_request().to_json_body()
     assert sorted(payload.keys()) == ["name", "purpose", "technicalDescriptors"]
     assert payload["name"] == PHASE1_CONTAINER_DEFINITION["name"]
     assert payload["purpose"] == PHASE1_CONTAINER_DEFINITION["purpose"]
@@ -824,7 +835,10 @@ def test_container_create_failure_reports_request_shape_in_diagnostics(monkeypat
     assert create_diag["endpoint"].endswith("/customers/containers")
     assert create_diag["method"] == "POST"
     assert create_diag["content_type"] == "application/json"
+    assert create_diag["is_json_body"] is True
     assert create_diag["request_field_names"] == ["name", "purpose", "technicalDescriptors"]
+    assert create_diag["descriptor_element_type"] == "BmwTechnicalDescriptor"
+    assert "technicalDescriptors" in (create_diag["serialized_body_sample"] or "")
     assert create_diag["technical_descriptors_included"] is True
     assert create_diag["technical_descriptor_count"] >= 1
     assert create_diag["technical_descriptor_shape_summary"] == "dict(keys=['id'])"
@@ -837,7 +851,7 @@ def test_container_create_failure_reports_request_shape_in_diagnostics(monkeypat
 
 def test_phase1_descriptors_do_not_use_legacy_shorthand_aliases(tmp_path):
     provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json")), auth=None)
-    payload = provider._phase1_container_create_payload()
+    payload = provider._phase1_container_create_request().to_json_body()
     legacy_aliases = {
         "CBATTERYSTATUS",
         "CRANGEELECTRIC",
