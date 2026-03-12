@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from bmw_auth import BmwAuthClient
-from bmw_cardata_contract import BmwCreateContainerRequest, BmwTechnicalDescriptor
+from bmw_openapi_create_container import CreateContainerRequest, CreateContainerTechnicalDescriptor
 from bmw_cardata_provider import BmwCarDataProvider, PHASE1_CONTAINER_DEFINITION
 from bmw_mapping import apply_planner_derivations, freshness_bucket, map_bmw_payload_to_vehicle_states
 from bmw_models import BmwTokenData, NormalizedVehicleState
@@ -612,8 +612,8 @@ def test_refresh_auto_creates_container_when_empty(monkeypatch, tmp_path):
             return _DummyResponse(payload={"charging": {"plugConnectionState": "CONNECTED", "chargingState": "CHARGING"}})
         return _DummyResponse(status_code=500, text="unexpected")
 
-    def fake_post(url, headers=None, json=None, timeout=None):
-        seen_posts.append({"url": url, "headers": headers, "json": json})
+    def fake_post(url, headers=None, data=None, json=None, timeout=None):
+        seen_posts.append({"url": url, "headers": headers, "json": json if isinstance(json, dict) else (__import__("json").loads(data) if isinstance(data, str) and data else None), "data": data})
         if url.endswith("/customers/containers"):
             return _DummyResponse(payload={"containerId": "AUTOC1", "state": "ACTIVE", "name": "pvbp_phase1_ev_telematics"})
         return _DummyResponse(status_code=500, text="unexpected")
@@ -638,8 +638,8 @@ def test_refresh_auto_creates_container_when_empty(monkeypatch, tmp_path):
     assert isinstance(seen_posts[0]["json"]["technicalDescriptors"], list)
     assert len(seen_posts[0]["json"]["technicalDescriptors"]) >= 1
     assert all(isinstance(td, dict) for td in seen_posts[0]["json"]["technicalDescriptors"])
-    assert all(sorted(td.keys()) == ["id"] for td in seen_posts[0]["json"]["technicalDescriptors"])
-    assert all("." in str(td.get("id") or "") for td in seen_posts[0]["json"]["technicalDescriptors"])
+    assert all(sorted(td.keys()) == ["technicalDescriptorId"] for td in seen_posts[0]["json"]["technicalDescriptors"])
+    assert all("." in str(td.get("technicalDescriptorId") or "") for td in seen_posts[0]["json"]["technicalDescriptors"])
     assert seen_posts[0]["headers"]["Content-Type"] == "application/json"
 
 
@@ -690,7 +690,7 @@ def test_container_create_failure_keeps_basic_data(monkeypatch, tmp_path):
             return _DummyResponse(payload={"containers": []})
         return _DummyResponse(status_code=500, text="unexpected")
 
-    def fake_post(url, headers=None, json=None, timeout=None):
+    def fake_post(url, headers=None, data=None, json=None, timeout=None):
         return _DummyResponse(status_code=500, text="create failed")
 
     monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
@@ -728,7 +728,7 @@ def test_created_container_persisted_and_reused(monkeypatch, tmp_path):
             return _DummyResponse(payload={"charging": {"plugConnectionState": "CONNECTED", "chargingState": "NOT_CHARGING"}})
         return _DummyResponse(status_code=500, text="unexpected")
 
-    def fake_post(url, headers=None, json=None, timeout=None):
+    def fake_post(url, headers=None, data=None, json=None, timeout=None):
         post_calls.append(url)
         return _DummyResponse(payload={"containerId": "REUSE1", "state": "ACTIVE"})
 
@@ -767,7 +767,7 @@ def test_capture_files_include_container_create(monkeypatch, tmp_path):
             return _DummyResponse(payload={"charging": {"plugConnectionState": "CONNECTED", "chargingState": "CHARGING"}})
         return _DummyResponse(status_code=500, text="unexpected")
 
-    def fake_post(url, headers=None, json=None, timeout=None):
+    def fake_post(url, headers=None, data=None, json=None, timeout=None):
         return _DummyResponse(payload={"containerId": "CC3", "state": "ACTIVE"})
 
     monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
@@ -778,14 +778,14 @@ def test_capture_files_include_container_create(monkeypatch, tmp_path):
     assert any("customers_containers_create" in Path(p).name for p in out["capture_files"])
 
 
-def test_phase1_container_request_uses_typed_contract_model(tmp_path):
+def test_phase1_container_request_uses_openapi_contract_model(tmp_path):
     provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json")), auth=None)
     req = provider._phase1_container_create_request()
-    assert isinstance(req, BmwCreateContainerRequest)
+    assert isinstance(req, CreateContainerRequest)
     assert req.name == PHASE1_CONTAINER_DEFINITION["name"]
     assert req.purpose == PHASE1_CONTAINER_DEFINITION["purpose"]
-    assert req.technical_descriptors
-    assert all(isinstance(td, BmwTechnicalDescriptor) for td in req.technical_descriptors)
+    assert req.technicalDescriptors
+    assert all(isinstance(td, CreateContainerTechnicalDescriptor) for td in req.technicalDescriptors)
 
 
 def test_phase1_container_definition_uses_technical_descriptors_for_bmw_phev():
@@ -794,10 +794,10 @@ def test_phase1_container_definition_uses_technical_descriptors_for_bmw_phev():
     assert sorted(payload.keys()) == ["name", "purpose", "technicalDescriptors"]
     assert payload["name"] == PHASE1_CONTAINER_DEFINITION["name"]
     assert payload["purpose"] == PHASE1_CONTAINER_DEFINITION["purpose"]
-    assert payload["technicalDescriptors"] == [{"id": x} for x in PHASE1_CONTAINER_DEFINITION["technical_descriptor_ids"]]
+    assert payload["technicalDescriptors"] == [{"technicalDescriptorId": x} for x in PHASE1_CONTAINER_DEFINITION["technical_descriptor_ids"]]
     assert "descriptors" not in payload
-    assert all(sorted(td.keys()) == ["id"] for td in payload["technicalDescriptors"])
-    assert all("." in str(td.get("id") or "") for td in payload["technicalDescriptors"])
+    assert all(sorted(td.keys()) == ["technicalDescriptorId"] for td in payload["technicalDescriptors"])
+    assert all("." in str(td.get("technicalDescriptorId") or "") for td in payload["technicalDescriptors"])
 
 
 def test_container_create_failure_reports_request_shape_in_diagnostics(monkeypatch, tmp_path):
@@ -817,7 +817,7 @@ def test_container_create_failure_reports_request_shape_in_diagnostics(monkeypat
             return _DummyResponse(payload={"containers": []})
         return _DummyResponse(status_code=500, text="unexpected")
 
-    def fake_post(url, headers=None, json=None, timeout=None):
+    def fake_post(url, headers=None, data=None, json=None, timeout=None):
         return _DummyResponse(status_code=400, payload={}, text='{"error":"bad_request"}')
 
     monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
@@ -837,16 +837,24 @@ def test_container_create_failure_reports_request_shape_in_diagnostics(monkeypat
     assert create_diag["content_type"] == "application/json"
     assert create_diag["is_json_body"] is True
     assert create_diag["request_field_names"] == ["name", "purpose", "technicalDescriptors"]
-    assert create_diag["descriptor_element_type"] == "BmwTechnicalDescriptor"
+    assert "\"technicalDescriptorId\"" in (create_diag["serialized_body"] or "")
+    assert create_diag["descriptor_element_type"] == "CreateContainerTechnicalDescriptor"
     assert "technicalDescriptors" in (create_diag["serialized_body_sample"] or "")
     assert create_diag["technical_descriptors_included"] is True
     assert create_diag["technical_descriptor_count"] >= 1
-    assert create_diag["technical_descriptor_shape_summary"] == "dict(keys=['id'])"
-    assert all(sorted(td.keys()) == ["id"] for td in create_diag["technical_descriptor_sample"])
-    assert all("." in str(td.get("id") or "") for td in create_diag["technical_descriptor_sample"])
+    assert create_diag["technical_descriptor_shape_summary"] == "dict(keys=['technicalDescriptorId'])"
+    assert all(sorted(td.keys()) == ["technicalDescriptorId"] for td in create_diag["technical_descriptor_sample"])
+    assert all("." in str(td.get("technicalDescriptorId") or "") for td in create_diag["technical_descriptor_sample"])
     assert create_diag["attempted"] is True
     assert create_diag["status"] == 400
     assert "bad_request" in (create_diag["response_excerpt"] or "")
+    capture_files = [Path(p) for p in out["capture_files"] if "customers_containers_create_attempt" in Path(p).name]
+    assert capture_files
+    create_capture = json.loads(capture_files[0].read_text(encoding="utf-8"))
+    assert create_capture["payload"]["top_level_field_names"] == ["name", "purpose", "technicalDescriptors"]
+    assert create_capture["payload"]["json_body"]["technicalDescriptors"]
+    assert sorted(create_capture["payload"]["json_body"]["technicalDescriptors"][0].keys()) == ["technicalDescriptorId"]
+    assert "\"technicalDescriptorId\"" in create_capture["payload"]["serialized_body"]
 
 
 def test_phase1_descriptors_do_not_use_legacy_shorthand_aliases(tmp_path):
@@ -861,4 +869,4 @@ def test_phase1_descriptors_do_not_use_legacy_shorthand_aliases(tmp_path):
         "CPLUGSTATUS",
         "CACCURRENTLIMIT",
     }
-    assert set(str(td.get("id") or "") for td in payload["technicalDescriptors"]).isdisjoint(legacy_aliases)
+    assert set(str(td.get("technicalDescriptorId") or "") for td in payload["technicalDescriptors"]).isdisjoint(legacy_aliases)
