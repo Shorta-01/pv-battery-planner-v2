@@ -102,7 +102,7 @@ class BmwCarDataProvider:
         capture_paths: list[str],
         stage: str,
         optional: bool,
-    ) -> dict[str, Any] | None:
+    ) -> Any:
         endpoint = f"{base}{path}"
         self.status.refresh_sequence_endpoints.append(path)
         resp = requests.get(endpoint, headers=headers, timeout=20)
@@ -167,8 +167,6 @@ class BmwCarDataProvider:
                 stage=discovery_op.stage,
                 optional=False,
             )
-            assert isinstance(mappings_payload, dict)
-
             discovered_ids, mapping_diagnostics = self._discover_vehicle_ids(mappings_payload)
             self.status.discovered_vehicle_ids = list(discovered_ids)
             self.status.mapping_diagnostics = list(mapping_diagnostics)
@@ -194,6 +192,12 @@ class BmwCarDataProvider:
 
             target_vehicle_id = self._select_active_vehicle(discovered_ids, mapping_diagnostics)
             self.status.active_vehicle_id = target_vehicle_id
+            logger.debug(
+                "BMW mapping discovery discovered_vehicle_ids=%s active_vehicle_id=%s diagnostics=%s",
+                self.status.discovered_vehicle_ids,
+                self.status.active_vehicle_id,
+                self.status.mapping_diagnostics,
+            )
 
             for op in self.rest_operations()[1:]:
                 self._request_json(
@@ -239,12 +243,15 @@ class BmwCarDataProvider:
                 "capture_files": capture_paths,
             }
 
-    def _discover_vehicle_ids(self, discovery_payload: dict[str, Any]) -> tuple[list[str], list[dict[str, Any]]]:
+    def _discover_vehicle_ids(self, discovery_payload: Any) -> tuple[list[str], list[dict[str, Any]]]:
         raw_rows: list[dict[str, Any]] = []
-        if isinstance(discovery_payload.get("vehicleMappings"), list):
-            raw_rows.extend(x for x in discovery_payload.get("vehicleMappings") if isinstance(x, dict))
-        if isinstance(discovery_payload.get("vehicles"), list):
-            raw_rows.extend(x for x in discovery_payload.get("vehicles") if isinstance(x, dict))
+        if isinstance(discovery_payload, list):
+            raw_rows.extend(x for x in discovery_payload if isinstance(x, dict))
+        elif isinstance(discovery_payload, dict):
+            if isinstance(discovery_payload.get("vehicleMappings"), list):
+                raw_rows.extend(x for x in discovery_payload.get("vehicleMappings") if isinstance(x, dict))
+            if isinstance(discovery_payload.get("vehicles"), list):
+                raw_rows.extend(x for x in discovery_payload.get("vehicles") if isinstance(x, dict))
 
         ids: list[str] = []
         diagnostics: list[dict[str, Any]] = []

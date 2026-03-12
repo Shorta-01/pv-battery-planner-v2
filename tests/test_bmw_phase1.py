@@ -376,6 +376,57 @@ def test_provider_refresh_sequence_and_version_headers(monkeypatch, tmp_path):
     assert out["rest_token_mode"] == "access_token"
 
 
+def test_refresh_supports_top_level_array_mappings_payload(monkeypatch, tmp_path):
+    class _Auth:
+        def load_token(self):
+            return BmwTokenData(access_token="access-1", obtained_at=dt.datetime.now(dt.timezone.utc))
+
+        def refresh_if_possible(self, tok):
+            return tok
+
+    seen_urls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        seen_urls.append(url)
+        if url.endswith("/customers/vehicles/mappings"):
+            return _DummyResponse(
+                payload=[
+                    {
+                        "mappedSince": "2024-03-05T09:12:47.671Z",
+                        "mappingType": "PRIMARY",
+                        "vin": "WBA51EH0X0CR89778",
+                    }
+                ]
+            )
+        if url.endswith("/customers/vehicles/WBA51EH0X0CR89778/basicData"):
+            return _DummyResponse(
+                payload={
+                    "vin": "WBA51EH0X0CR89778",
+                    "lastUpdatedAt": "2026-03-11T10:00:00Z",
+                    "battery": {"socPercent": 64},
+                }
+            )
+        if url.endswith("/customers/vehicles/WBA51EH0X0CR89778/chargingprofile"):
+            return _DummyResponse(status_code=404, text="not found")
+        return _DummyResponse(status_code=500, text="unexpected")
+
+    monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
+    provider = BmwCarDataProvider(
+        config={"bmw_enabled": True},
+        storage=BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json")),
+        auth=_Auth(),
+    )
+
+    out = provider.refresh_once()
+    assert out["ok"] is True
+    assert out["discovered_vehicle_ids"] == ["WBA51EH0X0CR89778"]
+    assert out["active_vehicle_id"] == "WBA51EH0X0CR89778"
+    assert seen_urls[:2] == [
+        "https://api-cardata.bmwgroup.com/customers/vehicles/mappings",
+        "https://api-cardata.bmwgroup.com/customers/vehicles/WBA51EH0X0CR89778/basicData",
+    ]
+
+
 def test_refresh_graceful_no_discovered_vehicles(monkeypatch, tmp_path):
     class _Auth:
         def load_token(self):
