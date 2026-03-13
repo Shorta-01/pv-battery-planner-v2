@@ -409,6 +409,36 @@ class BmwCarDataProvider:
         persisted_accepted = self._build_technical_descriptors(
             descriptor_state.get("accepted_descriptors") if isinstance(descriptor_state.get("accepted_descriptors"), list) else []
         )
+        persisted_rejected_raw = descriptor_state.get("rejected_descriptors") if isinstance(descriptor_state.get("rejected_descriptors"), dict) else {}
+        persisted_rejected = {str(k): v for k, v in persisted_rejected_raw.items()}
+        candidate_descriptors = self._phase1_candidate_descriptors()
+        next_probe_descriptor = "vehicle.drivetrain.electricEngine.charging.level"
+        should_probe_next = bool(
+            persisted_accepted
+            and next_probe_descriptor not in persisted_accepted
+            and next_probe_descriptor not in persisted_rejected
+        )
+        if should_probe_next:
+            accepted_next, rejected_next, probe_results_next = self._probe_descriptors(
+                base=base,
+                headers=headers,
+                aggregate_payload=aggregate_payload,
+                capture_paths=capture_paths,
+                candidates=[next_probe_descriptor],
+            )
+            if accepted_next:
+                persisted_accepted = self._build_technical_descriptors(persisted_accepted + accepted_next)
+            persisted_rejected.update(rejected_next)
+            existing_probe_results = descriptor_state.get("probe_results") if isinstance(descriptor_state.get("probe_results"), list) else []
+            descriptor_state["probe_results"] = [*existing_probe_results, *probe_results_next]
+            descriptor_state["accepted_descriptors"] = list(persisted_accepted)
+            descriptor_state["rejected_descriptors"] = dict(persisted_rejected)
+            self._persist_descriptor_validation_state(
+                accepted_descriptors=persisted_accepted,
+                rejected_descriptors=persisted_rejected,
+                probe_results=descriptor_state.get("probe_results") if isinstance(descriptor_state.get("probe_results"), list) else [],
+            )
+
         candidate_descriptors = self._phase1_candidate_descriptors()
         initial_descriptors = persisted_accepted or candidate_descriptors
 
@@ -426,7 +456,7 @@ class BmwCarDataProvider:
             self.status.container_auto_create_succeeded = True
             self._persist_descriptor_validation_state(
                 accepted_descriptors=initial_descriptors,
-                rejected_descriptors=descriptor_state.get("rejected_descriptors") if isinstance(descriptor_state.get("rejected_descriptors"), dict) else {},
+                rejected_descriptors=persisted_rejected,
                 probe_results=descriptor_state.get("probe_results") if isinstance(descriptor_state.get("probe_results"), list) else [],
             )
             return container_id, diag
