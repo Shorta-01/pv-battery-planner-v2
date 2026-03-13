@@ -17,7 +17,7 @@ class _FakeBmwService:
         return {"provider_status": "healthy", "data_status": "fresh"}
 
     def vehicles(self):
-        return {"veh": {"soc_pct": 71.0, "freshness_seconds": 10, "is_plugged": False, "is_charging": False, "range_km": 300.0}}
+        return {"veh": {"soc_pct": 71.0, "freshness_seconds": 10, "is_plugged": True, "is_charging": True, "range_km": 300.0, "charge_power_kw": None, "time_to_full_min": 35}}
 
     def manual_refresh(self, *, force_reprobe=False):
         _ = force_reprobe
@@ -62,6 +62,9 @@ def test_get_unified_ev_status(monkeypatch, tmp_path):
     out = state.get_unified_ev_status()
 
     assert out["soc_pct"] == 71.0
-    assert out["charge_power_kw"] == 4.4
-    assert out["charge_power_source"] == "ocpp"
+    assert out["charge_power_kw"] is None
+    assert out["charge_power_source"] == "unavailable"
+    assert out["field_states"]["charge_power_kw"] == "waiting_for_bmw_power"
+    assert out["time_to_full_min"] == 35
+    assert out["expected_full_charge_source"] == "bmw_time_to_full"
     assert out["sources"]["deadline_time"] == "config"

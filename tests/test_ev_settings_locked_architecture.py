@@ -1,5 +1,4 @@
 import copy
-import re
 import sys
 from pathlib import Path
 
@@ -90,7 +89,8 @@ def test_backend_run_path_no_longer_depends_on_manual_vs_bmw_source_switch() -> 
     text = Path("backend_api.py").read_text(encoding="utf-8")
 
     assert 'str(ev_cfg.get("source", "manual")) == "bmw_cardata"' not in text
-    assert re.search(r"if bool\(ev_cfg.get\(\"enabled\", False\)\):", text)
+    assert "def _get_planning_ready_ev_state(self)" in text
+    assert "ev_state = self._get_planning_ready_ev_state()" in text
 
 
 def test_settings_ui_exposes_unified_cardata_setup_actions() -> None:

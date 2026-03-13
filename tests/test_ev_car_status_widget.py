@@ -71,10 +71,11 @@ def test_app_widget_uses_unified_status_labels_and_debug() -> None:
     fn_block = app_text[start:end]
 
     assert "Not charging" in fn_block
-    assert "Waiting for charger data" in fn_block
-    assert "Not set" in fn_block
     assert "Not provided by BMW yet" in fn_block
-    assert "Power from OCPP" in fn_block
+    assert "Not set" in fn_block
+    assert "unknown_label=\"Unknown\"" in fn_block
+    assert "Not provided by BMW yet" in fn_block
+    assert "Power from OCPP" not in fn_block
     assert "if APP_DEBUG:" in fn_block
 
 

@@ -4411,18 +4411,20 @@ with left:
         power_state = ((ev_status.get("field_states") or {}).get("charge_power_kw"))
         if power_state == "not_charging":
             charge_power_label = "Not charging"
-        elif power_state == "waiting_for_charger_data":
-            charge_power_label = "Waiting for charger data"
+        elif power_state == "waiting_for_bmw_power":
+            charge_power_label = "Not provided by BMW yet"
         else:
             charge_power_label = format_ev_kw(ev_status.get("charge_power_kw"), unknown_label="Unavailable")
 
         full_state = ((ev_status.get("field_states") or {}).get("expected_full_charge_ts"))
         if full_state == "ready":
             expected_full_label = format_ev_datetime(ev_status.get("expected_full_charge_ts"), unknown_label="Unavailable")
+        elif full_state == "waiting_for_bmw_eta":
+            expected_full_label = "Waiting for BMW ETA"
         elif full_state == "waiting_for_power_limit":
-            expected_full_label = "Waiting for power data"
+            expected_full_label = "Waiting for BMW power limit"
         elif full_state == "waiting_for_soc":
-            expected_full_label = "Waiting for SOC data"
+            expected_full_label = "Waiting for BMW SOC"
         elif full_state == "not_charging":
             expected_full_label = "Not charging"
         elif full_state == "not_plugged":
@@ -4440,8 +4442,8 @@ with left:
             headline = f"{soc_pct:.0f}% battery · not plugged in"
 
         metric_items = [
-            ("Plugged in", format_ev_bool(is_plugged, true_label="Yes", false_label="No", unknown_label="Waiting for live data")),
-            ("Charging now", format_ev_bool(is_charging, true_label="Yes", false_label="No", unknown_label="Waiting for live data")),
+            ("Plugged in", format_ev_bool(is_plugged, true_label="Yes", false_label="No", unknown_label="Unknown")),
+            ("Charging now", format_ev_bool(is_charging, true_label="Yes", false_label="No", unknown_label="Unknown")),
             ("Charge power", charge_power_label),
             ("Full charge at", expected_full_label),
             ("Deadline", deadline_label),
@@ -4458,9 +4460,7 @@ with left:
         helper_parts = []
         helper_parts.append(f"Last BMW update freshness: {freshness_label}")
         power_source = str(ev_status.get("charge_power_source") or "unavailable")
-        if power_source == "ocpp":
-            helper_parts.append("Power from OCPP")
-        elif power_source == "bmw":
+        if power_source == "bmw":
             helper_parts.append("Power from BMW telematics")
         for warning in (ev_status.get("warnings") or []):
             helper_parts.append(str(warning))

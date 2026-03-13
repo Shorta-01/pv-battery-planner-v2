@@ -91,26 +91,14 @@ def build_unified_ev_status(
     ocpp_connected = bool((evse_status or {}).get("connected"))
     ocpp_enabled = bool((evse_status or {}).get("enabled"))
 
-    if ocpp_connected:
-        is_plugged = evse_status.get("is_plugged")
-        plugged_source = "ocpp"
-    else:
-        is_plugged = vehicle.get("is_plugged")
-        plugged_source = "bmw" if is_plugged is not None else "unavailable"
+    is_plugged = vehicle.get("is_plugged")
+    plugged_source = "bmw" if is_plugged is not None else "unavailable"
 
-    if ocpp_connected:
-        is_charging = evse_status.get("is_charging")
-        charging_source = "ocpp"
-    else:
-        is_charging = vehicle.get("is_charging")
-        charging_source = "bmw" if is_charging is not None else "unavailable"
+    is_charging = vehicle.get("is_charging")
+    charging_source = "bmw" if is_charging is not None else "unavailable"
 
-    ocpp_power = _to_float(evse_status.get("power_kw"))
     bmw_power = _to_float(vehicle.get("charge_power_kw"))
-    if ocpp_connected and ocpp_power is not None:
-        charge_power_kw = ocpp_power
-        charge_power_source = "ocpp"
-    elif bmw_power is not None:
+    if bmw_power is not None:
         charge_power_kw = bmw_power
         charge_power_source = "bmw"
     else:
@@ -136,6 +124,9 @@ def build_unified_ev_status(
     limit_candidates = [v for v in limit_candidates if v is not None and v > 0]
     effective_limit_kw = min(limit_candidates) if limit_candidates else None
 
+    bmw_expected_full_charge_ts = _parse_ts(vehicle.get("expected_full_charge_ts"))
+    bmw_time_to_full_min = _to_int(vehicle.get("time_to_full_min"))
+
     full_charge_state = "unavailable"
     expected_full_charge_ts = None
     expected_full_charge_source = "unavailable"
@@ -143,6 +134,14 @@ def build_unified_ev_status(
         full_charge_state = "not_plugged"
     elif not bool(is_charging):
         full_charge_state = "not_charging"
+    elif bmw_expected_full_charge_ts is not None:
+        expected_full_charge_ts = bmw_expected_full_charge_ts.replace(microsecond=0).isoformat()
+        expected_full_charge_source = "bmw"
+        full_charge_state = "ready"
+    elif bmw_time_to_full_min is not None and bmw_time_to_full_min >= 0:
+        expected_full_charge_ts = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=bmw_time_to_full_min)).replace(microsecond=0).isoformat()
+        expected_full_charge_source = "bmw_time_to_full"
+        full_charge_state = "ready"
     elif soc_pct is None or energy_needed_kwh is None:
         full_charge_state = "waiting_for_soc"
     else:
@@ -150,10 +149,10 @@ def build_unified_ev_status(
         if power_for_eta and power_for_eta > 0:
             eta_hours = energy_needed_kwh / power_for_eta
             expected_full_charge_ts = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=eta_hours)).replace(microsecond=0).isoformat()
-            expected_full_charge_source = "ocpp_power" if charge_power_source == "ocpp" else "power_limit"
+            expected_full_charge_source = "power_limit"
             full_charge_state = "ready"
         else:
-            full_charge_state = "waiting_for_power_limit"
+            full_charge_state = "waiting_for_bmw_eta" if bool(is_charging) else "waiting_for_power_limit"
 
     freshness_label = "BMW freshness unknown"
     if freshness_seconds is not None:
@@ -168,7 +167,7 @@ def build_unified_ev_status(
         warnings.append("Using last known BMW data; SOC is stale.")
 
     if bool(is_charging) and charge_power_kw is None:
-        charge_power_state = "waiting_for_charger_data"
+        charge_power_state = "waiting_for_bmw_power"
     elif bool(is_charging) is False:
         charge_power_state = "not_charging"
     elif charge_power_kw is not None:
@@ -207,6 +206,7 @@ def build_unified_ev_status(
         "deadline_state": deadline_state,
         "expected_full_charge_ts": expected_full_charge_ts,
         "expected_full_charge_source": expected_full_charge_source,
+        "time_to_full_min": bmw_time_to_full_min,
         "freshness_seconds": freshness_seconds,
         "freshness_label": freshness_label,
         "warnings": warnings,
