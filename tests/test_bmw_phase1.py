@@ -99,6 +99,33 @@ def test_mapping_real_telematic_descriptors_payload():
     assert st.field_availability["last_update_ts"] is True
 
 
+def test_mapping_real_telematic_charging_level_maps_soc_pct():
+    payload = {
+        "GET /customers/vehicles/WBA51EH0X0CR89778/telematicData?containerId=CONT1": {
+            "telematicData": {
+                "vehicle.drivetrain.electricEngine.charging.level": {
+                    "timestamp": "2026-03-13T09:00:07.000Z",
+                    "unit": "%",
+                    "value": "71",
+                },
+                "vehicle.drivetrain.electricEngine.charging.status": {
+                    "timestamp": "2026-03-13T09:00:07.000Z",
+                    "unit": None,
+                    "value": "CHARGINGACTIVE",
+                },
+            }
+        }
+    }
+
+    states = map_bmw_payload_to_vehicle_states(payload)
+    assert len(states) == 1
+    st = states[0]
+    assert st.soc_pct == 71
+    assert st.is_charging is True
+    assert st.charge_session_active is True
+    assert st.raw_fields["telematicData"]["telematicData"]["vehicle.drivetrain.electricEngine.charging.level"]["value"] == "71"
+
+
 def test_derivations_energy_and_economics():
     st = NormalizedVehicleState(vehicle_id="V1", soc_pct=40, battery_capacity_kwh=80, is_plugged=True, data_status="fresh", range_km=250)
     out = apply_planner_derivations(
@@ -952,3 +979,69 @@ def test_container_create_diagnostics_use_string_descriptor_shape(monkeypatch, t
 def test_create_container_contract_rejects_non_string_descriptors():
     with pytest.raises(TypeError):
         CreateContainerRequest(name="n", purpose="p", technicalDescriptors=[{"id": "x"}])  # type: ignore[list-item]
+
+
+def test_existing_descriptor_state_triggers_targeted_charging_level_probe_once(monkeypatch, tmp_path):
+    class _Auth:
+        def load_token(self):
+            return BmwTokenData(access_token="access-1", obtained_at=dt.datetime.now(dt.timezone.utc))
+
+        def refresh_if_possible(self, tok):
+            return tok
+
+    post_descriptors = []
+
+    def fake_get(url, headers=None, timeout=None):
+        if url.endswith("/customers/vehicles/mappings"):
+            return _DummyResponse(payload={"vehicleMappings": [{"vin": "VINL1"}]})
+        if url.endswith("/customers/vehicles/VINL1/basicData"):
+            return _DummyResponse(payload={"vin": "VINL1", "lastUpdatedAt": "2026-03-11T10:00:00Z"})
+        if url.endswith("/customers/containers"):
+            return _DummyResponse(payload={"containers": []})
+        if "telematicData?containerId=FINAL-LVL" in url:
+            return _DummyResponse(payload={"telematicData": {"vehicle.drivetrain.electricEngine.charging.level": {"timestamp": "2026-03-13T09:00:07.000Z", "unit": "%", "value": "64"}}})
+        return _DummyResponse(status_code=500, text="unexpected")
+
+    def fake_post(url, headers=None, data=None, json=None, timeout=None):
+        payload = json if isinstance(json, dict) else __import__("json").loads(data)
+        desc = payload["technicalDescriptors"]
+        post_descriptors.append(desc)
+        if desc == ["vehicle.drivetrain.electricEngine.charging.level"]:
+            return _DummyResponse(payload={"containerId": "PROBE-LVL", "state": "ACTIVE"})
+        if "vehicle.drivetrain.electricEngine.charging.level" in desc:
+            return _DummyResponse(payload={"containerId": "FINAL-LVL", "state": "ACTIVE"})
+        return _DummyResponse(status_code=400, payload={}, text='{"error":"bad_request"}')
+
+    def fake_delete(url, headers=None, timeout=None):
+        return _DummyResponse(status_code=204, payload={})
+
+    monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
+    monkeypatch.setattr("bmw_cardata_provider.requests.post", fake_post)
+    monkeypatch.setattr("bmw_cardata_provider.requests.delete", fake_delete)
+
+    storage = BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json"))
+    storage.save_descriptor_validation_state(
+        {
+            "accepted_descriptors": [
+                "vehicle.drivetrain.electricEngine.charging.status",
+                "vehicle.body.chargingPort.status",
+                "vehicle.powertrain.electric.battery.charging.acLimit.selected",
+            ],
+            "rejected_descriptors": {},
+            "probe_results": [],
+        }
+    )
+
+    provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=storage, auth=_Auth())
+    out = provider.refresh_once()
+
+    assert out["ok"] is True
+    assert ["vehicle.drivetrain.electricEngine.charging.level"] in post_descriptors
+    assert any("vehicle.drivetrain.electricEngine.charging.level" in d for d in post_descriptors if len(d) > 1)
+    assert provider.vehicles["VINL1"].soc_pct == 64
+
+    state = storage.load_descriptor_validation_state()
+    assert "vehicle.drivetrain.electricEngine.charging.level" in state["accepted_descriptors"]
+    probe_entries = [x for x in state.get("probe_results", []) if x.get("tested_descriptors") == ["vehicle.drivetrain.electricEngine.charging.level"]]
+    assert len(probe_entries) == 1
+

@@ -252,6 +252,14 @@ def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[Normalize
             _dig(tele_charge_settings, "acCurrentLimitA"),
             charge_settings.get("acCurrentLimitA"),
         ))
+        soc_pct = _as_float(_first(
+            _descriptor_value(telematic, "vehicle.drivetrain.electricEngine.charging.level"),
+            _dig(telematic, "socPct"),
+            _dig(telematic, "soc"),
+            _dig(tele_battery, "socPercent"),
+            _dig(tele_battery, "socPct"),
+            battery.get("socPercent"),
+        ))
 
         state = NormalizedVehicleState(
             vehicle_id=vehicle_id,
@@ -259,7 +267,7 @@ def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[Normalize
             data_status=status,
             last_update_ts=ts,
             freshness_seconds=age,
-            soc_pct=_as_float(_first(_dig(telematic, "socPct"), _dig(telematic, "soc"), _dig(tele_battery, "socPercent"), _dig(tele_battery, "socPct"), battery.get("socPercent"))),
+            soc_pct=soc_pct,
             is_plugged=is_plugged,
             is_charging=is_charging,
             range_km=_as_float(_first(_dig(telematic, "rangeKm"), _dig(telematic, "remainingRangeKm"), _dig(tele_range, "electricKm"), range_data.get("electricKm"))),
@@ -278,7 +286,7 @@ def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[Normalize
             charge_error_raw=_first(_dig(telematic, "chargeError"), _dig(telematic, "errorCode"), _dig(tele_charging, "chargeError"), charging.get("chargeError"), charging.get("errorCode")),
             raw_fields=row,
         )
-        state.charge_session_active = bool(is_plugged and is_charging and not state.charge_error_raw) if None not in (is_plugged, is_charging) else None
+        state.charge_session_active = bool(is_charging and not state.charge_error_raw) if is_charging is not None else None
         state.field_availability = {
             "charging_status": charging_status_raw is not None,
             "plug_status": plug_status_raw is not None,
