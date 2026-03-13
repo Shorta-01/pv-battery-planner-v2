@@ -125,6 +125,17 @@ def test_run_now_pv_uncertainty_false_omits_uncertainty_outputs(monkeypatch, tmp
     assert result["warnings_count"] >= 0
     assert isinstance(result["run_duration_ms"], int)
     assert result["run_duration_ms"] >= 0
+    diag = result.get("run_diagnostics")
+    assert isinstance(diag, dict)
+    assert diag.get("success") is True
+    assert isinstance(diag.get("total_run_ms"), float)
+    assert diag.get("total_run_ms") >= 0.0
+    stage_timings = diag.get("stage_timings_ms")
+    assert isinstance(stage_timings, dict)
+    for key in ["config_normalization", "weather_fetch", "weather_ensemble", "planner_simulation", "savings_evaluation", "db_write", "response_build", "total_run"]:
+        assert key in stage_timings
+        assert isinstance(stage_timings[key], float)
+        assert stage_timings[key] >= 0.0
     assert result["pv_totals_kwh"] == {"p10": None, "p50": 3.0, "p90": None}
     assert result["inputs_used"]["buffer_percent"] == 0.0
     assert result["inputs_used"]["max_ac_charge_power_kw"] == 5.0
@@ -236,6 +247,11 @@ def test_run_now_all_weather_models_failed_persists_error_run(monkeypatch, tmp_p
     assert result["weather_ensemble"]["failure_reasons_by_model"]["ecmwf_ifs"]["category"] == "provider_down"
     assert inserted["payload"]["status"] == "error"
     assert inserted["payload"]["warnings_count"] == 3
+    diag = result.get("run_diagnostics")
+    assert isinstance(diag, dict)
+    assert diag.get("success") is False
+    assert isinstance(diag.get("error_summary"), str)
+    assert diag.get("total_run_ms") >= 0.0
 
 
 def test_run_now_includes_provider_payloads_when_enabled(monkeypatch, tmp_path):
