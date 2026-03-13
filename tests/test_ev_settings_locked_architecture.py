@@ -108,3 +108,21 @@ def test_settings_ui_keeps_bmw_only_semantics_without_manual_telemetry_path() ->
     assert '"source": "bmw_cardata"' in text
     assert '"bmw_enabled": bool(ui.get("cfg_ev_enabled", False))' in text
     assert "manual EV telemetry" not in text
+
+
+def test_ev_settings_ui_places_petrol_economics_fields_on_one_row() -> None:
+    text = Path("app.py").read_text(encoding="utf-8")
+
+    assert 'petrol_col1, petrol_col2 = st.columns(2, gap="large")' in text
+    assert 'with petrol_col1:' in text
+    assert 'with petrol_col2:' in text
+    assert "Petrol price (€/L)" in text
+    assert "Petrol consumption (L/100 km)" in text
+
+
+def test_readiness_strip_includes_cardata_status() -> None:
+    text = Path("app.py").read_text(encoding="utf-8")
+
+    assert "summarize_cardata_readiness(" in text
+    assert '"CarData": []' in text
+    assert '["Inputs", "Location", "Tariffs", "PV", "Battery", "Weather", "CarData"]' in text

@@ -110,6 +110,43 @@ def summarize_ev_setup_state(
     return {"level": "info", "title": "Multiple vehicles found, choose one", "detail": "Select the active BMW vehicle for forecasts."}
 
 
+def summarize_cardata_readiness(
+    *,
+    ev_enabled: bool,
+    has_client_id: bool,
+    provider_status: dict[str, Any] | None,
+    has_vehicle: bool,
+    has_device_flow_session: bool,
+    vehicle_freshness_seconds: Any,
+) -> dict[str, str | bool]:
+    """Return compact readiness state for the bottom status strip."""
+    if not ev_enabled:
+        return {"required": False, "ready": True, "label": "CarData", "detail": "EV integration off"}
+
+    if not has_client_id:
+        return {"required": True, "ready": False, "label": "CarData", "detail": "Missing BMW client id"}
+
+    if has_device_flow_session:
+        return {"required": True, "ready": False, "label": "CarData", "detail": "Auth/setup required"}
+
+    status = provider_status if isinstance(provider_status, dict) else {}
+    provider = str(status.get("provider_status") or "").strip().lower()
+    data_status = str(status.get("data_status") or "").strip().lower()
+    freshness = _to_float_or_none(vehicle_freshness_seconds)
+    is_stale_or_degraded = provider == "degraded" or data_status in {"stale", "partial", "error"} or (freshness is not None and freshness >= 1800.0)
+
+    if provider == "auth_required":
+        return {"required": True, "ready": False, "label": "CarData", "detail": "Auth/setup required"}
+
+    if not has_vehicle:
+        return {"required": True, "ready": False, "label": "CarData", "detail": "No linked vehicle"}
+
+    if is_stale_or_degraded:
+        return {"required": True, "ready": False, "label": "CarData", "detail": "Stale/degraded data"}
+
+    return {"required": True, "ready": True, "label": "CarData", "detail": "Ready"}
+
+
 def format_ev_bool(value: Any, true_label: str = "Yes", false_label: str = "No", unknown_label: str = "—") -> str:
     if value is None:
         return unknown_label
