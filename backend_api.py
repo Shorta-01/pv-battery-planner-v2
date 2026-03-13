@@ -1115,7 +1115,7 @@ class BackendState:
             effective_use_sat = requested_use_sat
 
         ev_cfg = cfg.get("ev_vehicle_data", {}) if isinstance(cfg.get("ev_vehicle_data"), dict) else {}
-        if bool(ev_cfg.get("enabled", False)) and str(ev_cfg.get("source", "manual")) == "bmw_cardata":
+        if bool(ev_cfg.get("enabled", False)):
             try:
                 vehicles = self.bmw_service.vehicles()
                 if vehicles:
