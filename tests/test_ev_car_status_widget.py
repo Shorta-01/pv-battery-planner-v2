@@ -11,6 +11,7 @@ from ui_utils import (
     format_ev_kwh,
     format_ev_kw,
     format_ev_time_to_full_minutes,
+    summarize_ev_setup_state,
 )
 
 
@@ -122,3 +123,35 @@ def test_settings_vehicle_data_uses_compact_status_chips_and_refresh_label() -> 
     assert "status_chip_specs" in app_text
     assert "Provider status:" in app_text
     assert "if APP_DEBUG:" in app_text
+
+
+def test_summarize_ev_setup_state_missing_client_id_and_reconnect_paths() -> None:
+    missing = summarize_ev_setup_state({}, ev_enabled=True, has_client_id=False, vehicle_count=0, has_device_flow_session=False)
+    assert missing["title"] == "BMW client ID required"
+
+    reconnect = summarize_ev_setup_state({"provider_status": "auth_required"}, ev_enabled=True, has_client_id=True, vehicle_count=0, has_device_flow_session=False)
+    assert reconnect["title"] == "Reconnect required"
+
+
+def test_summarize_ev_setup_state_device_flow_and_vehicle_outcomes() -> None:
+    device_flow = summarize_ev_setup_state({"provider_status": "degraded"}, ev_enabled=True, has_client_id=True, vehicle_count=0, has_device_flow_session=True)
+    assert device_flow["title"] == "BMW authorization required"
+
+    no_vehicle = summarize_ev_setup_state({"provider_status": "healthy"}, ev_enabled=True, has_client_id=True, vehicle_count=0, has_device_flow_session=False)
+    assert no_vehicle["title"] == "No BMW vehicles found"
+
+    one_vehicle = summarize_ev_setup_state({"provider_status": "healthy"}, ev_enabled=True, has_client_id=True, vehicle_count=1, has_device_flow_session=False)
+    assert one_vehicle["title"] == "1 vehicle linked"
+
+    many = summarize_ev_setup_state({"provider_status": "healthy"}, ev_enabled=True, has_client_id=True, vehicle_count=2, has_device_flow_session=False)
+    assert many["title"] == "Multiple vehicles found, choose one"
+
+
+def test_settings_block_keeps_diagnostics_secondary_and_no_raw_payload_dump() -> None:
+    app_text = Path("app.py").read_text(encoding="utf-8")
+    start = app_text.index('st.markdown("#### EV Vehicle Data")')
+    end = app_text.index('cfg_load_profile = [float(v) for v in effective_cfg["load_profile"]["load_profile_24h"]]', start)
+    block = app_text[start:end]
+
+    assert "if APP_DEBUG:" in block
+    assert "st.json({\"provider_status\": provider_status, \"vehicles\": vehicles_payload}" not in block

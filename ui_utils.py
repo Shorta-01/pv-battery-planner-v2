@@ -71,6 +71,45 @@ def summarize_ev_provider_state(
     }
 
 
+def summarize_ev_setup_state(
+    provider_status: dict[str, Any] | None,
+    *,
+    ev_enabled: bool,
+    has_client_id: bool,
+    vehicle_count: int,
+    has_device_flow_session: bool,
+) -> dict[str, Any]:
+    """Return user-friendly setup guidance for BMW CarData connection flow."""
+    status = provider_status if isinstance(provider_status, dict) else {}
+    provider = str(status.get("provider_status") or "").strip().lower()
+
+    if not ev_enabled:
+        return {"level": "info", "title": "BMW not connected", "detail": "Enable EV integration to set up BMW CarData."}
+    if not has_client_id:
+        return {
+            "level": "warning",
+            "title": "BMW client ID required",
+            "detail": "Enter your BMW client id, then click Setup CarData connection.",
+        }
+    if has_device_flow_session:
+        return {
+            "level": "info",
+            "title": "BMW authorization required",
+            "detail": "Open the BMW page and enter this code, then click Check connection.",
+        }
+    if provider == "auth_required":
+        return {
+            "level": "warning",
+            "title": "Reconnect required",
+            "detail": "BMW authorization has expired or is missing. Click Setup CarData connection.",
+        }
+    if vehicle_count <= 0:
+        return {"level": "warning", "title": "No BMW vehicles found", "detail": "Connect BMW and re-check your linked vehicles."}
+    if vehicle_count == 1:
+        return {"level": "success", "title": "1 vehicle linked", "detail": "Vehicle data ready."}
+    return {"level": "info", "title": "Multiple vehicles found, choose one", "detail": "Select the active BMW vehicle for forecasts."}
+
+
 def format_ev_bool(value: Any, true_label: str = "Yes", false_label: str = "No", unknown_label: str = "—") -> str:
     if value is None:
         return unknown_label

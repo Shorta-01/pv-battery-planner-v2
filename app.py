@@ -35,6 +35,7 @@ from ui_utils import (
     is_app_debug_enabled,
     resolve_pv_outlook_savings,
     summarize_ev_provider_state,
+    summarize_ev_setup_state,
     weather_code_to_icon as ui_weather_code_to_icon,
     weather_code_to_label as ui_weather_code_to_label,
 )
@@ -3899,8 +3900,6 @@ with left:
             value=str(ev_cfg.get("ev_charge_deadline_time", "")),
             help="Manual policy target: EV must be fully charged by this time.",
         )
-        if cfg_ev_enabled and not str(cfg_bmw_client_id).strip():
-            ui_warning("BMW connection is incomplete: configure BMW client id to enable EV SOC from BMW CarData.")
 
         provider_status = {}
         vehicles_payload = {}
@@ -3915,7 +3914,82 @@ with left:
         vehicle_list = list(vehicle_map.values()) if isinstance(vehicle_map, dict) else []
         first_vehicle = next(iter(vehicle_map.values()), {}) if isinstance(vehicle_map, dict) else {}
         selected_vehicle_id = str(ev_cfg.get("bmw_active_vehicle_id") or "")
+        setup_state_key = "_ev_cardata_setup"
+        setup_state = st.session_state.get(setup_state_key, {})
+        if not isinstance(setup_state, dict):
+            setup_state = {}
+        has_client_id = bool(str(cfg_bmw_client_id).strip())
+        has_device_flow_session = bool(setup_state.get("device_code"))
 
+        setup_summary = summarize_ev_setup_state(
+            provider_status,
+            ev_enabled=bool(cfg_ev_enabled),
+            has_client_id=has_client_id,
+            vehicle_count=len(vehicle_list),
+            has_device_flow_session=has_device_flow_session,
+        )
+        setup_title = str(setup_summary.get("title") or "BMW not connected")
+        setup_detail = str(setup_summary.get("detail") or "")
+        setup_level = str(setup_summary.get("level") or "info")
+        if setup_level == "success":
+            st.success(f"{setup_title}. {setup_detail}".strip())
+        elif setup_level == "warning":
+            ui_warning(f"{setup_title}. {setup_detail}".strip())
+        else:
+            st.info(f"{setup_title}. {setup_detail}".strip())
+
+        setup_col, check_col = st.columns(2)
+        with setup_col:
+            if st.button(
+                "Setup CarData connection",
+                key="btn_ev_setup_cardata_connection",
+                type="primary",
+                help="Use this to set up, reconnect, or re-link your BMW CarData connection.",
+                disabled=bool(cfg_ev_enabled) and not has_client_id,
+            ):
+                if not has_client_id:
+                    st.error("BMW client ID required. Enter your BMW client id first.")
+                else:
+                    try:
+                        start_payload = api_post("/v1/ev/bmw/device_flow/start", {})
+                        st.session_state[setup_state_key] = {
+                            "device_code": str(start_payload.get("device_code") or ""),
+                            "user_code": str(start_payload.get("user_code") or ""),
+                            "verification_uri": str(start_payload.get("verification_uri") or ""),
+                        }
+                        st.success("BMW authorization required. Open the BMW page and enter this code.")
+                    except Exception as exc:
+                        st.error(f"Could not start BMW setup: {exc}")
+
+        setup_state = st.session_state.get(setup_state_key, {}) if isinstance(st.session_state.get(setup_state_key), dict) else {}
+        device_code = str(setup_state.get("device_code") or "").strip()
+        user_code = str(setup_state.get("user_code") or "").strip()
+        verification_uri = str(setup_state.get("verification_uri") or "").strip()
+
+        if device_code:
+            if verification_uri:
+                st.write(f"Open this BMW page: {verification_uri}")
+            if user_code:
+                st.code(user_code)
+            st.caption("Waiting for BMW authorization")
+            with check_col:
+                if st.button("Check connection", key="btn_ev_check_connection", type="secondary"):
+                    try:
+                        poll_payload = api_post("/v1/ev/bmw/device_flow/poll", {"device_code": device_code})
+                        if bool(poll_payload.get("ok", False)):
+                            api_post("/v1/ev/manual_refresh?force_reprobe=true", {})
+                            provider_status = api_get("/v1/ev/provider_status")
+                            vehicles_payload = api_get("/v1/ev/vehicles")
+                            vehicle_map = vehicles_payload.get("vehicles", {}) if isinstance(vehicles_payload, dict) else {}
+                            vehicle_list = list(vehicle_map.values()) if isinstance(vehicle_map, dict) else []
+                            st.session_state[setup_state_key] = {}
+                            st.success("BMW connected")
+                        else:
+                            st.info("Waiting for BMW authorization")
+                    except Exception as exc:
+                        st.error(f"Connection check failed: {exc}")
+
+        first_vehicle = next(iter(vehicle_map.values()), {}) if isinstance(vehicle_map, dict) else {}
         linked_label = "Vehicle linked" if first_vehicle else "No vehicle"
         linked_tip = "This BMW vehicle is used for EV SOC and status." if first_vehicle else "No BMW vehicle is currently linked for EV status."
         freshness_seconds = first_vehicle.get("freshness_seconds") if first_vehicle else None
@@ -3960,22 +4034,31 @@ with left:
             + "</div>",
             unsafe_allow_html=True,
         )
-        if len(vehicle_list) > 1:
-            vehicle_options = []
-            for vehicle in vehicle_list:
-                vehicle_id = str(vehicle.get("vehicle_id") or "").strip()
-                if not vehicle_id:
-                    continue
-                label = str(vehicle.get("display_name") or vehicle_id)
-                vehicle_options.append((label, vehicle_id))
-            if vehicle_options:
-                option_ids = [v[1] for v in vehicle_options]
-                default_idx = option_ids.index(selected_vehicle_id) if selected_vehicle_id in option_ids else 0
-                selected_label = st.selectbox("Active BMW vehicle", options=[v[0] for v in vehicle_options], index=default_idx)
-                for label, vehicle_id in vehicle_options:
-                    if label == selected_label:
-                        selected_vehicle_id = vehicle_id
-                        break
+
+        vehicle_options = []
+        for vehicle in vehicle_list:
+            vehicle_id = str(vehicle.get("vehicle_id") or "").strip()
+            if not vehicle_id:
+                continue
+            label = str(vehicle.get("display_name") or vehicle_id)
+            vehicle_options.append((label, vehicle_id))
+
+        if len(vehicle_options) == 1 and selected_vehicle_id != vehicle_options[0][1]:
+            selected_vehicle_id = vehicle_options[0][1]
+            st.success("1 vehicle linked. Set as active vehicle automatically.")
+
+        if len(vehicle_options) > 1:
+            option_ids = [v[1] for v in vehicle_options]
+            default_idx = option_ids.index(selected_vehicle_id) if selected_vehicle_id in option_ids else 0
+            selected_label = st.selectbox("Active BMW vehicle", options=[v[0] for v in vehicle_options], index=default_idx)
+            for label, vehicle_id in vehicle_options:
+                if label == selected_label:
+                    selected_vehicle_id = vehicle_id
+                    break
+            st.info("Multiple vehicles found, choose one")
+        elif cfg_ev_enabled and has_client_id and len(vehicle_options) == 0:
+            ui_warning("No BMW vehicles found")
+
         if st.button("Refresh BMW data", key="btn_ev_manual_refresh_settings", type="secondary", help="Fetch latest BMW vehicle data now"):
             try:
                 api_post("/v1/ev/manual_refresh", {})
