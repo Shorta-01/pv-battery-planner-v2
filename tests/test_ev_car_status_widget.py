@@ -27,12 +27,15 @@ def test_ev_format_helpers_basic() -> None:
     assert format_ev_datetime("2026-03-11T06:30:00+00:00")
 
 
-def test_app_uses_card_widget_and_gates_diagnostics() -> None:
+def test_app_uses_card_widget_and_canonical_debug_gating() -> None:
     app_text = Path("app.py").read_text(encoding="utf-8")
 
     assert "EV / Car Status" not in app_text
     assert "CAR STATUS" in app_text
     assert "EV diagnostics" in app_text
+    assert "APP_DEBUG = is_app_debug_enabled()" in app_text
+    assert "bool(os.getenv(\"APP_DEBUG\"))" not in app_text
+    assert "os.getenv(\"DEBUG\"" not in app_text
     assert "if APP_DEBUG:" in app_text
     assert "st.write({" not in app_text[app_text.index("def render_ev_car_status_panel"): app_text.index("forecast_mode, selected_models")]
 
@@ -61,4 +64,30 @@ def test_app_widget_surfaces_required_bmw_fields_and_deadline() -> None:
 
     assert "api_get(\"/v1/ev/vehicles\")" in fn_block
     assert "api_get(\"/v1/ev/provider_status\")" in fn_block
+    assert "ocpp" not in fn_block.lower()
+
+
+def test_app_widget_uses_provider_status_for_user_facing_states() -> None:
+    app_text = Path("app.py").read_text(encoding="utf-8")
+    start = app_text.index("def render_ev_car_status_panel")
+    end = app_text.index("forecast_mode, selected_models", start)
+    fn_block = app_text[start:end]
+
+    assert "summarize_ev_provider_state(" in fn_block
+    assert "BMW authorization required." in fn_block
+    assert "provider_state.get(\"fallback\")" in fn_block
+    assert "provider_state.get(\"helper\")" in fn_block
+    assert "EV diagnostics" in fn_block
+    assert "if APP_DEBUG:" in fn_block
+
+
+def test_app_widget_keeps_bmw_only_source_and_no_ocpp_dependency() -> None:
+    app_text = Path("app.py").read_text(encoding="utf-8")
+    start = app_text.index("def render_ev_car_status_panel")
+    end = app_text.index("forecast_mode, selected_models", start)
+    fn_block = app_text[start:end]
+
+    assert "api_get(\"/v1/ev/vehicles\")" in fn_block
+    assert "api_get(\"/v1/ev/provider_status\")" in fn_block
+    assert "BMW" in fn_block
     assert "ocpp" not in fn_block.lower()
