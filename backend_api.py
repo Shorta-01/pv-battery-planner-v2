@@ -2246,9 +2246,9 @@ def get_ev_provider_status(authorization: str | None = Header(default=None)) -> 
 
 
 @app.post("/v1/ev/manual_refresh")
-def ev_manual_refresh(authorization: str | None = Header(default=None)) -> dict:
+def ev_manual_refresh(force_reprobe: bool = False, authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
-    return state.bmw_service.manual_refresh()
+    return state.bmw_service.manual_refresh(force_reprobe=force_reprobe)
 
 
 @app.post("/v1/ev/bmw/device_flow/start")
