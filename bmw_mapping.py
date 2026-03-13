@@ -6,6 +6,17 @@ from typing import Any
 from bmw_models import NormalizedVehicleState, parse_dt, utcnow
 
 
+BMW_CHARGING_STATUS_BOOL_MAP: dict[str, bool] = {
+    "CHARGINGACTIVE": True,
+    "NOCHARGING": False,
+}
+
+BMW_PLUG_STATUS_BOOL_MAP: dict[str, bool] = {
+    "CONNECTED": True,
+    "DISCONNECTED": False,
+}
+
+
 def _as_float(v: Any) -> float | None:
     try:
         if v is None or v == "":
@@ -47,6 +58,12 @@ def _as_bool_from_states(value: Any, *, true_values: set[str], false_values: set
     if s in false_values:
         return False
     return None
+
+
+def _as_bool_from_known_map(value: Any, mapping: dict[str, bool]) -> bool | None:
+    if value is None:
+        return None
+    return mapping.get(str(value).strip().upper())
 
 
 def _descriptor_value(telematic: dict[str, Any], key: str, field: str = "value") -> Any:
@@ -203,11 +220,13 @@ def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[Normalize
             _dig(tele_charging, "chargingState"),
             charging.get("chargingState"),
         )
-        is_charging = _as_bool_from_states(
-            charging_status_raw,
-            true_values={"CHARGING", "CHARGINGACTIVE", "ACTIVE", "IN_PROGRESS"},
-            false_values={"NOT_CHARGING", "CHARGINGINACTIVE", "INACTIVE", "COMPLETED", "ERROR", "IDLE"},
-        )
+        is_charging = _as_bool_from_known_map(charging_status_raw, BMW_CHARGING_STATUS_BOOL_MAP)
+        if is_charging is None:
+            is_charging = _as_bool_from_states(
+                charging_status_raw,
+                true_values={"CHARGING", "CHARGINGACTIVE", "ACTIVE", "IN_PROGRESS"},
+                false_values={"NOT_CHARGING", "CHARGINGINACTIVE", "INACTIVE", "COMPLETED", "ERROR", "IDLE"},
+            )
         if is_charging is None:
             is_charging = _as_bool_from_states(_first(_dig(telematic, "isCharging"), _dig(tele_charging, "isCharging")), true_values={"TRUE", "1"}, false_values={"FALSE", "0"})
 
@@ -219,11 +238,13 @@ def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[Normalize
             _dig(tele_charging, "plugState"),
             charging.get("plugConnectionState"),
         )
-        is_plugged = _as_bool_from_states(
-            plug_status_raw,
-            true_values={"CONNECTED", "PLUGGED", "PLUGGED_IN"},
-            false_values={"DISCONNECTED", "UNPLUGGED", "NOT_PLUGGED", "OPEN", "NOT_CONNECTED"},
-        )
+        is_plugged = _as_bool_from_known_map(plug_status_raw, BMW_PLUG_STATUS_BOOL_MAP)
+        if is_plugged is None:
+            is_plugged = _as_bool_from_states(
+                plug_status_raw,
+                true_values={"CONNECTED", "PLUGGED", "PLUGGED_IN"},
+                false_values={"DISCONNECTED", "UNPLUGGED", "NOT_PLUGGED", "OPEN", "NOT_CONNECTED"},
+            )
         if is_plugged is None:
             is_plugged = _as_bool_from_states(_first(_dig(telematic, "isPlugged"), _dig(tele_charging, "isPlugged")), true_values={"TRUE", "1"}, false_values={"FALSE", "0"})
 
@@ -287,6 +308,8 @@ def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[Normalize
             raw_fields=row,
         )
         state.charge_session_active = bool(is_charging and not state.charge_error_raw) if is_charging is not None else None
+        if charging_status_raw is not None and is_charging is False and state.charge_session_active is None:
+            state.charge_session_active = False
         state.field_availability = {
             "charging_status": charging_status_raw is not None,
             "plug_status": plug_status_raw is not None,
