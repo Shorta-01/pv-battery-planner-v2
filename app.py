@@ -25,6 +25,13 @@ from error_logging import classify_exception, format_exception_body
 from tariff_time import compute_offpeak_segments, make_summary_lines, parse_hhmm
 from ui_health import compute_weather_health, should_hard_stop
 from ui_utils import (
+    format_ev_bool,
+    format_ev_datetime,
+    format_ev_freshness,
+    format_ev_km,
+    format_ev_kwh,
+    format_ev_kw,
+    format_ev_time_to_full_minutes,
     resolve_pv_outlook_savings,
     weather_code_to_icon as ui_weather_code_to_icon,
     weather_code_to_label as ui_weather_code_to_label,
@@ -4186,68 +4193,178 @@ with left:
                         log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:car_charger_stop", title="Frontend error: car charger stop", exc=exc)
                         st.error(f"Stop failed: {exc}")
 
-    def render_ev_car_status_panel() -> None:
-        with st.expander("EV / Car Status", expanded=True):
-            try:
-                provider_status = api_get("/v1/ev/provider_status")
-                vehicles_payload = api_get("/v1/ev/vehicles")
-            except Exception as exc:
-                st.warning(f"EV status unavailable: {exc}")
-                return
-            vehicles = vehicles_payload.get("vehicles", {}) if isinstance(vehicles_payload, dict) else {}
-            if not vehicles:
-                st.info("No EV vehicle data available yet.")
-                return
-            v = next(iter(vehicles.values()))
-            st.markdown("**Vehicle status**")
-            st.write({
-                "Car display name": v.get("display_name"),
-                "Data source": v.get("data_provider"),
-                "Data status": v.get("data_status"),
-                "Last update": v.get("last_update_ts"),
-                "Freshness age": v.get("freshness_seconds"),
-                "SoC": v.get("soc_pct"),
-                "Range": v.get("range_km"),
-                "Plugged in": v.get("is_plugged"),
-                "Charging now": v.get("is_charging"),
-                "Charge power": v.get("charge_power_kw"),
-                "Time to full": v.get("time_to_full_min"),
-            })
-            st.markdown("**Charging settings detected from car**")
-            st.write({
-                "AC current limit": v.get("ac_current_limit_a"),
-                "Charging mode": v.get("charging_mode"),
-                "Optimized charging preference": v.get("optimized_charging_preference"),
-                "Car-side charge window": f"{v.get('charge_window_start')} - {v.get('charge_window_end')}",
-            })
-            st.markdown("**Planner interpretation**")
-            st.write({
-                "Energy still needed": v.get("energy_needed_kwh"),
-                "Effective charge power limit": v.get("effective_charge_power_limit_kw"),
-                "Planner demand active": v.get("planner_demand_active"),
-                "Max reachable SoC in current window": v.get("max_reachable_soc_pct"),
-                "Planned EV energy": v.get("planned_energy_kwh"),
-                "Planned EV charging cost": v.get("planned_charge_cost_eur"),
-                "Avoided petrol cost": v.get("avoided_petrol_cost_eur"),
-                "Net economic benefit": v.get("net_economic_benefit_eur"),
-                "Expected full-charge time": v.get("expected_full_charge_ts"),
-                "Planner status text": v.get("planner_status_text"),
-                "Planner priority": v.get("planner_priority"),
-            })
-            st.markdown("**Diagnostics**")
-            st.write({
-                "Raw plug status": v.get("plug_status_raw"),
-                "Flap lock status": v.get("flap_lock_status_raw"),
-                "Charge error": v.get("charge_error_raw"),
-                "Vehicle id": v.get("vehicle_id"),
-                "Missing fields": [k for k, val in v.items() if val is None],
-                "Provider status": provider_status,
-            })
+    def render_ev_car_status_panel(container=None) -> None:
+        card = container if container is not None else st.container()
+        try:
+            provider_status = api_get("/v1/ev/provider_status")
+            vehicles_payload = api_get("/v1/ev/vehicles")
+        except Exception as exc:
+            card.markdown(
+                """
+                <div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.78rem 0.82rem;
+                background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));min-width:245px;'>
+                <div style='font-weight:760;letter-spacing:0.03em;opacity:0.95;'>CAR STATUS</div>
+                <div style='margin-top:0.45rem;font-size:0.90rem;opacity:0.88;'>BMW vehicle status unavailable.</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if APP_DEBUG:
+                with card.expander("EV diagnostics", expanded=False):
+                    st.caption(f"EV status fetch error: {exc}")
+            return
+
+        vehicles = vehicles_payload.get("vehicles", {}) if isinstance(vehicles_payload, dict) else {}
+        v = next(iter(vehicles.values()), {}) if isinstance(vehicles, dict) else {}
+        if not v:
+            card.markdown(
+                """
+                <div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.78rem 0.82rem;
+                background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));min-width:245px;'>
+                <div style='font-weight:760;letter-spacing:0.03em;opacity:0.95;'>CAR STATUS</div>
+                <div style='margin-top:0.45rem;font-size:0.90rem;opacity:0.88;'>No BMW vehicle data available yet.</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            return
+
+        soc_raw = _safe_float(v.get("soc_pct"), float("nan"))
+        soc_pct = max(0.0, min(100.0, soc_raw)) if pd.notna(soc_raw) else None
+        is_plugged = v.get("is_plugged")
+        is_charging = v.get("is_charging")
+
+        if soc_pct is None:
+            headline = "Battery status unavailable"
+        elif bool(is_charging):
+            headline = f"{soc_pct:.0f}% battery · charging now"
+        elif bool(is_plugged):
+            headline = f"{soc_pct:.0f}% battery · plugged in, waiting"
+        else:
+            headline = f"{soc_pct:.0f}% battery · not plugged in"
+
+        freshness_label = format_ev_freshness(v.get("freshness_seconds"))
+        freshness_chip = (
+            f"<span style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
+            "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
+            "border-radius:999px;font-size:0.72rem;font-weight:650;'>⏱ {freshness_label}</span>"
+        )
+        status_chip_text = "Charging" if bool(is_charging) else ("Plugged" if bool(is_plugged) else "Unplugged")
+        status_chip = (
+            f"<span style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
+            "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
+            "border-radius:999px;font-size:0.72rem;font-weight:650;'>🚗 {status_chip_text}</span>"
+        )
+
+        deadline_cfg = ((effective_cfg or {}).get("ev_vehicle_data", {}) or {}).get("ev_charge_deadline_time")
+        deadline_label = str(deadline_cfg).strip() if str(deadline_cfg or "").strip() else "—"
+        expected_full_label = format_ev_datetime(v.get("expected_full_charge_ts"))
+
+        metric_items = [
+            ("Plugged in", format_ev_bool(is_plugged, true_label="Yes", false_label="No")),
+            ("Charging now", format_ev_bool(is_charging, true_label="Yes", false_label="No")),
+            ("Charge power", format_ev_kw(v.get("charge_power_kw"))),
+            ("Full charge at", expected_full_label),
+            ("Deadline", deadline_label),
+            ("Range", format_ev_km(v.get("range_km"))),
+        ]
+
+        metric_html = "".join(
+            "<div style='border:1px solid rgba(255,255,255,0.10);border-radius:10px;padding:0.42rem 0.48rem;"
+            "background:rgba(255,255,255,0.03);'>"
+            f"<div style='font-size:0.66rem;opacity:0.72;text-transform:uppercase;letter-spacing:0.05em;'>{_esc_attr(k)}</div>"
+            f"<div style='margin-top:0.12rem;font-size:0.85rem;font-weight:700;'>{_esc_attr(val)}</div>"
+            "</div>"
+            for k, val in metric_items
+        )
+
+        helper_parts = []
+        energy_needed = format_ev_kwh(v.get("energy_needed_kwh"))
+        time_to_full = format_ev_time_to_full_minutes(v.get("time_to_full_min"))
+        planner_status = str(v.get("planner_status_text") or "").strip()
+        last_update = format_ev_datetime(v.get("last_update_ts"))
+        helper_parts.append(f"Energy still needed: {energy_needed}")
+        helper_parts.append(f"Time to full: {time_to_full}")
+        if planner_status:
+            helper_parts.append(f"Planner: {planner_status}")
+        helper_parts.append(f"Last BMW update: {last_update} ({freshness_label})")
+
+        soc_width = soc_pct if soc_pct is not None else 0.0
+
+        timeline_html = ""
+        try:
+            now_ts = dt.datetime.now()
+            full_raw = v.get("expected_full_charge_ts")
+            full_ts = dt.datetime.fromisoformat(str(full_raw).replace("Z", "+00:00")) if full_raw else None
+            if full_ts is not None:
+                if full_ts.tzinfo is not None:
+                    full_ts = full_ts.astimezone()
+                total_sec = max((full_ts - now_ts).total_seconds(), 0.0)
+                horizon_sec = max(total_sec, 60.0)
+                deadline_marker = ""
+                if deadline_label != "—":
+                    try:
+                        hh, mm = [int(x) for x in deadline_label.split(":", 1)]
+                        deadline_dt = now_ts.replace(hour=hh, minute=mm, second=0, microsecond=0)
+                        if deadline_dt < now_ts:
+                            deadline_dt += dt.timedelta(days=1)
+                        marker_pct = clamp_pct(((deadline_dt - now_ts).total_seconds() / horizon_sec) * 100.0)
+                        deadline_marker = (
+                            "<div style='position:absolute;top:-2px;bottom:-2px;width:2px;"
+                            f"left:{marker_pct:.2f}%;background:#f4a261;opacity:0.9;'></div>"
+                        )
+                    except Exception:
+                        deadline_marker = ""
+                timeline_html = (
+                    "<div style='margin-top:0.48rem;'>"
+                    "<div style='font-size:0.67rem;opacity:0.78;'>Charge timeline</div>"
+                    "<div style='margin-top:0.18rem;height:8px;border-radius:999px;background:rgba(255,255,255,0.10);position:relative;overflow:hidden;'>"
+                    "<div style='position:absolute;left:0;top:0;bottom:0;width:100%;background:linear-gradient(90deg,rgba(82,183,136,0.15),rgba(82,183,136,0.6));'></div>"
+                    + deadline_marker
+                    + "</div>"
+                    f"<div style='margin-top:0.16rem;font-size:0.66rem;opacity:0.72;'>Now → Full by {expected_full_label}"
+                    + (f" · Deadline {deadline_label}" if deadline_label != "—" else "")
+                    + "</div></div>"
+                )
+        except Exception:
+            timeline_html = ""
+
+        card.markdown(
+            (
+                "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.78rem 0.82rem;"
+                "background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));min-width:245px;'>"
+                "<div style='display:flex;align-items:center;justify-content:space-between;gap:0.42rem;'>"
+                "<div style='font-size:0.90rem;font-weight:760;letter-spacing:0.03em;opacity:0.95;'>CAR STATUS</div>"
+                "<div style='display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;'>"
+                f"{freshness_chip}{status_chip}"
+                "</div></div>"
+                f"<div style='margin-top:0.40rem;font-size:0.96rem;font-weight:700;'>{_esc_attr(headline)}</div>"
+                "<div style='margin-top:0.45rem;height:8px;border-radius:999px;overflow:hidden;background:rgba(255,255,255,0.12);'>"
+                f"<div style='height:100%;width:{soc_width:.1f}%;background:linear-gradient(90deg,#d62828 0%,#f4a261 45%,#52b788 70%,#2a9d8f 100%);'></div>"
+                "</div>"
+                f"<div style='margin-top:0.30rem;font-size:0.70rem;opacity:0.82;'>State of charge: {f'{soc_pct:.0f}%' if soc_pct is not None else '—'}</div>"
+                f"{timeline_html}"
+                "<div style='margin-top:0.55rem;display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.40rem;'>"
+                f"{metric_html}"
+                "</div>"
+                "<div style='margin-top:0.48rem;font-size:0.69rem;opacity:0.76;line-height:1.35;'>"
+                + " · ".join(_esc_attr(part) for part in helper_parts)
+                + "</div></div>"
+            ),
+            unsafe_allow_html=True,
+        )
+
+        if APP_DEBUG:
+            with card.expander("EV diagnostics", expanded=False):
+                st.json({
+                    "provider_status": provider_status,
+                    "vehicle": v,
+                }, expanded=False)
+
 
     forecast_mode, selected_models, sat_nowcast_for_run = render_weather_models_panel()
 
     render_car_charger_panel()
-    render_ev_car_status_panel()
 
     readiness_issues = validate_sidebar_readiness(
         st.session_state.get("_cfg_ui_snapshot", {}),
@@ -4744,6 +4861,8 @@ if run_clicked or st.session_state.get("last_run_result"):
 
             pv_week_ahead_display = (pv_week_ahead or [])[:6]
             render_pv_week_ahead_widget(pv_week_ahead_display)
+
+            render_ev_car_status_panel(st.container())
 
             if charge_target_reachable is False and charge_warning_text:
                 ui_warning(charge_warning_text)
