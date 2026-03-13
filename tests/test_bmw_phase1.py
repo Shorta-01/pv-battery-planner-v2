@@ -99,6 +99,50 @@ def test_mapping_real_telematic_descriptors_payload():
     assert st.field_availability["last_update_ts"] is True
 
 
+def test_mapping_real_telematic_nocharging_and_disconnected_map_to_false_booleans():
+    payload = {
+        "GET /customers/vehicles/WBA51EH0X0CR89778/telematicData?containerId=CONT1": {
+            "telematicData": {
+                "vehicle.drivetrain.electricEngine.charging.level": {
+                    "timestamp": "2026-03-13T09:00:07.000Z",
+                    "unit": "%",
+                    "value": "44",
+                },
+                "vehicle.drivetrain.electricEngine.charging.status": {
+                    "timestamp": "2026-03-13T09:00:07.000Z",
+                    "unit": None,
+                    "value": "NOCHARGING",
+                },
+                "vehicle.powertrain.electric.battery.charging.acLimit.selected": {
+                    "timestamp": "2026-03-13T09:00:07.000Z",
+                    "unit": "A",
+                    "value": "10",
+                },
+                "vehicle.body.chargingPort.status": {
+                    "timestamp": "2026-03-13T09:00:07.000Z",
+                    "unit": None,
+                    "value": "DISCONNECTED",
+                },
+            }
+        }
+    }
+
+    states = map_bmw_payload_to_vehicle_states(payload)
+    assert len(states) == 1
+    st = states[0]
+    assert st.soc_pct == 44
+    assert st.charging_mode == "NOCHARGING"
+    assert st.is_charging is False
+    assert st.charge_session_active is False
+    assert st.is_plugged is False
+    assert st.plug_status_raw == "DISCONNECTED"
+    assert st.ac_current_limit_a == 10
+    assert st.last_update_ts is not None
+    assert st.range_km is None
+    assert st.time_to_full_min is None
+    assert st.charge_power_kw is None
+
+
 def test_mapping_real_telematic_charging_level_maps_soc_pct():
     payload = {
         "GET /customers/vehicles/WBA51EH0X0CR89778/telematicData?containerId=CONT1": {
