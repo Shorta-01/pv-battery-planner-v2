@@ -91,3 +91,20 @@ def test_backend_run_path_no_longer_depends_on_manual_vs_bmw_source_switch() -> 
 
     assert 'str(ev_cfg.get("source", "manual")) == "bmw_cardata"' not in text
     assert re.search(r"if bool\(ev_cfg.get\(\"enabled\", False\)\):", text)
+
+
+def test_settings_ui_exposes_unified_cardata_setup_actions() -> None:
+    text = Path("app.py").read_text(encoding="utf-8")
+
+    assert "Setup CarData connection" in text
+    assert "Check connection" in text
+    assert "Vehicle data source" not in text
+    assert "Manual vs BMW" not in text
+
+
+def test_settings_ui_keeps_bmw_only_semantics_without_manual_telemetry_path() -> None:
+    text = Path("app.py").read_text(encoding="utf-8")
+
+    assert '"source": "bmw_cardata"' in text
+    assert '"bmw_enabled": bool(ui.get("cfg_ev_enabled", False))' in text
+    assert "manual EV telemetry" not in text
