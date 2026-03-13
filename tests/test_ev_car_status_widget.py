@@ -67,6 +67,16 @@ def test_app_widget_surfaces_required_bmw_fields_and_deadline() -> None:
     assert "ocpp" not in fn_block.lower()
 
 
+def test_results_layout_places_car_status_with_fusionsolar_card() -> None:
+    app_text = Path("app.py").read_text(encoding="utf-8")
+    with_top_left = app_text.index("with top_left:")
+    render_summary = app_text.index("render_offpeak_plan_summary(", with_top_left)
+    render_car_status = app_text.index("render_ev_car_status_panel(st.container())", with_top_left)
+    render_pv_week = app_text.index("render_pv_week_ahead_widget(pv_week_ahead_display)", with_top_left)
+
+    assert render_summary < render_car_status < render_pv_week
+
+
 def test_app_widget_uses_provider_status_for_user_facing_states() -> None:
     app_text = Path("app.py").read_text(encoding="utf-8")
     start = app_text.index("def render_ev_car_status_panel")
@@ -91,3 +101,24 @@ def test_app_widget_keeps_bmw_only_source_and_no_ocpp_dependency() -> None:
     assert "api_get(\"/v1/ev/provider_status\")" in fn_block
     assert "BMW" in fn_block
     assert "ocpp" not in fn_block.lower()
+
+
+def test_car_status_headline_prefers_soc_and_range_when_available() -> None:
+    app_text = Path("app.py").read_text(encoding="utf-8")
+    start = app_text.index("def render_ev_car_status_panel")
+    end = app_text.index("forecast_mode, selected_models", start)
+    fn_block = app_text[start:end]
+
+    assert "range_label = format_ev_km" in fn_block
+    assert "% / {range_label} ·" in fn_block
+    assert "% battery ·" in fn_block
+
+
+def test_settings_vehicle_data_uses_compact_status_chips_and_refresh_label() -> None:
+    app_text = Path("app.py").read_text(encoding="utf-8")
+
+    assert "Refresh BMW data" in app_text
+    assert "Manual refresh" not in app_text
+    assert "status_chip_specs" in app_text
+    assert "Provider status:" in app_text
+    assert "if APP_DEBUG:" in app_text
