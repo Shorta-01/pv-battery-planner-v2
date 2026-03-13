@@ -1,6 +1,76 @@
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any
+
+
+def format_ev_bool(value: Any, true_label: str = "Yes", false_label: str = "No", unknown_label: str = "—") -> str:
+    if value is None:
+        return unknown_label
+    return true_label if bool(value) else false_label
+
+
+def format_ev_datetime(value: Any, unknown_label: str = "—") -> str:
+    if value is None:
+        return unknown_label
+    raw = str(value).strip()
+    if not raw:
+        return unknown_label
+    try:
+        normalized = raw.replace("Z", "+00:00")
+        ts = dt.datetime.fromisoformat(normalized)
+        if ts.tzinfo is not None:
+            ts = ts.astimezone()
+        return ts.strftime("%H:%M")
+    except Exception:
+        return raw
+
+
+def format_ev_freshness(seconds: Any, unknown_label: str = "—") -> str:
+    age = _to_float_or_none(seconds)
+    if age is None:
+        return unknown_label
+    age = max(0.0, age)
+    if age < 60:
+        return f"{int(age)}s ago"
+    if age < 3600:
+        return f"{int(round(age / 60.0))}m ago"
+    return f"{age / 3600.0:.1f}h ago"
+
+
+def format_ev_kw(value: Any, unknown_label: str = "—") -> str:
+    num = _to_float_or_none(value)
+    if num is None:
+        return unknown_label
+    return f"{num:.1f} kW"
+
+
+def format_ev_kwh(value: Any, unknown_label: str = "—") -> str:
+    num = _to_float_or_none(value)
+    if num is None:
+        return unknown_label
+    return f"{num:.1f} kWh"
+
+
+def format_ev_km(value: Any, unknown_label: str = "—") -> str:
+    num = _to_float_or_none(value)
+    if num is None:
+        return unknown_label
+    return f"{num:.0f} km"
+
+
+def format_ev_time_to_full_minutes(value: Any, unknown_label: str = "—") -> str:
+    mins = _to_float_or_none(value)
+    if mins is None:
+        return unknown_label
+    mins = max(0.0, mins)
+    if mins < 60:
+        return f"{int(round(mins))} min"
+    hours = int(mins // 60)
+    rem = int(round(mins - (hours * 60)))
+    if rem == 0:
+        return f"{hours}h"
+    return f"{hours}h {rem}m"
 
 
 def weather_code_to_icon(weather_code: int | float | str | None) -> str:
