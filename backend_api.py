@@ -14,6 +14,7 @@ import threading
 import tempfile
 import traceback
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -86,6 +87,57 @@ PV_QUALITY_COLORS = {
 FULL_RESULT_HEAVY_KEYS = {"weather", "pv", "detail", "flows", "soc"}
 DEBUG = os.getenv("DEBUG", "").strip() in ("1", "true", "True", "yes", "YES")
 logger = logging.getLogger(__name__)
+
+
+def _utc_now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _json_payload_size_bytes(payload: object) -> int:
+    try:
+        raw = json.dumps(payload, separators=(",", ":"), default=str)
+    except Exception:
+        raw = json.dumps({"unserializable_payload": True}, separators=(",", ":"))
+    return len(raw.encode("utf-8"))
+
+
+class _RunDiagnostics:
+    def __init__(self) -> None:
+        self.started_at = time.perf_counter()
+        self.stage_timings_ms: dict[str, float] = {}
+        self.payload_sizes_bytes: dict[str, int] = {}
+        self.data: dict[str, object] = {
+            "timestamp_utc": _utc_now_iso(),
+            "success": False,
+            "status": "running",
+            "error_summary": None,
+            "stage_timings_ms": self.stage_timings_ms,
+            "payload_sizes_bytes": self.payload_sizes_bytes,
+            "total_run_ms": 0.0,
+        }
+
+    @contextmanager
+    def stage(self, name: str):
+        stage_started = time.perf_counter()
+        try:
+            yield
+        finally:
+            elapsed_ms = (time.perf_counter() - stage_started) * 1000.0
+            self.stage_timings_ms[name] = max(0.0, float(elapsed_ms))
+
+    def mark_payload(self, key: str, payload: object) -> int:
+        size_bytes = _json_payload_size_bytes(payload)
+        self.payload_sizes_bytes[key] = int(size_bytes)
+        return int(size_bytes)
+
+    def finalize(self, *, success: bool, status: str, error_summary: str | None = None) -> dict[str, object]:
+        total_run_ms = (time.perf_counter() - self.started_at) * 1000.0
+        self.stage_timings_ms["total_run"] = max(0.0, float(total_run_ms))
+        self.data["total_run_ms"] = max(0.0, float(total_run_ms))
+        self.data["success"] = bool(success)
+        self.data["status"] = str(status)
+        self.data["error_summary"] = error_summary
+        return self.data
 
 
 def _clamp_score_0_100(value: float) -> int:
@@ -742,6 +794,7 @@ class BackendState:
         LOCAL_STATE_DIR.mkdir(parents=True, exist_ok=True)
         init_db(str(SQLITE_PATH))
         self._lock = threading.Lock()
+        self.latest_diagnostics: dict[str, object] = {}
         self.api_token = self._load_or_create_token()
         self.settings = self._load_settings()
         self.last_inputs = self._read_json(INPUTS_PATH, default={})
@@ -769,6 +822,22 @@ class BackendState:
                 bmw_debug.get("provider_rebuilt_after_config_update"),
             )
         self._migrate_json_history_to_sqlite()
+
+    def record_endpoint_payload_size(self, endpoint_key: str, payload: object) -> int:
+        size_bytes = _json_payload_size_bytes(payload)
+        if not isinstance(self.latest_diagnostics, dict):
+            self.latest_diagnostics = {
+                "timestamp_utc": _utc_now_iso(),
+                "status": "n/a",
+                "success": False,
+                "stage_timings_ms": {},
+                "payload_sizes_bytes": {},
+                "total_run_ms": 0.0,
+            }
+        payload_sizes = self.latest_diagnostics.setdefault("payload_sizes_bytes", {})
+        if isinstance(payload_sizes, dict):
+            payload_sizes[endpoint_key] = int(size_bytes)
+        return int(size_bytes)
 
     def _migrate_json_history_to_sqlite(self) -> None:
         payloads: list[dict] = []
@@ -1214,66 +1283,67 @@ class BackendState:
         fast_mode: bool = False,
         use_satellite_nowcast_0_6h_override: bool | None = None,
     ) -> dict:
-        run_started = time.perf_counter()
-        cfg = self.settings["config"]
-        loc_cfg = cfg.get("location", {})
-        tz = str(loc_cfg.get("timezone", "Europe/Brussels"))
-        loc = core.Location(
-            name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
-            latitude=float(loc_cfg["latitude"]),
-            longitude=float(loc_cfg["longitude"]),
-            elevation_m=float(loc_cfg["elevation_m"]) if loc_cfg.get("elevation_m") is not None else None,
-        )
+        diagnostics = _RunDiagnostics()
+        with diagnostics.stage("config_normalization"):
+            cfg = self.settings["config"]
+            loc_cfg = cfg.get("location", {})
+            tz = str(loc_cfg.get("timezone", "Europe/Brussels"))
+            loc = core.Location(
+                name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
+                latitude=float(loc_cfg["latitude"]),
+                longitude=float(loc_cfg["longitude"]),
+                elevation_m=float(loc_cfg["elevation_m"]) if loc_cfg.get("elevation_m") is not None else None,
+            )
 
-        mode = str(forecast_mode or "auto").lower().strip()
-        if mode not in ("auto", "expert"):
-            mode = "auto"
+            mode = str(forecast_mode or "auto").lower().strip()
+            if mode not in ("auto", "expert"):
+                mode = "auto"
 
-        if mode == "expert":
-            tomorrow_models = list(weather_models or [])
-            if not tomorrow_models:
-                tomorrow_models = auto_select_models_for_location(loc, requested_days=1)
-        else:
-            tomorrow_models = auto_select_models_for_location(loc.latitude, loc.longitude, requested_days=1)
-        week_models = select_week_ahead_models(requested_days=7)
-        if not tomorrow_models:
-            raise HTTPException(status_code=400, detail="Select at least one weather model.")
-
-        normalized_ensemble_method = str(ensemble_method).lower().strip()
-        ensemble_method_tomorrow = "weighted"
-        ensemble_method_week = "median"
-        weather_cfg = cfg.get("weather", {}) if isinstance(cfg, dict) else {}
-        store_provider_payloads = bool(weather_cfg.get("store_provider_payloads", False)) if isinstance(weather_cfg, dict) else False
-        requested_use_sat = bool(weather_cfg.get("use_satellite_nowcast_0_6h", False)) if isinstance(weather_cfg, dict) else False
-        now_utc = dt.datetime.now(dt.timezone.utc)
-        requested_days = max(1, (target_date - now_utc.astimezone(ZoneInfo(tz)).date()).days)
-        if mode == "auto":
-            if requested_days > 1:
-                effective_use_sat = False
+            if mode == "expert":
+                tomorrow_models = list(weather_models or [])
+                if not tomorrow_models:
+                    tomorrow_models = auto_select_models_for_location(loc, requested_days=1)
             else:
-                effective_use_sat = should_use_satellite_nowcast_auto(
-                    latitude=loc.latitude,
-                    longitude=loc.longitude,
-                    timezone_name=tz,
-                    requested_days=1,
-                    now_utc=now_utc,
-                )
-        elif use_satellite_nowcast_0_6h_override is not None:
-            effective_use_sat = bool(use_satellite_nowcast_0_6h_override)
-        else:
-            effective_use_sat = requested_use_sat
+                tomorrow_models = auto_select_models_for_location(loc.latitude, loc.longitude, requested_days=1)
+            week_models = select_week_ahead_models(requested_days=7)
+            if not tomorrow_models:
+                raise HTTPException(status_code=400, detail="Select at least one weather model.")
 
-        ev_state = self._get_planning_ready_ev_state()
-        ev_warning = ev_state.get("warning")
-        vehicles = ev_state.get("vehicles") if isinstance(ev_state.get("vehicles"), dict) else {}
-        if vehicles:
-            first = next(iter(vehicles.values()))
-            ev_soc = first.get("soc_pct")
-            ev_status = str(first.get("data_status") or "")
-            if ev_soc is not None and ev_status in {"fresh", "aging", "fallback"}:
-                soc_percent = float(ev_soc)
+            normalized_ensemble_method = str(ensemble_method).lower().strip()
+            ensemble_method_tomorrow = "weighted"
+            ensemble_method_week = "median"
+            weather_cfg = cfg.get("weather", {}) if isinstance(cfg, dict) else {}
+            store_provider_payloads = bool(weather_cfg.get("store_provider_payloads", False)) if isinstance(weather_cfg, dict) else False
+            requested_use_sat = bool(weather_cfg.get("use_satellite_nowcast_0_6h", False)) if isinstance(weather_cfg, dict) else False
+            now_utc = dt.datetime.now(dt.timezone.utc)
+            requested_days = max(1, (target_date - now_utc.astimezone(ZoneInfo(tz)).date()).days)
+            if mode == "auto":
+                if requested_days > 1:
+                    effective_use_sat = False
+                else:
+                    effective_use_sat = should_use_satellite_nowcast_auto(
+                        latitude=loc.latitude,
+                        longitude=loc.longitude,
+                        timezone_name=tz,
+                        requested_days=1,
+                        now_utc=now_utc,
+                    )
+            elif use_satellite_nowcast_0_6h_override is not None:
+                effective_use_sat = bool(use_satellite_nowcast_0_6h_override)
+            else:
+                effective_use_sat = requested_use_sat
 
-        run_at_utc = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+            ev_state = self._get_planning_ready_ev_state()
+            ev_warning = ev_state.get("warning")
+            vehicles = ev_state.get("vehicles") if isinstance(ev_state.get("vehicles"), dict) else {}
+            if vehicles:
+                first = next(iter(vehicles.values()))
+                ev_soc = first.get("soc_pct")
+                ev_status = str(first.get("data_status") or "")
+                if ev_soc is not None and ev_status in {"fresh", "aging", "fallback"}:
+                    soc_percent = float(ev_soc)
+
+        run_at_utc = _utc_now_iso()
         run_id = str(uuid.uuid4())
         config_hash = compute_config_hash(cfg)
         inputs_used = {
@@ -1297,19 +1367,20 @@ class BackendState:
         }
 
         try:
-            ensemble_tomorrow = build_ensemble_forecast(
-                loc=loc,
-                target_date=target_date,
-                tz=tz,
-                weather_models=tomorrow_models,
-                ensemble_method=ensemble_method_tomorrow,
-                pv_uncertainty=bool(pv_uncertainty),
-                accuracy_mode=True,
-                fast_mode=bool(fast_mode),
-                requested_days=1,
-                use_satellite_nowcast_0_6h=effective_use_sat,
-                expert_mode=(mode == "expert"),
-            )
+            with diagnostics.stage("weather_fetch"):
+                ensemble_tomorrow = build_ensemble_forecast(
+                    loc=loc,
+                    target_date=target_date,
+                    tz=tz,
+                    weather_models=tomorrow_models,
+                    ensemble_method=ensemble_method_tomorrow,
+                    pv_uncertainty=bool(pv_uncertainty),
+                    accuracy_mode=True,
+                    fast_mode=bool(fast_mode),
+                    requested_days=1,
+                    use_satellite_nowcast_0_6h=effective_use_sat,
+                    expert_mode=(mode == "expert"),
+                )
         except RuntimeError as exc:
             if "All weather model requests failed" not in str(exc):
                 raise
@@ -1326,7 +1397,8 @@ class BackendState:
                     reason_msg = "unknown"
                 warnings.append(f"model failed: {model_id} ({reason_msg})")
             warnings = list(dict.fromkeys(warnings))
-            run_duration_ms = int((time.perf_counter() - run_started) * 1000)
+            diag_error = diagnostics.finalize(success=False, status="error", error_summary=f"{type(exc).__name__}: {exc}")
+            run_duration_ms = int(float(diag_error.get("total_run_ms", 0.0)))
             error_payload = {
                 "run_id": run_id,
                 "target_date": target_date.isoformat(),
@@ -1336,6 +1408,7 @@ class BackendState:
                 "timezone": tz,
                 "status": "error",
                 "run_duration_ms": run_duration_ms,
+                "run_diagnostics": diag_error,
                 "warnings": warnings,
                 "warnings_count": len(warnings),
                 "inputs_used": inputs_used,
@@ -1375,6 +1448,7 @@ class BackendState:
                 "weather_by_model": {},
             }
             insert_forecast_run(str(SQLITE_PATH), error_payload)
+            self.latest_diagnostics = diag_error
             self.latest_result = error_payload
             self.history.append(_to_history_summary(error_payload))
             self.history = self.history[-MAX_HISTORY:]
@@ -1383,19 +1457,20 @@ class BackendState:
 
         warnings: list[str] = [ev_warning] if isinstance(ev_warning, str) and ev_warning.strip() else []
         try:
-            ensemble_week = build_ensemble_forecast(
-                loc=loc,
-                target_date=target_date,
-                tz=tz,
-                weather_models=week_models,
-                ensemble_method=ensemble_method_week,
-                pv_uncertainty=bool(pv_uncertainty),
-                accuracy_mode=True,
-                fast_mode=False,
-                requested_days=7,
-                use_satellite_nowcast_0_6h=False,
-                expert_mode=False,
-            )
+            with diagnostics.stage("weather_ensemble"):
+                ensemble_week = build_ensemble_forecast(
+                    loc=loc,
+                    target_date=target_date,
+                    tz=tz,
+                    weather_models=week_models,
+                    ensemble_method=ensemble_method_week,
+                    pv_uncertainty=bool(pv_uncertainty),
+                    accuracy_mode=True,
+                    fast_mode=False,
+                    requested_days=7,
+                    use_satellite_nowcast_0_6h=False,
+                    expert_mode=False,
+                )
         except Exception as exc:
             ensemble_week = None
             warnings.append(f"pv_week_ahead_ensemble_failed={type(exc).__name__}:{exc}")
@@ -1527,8 +1602,9 @@ class BackendState:
         warnings = list(dict.fromkeys(warnings))
         status = "degraded" if warnings else "ok"
 
-        weather = ensemble_tomorrow.weather_primary
-        tomorrow_index, tomorrow_index_dst_adjusted = core.build_local_day_hour_index(target_date, tz)
+        with diagnostics.stage("pv_estimate"):
+            weather = ensemble_tomorrow.weather_primary
+            tomorrow_index, tomorrow_index_dst_adjusted = core.build_local_day_hour_index(target_date, tz)
         if len(tomorrow_index) != 24:
             raise RuntimeError(f"INV-T4 violation: expected 24 hourly slots, got {len(tomorrow_index)}")
 
@@ -1640,17 +1716,18 @@ class BackendState:
             decision_series = ensemble_tomorrow.pv_ensemble_p50
         if decision_series is None:
             decision_series = ensemble_tomorrow.pv_ensemble_p50
-        pv["pv_total_decision_kwh"] = pd.to_numeric(decision_series.reindex(pv.index), errors="coerce")
+            pv["pv_total_decision_kwh"] = pd.to_numeric(decision_series.reindex(pv.index), errors="coerce")
 
-        detail_df, flows_df, soc_series, charge_kw, cutoff_soc, cutoff_reason, charge_note, charge_target_reachable, charge_warning_text = core.run_detailed_plan(
-            target_date=target_date,
-            weather=weather,
-            pv_df=pv,
-            consumption_kwh=cons,
-            soc_at_22_percent=estimated_soc_percent,
-            buffer_percent=buffer_percent,
-            max_ac_charge_power_kw=user_max_ac_kw,
-        )
+        with diagnostics.stage("planner_simulation"):
+            detail_df, flows_df, soc_series, charge_kw, cutoff_soc, cutoff_reason, charge_note, charge_target_reachable, charge_warning_text = core.run_detailed_plan(
+                target_date=target_date,
+                weather=weather,
+                pv_df=pv,
+                consumption_kwh=cons,
+                soc_at_22_percent=estimated_soc_percent,
+                buffer_percent=buffer_percent,
+                max_ac_charge_power_kw=user_max_ac_kw,
+            )
         cutoff_adjusted_for_pv_headroom = str(cutoff_reason).startswith("CONFLICT")
         cutoff_adjustment_reason = (
             "Cutoff lowered to preserve PV headroom for daytime surplus handling."
@@ -1694,32 +1771,33 @@ class BackendState:
         cons_forecast_kwh = float(cons.sum())
         if "load_kwh" not in pv.columns:
             pv = core.add_load_and_surplus_columns(pv, cons_forecast_kwh)
-        quality_sig = inspect.signature(scoring.compute_pv_quality_score)
-        quality_kwargs = {
-            "pv_df": pv,
-            "weather_df": weather.df,
-            "target_date": target_date,
-            "tz": tz,
-            "fallback_score": 55,
-        }
-        if "loc" in quality_sig.parameters:
-            quality_kwargs["loc"] = loc
-        pv_quality = scoring.compute_pv_quality_score(**quality_kwargs)
+        with diagnostics.stage("savings_evaluation"):
+            quality_sig = inspect.signature(scoring.compute_pv_quality_score)
+            quality_kwargs = {
+                "pv_df": pv,
+                "weather_df": weather.df,
+                "target_date": target_date,
+                "tz": tz,
+                "fallback_score": 55,
+            }
+            if "loc" in quality_sig.parameters:
+                quality_kwargs["loc"] = loc
+            pv_quality = scoring.compute_pv_quality_score(**quality_kwargs)
 
-        today_date = target_date - dt.timedelta(days=1)
-        # Savings cycle must start from estimated off-peak SOC for continuity with run_detailed_plan().
-        savings = core.compute_euro_savings_no_battery_vs_plan(
-            pv_df=pv,
-            flows_df=flows_df,
-            soc_at_22=float(estimated_soc_percent) / 100.0,
-            charge_kw=charge_kw,
-            cutoff_soc=cutoff_soc,
-            today_date=today_date,
-            tomorrow_date=target_date,
-            total_consumption_kwh=cons_forecast_kwh,
-            tariff_cfg=(cfg.get("tariff", {}) if isinstance(cfg, dict) else {}),
-        )
-        pv_quality.update(savings)
+            today_date = target_date - dt.timedelta(days=1)
+            # Savings cycle must start from estimated off-peak SOC for continuity with run_detailed_plan().
+            savings = core.compute_euro_savings_no_battery_vs_plan(
+                pv_df=pv,
+                flows_df=flows_df,
+                soc_at_22=float(estimated_soc_percent) / 100.0,
+                charge_kw=charge_kw,
+                cutoff_soc=cutoff_soc,
+                today_date=today_date,
+                tomorrow_date=target_date,
+                total_consumption_kwh=cons_forecast_kwh,
+                tariff_cfg=(cfg.get("tariff", {}) if isinstance(cfg, dict) else {}),
+            )
+            pv_quality.update(savings)
 
         pv_totals_kwh = {
             "p50": canonical_tomorrow_total_kwh,
@@ -1795,7 +1873,6 @@ class BackendState:
         warnings = list(dict.fromkeys(warnings))
         status = "degraded" if warnings else "ok"
 
-        run_duration_ms = int((time.perf_counter() - run_started) * 1000)
         system_snapshot = {
             "lat": loc_cfg.get("latitude"),
             "lon": loc_cfg.get("longitude"),
@@ -1821,7 +1898,11 @@ class BackendState:
         inputs_used["pv_decision_scenario"] = decision_quantile
         inputs_used["pv_decision_reason"] = decision_reason
 
-        payload = {
+        diag_success = diagnostics.finalize(success=True, status=status)
+        run_duration_ms = int(float(diag_success.get("total_run_ms", 0.0)))
+
+        with diagnostics.stage("response_build"):
+            payload = {
             "run_id": run_id,
             "target_date": target_date.isoformat(),
             "weather": self._serialize_df(weather.df),
@@ -1966,15 +2047,21 @@ class BackendState:
                 "nowcast_used_hours": int(getattr(ensemble_tomorrow, "nowcast_used_hours", 0) or 0),
                 "nowcast_blend_hours": int(getattr(ensemble_tomorrow, "nowcast_blend_hours", 0) or 0),
             },
-            "provider_payloads_by_model": ((getattr(ensemble_tomorrow, "provider_payloads_by_model", {}) or {}) if store_provider_payloads else {}),
-        }
-        insert_forecast_run(str(SQLITE_PATH), payload)
-        self.latest_result = payload
+                "provider_payloads_by_model": ((getattr(ensemble_tomorrow, "provider_payloads_by_model", {}) or {}) if store_provider_payloads else {}),
+            }
+        with diagnostics.stage("db_write"):
+            insert_forecast_run(str(SQLITE_PATH), payload)
+            self.latest_diagnostics = diag_success
+            self.latest_result = payload
         self.history.append(_to_history_summary(payload))
         self.history = self.history[-MAX_HISTORY:]
         self.settings["last_successful_for_target_date"] = target_date.isoformat()
         self._save_results()
         self._save_settings()
+        final_diag = diagnostics.finalize(success=True, status=status)
+        payload["run_diagnostics"] = final_diag
+        payload["run_duration_ms"] = int(float(final_diag.get("total_run_ms", 0.0)))
+        self.latest_diagnostics = final_diag
         del detail_df, flows_df, pv, weather
         gc.collect()
         return payload
@@ -2032,10 +2119,16 @@ class BackendState:
                 result["warnings"] = [*existing, *warnings]
                 result["input_warnings"] = warnings
             self.latest_result = result
+            run_response = {"ran": True, "result": result}
+            payload_size = self.record_endpoint_payload_size("/v1/run/now", run_response)
+            if DEBUG:
+                stage_timings = self.latest_diagnostics.get("stage_timings_ms", {}) if isinstance(self.latest_diagnostics, dict) else {}
+                slowest = max(stage_timings.items(), key=lambda kv: kv[1]) if isinstance(stage_timings, dict) and stage_timings else None
+                logger.info("run diagnostics run_id=%s total_ms=%.1f slowest_stage=%s payload_bytes=%d status=%s", result.get("run_id"), float(result.get("run_duration_ms", 0.0)), (slowest[0] if slowest else None), int(payload_size), result.get("status"))
             if self.history:
                 self.history[-1]["run_type"] = "manual"
             self._save_results()
-            return {"ran": True, "result": result}
+            return run_response
         finally:
             self._lock.release()
 
@@ -2103,6 +2196,12 @@ class BackendState:
                 result["input_warnings"] = warnings
             result["run_type"] = "nightly"
             self.latest_result = result
+            run_response = {"ran": True, "result": result}
+            payload_size = self.record_endpoint_payload_size("/v1/run/now", run_response)
+            if DEBUG:
+                stage_timings = self.latest_diagnostics.get("stage_timings_ms", {}) if isinstance(self.latest_diagnostics, dict) else {}
+                slowest = max(stage_timings.items(), key=lambda kv: kv[1]) if isinstance(stage_timings, dict) and stage_timings else None
+                logger.info("run diagnostics run_id=%s total_ms=%.1f slowest_stage=%s payload_bytes=%d status=%s", result.get("run_id"), float(result.get("run_duration_ms", 0.0)), (slowest[0] if slowest else None), int(payload_size), result.get("status"))
             if self.history:
                 self.history[-1]["warnings"] = warnings
                 self.history[-1]["run_type"] = "nightly"
@@ -2544,9 +2643,9 @@ def weather_models(authorization: str | None = Header(default=None)) -> dict:
 def latest_result(authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
     db_payload = fetch_latest_full_run(str(SQLITE_PATH))
-    if db_payload is not None:
-        return db_payload
-    return state.latest_result
+    out = db_payload if db_payload is not None else state.latest_result
+    state.record_endpoint_payload_size("/v1/results/latest", out)
+    return out
 
 
 
@@ -2567,6 +2666,6 @@ def history(days: int = 30, show_all_runs: bool = False, authorization: str | No
         items = fetch_history_all_runs(str(SQLITE_PATH), limit_days=limit_days)
     else:
         items = fetch_history_latest_per_day(str(SQLITE_PATH), limit_days=limit_days)
-    if items:
-        return {"items": items}
-    return {"items": state.history[-limit_days:]}
+    out = {"items": items} if items else {"items": state.history[-limit_days:]}
+    state.record_endpoint_payload_size("/v1/results/history", out)
+    return out
