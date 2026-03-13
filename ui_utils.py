@@ -1,7 +1,74 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 from typing import Any
+
+
+def is_app_debug_enabled(env: dict[str, str] | None = None) -> bool:
+    """Return True when APP_DEBUG is explicitly enabled."""
+    source = env if env is not None else os.environ
+    raw = str(source.get("APP_DEBUG", "")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def summarize_ev_provider_state(
+    provider_status: dict[str, Any] | None,
+    *,
+    has_vehicle: bool,
+    soc_available: bool,
+    vehicle_freshness_seconds: Any,
+) -> dict[str, Any]:
+    """Map backend provider_status into concise user-facing EV widget state."""
+    status = provider_status if isinstance(provider_status, dict) else {}
+    provider = str(status.get("provider_status") or "").strip().lower()
+    data_status = str(status.get("data_status") or "").strip().lower()
+    freshness = _to_float_or_none(vehicle_freshness_seconds)
+    stale_data = data_status in {"stale", "partial", "error"} or (freshness is not None and freshness >= 1800.0)
+
+    chips: list[str] = []
+    helper = ""
+    fallback = ""
+    headline_override = ""
+
+    if not status:
+        chips = ["Waiting for BMW data"]
+        fallback = "BMW data temporarily unavailable. Please try again shortly."
+    elif provider == "disabled":
+        chips = ["BMW disabled"]
+        fallback = "EV integration is disabled. Enable BMW in settings to see car status."
+    elif provider == "auth_required":
+        chips = ["Auth required"]
+        fallback = "BMW authorization required. Connect your BMW account to load vehicle status."
+    elif not has_vehicle:
+        if provider == "degraded":
+            chips = ["No vehicle", "Degraded"]
+            fallback = "No BMW vehicles found yet. Check vehicle mapping and refresh BMW data."
+        else:
+            chips = ["Waiting for BMW data"]
+            fallback = "BMW connected. Waiting for vehicle data."
+    else:
+        if provider in {"healthy", "ready", "polling"}:
+            chips.append("Connected")
+        elif provider == "degraded":
+            chips.append("Degraded")
+        else:
+            chips.append("BMW status unknown")
+
+        if stale_data:
+            chips.append("Stale")
+            helper = "Using last known BMW vehicle data."
+        if not soc_available:
+            headline_override = "Vehicle data ready · battery level pending"
+
+    return {
+        "chips": chips[:2],
+        "helper": helper,
+        "fallback": fallback,
+        "headline_override": headline_override,
+        "provider_status": provider,
+        "data_status": data_status,
+    }
 
 
 def format_ev_bool(value: Any, true_label: str = "Yes", false_label: str = "No", unknown_label: str = "—") -> str:

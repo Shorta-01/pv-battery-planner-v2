@@ -32,7 +32,9 @@ from ui_utils import (
     format_ev_kwh,
     format_ev_kw,
     format_ev_time_to_full_minutes,
+    is_app_debug_enabled,
     resolve_pv_outlook_savings,
+    summarize_ev_provider_state,
     weather_code_to_icon as ui_weather_code_to_icon,
     weather_code_to_label as ui_weather_code_to_label,
 )
@@ -487,7 +489,7 @@ def save_settings_payload(new_cfg: dict, *, rerun: bool = True) -> bool:
 LOCAL_STATE_DIR = Path("local_state")
 API_BASE_URL = os.getenv("PVBP_BACKEND_URL", "http://127.0.0.1:8787")
 API_TOKEN_FILE = LOCAL_STATE_DIR / "api_token.txt"
-APP_DEBUG = os.getenv("DEBUG", "").strip() in ("1", "true", "True", "yes", "YES")
+APP_DEBUG = is_app_debug_enabled()
 SHOW_WARNINGS_UI = False
 UI_ERROR_BUFFER_PATH = LOCAL_STATE_DIR / "ui_error_buffer.jsonl"
 
@@ -907,7 +909,7 @@ def render_weather_models(
     if (not selected_models) and (not disabled):
         st.error("Select at least one weather model.")
 
-    debug_ui = bool(os.getenv("APP_DEBUG")) and st.session_state.get("history_mode", "Simple") == "Debug"
+    debug_ui = APP_DEBUG and st.session_state.get("history_mode", "Simple") == "Debug"
     if debug_ui:
         dbg = st.session_state.get("last_weather_ensemble_debug") or {}
         with st.expander("Advanced: last run model debug", expanded=False):
@@ -4195,38 +4197,96 @@ with left:
 
     def render_ev_car_status_panel(container=None) -> None:
         card = container if container is not None else st.container()
-        try:
-            provider_status = api_get("/v1/ev/provider_status")
-            vehicles_payload = api_get("/v1/ev/vehicles")
-        except Exception as exc:
+
+        def _render_fallback_card(message: str, chips: list[str] | None = None, helper: str = "") -> None:
+            chips_html = ""
+            if chips:
+                chips_html = "".join(
+                    "<span style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
+                    "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
+                    "border-radius:999px;font-size:0.72rem;font-weight:650;'>"
+                    f"{_esc_attr(chip)}</span>"
+                    for chip in chips[:2]
+                )
+            helper_html = f"<div style='margin-top:0.36rem;font-size:0.74rem;opacity:0.72;'>{_esc_attr(helper)}</div>" if helper else ""
             card.markdown(
-                """
-                <div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.78rem 0.82rem;
-                background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));min-width:245px;'>
-                <div style='font-weight:760;letter-spacing:0.03em;opacity:0.95;'>CAR STATUS</div>
-                <div style='margin-top:0.45rem;font-size:0.90rem;opacity:0.88;'>BMW vehicle status unavailable.</div>
-                </div>
-                """,
+                (
+                    "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.78rem 0.82rem;"
+                    "background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));min-width:245px;'>"
+                    "<div style='display:flex;align-items:center;justify-content:space-between;gap:0.42rem;'>"
+                    "<div style='font-size:0.90rem;font-weight:760;letter-spacing:0.03em;opacity:0.95;'>CAR STATUS</div>"
+                    f"<div style='display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;'>{chips_html}</div>"
+                    "</div>"
+                    f"<div style='margin-top:0.45rem;font-size:0.90rem;opacity:0.88;'>{_esc_attr(message)}</div>"
+                    f"{helper_html}</div>"
+                ),
                 unsafe_allow_html=True,
             )
-            if APP_DEBUG:
-                with card.expander("EV diagnostics", expanded=False):
-                    st.caption(f"EV status fetch error: {exc}")
-            return
+
+        provider_status: dict = {}
+        vehicles_payload: dict = {}
+        fetch_error = ""
+        try:
+            provider_status = api_get("/v1/ev/provider_status")
+        except Exception as exc:
+            fetch_error = str(exc)
+            provider_status = {}
+
+        try:
+            vehicles_payload = api_get("/v1/ev/vehicles")
+        except Exception as exc:
+            if not fetch_error:
+                fetch_error = str(exc)
+            vehicles_payload = {}
 
         vehicles = vehicles_payload.get("vehicles", {}) if isinstance(vehicles_payload, dict) else {}
         v = next(iter(vehicles.values()), {}) if isinstance(vehicles, dict) else {}
-        if not v:
-            card.markdown(
-                """
-                <div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.78rem 0.82rem;
-                background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));min-width:245px;'>
-                <div style='font-weight:760;letter-spacing:0.03em;opacity:0.95;'>CAR STATUS</div>
-                <div style='margin-top:0.45rem;font-size:0.90rem;opacity:0.88;'>No BMW vehicle data available yet.</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
+        has_vehicle = bool(v)
+
+        provider_state = summarize_ev_provider_state(
+            provider_status,
+            has_vehicle=has_vehicle,
+            soc_available=bool(v and pd.notna(_safe_float(v.get("soc_pct"), float("nan")))),
+            vehicle_freshness_seconds=(v or {}).get("freshness_seconds"),
+        )
+
+        ev_cfg = (effective_cfg or {}).get("ev_vehicle_data", {}) or {}
+        if not bool(ev_cfg.get("bmw_enabled", False)):
+            _render_fallback_card(
+                "EV integration is disabled.",
+                chips=["BMW disabled"],
+                helper="Enable BMW in settings to show car status.",
             )
+            return
+
+        if not str(ev_cfg.get("bmw_client_id") or "").strip():
+            _render_fallback_card(
+                "BMW authorization required.",
+                chips=["Auth required"],
+                helper="Add your BMW client id and connect your account.",
+            )
+            return
+
+        if fetch_error and not has_vehicle:
+            _render_fallback_card(
+                provider_state.get("fallback") or "BMW data temporarily unavailable.",
+                chips=provider_state.get("chips") or ["Waiting for BMW data"],
+                helper="Unable to refresh BMW status right now.",
+            )
+            if APP_DEBUG:
+                with card.expander("EV diagnostics", expanded=False):
+                    st.caption(f"EV status fetch error: {fetch_error}")
+            return
+
+        if not has_vehicle:
+            _render_fallback_card(
+                provider_state.get("fallback") or "No BMW vehicle data available yet.",
+                chips=provider_state.get("chips") or ["No vehicle"],
+                helper=provider_state.get("helper") or "",
+            )
+            if APP_DEBUG:
+                with card.expander("EV diagnostics", expanded=False):
+                    st.json({"provider_status": provider_status, "vehicles": vehicles_payload}, expanded=False)
             return
 
         soc_raw = _safe_float(v.get("soc_pct"), float("nan"))
@@ -4235,7 +4295,7 @@ with left:
         is_charging = v.get("is_charging")
 
         if soc_pct is None:
-            headline = "Battery status unavailable"
+            headline = provider_state.get("headline_override") or "Battery status unavailable"
         elif bool(is_charging):
             headline = f"{soc_pct:.0f}% battery · charging now"
         elif bool(is_plugged):
@@ -4254,6 +4314,13 @@ with left:
             f"<span style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
             "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
             "border-radius:999px;font-size:0.72rem;font-weight:650;'>🚗 {status_chip_text}</span>"
+        )
+        provider_chip_html = "".join(
+            "<span style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
+            "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
+            "border-radius:999px;font-size:0.72rem;font-weight:650;'>"
+            f"{_esc_attr(chip)}</span>"
+            for chip in (provider_state.get("chips") or [])[:1]
         )
 
         deadline_cfg = ((effective_cfg or {}).get("ev_vehicle_data", {}) or {}).get("ev_charge_deadline_time")
@@ -4288,6 +4355,8 @@ with left:
         if planner_status:
             helper_parts.append(f"Planner: {planner_status}")
         helper_parts.append(f"Last BMW update: {last_update} ({freshness_label})")
+        if provider_state.get("helper"):
+            helper_parts.append(str(provider_state.get("helper")))
 
         soc_width = soc_pct if soc_pct is not None else 0.0
 
@@ -4336,7 +4405,7 @@ with left:
                 "<div style='display:flex;align-items:center;justify-content:space-between;gap:0.42rem;'>"
                 "<div style='font-size:0.90rem;font-weight:760;letter-spacing:0.03em;opacity:0.95;'>CAR STATUS</div>"
                 "<div style='display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;'>"
-                f"{freshness_chip}{status_chip}"
+                f"{freshness_chip}{status_chip}{provider_chip_html}"
                 "</div></div>"
                 f"<div style='margin-top:0.40rem;font-size:0.96rem;font-weight:700;'>{_esc_attr(headline)}</div>"
                 "<div style='margin-top:0.45rem;height:8px;border-radius:999px;overflow:hidden;background:rgba(255,255,255,0.12);'>"
@@ -4359,6 +4428,7 @@ with left:
                 st.json({
                     "provider_status": provider_status,
                     "vehicle": v,
+                    "provider_state": provider_state,
                 }, expanded=False)
 
 

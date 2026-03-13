@@ -3,7 +3,12 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ui_utils import resolve_pv_outlook_savings, weather_code_to_icon
+from ui_utils import (
+    is_app_debug_enabled,
+    resolve_pv_outlook_savings,
+    summarize_ev_provider_state,
+    weather_code_to_icon,
+)
 
 
 def test_weather_code_to_icon_known_numeric_codes() -> None:
@@ -78,3 +83,40 @@ def test_resolve_pv_outlook_savings_corrects_bad_savings_field() -> None:
     out = resolve_pv_outlook_savings(payload)
 
     assert out["savings"] == 7.62 - 7.94
+
+
+def test_is_app_debug_enabled_reads_only_app_debug() -> None:
+    assert is_app_debug_enabled({"APP_DEBUG": "1"}) is True
+    assert is_app_debug_enabled({"APP_DEBUG": "true"}) is True
+    assert is_app_debug_enabled({"APP_DEBUG": "0", "DEBUG": "1"}) is False
+
+
+def test_summarize_ev_provider_state_auth_required() -> None:
+    state = summarize_ev_provider_state(
+        {"provider_status": "auth_required", "data_status": "stale"},
+        has_vehicle=False,
+        soc_available=False,
+        vehicle_freshness_seconds=None,
+    )
+    assert "Auth required" in state["chips"]
+    assert "authorization required" in state["fallback"].lower()
+
+
+def test_summarize_ev_provider_state_no_vehicle_and_stale_vehicle_data() -> None:
+    no_vehicle = summarize_ev_provider_state(
+        {"provider_status": "degraded", "data_status": "partial"},
+        has_vehicle=False,
+        soc_available=False,
+        vehicle_freshness_seconds=None,
+    )
+    assert "No vehicle" in no_vehicle["chips"]
+
+    stale = summarize_ev_provider_state(
+        {"provider_status": "healthy", "data_status": "fresh"},
+        has_vehicle=True,
+        soc_available=True,
+        vehicle_freshness_seconds=2400,
+    )
+    assert "Connected" in stale["chips"]
+    assert "Stale" in stale["chips"]
+    assert "last known" in stale["helper"].lower()
