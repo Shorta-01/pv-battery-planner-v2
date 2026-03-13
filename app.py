@@ -278,6 +278,29 @@ def build_settings_payload(effective_cfg: dict, valid_model_ids: set[str]) -> tu
     forecast_mode_value = str(st.session_state.get("forecast_mode_select", "Auto"))
     forecast_mode_to_save = FORECAST_MODE_OPTIONS.get(forecast_mode_value, "auto")
     user_sat_setting = bool(st.session_state.get("use_sat_nowcast_expert", ui.get("saved_sat", False)))
+    ev_deadline = str(ui.get("cfg_ev_charge_deadline_time", "")).strip()
+    if ev_deadline:
+        try:
+            parse_hhmm(ev_deadline, allow_24_end=False)
+        except ValueError as exc:
+            return None, f"EV settings error: invalid EV charge deadline '{ev_deadline}' ({exc})"
+
+    petrol_price_raw = str(ui.get("cfg_petrol_price_eur_per_l", "")).strip()
+    petrol_consumption_raw = str(ui.get("cfg_petrol_consumption_l_per_100km", "")).strip()
+
+    def _optional_float(value: str, field_name: str) -> float | str:
+        if value == "":
+            return ""
+        try:
+            return float(value)
+        except ValueError:
+            raise ValueError(f"{field_name} must be a number when provided.") from None
+
+    try:
+        petrol_price = _optional_float(petrol_price_raw, "Petrol price")
+        petrol_consumption = _optional_float(petrol_consumption_raw, "Petrol consumption")
+    except ValueError as exc:
+        return None, f"EV settings error: {exc}"
 
     new_cfg = {
         "location": {
@@ -343,6 +366,9 @@ def build_settings_payload(effective_cfg: dict, valid_model_ids: set[str]) -> tu
             "bmw_enabled": bool(ui.get("cfg_ev_enabled", False)),
             "bmw_client_id": str(ui.get("cfg_bmw_client_id", "")).strip(),
             "bmw_active_vehicle_id": str(ui.get("cfg_bmw_active_vehicle_id", "")).strip() or None,
+            "petrol_price_eur_per_l": petrol_price,
+            "petrol_consumption_l_per_100km": petrol_consumption,
+            "ev_charge_deadline_time": ev_deadline,
             "bmw_token_cache_path": str((effective_cfg.get("ev_vehicle_data", {}) or {}).get("bmw_token_cache_path", "local_state/bmw_token.json")),
             "bmw_raw_event_store_path": str((effective_cfg.get("ev_vehicle_data", {}) or {}).get("bmw_raw_event_store_path", "local_state/bmw_raw_events.jsonl")),
             "bmw_vehicle_state_store_path": str((effective_cfg.get("ev_vehicle_data", {}) or {}).get("bmw_vehicle_state_store_path", "local_state/bmw_vehicle_state.json")),
@@ -3849,6 +3875,21 @@ with left:
         ev_cfg = (effective_cfg.get("ev_vehicle_data", {}) or {}) if isinstance(effective_cfg, dict) else {}
         cfg_ev_enabled = st.checkbox("EV integration enabled", value=bool(ev_cfg.get("enabled", False)))
         cfg_bmw_client_id = st.text_input("BMW client id", value=str(ev_cfg.get("bmw_client_id", "")), type="password")
+        cfg_petrol_price_eur_per_l = st.text_input(
+            "Petrol price (€/L)",
+            value=str(ev_cfg.get("petrol_price_eur_per_l", "")),
+            help="Optional economics input used for EV-vs-petrol comparison. Not live vehicle telemetry.",
+        )
+        cfg_petrol_consumption_l_per_100km = st.text_input(
+            "Petrol consumption (L/100 km)",
+            value=str(ev_cfg.get("petrol_consumption_l_per_100km", "")),
+            help="Optional economics input used for EV-vs-petrol comparison. Not live vehicle telemetry.",
+        )
+        cfg_ev_charge_deadline_time = st.text_input(
+            "EV charge deadline (HH:MM)",
+            value=str(ev_cfg.get("ev_charge_deadline_time", "")),
+            help="Manual policy target: EV must be fully charged by this time.",
+        )
         if cfg_ev_enabled and not str(cfg_bmw_client_id).strip():
             ui_warning("BMW connection is incomplete: configure BMW client id to enable EV SOC from BMW CarData.")
 
@@ -3936,6 +3977,9 @@ with left:
             "cfg_ev_enabled": bool(cfg_ev_enabled),
             "cfg_bmw_client_id": str(cfg_bmw_client_id),
             "cfg_bmw_active_vehicle_id": str(selected_vehicle_id),
+            "cfg_petrol_price_eur_per_l": str(cfg_petrol_price_eur_per_l),
+            "cfg_petrol_consumption_l_per_100km": str(cfg_petrol_consumption_l_per_100km),
+            "cfg_ev_charge_deadline_time": str(cfg_ev_charge_deadline_time),
             "cfg_load_profile": cfg_load_profile,
             "saved_sat": bool((effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}).get("use_satellite_nowcast_0_6h", False)),
             "cfg_max_grid_charge_power_kw": float(user_max_ac_kw),

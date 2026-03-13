@@ -205,6 +205,9 @@ DEFAULT_CONFIG = {
         "source": "bmw_cardata",
         "bmw_enabled": False,
         "bmw_client_id": "",
+        "petrol_price_eur_per_l": "",
+        "petrol_consumption_l_per_100km": "",
+        "ev_charge_deadline_time": "",
         "bmw_token_cache_path": "local_state/bmw_token.json",
         "bmw_raw_event_store_path": "local_state/bmw_raw_events.jsonl",
         "bmw_vehicle_state_store_path": "local_state/bmw_vehicle_state.json",
@@ -497,6 +500,13 @@ def validate_config(cfg: dict) -> None:
     if min_days <= 0:
         raise ValueError("weather.dynamic_weights.min_days must be > 0.")
 
+    ev_cfg = cfg.get("ev_vehicle_data", {}) if isinstance(cfg.get("ev_vehicle_data"), dict) else {}
+    if bool(ev_cfg.get("enabled", False)) and not str(ev_cfg.get("bmw_client_id", "")).strip():
+        raise ValueError("ev_vehicle_data.bmw_client_id is required when ev_vehicle_data.enabled is true.")
+    deadline = ev_cfg.get("ev_charge_deadline_time")
+    if deadline not in (None, ""):
+        _validate_time_hhmm(str(deadline), allow_2400_end=False)
+
 
 def _apply_config_impl(cfg: dict, enforce_pv_defaults: bool) -> None:
     global USE_GEOCODING, ADDRESS_QUERY, LATITUDE, LONGITUDE, TIMEZONE
@@ -620,11 +630,11 @@ def build_effective_config(user_cfg: dict) -> dict:
         ev_enabled = bool(ev_cfg.get("enabled", False))
         ev_cfg["source"] = "bmw_cardata"
         ev_cfg["bmw_enabled"] = ev_enabled
+        if not ev_cfg.get("ev_charge_deadline_time") and ev_cfg.get("ready_by_time"):
+            ev_cfg["ev_charge_deadline_time"] = ev_cfg.get("ready_by_time")
         for legacy_key in (
             "bmw_stream_enabled",
             "charger_max_power_kw",
-            "petrol_price_eur_per_l",
-            "petrol_consumption_l_per_100km",
             "ready_by_time",
         ):
             ev_cfg.pop(legacy_key, None)
