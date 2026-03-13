@@ -3911,16 +3911,55 @@ with left:
             provider_status = {}
             vehicles_payload = {}
 
-        status_cols = st.columns(2)
-        status_cols[0].caption(f"Provider status: {provider_status.get('provider_status', 'unknown')}")
-        status_cols[1].caption(f"Data status: {provider_status.get('data_status', 'unknown')}")
         vehicle_map = vehicles_payload.get("vehicles", {}) if isinstance(vehicles_payload, dict) else {}
         vehicle_list = list(vehicle_map.values()) if isinstance(vehicle_map, dict) else []
         first_vehicle = next(iter(vehicle_map.values()), {}) if isinstance(vehicle_map, dict) else {}
         selected_vehicle_id = str(ev_cfg.get("bmw_active_vehicle_id") or "")
-        if first_vehicle:
-            st.caption(f"Linked vehicle: {first_vehicle.get('display_name') or '-'} · {first_vehicle.get('vehicle_id')}")
-            st.caption(f"Last vehicle update: {first_vehicle.get('last_update_ts')} · Freshness: {first_vehicle.get('freshness_seconds')}")
+
+        linked_label = "Vehicle linked" if first_vehicle else "No vehicle"
+        linked_tip = "This BMW vehicle is used for EV SOC and status." if first_vehicle else "No BMW vehicle is currently linked for EV status."
+        freshness_seconds = first_vehicle.get("freshness_seconds") if first_vehicle else None
+        freshness_label = format_ev_freshness(freshness_seconds, unknown_label="Waiting for BMW data")
+        provider_state = summarize_ev_provider_state(
+            provider_status,
+            has_vehicle=bool(first_vehicle),
+            soc_available=bool(first_vehicle and pd.notna(_safe_float(first_vehicle.get("soc_pct"), float("nan")))),
+            vehicle_freshness_seconds=freshness_seconds,
+        )
+        connected_state = "Connected" if "Connected" in (provider_state.get("chips") or []) else "Auth required"
+        connected_tip = (
+            "BMW authorization is active and vehicle data can be retrieved."
+            if connected_state == "Connected"
+            else "BMW authorization is required before vehicle data can be retrieved."
+        )
+        data_fresh_state = "Stale" if "Stale" in (provider_state.get("chips") or []) else "Fresh"
+        data_fresh_tip = (
+            "Latest BMW vehicle data is older than expected and may not reflect the live car state."
+            if data_fresh_state == "Stale"
+            else "BMW vehicle data was updated recently."
+        )
+        status_chip_specs = [
+            ("🔐", connected_state, connected_tip),
+            ("📡", data_fresh_state, data_fresh_tip),
+            ("🚗", linked_label, linked_tip),
+            ("⏱", f"Updated {freshness_label}", "Time since the latest vehicle data update received from BMW."),
+        ]
+        status_chips_html = "".join(
+            "<span title='" + _esc_attr(tip) + "' style='display:inline-flex;align-items:center;gap:0.28rem;padding:0.20rem 0.45rem;"
+            "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:999px;"
+            "font-size:0.72rem;font-weight:650;'>"
+            + _esc_attr(icon)
+            + " "
+            + _esc_attr(label)
+            + "</span>"
+            for icon, label, tip in status_chip_specs
+        )
+        st.markdown(
+            "<div style='display:flex;gap:0.35rem;flex-wrap:wrap;margin:0.1rem 0 0.35rem 0;'>"
+            + status_chips_html
+            + "</div>",
+            unsafe_allow_html=True,
+        )
         if len(vehicle_list) > 1:
             vehicle_options = []
             for vehicle in vehicle_list:
@@ -3937,13 +3976,20 @@ with left:
                     if label == selected_label:
                         selected_vehicle_id = vehicle_id
                         break
-        st.caption(f"Stream connected: {'yes' if provider_status.get('stream_connected') else 'no'}")
-        if st.button("Manual refresh", key="btn_ev_manual_refresh_settings"):
+        if st.button("Refresh BMW data", key="btn_ev_manual_refresh_settings", type="secondary", help="Fetch latest BMW vehicle data now"):
             try:
                 api_post("/v1/ev/manual_refresh", {})
                 st.success("EV refresh triggered.")
             except Exception as exc:
                 st.error(f"EV refresh failed: {exc}")
+
+        if APP_DEBUG:
+            st.caption(f"Provider status: {provider_status.get('provider_status', 'unknown')}")
+            st.caption(f"Data status: {provider_status.get('data_status', 'unknown')}")
+            if first_vehicle:
+                st.caption(f"Linked vehicle: {first_vehicle.get('display_name') or '-'} · {first_vehicle.get('vehicle_id')}")
+                st.caption(f"Last vehicle update: {first_vehicle.get('last_update_ts')} · Freshness: {first_vehicle.get('freshness_seconds')}")
+            st.caption(f"Stream connected: {'yes' if provider_status.get('stream_connected') else 'no'}")
 
 
         cfg_load_profile = [float(v) for v in effective_cfg["load_profile"]["load_profile_24h"]]
@@ -4251,7 +4297,7 @@ with left:
         )
 
         ev_cfg = (effective_cfg or {}).get("ev_vehicle_data", {}) or {}
-        if not bool(ev_cfg.get("bmw_enabled", False)):
+        if not bool(ev_cfg.get("enabled", ev_cfg.get("bmw_enabled", False))):
             _render_fallback_card(
                 "EV integration is disabled.",
                 chips=["BMW disabled"],
@@ -4294,14 +4340,17 @@ with left:
         is_plugged = v.get("is_plugged")
         is_charging = v.get("is_charging")
 
+        range_label = format_ev_km(v.get("range_km"), unknown_label="Not available")
+        has_range = range_label != "Not available"
+
         if soc_pct is None:
             headline = provider_state.get("headline_override") or "Battery status unavailable"
         elif bool(is_charging):
-            headline = f"{soc_pct:.0f}% battery · charging now"
+            headline = f"{soc_pct:.0f}% / {range_label} · charging now" if has_range else f"{soc_pct:.0f}% battery · charging now"
         elif bool(is_plugged):
-            headline = f"{soc_pct:.0f}% battery · plugged in, waiting"
+            headline = f"{soc_pct:.0f}% / {range_label} · plugged in, waiting" if has_range else f"{soc_pct:.0f}% battery · plugged in, waiting"
         else:
-            headline = f"{soc_pct:.0f}% battery · not plugged in"
+            headline = f"{soc_pct:.0f}% / {range_label} · not plugged in" if has_range else f"{soc_pct:.0f}% battery · not plugged in"
 
         freshness_label = format_ev_freshness(v.get("freshness_seconds"))
         freshness_chip = (
@@ -4324,16 +4373,16 @@ with left:
         )
 
         deadline_cfg = ((effective_cfg or {}).get("ev_vehicle_data", {}) or {}).get("ev_charge_deadline_time")
-        deadline_label = str(deadline_cfg).strip() if str(deadline_cfg or "").strip() else "—"
-        expected_full_label = format_ev_datetime(v.get("expected_full_charge_ts"))
+        deadline_label = str(deadline_cfg).strip() if str(deadline_cfg or "").strip() else "No deadline set"
+        expected_full_label = format_ev_datetime(v.get("expected_full_charge_ts"), unknown_label="Waiting for BMW data")
 
         metric_items = [
             ("Plugged in", format_ev_bool(is_plugged, true_label="Yes", false_label="No")),
             ("Charging now", format_ev_bool(is_charging, true_label="Yes", false_label="No")),
-            ("Charge power", format_ev_kw(v.get("charge_power_kw"))),
+            ("Charge power", format_ev_kw(v.get("charge_power_kw"), unknown_label="Not available")),
             ("Full charge at", expected_full_label),
             ("Deadline", deadline_label),
-            ("Range", format_ev_km(v.get("range_km"))),
+            ("Range", range_label),
         ]
 
         metric_html = "".join(
@@ -4346,8 +4395,8 @@ with left:
         )
 
         helper_parts = []
-        energy_needed = format_ev_kwh(v.get("energy_needed_kwh"))
-        time_to_full = format_ev_time_to_full_minutes(v.get("time_to_full_min"))
+        energy_needed = format_ev_kwh(v.get("energy_needed_kwh"), unknown_label="Not available")
+        time_to_full = format_ev_time_to_full_minutes(v.get("time_to_full_min"), unknown_label="Waiting for BMW data")
         planner_status = str(v.get("planner_status_text") or "").strip()
         last_update = format_ev_datetime(v.get("last_update_ts"))
         helper_parts.append(f"Energy still needed: {energy_needed}")
@@ -4912,6 +4961,7 @@ if run_clicked or st.session_state.get("last_run_result"):
                         or ((result.get("weather_ensemble") or {}).get("selected_models") if isinstance(result.get("weather_ensemble"), dict) else None)
                     ),
                 )
+                render_ev_car_status_panel(st.container())
             with top_right:
                 render_pv_quality_widget(
                     top_right,
@@ -4931,8 +4981,6 @@ if run_clicked or st.session_state.get("last_run_result"):
 
             pv_week_ahead_display = (pv_week_ahead or [])[:6]
             render_pv_week_ahead_widget(pv_week_ahead_display)
-
-            render_ev_car_status_panel(st.container())
 
             if charge_target_reachable is False and charge_warning_text:
                 ui_warning(charge_warning_text)

@@ -4,6 +4,10 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ui_utils import (
+    format_ev_datetime,
+    format_ev_km,
+    format_ev_kw,
+    format_ev_time_to_full_minutes,
     is_app_debug_enabled,
     resolve_pv_outlook_savings,
     summarize_ev_provider_state,
@@ -120,3 +124,10 @@ def test_summarize_ev_provider_state_no_vehicle_and_stale_vehicle_data() -> None
     assert "Connected" in stale["chips"]
     assert "Stale" in stale["chips"]
     assert "last known" in stale["helper"].lower()
+
+
+def test_ev_format_helpers_support_friendly_unknown_labels() -> None:
+    assert format_ev_km(None, unknown_label="Not available") == "Not available"
+    assert format_ev_kw(None, unknown_label="Not available") == "Not available"
+    assert format_ev_time_to_full_minutes(None, unknown_label="Waiting for BMW data") == "Waiting for BMW data"
+    assert format_ev_datetime(None, unknown_label="Waiting for BMW data") == "Waiting for BMW data"
