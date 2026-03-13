@@ -48,6 +48,13 @@ def _as_bool_from_states(value: Any, *, true_values: set[str], false_values: set
         return False
     return None
 
+
+def _descriptor_value(telematic: dict[str, Any], key: str, field: str = "value") -> Any:
+    node = telematic.get(key)
+    if isinstance(node, dict):
+        return node.get(field)
+    return None
+
 def freshness_bucket(last_update_ts: dt.datetime | None, now: dt.datetime | None = None) -> tuple[str, int | None]:
     if last_update_ts is None:
         return "error", None
@@ -166,6 +173,8 @@ def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[Normalize
         basic = row.get("basicData") if isinstance(row.get("basicData"), dict) else row
         mapped = mappings_by_vin.get(vehicle_id, row.get("_mapping") if isinstance(row.get("_mapping"), dict) else {})
         telematic = row.get("telematicData") if isinstance(row.get("telematicData"), dict) else {}
+        if isinstance(telematic.get("telematicData"), dict):
+            telematic = telematic.get("telematicData")
         charging_profile = row.get("chargingProfile") if isinstance(row.get("chargingProfile"), dict) else {}
 
         charging = basic.get("charging") if isinstance(basic.get("charging"), dict) else {}
@@ -187,28 +196,44 @@ def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[Normalize
         if not charge_settings and isinstance(charging_profile.get("chargeSettings"), dict):
             charge_settings = charging_profile.get("chargeSettings")
 
+        charging_status_raw = _first(
+            _descriptor_value(telematic, "vehicle.drivetrain.electricEngine.charging.status"),
+            _dig(telematic, "chargingStatus"),
+            _dig(telematic, "chargingState"),
+            _dig(tele_charging, "chargingState"),
+            charging.get("chargingState"),
+        )
+        is_charging = _as_bool_from_states(
+            charging_status_raw,
+            true_values={"CHARGING", "CHARGINGACTIVE", "ACTIVE", "IN_PROGRESS"},
+            false_values={"NOT_CHARGING", "CHARGINGINACTIVE", "INACTIVE", "COMPLETED", "ERROR", "IDLE"},
+        )
+        if is_charging is None:
+            is_charging = _as_bool_from_states(_first(_dig(telematic, "isCharging"), _dig(tele_charging, "isCharging")), true_values={"TRUE", "1"}, false_values={"FALSE", "0"})
+
         plug_status_raw = _first(
+            _descriptor_value(telematic, "vehicle.body.chargingPort.status"),
             _dig(telematic, "plugStatus"),
             _dig(telematic, "plugConnectionState"),
             _dig(tele_charging, "plugConnectionState"),
             _dig(tele_charging, "plugState"),
             charging.get("plugConnectionState"),
         )
-        is_plugged = _as_bool_from_states(plug_status_raw, true_values={"CONNECTED", "PLUGGED", "PLUGGED_IN"}, false_values={"DISCONNECTED", "UNPLUGGED", "NOT_PLUGGED"})
+        is_plugged = _as_bool_from_states(
+            plug_status_raw,
+            true_values={"CONNECTED", "PLUGGED", "PLUGGED_IN"},
+            false_values={"DISCONNECTED", "UNPLUGGED", "NOT_PLUGGED", "OPEN", "NOT_CONNECTED"},
+        )
         if is_plugged is None:
             is_plugged = _as_bool_from_states(_first(_dig(telematic, "isPlugged"), _dig(tele_charging, "isPlugged")), true_values={"TRUE", "1"}, false_values={"FALSE", "0"})
 
-        charging_state = _first(
-            _dig(telematic, "chargingStatus"),
-            _dig(telematic, "chargingState"),
-            _dig(tele_charging, "chargingState"),
-            charging.get("chargingState"),
-        )
-        is_charging = _as_bool_from_states(charging_state, true_values={"CHARGING", "ACTIVE", "IN_PROGRESS"}, false_values={"NOT_CHARGING", "COMPLETED", "ERROR", "IDLE"})
-        if is_charging is None:
-            is_charging = _as_bool_from_states(_first(_dig(telematic, "isCharging"), _dig(tele_charging, "isCharging")), true_values={"TRUE", "1"}, false_values={"FALSE", "0"})
-
-        ts = parse_dt(_first(
+        descriptor_timestamps = [
+            parse_dt(v.get("timestamp"))
+            for v in telematic.values()
+            if isinstance(v, dict) and isinstance(v.get("timestamp"), str)
+        ]
+        descriptor_timestamps = [t for t in descriptor_timestamps if t is not None]
+        ts = max(descriptor_timestamps) if descriptor_timestamps else parse_dt(_first(
             _dig(telematic, "lastUpdatedAt"),
             _dig(telematic, "statusUpdatedAt"),
             _dig(telematic, "updateTime"),
@@ -218,6 +243,15 @@ def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[Normalize
             basic.get("updateTime"),
         ))
         status, age = freshness_bucket(ts) if ts else ("partial", None)
+        if telematic and status == "partial":
+            status = "live_partial"
+
+        ac_current_limit_a = _as_float(_first(
+            _descriptor_value(telematic, "vehicle.powertrain.electric.battery.charging.acLimit.selected"),
+            _dig(telematic, "acCurrentLimitA"),
+            _dig(tele_charge_settings, "acCurrentLimitA"),
+            charge_settings.get("acCurrentLimitA"),
+        ))
 
         state = NormalizedVehicleState(
             vehicle_id=vehicle_id,
@@ -231,9 +265,9 @@ def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[Normalize
             range_km=_as_float(_first(_dig(telematic, "rangeKm"), _dig(telematic, "remainingRangeKm"), _dig(tele_range, "electricKm"), range_data.get("electricKm"))),
             time_to_full_min=_as_int(_first(_dig(telematic, "timeToFullMin"), _dig(telematic, "remainingTimeToFullMinutes"), _dig(tele_charging, "remainingTimeToFullMinutes"), charging.get("remainingTimeToFullMinutes"))),
             charge_power_kw=_as_float(_first(_dig(telematic, "chargePowerKw"), _dig(tele_charging, "chargePowerKw"), charging.get("chargePowerKw"))),
-            ac_current_limit_a=_as_float(_first(_dig(telematic, "acCurrentLimitA"), _dig(tele_charge_settings, "acCurrentLimitA"), charge_settings.get("acCurrentLimitA"))),
+            ac_current_limit_a=ac_current_limit_a,
             battery_capacity_kwh=_as_float(_first(_dig(tele_battery, "capacityKwh"), battery.get("capacityKwh"))),
-            charging_mode=charge_settings.get("chargingMode"),
+            charging_mode=_first(charge_settings.get("chargingMode"), str(charging_status_raw) if charging_status_raw is not None else None),
             optimized_charging_preference=charge_settings.get("optimizedChargingPreference"),
             charge_window_start=charge_settings.get("chargeWindowStart"),
             charge_window_end=charge_settings.get("chargeWindowEnd"),
@@ -245,6 +279,12 @@ def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[Normalize
             raw_fields=row,
         )
         state.charge_session_active = bool(is_plugged and is_charging and not state.charge_error_raw) if None not in (is_plugged, is_charging) else None
+        state.field_availability = {
+            "charging_status": charging_status_raw is not None,
+            "plug_status": plug_status_raw is not None,
+            "ac_current_limit_a": ac_current_limit_a is not None,
+            "last_update_ts": ts is not None,
+        }
         if state.battery_capacity_kwh is not None and state.soc_pct is not None:
             state.energy_needed_kwh = state.battery_capacity_kwh * (100 - state.soc_pct) / 100
         out.append(state)

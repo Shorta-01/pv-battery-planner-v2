@@ -53,6 +53,52 @@ def test_mapping_bmw_fixture_realistic_shape():
     assert st.charge_error_raw is None
 
 
+def test_mapping_real_telematic_descriptors_payload():
+    payload = {
+        "GET /customers/vehicles/WBA51EH0X0CR89778/telematicData?containerId=CONT1": {
+            "telematicData": {
+                "vehicle.drivetrain.electricEngine.charging.status": {
+                    "timestamp": "2026-03-13T09:00:07.000Z",
+                    "unit": None,
+                    "value": "CHARGINGACTIVE",
+                },
+                "vehicle.powertrain.electric.battery.charging.acLimit.selected": {
+                    "timestamp": "2026-03-13T09:00:07.000Z",
+                    "unit": "A",
+                    "value": "10",
+                },
+                "vehicle.body.chargingPort.status": {
+                    "timestamp": "2026-03-13T09:00:07.000Z",
+                    "unit": None,
+                    "value": "CONNECTED",
+                },
+            }
+        }
+    }
+
+    states = map_bmw_payload_to_vehicle_states(payload)
+    assert len(states) == 1
+    st = states[0]
+    assert st.vehicle_id == "WBA51EH0X0CR89778"
+    assert st.is_charging is True
+    assert st.charge_session_active is True
+    assert st.is_plugged is True
+    assert st.plug_status_raw == "CONNECTED"
+    assert st.ac_current_limit_a == 10
+    assert st.last_update_ts is not None
+    assert st.last_update_ts.isoformat().replace("+00:00", "Z") == "2026-03-13T09:00:07Z"
+    assert st.soc_pct is None
+    assert st.range_km is None
+    assert st.charge_power_kw is None
+    assert st.time_to_full_min is None
+    assert isinstance(st.raw_fields.get("telematicData"), dict)
+    assert st.raw_fields["telematicData"]["telematicData"]["vehicle.drivetrain.electricEngine.charging.status"]["value"] == "CHARGINGACTIVE"
+    assert st.field_availability["charging_status"] is True
+    assert st.field_availability["plug_status"] is True
+    assert st.field_availability["ac_current_limit_a"] is True
+    assert st.field_availability["last_update_ts"] is True
+
+
 def test_derivations_energy_and_economics():
     st = NormalizedVehicleState(vehicle_id="V1", soc_pct=40, battery_capacity_kwh=80, is_plugged=True, data_status="fresh", range_km=250)
     out = apply_planner_derivations(
