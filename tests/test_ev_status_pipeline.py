@@ -102,3 +102,40 @@ def test_full_charge_eta_reports_reason_when_impossible() -> None:
     )
     assert out["expected_full_charge_ts"] is None
     assert out["field_states"]["expected_full_charge_ts"] in {"waiting_for_soc", "waiting_for_bmw_eta"}
+
+
+def test_unknown_bmw_status_preserves_tri_state_semantics() -> None:
+    out = build_unified_ev_status(
+        ev_cfg={"enabled": True},
+        runtime_ev_cfg={"charger_max_power_kw": None},
+        bmw_provider_status={},
+        bmw_vehicles=_vehicle(is_plugged=None, is_charging=None, charge_power_kw=None, expected_full_charge_ts=None, time_to_full_min=None),
+        evse_status={"connected": True, "enabled": True, "is_plugged": True, "is_charging": True, "power_kw": 7.0},
+    )
+    assert out["is_plugged"] is None
+    assert out["is_charging"] is None
+    assert out["field_states"]["expected_full_charge_ts"] != "not_plugged"
+    assert out["field_states"]["charge_power_kw"] != "not_charging"
+    assert out["field_states"]["expected_full_charge_ts"] == "waiting_for_bmw_status"
+    assert out["field_states"]["charge_power_kw"] == "waiting_for_bmw_status"
+
+
+def test_explicit_false_and_true_regression_semantics() -> None:
+    explicit_false = build_unified_ev_status(
+        ev_cfg={"enabled": True},
+        runtime_ev_cfg={"charger_max_power_kw": 11.0},
+        bmw_provider_status={},
+        bmw_vehicles=_vehicle(is_plugged=False, is_charging=False, charge_power_kw=None, expected_full_charge_ts=None, time_to_full_min=None),
+        evse_status={"connected": True, "enabled": True},
+    )
+    assert explicit_false["field_states"]["expected_full_charge_ts"] == "not_plugged"
+    assert explicit_false["field_states"]["charge_power_kw"] == "not_charging"
+
+    explicit_true = build_unified_ev_status(
+        ev_cfg={"enabled": True},
+        runtime_ev_cfg={"charger_max_power_kw": 11.0},
+        bmw_provider_status={},
+        bmw_vehicles=_vehicle(is_plugged=True, is_charging=True, charge_power_kw=3.7),
+        evse_status={"connected": False, "enabled": False},
+    )
+    assert explicit_true["field_states"]["charge_power_kw"] == "available"

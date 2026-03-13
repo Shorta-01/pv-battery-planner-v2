@@ -4390,7 +4390,14 @@ with left:
         is_charging = ev_status.get("is_charging")
         freshness_label = str(ev_status.get("freshness_label") or "BMW freshness unknown")
 
-        status_chip_text = "Charging" if bool(is_charging) else ("Plugged" if bool(is_plugged) else "Unplugged")
+        if is_charging is True:
+            status_chip_text = "Charging"
+        elif is_plugged is True:
+            status_chip_text = "Plugged"
+        elif is_plugged is False:
+            status_chip_text = "Unplugged"
+        else:
+            status_chip_text = "Unknown"
         freshness_chip = (
             "<span style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
             "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
@@ -4413,6 +4420,8 @@ with left:
             charge_power_label = "Not charging"
         elif power_state == "waiting_for_bmw_power":
             charge_power_label = "Not provided by BMW yet"
+        elif power_state == "waiting_for_bmw_status":
+            charge_power_label = "Waiting for BMW status"
         else:
             charge_power_label = format_ev_kw(ev_status.get("charge_power_kw"), unknown_label="Unavailable")
 
@@ -4429,17 +4438,21 @@ with left:
             expected_full_label = "Not charging"
         elif full_state == "not_plugged":
             expected_full_label = "Not plugged"
+        elif full_state == "waiting_for_bmw_status":
+            expected_full_label = "Waiting for BMW data"
         else:
             expected_full_label = "Unavailable"
 
         if soc_pct is None:
             headline = "Battery status unavailable"
-        elif bool(is_charging):
+        elif is_charging is True:
             headline = f"{soc_pct:.0f}% battery · charging now"
-        elif bool(is_plugged):
+        elif is_plugged is True:
             headline = f"{soc_pct:.0f}% battery · plugged in, waiting"
-        else:
+        elif is_plugged is False:
             headline = f"{soc_pct:.0f}% battery · not plugged in"
+        else:
+            headline = f"{soc_pct:.0f}% battery · waiting for BMW status"
 
         metric_items = [
             ("Plugged in", format_ev_bool(is_plugged, true_label="Yes", false_label="No", unknown_label="Unknown")),

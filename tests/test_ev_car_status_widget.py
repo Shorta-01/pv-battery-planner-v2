@@ -129,3 +129,17 @@ def test_settings_block_keeps_diagnostics_secondary_and_no_raw_payload_dump() ->
 
     assert "if APP_DEBUG:" in block
     assert "st.json({\"provider_status\": provider_status, \"vehicles\": vehicles_payload}" not in block
+
+
+def test_app_widget_tri_state_unknown_status_labels() -> None:
+    app_text = Path("app.py").read_text(encoding="utf-8")
+    start = app_text.index("def render_ev_car_status_panel")
+    end = app_text.index("forecast_mode, selected_models", start)
+    fn_block = app_text[start:end]
+
+    assert 'status_chip_text = "Unknown"' in fn_block
+    assert 'expected_full_label = "Waiting for BMW data"' in fn_block
+    assert 'charge_power_label = "Waiting for BMW status"' in fn_block
+    assert 'status_chip_text = "Charging" if bool(is_charging)' not in fn_block
+    assert 'headline = f"{soc_pct:.0f}% battery · not plugged in"' in fn_block
+    assert 'headline = f"{soc_pct:.0f}% battery · waiting for BMW status"' in fn_block
