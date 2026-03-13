@@ -4368,125 +4368,87 @@ with left:
                 unsafe_allow_html=True,
             )
 
-        provider_status: dict = {}
-        vehicles_payload: dict = {}
         fetch_error = ""
+        ev_status: dict = {}
         try:
-            provider_status = api_get("/v1/ev/provider_status")
+            ev_status = api_get("/v1/ev/status")
         except Exception as exc:
             fetch_error = str(exc)
-            provider_status = {}
-
-        try:
-            vehicles_payload = api_get("/v1/ev/vehicles")
-        except Exception as exc:
-            if not fetch_error:
-                fetch_error = str(exc)
-            vehicles_payload = {}
-
-        vehicles = vehicles_payload.get("vehicles", {}) if isinstance(vehicles_payload, dict) else {}
-        v = next(iter(vehicles.values()), {}) if isinstance(vehicles, dict) else {}
-        has_vehicle = bool(v)
-
-        provider_state = summarize_ev_provider_state(
-            provider_status,
-            has_vehicle=has_vehicle,
-            soc_available=bool(v and pd.notna(_safe_float(v.get("soc_pct"), float("nan")))),
-            vehicle_freshness_seconds=(v or {}).get("freshness_seconds"),
-        )
+            ev_status = {}
 
         ev_cfg = (effective_cfg or {}).get("ev_vehicle_data", {}) or {}
         if not bool(ev_cfg.get("enabled", ev_cfg.get("bmw_enabled", False))):
-            _render_fallback_card(
-                "EV integration is disabled.",
-                chips=["BMW disabled"],
-                helper="Enable BMW in settings to show car status.",
-            )
+            _render_fallback_card("EV integration is disabled.", chips=["BMW disabled"], helper="Enable BMW in settings to show car status.")
+            return
+        if not ev_status:
+            _render_fallback_card("EV status temporarily unavailable.", chips=["Waiting for EV data"], helper=fetch_error or "Unable to refresh EV status right now.")
             return
 
-        if not str(ev_cfg.get("bmw_client_id") or "").strip():
-            _render_fallback_card(
-                "BMW authorization required.",
-                chips=["Auth required"],
-                helper="Add your BMW client id and connect your account.",
-            )
-            return
+        soc_pct = _safe_float(ev_status.get("soc_pct"), float("nan"))
+        soc_pct = max(0.0, min(100.0, soc_pct)) if pd.notna(soc_pct) else None
+        is_plugged = ev_status.get("is_plugged")
+        is_charging = ev_status.get("is_charging")
+        freshness_label = str(ev_status.get("freshness_label") or "BMW freshness unknown")
 
-        if fetch_error and not has_vehicle:
-            _render_fallback_card(
-                provider_state.get("fallback") or "BMW data temporarily unavailable.",
-                chips=provider_state.get("chips") or ["Waiting for BMW data"],
-                helper="Unable to refresh BMW status right now.",
-            )
-            if APP_DEBUG:
-                with card.expander("EV diagnostics", expanded=False):
-                    st.caption(f"EV status fetch error: {fetch_error}")
-            return
-
-        if not has_vehicle:
-            _render_fallback_card(
-                provider_state.get("fallback") or "No BMW vehicle data available yet.",
-                chips=provider_state.get("chips") or ["No vehicle"],
-                helper=provider_state.get("helper") or "",
-            )
-            if APP_DEBUG:
-                with card.expander("EV diagnostics", expanded=False):
-                    st.json({"provider_status": provider_status, "vehicles": vehicles_payload}, expanded=False)
-            return
-
-        soc_raw = _safe_float(v.get("soc_pct"), float("nan"))
-        soc_pct = max(0.0, min(100.0, soc_raw)) if pd.notna(soc_raw) else None
-        is_plugged = v.get("is_plugged")
-        is_charging = v.get("is_charging")
-
-        range_label = format_ev_km(v.get("range_km"), unknown_label="Not available")
-        has_range = range_label != "Not available"
-
-        if soc_pct is None:
-            headline = provider_state.get("headline_override") or "Battery status unavailable"
-        elif bool(is_charging):
-            headline = f"{soc_pct:.0f}% / {range_label} · charging now" if has_range else f"{soc_pct:.0f}% battery · charging now"
-        elif bool(is_plugged):
-            headline = f"{soc_pct:.0f}% / {range_label} · plugged in, waiting" if has_range else f"{soc_pct:.0f}% battery · plugged in, waiting"
-        else:
-            headline = f"{soc_pct:.0f}% / {range_label} · not plugged in" if has_range else f"{soc_pct:.0f}% battery · not plugged in"
-
-        freshness_label = format_ev_freshness(v.get("freshness_seconds"))
-        freshness_chip = (
-            f"<span style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
-            "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
-            "border-radius:999px;font-size:0.72rem;font-weight:650;'>⏱ {freshness_label}</span>"
-        )
         status_chip_text = "Charging" if bool(is_charging) else ("Plugged" if bool(is_plugged) else "Unplugged")
-        status_chip = (
-            f"<span style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
-            "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
-            "border-radius:999px;font-size:0.72rem;font-weight:650;'>🚗 {status_chip_text}</span>"
-        )
-        provider_chip_html = "".join(
+        freshness_chip = (
             "<span style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
             "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
-            "border-radius:999px;font-size:0.72rem;font-weight:650;'>"
-            f"{_esc_attr(chip)}</span>"
-            for chip in (provider_state.get("chips") or [])[:1]
+            f"border-radius:999px;font-size:0.72rem;font-weight:650;'>⏱ {_esc_attr(freshness_label)}</span>"
+        )
+        status_chip = (
+            "<span style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
+            "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
+            f"border-radius:999px;font-size:0.72rem;font-weight:650;'>🚗 {_esc_attr(status_chip_text)}</span>"
         )
 
-        deadline_cfg = ((effective_cfg or {}).get("ev_vehicle_data", {}) or {}).get("ev_charge_deadline_time")
-        deadline_label = str(deadline_cfg).strip() if str(deadline_cfg or "").strip() else "No deadline set"
-        expected_full_label = format_ev_datetime(v.get("expected_full_charge_ts"), unknown_label="Waiting for BMW data")
+        range_state = ((ev_status.get("field_states") or {}).get("range_km"))
+        range_label = format_ev_km(ev_status.get("range_km"), unknown_label="Not provided by BMW yet") if range_state != "bmw_missing" else "Not provided by BMW yet"
+
+        deadline_state = ev_status.get("deadline_state")
+        deadline_label = str(ev_status.get("deadline_time") or "").strip() if deadline_state == "configured" else "Not set"
+
+        power_state = ((ev_status.get("field_states") or {}).get("charge_power_kw"))
+        if power_state == "not_charging":
+            charge_power_label = "Not charging"
+        elif power_state == "waiting_for_charger_data":
+            charge_power_label = "Waiting for charger data"
+        else:
+            charge_power_label = format_ev_kw(ev_status.get("charge_power_kw"), unknown_label="Unavailable")
+
+        full_state = ((ev_status.get("field_states") or {}).get("expected_full_charge_ts"))
+        if full_state == "ready":
+            expected_full_label = format_ev_datetime(ev_status.get("expected_full_charge_ts"), unknown_label="Unavailable")
+        elif full_state == "waiting_for_power_limit":
+            expected_full_label = "Waiting for power data"
+        elif full_state == "waiting_for_soc":
+            expected_full_label = "Waiting for SOC data"
+        elif full_state == "not_charging":
+            expected_full_label = "Not charging"
+        elif full_state == "not_plugged":
+            expected_full_label = "Not plugged"
+        else:
+            expected_full_label = "Unavailable"
+
+        if soc_pct is None:
+            headline = "Battery status unavailable"
+        elif bool(is_charging):
+            headline = f"{soc_pct:.0f}% battery · charging now"
+        elif bool(is_plugged):
+            headline = f"{soc_pct:.0f}% battery · plugged in, waiting"
+        else:
+            headline = f"{soc_pct:.0f}% battery · not plugged in"
 
         metric_items = [
-            ("Plugged in", format_ev_bool(is_plugged, true_label="Yes", false_label="No")),
-            ("Charging now", format_ev_bool(is_charging, true_label="Yes", false_label="No")),
-            ("Charge power", format_ev_kw(v.get("charge_power_kw"), unknown_label="Not available")),
+            ("Plugged in", format_ev_bool(is_plugged, true_label="Yes", false_label="No", unknown_label="Waiting for live data")),
+            ("Charging now", format_ev_bool(is_charging, true_label="Yes", false_label="No", unknown_label="Waiting for live data")),
+            ("Charge power", charge_power_label),
             ("Full charge at", expected_full_label),
             ("Deadline", deadline_label),
             ("Range", range_label),
         ]
-
         metric_html = "".join(
-            "<div style='border:1px solid rgba(255,255,255,0.10);border-radius:10px;padding:0.42rem 0.48rem;"
-            "background:rgba(255,255,255,0.03);'>"
+            "<div style='border:1px solid rgba(255,255,255,0.10);border-radius:10px;padding:0.42rem 0.48rem;background:rgba(255,255,255,0.03);'>"
             f"<div style='font-size:0.66rem;opacity:0.72;text-transform:uppercase;letter-spacing:0.05em;'>{_esc_attr(k)}</div>"
             f"<div style='margin-top:0.12rem;font-size:0.85rem;font-weight:700;'>{_esc_attr(val)}</div>"
             "</div>"
@@ -4494,58 +4456,16 @@ with left:
         )
 
         helper_parts = []
-        energy_needed = format_ev_kwh(v.get("energy_needed_kwh"), unknown_label="Not available")
-        time_to_full = format_ev_time_to_full_minutes(v.get("time_to_full_min"), unknown_label="Waiting for BMW data")
-        planner_status = str(v.get("planner_status_text") or "").strip()
-        last_update = format_ev_datetime(v.get("last_update_ts"))
-        helper_parts.append(f"Energy still needed: {energy_needed}")
-        helper_parts.append(f"Time to full: {time_to_full}")
-        if planner_status:
-            helper_parts.append(f"Planner: {planner_status}")
-        helper_parts.append(f"Last BMW update: {last_update} ({freshness_label})")
-        if provider_state.get("helper"):
-            helper_parts.append(str(provider_state.get("helper")))
+        helper_parts.append(f"Last BMW update freshness: {freshness_label}")
+        power_source = str(ev_status.get("charge_power_source") or "unavailable")
+        if power_source == "ocpp":
+            helper_parts.append("Power from OCPP")
+        elif power_source == "bmw":
+            helper_parts.append("Power from BMW telematics")
+        for warning in (ev_status.get("warnings") or []):
+            helper_parts.append(str(warning))
 
         soc_width = soc_pct if soc_pct is not None else 0.0
-
-        timeline_html = ""
-        try:
-            now_ts = dt.datetime.now()
-            full_raw = v.get("expected_full_charge_ts")
-            full_ts = dt.datetime.fromisoformat(str(full_raw).replace("Z", "+00:00")) if full_raw else None
-            if full_ts is not None:
-                if full_ts.tzinfo is not None:
-                    full_ts = full_ts.astimezone()
-                total_sec = max((full_ts - now_ts).total_seconds(), 0.0)
-                horizon_sec = max(total_sec, 60.0)
-                deadline_marker = ""
-                if deadline_label != "—":
-                    try:
-                        hh, mm = [int(x) for x in deadline_label.split(":", 1)]
-                        deadline_dt = now_ts.replace(hour=hh, minute=mm, second=0, microsecond=0)
-                        if deadline_dt < now_ts:
-                            deadline_dt += dt.timedelta(days=1)
-                        marker_pct = clamp_pct(((deadline_dt - now_ts).total_seconds() / horizon_sec) * 100.0)
-                        deadline_marker = (
-                            "<div style='position:absolute;top:-2px;bottom:-2px;width:2px;"
-                            f"left:{marker_pct:.2f}%;background:#f4a261;opacity:0.9;'></div>"
-                        )
-                    except Exception:
-                        deadline_marker = ""
-                timeline_html = (
-                    "<div style='margin-top:0.48rem;'>"
-                    "<div style='font-size:0.67rem;opacity:0.78;'>Charge timeline</div>"
-                    "<div style='margin-top:0.18rem;height:8px;border-radius:999px;background:rgba(255,255,255,0.10);position:relative;overflow:hidden;'>"
-                    "<div style='position:absolute;left:0;top:0;bottom:0;width:100%;background:linear-gradient(90deg,rgba(82,183,136,0.15),rgba(82,183,136,0.6));'></div>"
-                    + deadline_marker
-                    + "</div>"
-                    f"<div style='margin-top:0.16rem;font-size:0.66rem;opacity:0.72;'>Now → Full by {expected_full_label}"
-                    + (f" · Deadline {deadline_label}" if deadline_label != "—" else "")
-                    + "</div></div>"
-                )
-        except Exception:
-            timeline_html = ""
-
         card.markdown(
             (
                 "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.78rem 0.82rem;"
@@ -4553,19 +4473,18 @@ with left:
                 "<div style='display:flex;align-items:center;justify-content:space-between;gap:0.42rem;'>"
                 "<div style='font-size:0.90rem;font-weight:760;letter-spacing:0.03em;opacity:0.95;'>CAR STATUS</div>"
                 "<div style='display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;'>"
-                f"{freshness_chip}{status_chip}{provider_chip_html}"
+                f"{freshness_chip}{status_chip}"
                 "</div></div>"
                 f"<div style='margin-top:0.40rem;font-size:0.96rem;font-weight:700;'>{_esc_attr(headline)}</div>"
                 "<div style='margin-top:0.45rem;height:8px;border-radius:999px;overflow:hidden;background:rgba(255,255,255,0.12);'>"
                 f"<div style='height:100%;width:{soc_width:.1f}%;background:linear-gradient(90deg,#d62828 0%,#f4a261 45%,#52b788 70%,#2a9d8f 100%);'></div>"
                 "</div>"
-                f"<div style='margin-top:0.30rem;font-size:0.70rem;opacity:0.82;'>State of charge: {f'{soc_pct:.0f}%' if soc_pct is not None else '—'}</div>"
-                f"{timeline_html}"
+                f"<div style='margin-top:0.30rem;font-size:0.70rem;opacity:0.82;'>State of charge: {f'{soc_pct:.0f}%' if soc_pct is not None else 'Waiting for BMW SOC'}</div>"
                 "<div style='margin-top:0.55rem;display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.40rem;'>"
                 f"{metric_html}"
                 "</div>"
                 "<div style='margin-top:0.48rem;font-size:0.69rem;opacity:0.76;line-height:1.35;'>"
-                + " · ".join(_esc_attr(part) for part in helper_parts)
+                + " · ".join(_esc_attr(part) for part in helper_parts if part)
                 + "</div></div>"
             ),
             unsafe_allow_html=True,
@@ -4573,11 +4492,7 @@ with left:
 
         if APP_DEBUG:
             with card.expander("EV diagnostics", expanded=False):
-                st.json({
-                    "provider_status": provider_status,
-                    "vehicle": v,
-                    "provider_state": provider_state,
-                }, expanded=False)
+                st.json({"ev_status": ev_status}, expanded=False)
 
 
     forecast_mode, selected_models, sat_nowcast_for_run = render_weather_models_panel()

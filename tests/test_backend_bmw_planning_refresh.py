@@ -149,3 +149,18 @@ def test_run_now_and_nightly_both_call_run(monkeypatch, tmp_path):
     assert out_now["ran"] is True
     assert out_nightly["ran"] is True
     assert calls["count"] == 2
+
+
+def test_missing_soc_refreshes_before_planning(monkeypatch, tmp_path):
+    state = _new_state(monkeypatch, tmp_path)
+    state.settings["config"]["ev_vehicle_data"] = {"enabled": True, "bmw_healthcheck_seconds": 300}
+    missing_soc = _base_vehicle(soc=None, freshness=20, status="fresh")
+    refreshed = _base_vehicle(soc=66.0, freshness=10, status="fresh")
+    fake = _FakeBmwService([missing_soc, refreshed], refresh_result={"ok": True})
+    state.bmw_service = fake
+
+    out = state._get_planning_ready_ev_state()
+
+    assert out["refresh_attempted"] is True
+    assert out["refresh_reason"] == "missing_soc"
+    assert out["vehicles"]["vehicle-1"]["soc_pct"] == 66.0

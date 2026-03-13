@@ -47,7 +47,26 @@ class BmwService:
         self.last_runtime_rebuild_reason = reason
 
     def update_config(self, config: dict[str, Any]) -> None:
-        self.config = dict(config or {})
+        runtime_cfg = dict(config or {})
+        ev_cfg = runtime_cfg.get("ev_vehicle_data") if isinstance(runtime_cfg.get("ev_vehicle_data"), dict) else None
+        if ev_cfg is not None:
+            merged = dict(ev_cfg)
+            for key in (
+                "charger_max_power_kw",
+                "petrol_price_eur_per_l",
+                "petrol_consumption_l_per_100km",
+                "bmw_enabled",
+                "bmw_client_id",
+                "bmw_token_cache_path",
+                "bmw_raw_event_store_path",
+                "bmw_vehicle_state_store_path",
+                "bmw_healthcheck_seconds",
+            ):
+                if key in runtime_cfg and key not in merged:
+                    merged[key] = runtime_cfg.get(key)
+            self.config = merged
+        else:
+            self.config = runtime_cfg
         self._rebuild_runtime("config_update")
 
     def vehicles(self) -> dict[str, dict]:

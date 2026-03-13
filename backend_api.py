@@ -28,6 +28,7 @@ import planner_core as core
 import ocpp_evse
 import scoring
 from bmw_service import BmwService
+from ev_status import build_unified_ev_status
 
 from error_logging import compute_dedupe_key, format_exception_body
 from db_sqlite import (
@@ -748,11 +749,11 @@ class BackendState:
         self.settings_sanitized_warnings: list[str] = []
         self._sanitize_last_inputs()
         self._sanitize_settings()
-        self.bmw_service = BmwService(core.DEFAULT_CONFIG.get("ev_vehicle_data", {}))
+        self.bmw_service = BmwService(self._resolved_ev_runtime_config(core.DEFAULT_CONFIG))
         self.latest_result = self._read_json(LATEST_RESULT_PATH, default={})
         self.history = self._load_history()
         self._apply_config(self.settings["config"])
-        self.bmw_service.update_config(self.settings.get("config", {}).get("ev_vehicle_data", {}))
+        self.bmw_service.update_config(self._resolved_ev_runtime_config(self.settings.get("config", {})))
         if DEBUG:
             bmw_debug = self.bmw_service.device_flow_debug_info()
             logger.info(
@@ -988,13 +989,42 @@ class BackendState:
         self.settings["config"] = merged
         return merged
 
+
+    def _resolved_ev_runtime_config(self, cfg: dict | None = None) -> dict:
+        effective_cfg = cfg if isinstance(cfg, dict) else (self.settings.get("config", {}) if isinstance(self.settings, dict) else {})
+        ev_cfg = effective_cfg.get("ev_vehicle_data", {}) if isinstance(effective_cfg.get("ev_vehicle_data"), dict) else {}
+        cap_default = _float_or_default(self.settings.get("max_ac_charge_power_kw_default"), DEFAULT_MAX_AC_CAP)
+        runtime = {
+            "ev_vehicle_data": dict(ev_cfg),
+            "charger_max_power_kw": cap_default,
+        }
+        runtime.update(dict(ev_cfg))
+        if runtime.get("charger_max_power_kw") in (None, ""):
+            runtime["charger_max_power_kw"] = cap_default
+        return runtime
+
+    def get_unified_ev_status(self) -> dict:
+        cfg = self.settings.get("config", {}) if isinstance(self.settings, dict) else {}
+        ev_cfg = cfg.get("ev_vehicle_data", {}) if isinstance(cfg.get("ev_vehicle_data"), dict) else {}
+        provider_status = self.bmw_service.provider_status()
+        vehicles = self.bmw_service.vehicles()
+        evse = evse_mgr.status_dict()
+        evse["enabled"] = bool((cfg.get("car_charger", {}) if isinstance(cfg.get("car_charger"), dict) else {}).get("enabled", False))
+        return build_unified_ev_status(
+            ev_cfg=ev_cfg,
+            runtime_ev_cfg=self._resolved_ev_runtime_config(cfg),
+            bmw_provider_status=provider_status,
+            bmw_vehicles=vehicles,
+            evse_status=evse,
+        )
+
     def update_settings(self, payload: SettingsPayload) -> dict:
         _ = ZoneInfo(payload.timezone)
         dt.datetime.strptime(payload.nightly_run_time, "%H:%M")
         merged = self._apply_config(payload.config)
         loc_cfg = merged.get("location", {}) if isinstance(merged, dict) else {}
         canonical_tz = str(loc_cfg.get("timezone") or payload.timezone)
-        self.bmw_service.update_config(merged.get("ev_vehicle_data", {}))
+        self.bmw_service.update_config(self._resolved_ev_runtime_config(merged))
         self.settings.update(
             {
                 "config": merged,
@@ -1108,8 +1138,15 @@ class BackendState:
             refresh_reason = "no_cached_data"
         else:
             first_vehicle = next(iter(vehicles.values()))
+            soc_val = first_vehicle.get("soc_pct") if isinstance(first_vehicle, dict) else None
+            try:
+                soc_missing = soc_val in (None, "")
+            except Exception:
+                soc_missing = True
             freshness_seconds = self._bmw_vehicle_freshness_seconds(first_vehicle)
-            if freshness_seconds is None or freshness_seconds > threshold_seconds:
+            if soc_missing:
+                refresh_reason = "missing_soc"
+            elif freshness_seconds is None or freshness_seconds > threshold_seconds:
                 refresh_reason = "stale_cache"
 
         if refresh_reason is None:
@@ -1146,6 +1183,12 @@ class BackendState:
                     planning_state["warning"] = (
                         f"BMW data was stale (>{threshold_seconds}s); live refresh failed ({reason}) and no BMW vehicle data is available."
                     )
+        elif refresh_reason == "missing_soc":
+            if refresh_ok:
+                planning_state["warning"] = "BMW SOC was missing; live refresh succeeded before planning."
+            else:
+                reason = refresh_result.get("reason") if isinstance(refresh_result, dict) else "unknown"
+                planning_state["warning"] = f"BMW SOC missing and refresh failed ({reason}); using last known EV state."
         elif not planning_state["vehicles"]:
             if refresh_ok:
                 planning_state["warning"] = "BMW EV integration enabled, but no BMW vehicle data available."
@@ -2346,6 +2389,12 @@ def get_ev_vehicles(authorization: str | None = Header(default=None)) -> dict:
 def get_ev_provider_status(authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
     return state.bmw_service.provider_status()
+
+
+@app.get("/v1/ev/status")
+def get_ev_status(authorization: str | None = Header(default=None)) -> dict:
+    _require_token(authorization)
+    return state.get_unified_ev_status()
 
 
 @app.post("/v1/ev/manual_refresh")
