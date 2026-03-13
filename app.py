@@ -34,6 +34,7 @@ from ui_utils import (
     format_ev_time_to_full_minutes,
     is_app_debug_enabled,
     resolve_pv_outlook_savings,
+    summarize_cardata_readiness,
     summarize_ev_provider_state,
     summarize_ev_setup_state,
     weather_code_to_icon as ui_weather_code_to_icon,
@@ -400,7 +401,14 @@ def build_settings_payload(effective_cfg: dict, valid_model_ids: set[str]) -> tu
     return new_cfg, None
 
 
-def validate_sidebar_readiness(ui: dict, *, yesterday_kwh: float, forecast_mode: str, selected_models: list[str]) -> dict[str, list[str]]:
+def validate_sidebar_readiness(
+    ui: dict,
+    *,
+    yesterday_kwh: float,
+    forecast_mode: str,
+    selected_models: list[str],
+    cardata_readiness: dict[str, str | bool] | None = None,
+) -> dict[str, list[str]]:
     issues: dict[str, list[str]] = {
         "Inputs": [],
         "Location": [],
@@ -408,6 +416,7 @@ def validate_sidebar_readiness(ui: dict, *, yesterday_kwh: float, forecast_mode:
         "PV": [],
         "Battery": [],
         "Weather": [],
+        "CarData": [],
     }
 
     if yesterday_kwh < 2.0 or yesterday_kwh > 60.0:
@@ -461,6 +470,10 @@ def validate_sidebar_readiness(ui: dict, *, yesterday_kwh: float, forecast_mode:
 
     if forecast_mode == "expert" and not selected_models:
         issues["Weather"].append("Select at least one weather model in Expert mode.")
+
+    cardata = cardata_readiness if isinstance(cardata_readiness, dict) else {}
+    if bool(cardata.get("required")) and not bool(cardata.get("ready")):
+        issues["CarData"].append(str(cardata.get("detail") or "CarData not ready."))
 
     return issues
 
@@ -3885,16 +3898,19 @@ with left:
         ev_cfg = (effective_cfg.get("ev_vehicle_data", {}) or {}) if isinstance(effective_cfg, dict) else {}
         cfg_ev_enabled = st.checkbox("EV integration enabled", value=bool(ev_cfg.get("enabled", False)))
         cfg_bmw_client_id = st.text_input("BMW client id", value=str(ev_cfg.get("bmw_client_id", "")), type="password")
-        cfg_petrol_price_eur_per_l = st.text_input(
-            "Petrol price (€/L)",
-            value=str(ev_cfg.get("petrol_price_eur_per_l", "")),
-            help="Optional economics input used for EV-vs-petrol comparison. Not live vehicle telemetry.",
-        )
-        cfg_petrol_consumption_l_per_100km = st.text_input(
-            "Petrol consumption (L/100 km)",
-            value=str(ev_cfg.get("petrol_consumption_l_per_100km", "")),
-            help="Optional economics input used for EV-vs-petrol comparison. Not live vehicle telemetry.",
-        )
+        petrol_col1, petrol_col2 = st.columns(2, gap="large")
+        with petrol_col1:
+            cfg_petrol_price_eur_per_l = st.text_input(
+                "Petrol price (€/L)",
+                value=str(ev_cfg.get("petrol_price_eur_per_l", "")),
+                help="Optional economics input used for EV-vs-petrol comparison. Not live vehicle telemetry.",
+            )
+        with petrol_col2:
+            cfg_petrol_consumption_l_per_100km = st.text_input(
+                "Petrol consumption (L/100 km)",
+                value=str(ev_cfg.get("petrol_consumption_l_per_100km", "")),
+                help="Optional economics input used for EV-vs-petrol comparison. Not live vehicle telemetry.",
+            )
         cfg_ev_charge_deadline_time = st.text_input(
             "EV charge deadline (HH:MM)",
             value=str(ev_cfg.get("ev_charge_deadline_time", "")),
@@ -4568,11 +4584,21 @@ with left:
 
     render_car_charger_panel()
 
+    cardata_readiness = summarize_cardata_readiness(
+        ev_enabled=bool(st.session_state.get("cfg_ev_enabled", False)),
+        has_client_id=bool(str(st.session_state.get("cfg_bmw_client_id", "")).strip()),
+        provider_status=provider_status if isinstance(provider_status, dict) else {},
+        has_vehicle=bool(first_vehicle),
+        has_device_flow_session=bool((st.session_state.get("_ev_cardata_setup") or {}).get("device_code")) if isinstance(st.session_state.get("_ev_cardata_setup"), dict) else False,
+        vehicle_freshness_seconds=first_vehicle.get("freshness_seconds") if isinstance(first_vehicle, dict) else None,
+    )
+
     readiness_issues = validate_sidebar_readiness(
         st.session_state.get("_cfg_ui_snapshot", {}),
         yesterday_kwh=float(yesterday_kwh),
         forecast_mode=forecast_mode,
         selected_models=selected_models,
+        cardata_readiness=cardata_readiness,
     )
     settings_valid = not any(readiness_issues[k] for k in ["Location", "Tariffs", "PV", "Battery"])
     inputs_valid = not readiness_issues["Inputs"]
@@ -4596,7 +4622,7 @@ with left:
         st.session_state["_settings_saved_inline"] = False
 
     summary_parts = []
-    for key in ["Inputs", "Location", "Tariffs", "PV", "Battery", "Weather"]:
+    for key in ["Inputs", "Location", "Tariffs", "PV", "Battery", "Weather", "CarData"]:
         if readiness_issues[key]:
             summary_parts.append(f"\u26A0 {key}: {readiness_issues[key][0]}")
         else:

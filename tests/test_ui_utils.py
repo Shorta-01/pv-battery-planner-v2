@@ -10,6 +10,7 @@ from ui_utils import (
     format_ev_time_to_full_minutes,
     is_app_debug_enabled,
     resolve_pv_outlook_savings,
+    summarize_cardata_readiness,
     summarize_ev_provider_state,
     weather_code_to_icon,
 )
@@ -131,3 +132,62 @@ def test_ev_format_helpers_support_friendly_unknown_labels() -> None:
     assert format_ev_kw(None, unknown_label="Not available") == "Not available"
     assert format_ev_time_to_full_minutes(None, unknown_label="Waiting for BMW data") == "Waiting for BMW data"
     assert format_ev_datetime(None, unknown_label="Waiting for BMW data") == "Waiting for BMW data"
+
+
+def test_summarize_cardata_readiness_ev_disabled_is_neutral() -> None:
+    state = summarize_cardata_readiness(
+        ev_enabled=False,
+        has_client_id=False,
+        provider_status={},
+        has_vehicle=False,
+        has_device_flow_session=False,
+        vehicle_freshness_seconds=None,
+    )
+    assert state["required"] is False
+    assert state["ready"] is True
+
+
+def test_summarize_cardata_readiness_ready_and_not_ready_states() -> None:
+    ready = summarize_cardata_readiness(
+        ev_enabled=True,
+        has_client_id=True,
+        provider_status={"provider_status": "healthy", "data_status": "fresh"},
+        has_vehicle=True,
+        has_device_flow_session=False,
+        vehicle_freshness_seconds=60,
+    )
+    assert ready["ready"] is True
+    assert ready["detail"] == "Ready"
+
+    missing_client = summarize_cardata_readiness(
+        ev_enabled=True,
+        has_client_id=False,
+        provider_status={"provider_status": "healthy", "data_status": "fresh"},
+        has_vehicle=True,
+        has_device_flow_session=False,
+        vehicle_freshness_seconds=60,
+    )
+    assert missing_client["ready"] is False
+    assert missing_client["detail"] == "Missing BMW client id"
+
+    no_vehicle = summarize_cardata_readiness(
+        ev_enabled=True,
+        has_client_id=True,
+        provider_status={"provider_status": "healthy", "data_status": "fresh"},
+        has_vehicle=False,
+        has_device_flow_session=False,
+        vehicle_freshness_seconds=60,
+    )
+    assert no_vehicle["ready"] is False
+    assert no_vehicle["detail"] == "No linked vehicle"
+
+    stale = summarize_cardata_readiness(
+        ev_enabled=True,
+        has_client_id=True,
+        provider_status={"provider_status": "healthy", "data_status": "stale"},
+        has_vehicle=True,
+        has_device_flow_session=False,
+        vehicle_freshness_seconds=2400,
+    )
+    assert stale["ready"] is False
+    assert stale["detail"] == "Stale/degraded data"
