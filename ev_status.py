@@ -130,10 +130,12 @@ def build_unified_ev_status(
     full_charge_state = "unavailable"
     expected_full_charge_ts = None
     expected_full_charge_source = "unavailable"
-    if not bool(is_plugged):
+    if is_plugged is False:
         full_charge_state = "not_plugged"
-    elif not bool(is_charging):
+    elif is_charging is False:
         full_charge_state = "not_charging"
+    elif is_plugged is None or is_charging is None:
+        full_charge_state = "waiting_for_bmw_status"
     elif bmw_expected_full_charge_ts is not None:
         expected_full_charge_ts = bmw_expected_full_charge_ts.replace(microsecond=0).isoformat()
         expected_full_charge_source = "bmw"
@@ -152,7 +154,7 @@ def build_unified_ev_status(
             expected_full_charge_source = "power_limit"
             full_charge_state = "ready"
         else:
-            full_charge_state = "waiting_for_bmw_eta" if bool(is_charging) else "waiting_for_power_limit"
+            full_charge_state = "waiting_for_bmw_eta" if is_charging is True else "waiting_for_power_limit"
 
     freshness_label = "BMW freshness unknown"
     if freshness_seconds is not None:
@@ -166,10 +168,12 @@ def build_unified_ev_status(
     if soc_source == "bmw_stale":
         warnings.append("Using last known BMW data; SOC is stale.")
 
-    if bool(is_charging) and charge_power_kw is None:
+    if is_charging is True and charge_power_kw is None:
         charge_power_state = "waiting_for_bmw_power"
-    elif bool(is_charging) is False:
+    elif is_charging is False:
         charge_power_state = "not_charging"
+    elif is_charging is None:
+        charge_power_state = "waiting_for_bmw_status"
     elif charge_power_kw is not None:
         charge_power_state = "available"
     else:
