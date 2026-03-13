@@ -1051,6 +1051,112 @@ class BackendState:
         frame = s.to_frame(name="value")
         return self._serialize_df(frame)
 
+    def _bmw_planning_freshness_threshold_seconds(self, ev_cfg: dict) -> int:
+        for key in ("bmw_healthcheck_seconds",):
+            value = ev_cfg.get(key)
+            try:
+                parsed = int(value)
+                if parsed > 0:
+                    return parsed
+            except (TypeError, ValueError):
+                continue
+        return 300
+
+    def _bmw_vehicle_freshness_seconds(self, vehicle: dict) -> int | None:
+        freshness = vehicle.get("freshness_seconds")
+        try:
+            if freshness is not None:
+                return max(0, int(float(freshness)))
+        except (TypeError, ValueError):
+            pass
+
+        last_update_raw = vehicle.get("last_update_ts")
+        if isinstance(last_update_raw, str):
+            try:
+                parsed = dt.datetime.fromisoformat(last_update_raw.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=dt.timezone.utc)
+                return max(0, int((dt.datetime.now(dt.timezone.utc) - parsed.astimezone(dt.timezone.utc)).total_seconds()))
+            except ValueError:
+                return None
+        return None
+
+    def _get_planning_ready_ev_state(self) -> dict:
+        ev_cfg = self.settings.get("config", {}).get("ev_vehicle_data", {}) if isinstance(self.settings.get("config", {}), dict) else {}
+        enabled = bool(ev_cfg.get("enabled", False))
+        threshold_seconds = self._bmw_planning_freshness_threshold_seconds(ev_cfg)
+        planning_state = {
+            "vehicles": {},
+            "refresh_attempted": False,
+            "refresh_succeeded": False,
+            "refresh_reason": "ev_disabled" if not enabled else "cached_fresh",
+            "warning": None,
+            "threshold_seconds": threshold_seconds,
+        }
+
+        try:
+            vehicles = self.bmw_service.vehicles()
+        except Exception:
+            vehicles = {}
+        planning_state["vehicles"] = vehicles
+
+        if not enabled:
+            return planning_state
+
+        refresh_reason = None
+        if not vehicles:
+            refresh_reason = "no_cached_data"
+        else:
+            first_vehicle = next(iter(vehicles.values()))
+            freshness_seconds = self._bmw_vehicle_freshness_seconds(first_vehicle)
+            if freshness_seconds is None or freshness_seconds > threshold_seconds:
+                refresh_reason = "stale_cache"
+
+        if refresh_reason is None:
+            planning_state["refresh_reason"] = "cached_fresh"
+            return planning_state
+
+        planning_state["refresh_attempted"] = True
+        planning_state["refresh_reason"] = refresh_reason
+        try:
+            refresh_result = self.bmw_service.manual_refresh(force_reprobe=False)
+        except Exception as exc:
+            refresh_result = {"ok": False, "reason": "poll_failed", "error": str(exc)}
+        refresh_ok = bool(refresh_result.get("ok")) if isinstance(refresh_result, dict) else False
+        planning_state["refresh_succeeded"] = refresh_ok
+
+        try:
+            refreshed_vehicles = self.bmw_service.vehicles()
+        except Exception:
+            refreshed_vehicles = vehicles
+        planning_state["vehicles"] = refreshed_vehicles
+
+        if refresh_reason == "stale_cache":
+            if refresh_ok:
+                planning_state["warning"] = (
+                    f"BMW data was stale (>{threshold_seconds}s); live refresh succeeded before planning."
+                )
+            else:
+                reason = refresh_result.get("reason") if isinstance(refresh_result, dict) else "unknown"
+                if vehicles:
+                    planning_state["warning"] = (
+                        f"BMW data was stale (>{threshold_seconds}s); live refresh failed ({reason}), using last known EV state."
+                    )
+                else:
+                    planning_state["warning"] = (
+                        f"BMW data was stale (>{threshold_seconds}s); live refresh failed ({reason}) and no BMW vehicle data is available."
+                    )
+        elif not planning_state["vehicles"]:
+            if refresh_ok:
+                planning_state["warning"] = "BMW EV integration enabled, but no BMW vehicle data available."
+            else:
+                reason = refresh_result.get("reason") if isinstance(refresh_result, dict) else "unknown"
+                planning_state["warning"] = (
+                    f"BMW EV integration enabled, but no BMW vehicle data available (refresh failed: {reason})."
+                )
+
+        return planning_state
+
     def _run(
         self,
         target_date: dt.date,
@@ -1114,18 +1220,15 @@ class BackendState:
         else:
             effective_use_sat = requested_use_sat
 
-        ev_cfg = cfg.get("ev_vehicle_data", {}) if isinstance(cfg.get("ev_vehicle_data"), dict) else {}
-        if bool(ev_cfg.get("enabled", False)):
-            try:
-                vehicles = self.bmw_service.vehicles()
-                if vehicles:
-                    first = next(iter(vehicles.values()))
-                    ev_soc = first.get("soc_pct")
-                    ev_status = str(first.get("data_status") or "")
-                    if ev_soc is not None and ev_status in {"fresh", "aging", "fallback"}:
-                        soc_percent = float(ev_soc)
-            except Exception:
-                pass
+        ev_state = self._get_planning_ready_ev_state()
+        ev_warning = ev_state.get("warning")
+        vehicles = ev_state.get("vehicles") if isinstance(ev_state.get("vehicles"), dict) else {}
+        if vehicles:
+            first = next(iter(vehicles.values()))
+            ev_soc = first.get("soc_pct")
+            ev_status = str(first.get("data_status") or "")
+            if ev_soc is not None and ev_status in {"fresh", "aging", "fallback"}:
+                soc_percent = float(ev_soc)
 
         run_at_utc = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
         run_id = str(uuid.uuid4())
@@ -1235,7 +1338,7 @@ class BackendState:
             self._save_results()
             return error_payload
 
-        warnings: list[str] = []
+        warnings: list[str] = [ev_warning] if isinstance(ev_warning, str) and ev_warning.strip() else []
         try:
             ensemble_week = build_ensemble_forecast(
                 loc=loc,
