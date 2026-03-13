@@ -58,9 +58,9 @@ class BmwService:
         assert self.provider is not None
         return self.provider.status.to_dict()
 
-    def manual_refresh(self) -> dict[str, Any]:
+    def manual_refresh(self, *, force_reprobe: bool = False) -> dict[str, Any]:
         assert self.provider is not None
-        return self.provider.manual_refresh()
+        return self.provider.manual_refresh(force_reprobe=force_reprobe)
 
     def start_device_flow(self) -> dict[str, Any]:
         assert self.auth is not None
@@ -124,5 +124,6 @@ class BmwService:
             "has_live_telematics": self.provider.status.vehicle_data_mode == "live_telematics",
             "container_auto_create_attempted": self.provider.status.container_auto_create_attempted,
             "container_auto_create_succeeded": self.provider.status.container_auto_create_succeeded,
+            "force_reprobe_diagnostics": dict(self.provider.status.force_reprobe_diagnostics),
             "device_flow_session": safe_session,
         }

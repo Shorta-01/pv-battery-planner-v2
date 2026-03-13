@@ -402,6 +402,7 @@ class BmwCarDataProvider:
         headers: dict[str, str],
         aggregate_payload: dict[str, Any],
         capture_paths: list[str],
+        force_reprobe: bool = False,
     ) -> tuple[str | None, dict[str, Any] | None]:
         self.status.container_auto_create_attempted = True
 
@@ -416,7 +417,10 @@ class BmwCarDataProvider:
         should_probe_next = bool(
             persisted_accepted
             and next_probe_descriptor not in persisted_accepted
-            and next_probe_descriptor not in persisted_rejected
+            and (
+                next_probe_descriptor not in persisted_rejected
+                or force_reprobe
+            )
         )
         if should_probe_next:
             accepted_next, rejected_next, probe_results_next = self._probe_descriptors(
@@ -433,6 +437,7 @@ class BmwCarDataProvider:
             descriptor_state["probe_results"] = [*existing_probe_results, *probe_results_next]
             descriptor_state["accepted_descriptors"] = list(persisted_accepted)
             descriptor_state["rejected_descriptors"] = dict(persisted_rejected)
+            descriptor_state["last_forced_reprobe"] = bool(force_reprobe)
             self._persist_descriptor_validation_state(
                 accepted_descriptors=persisted_accepted,
                 rejected_descriptors=persisted_rejected,
@@ -500,7 +505,7 @@ class BmwCarDataProvider:
             self.status.container_auto_create_succeeded = True
         return final_container_id, final_diag
 
-    def refresh_once(self) -> dict[str, Any]:
+    def refresh_once(self, *, force_reprobe: bool = False) -> dict[str, Any]:
         if not bool(self.config.get("bmw_enabled", False)):
             self.status.provider_status = "disabled"
             return {"ok": False, "reason": "disabled"}
@@ -532,6 +537,17 @@ class BmwCarDataProvider:
         self.status.vehicle_data_mode = "unknown"
         self.status.container_auto_create_attempted = False
         self.status.container_auto_create_succeeded = False
+        self.status.force_reprobe_diagnostics = {
+            "force_mode": bool(force_reprobe),
+            "target_descriptor": "vehicle.drivetrain.electricEngine.charging.level",
+            "descriptor_reprobe_attempted": False,
+            "descriptor_accepted": False,
+            "descriptor_rejected": False,
+            "production_container_rebuilt": False,
+            "old_active_container_id": None,
+            "new_active_container_id": None,
+            "old_container_cleanup": None,
+        }
 
         try:
             discovery_op = self.rest_operations()[0]
@@ -607,22 +623,41 @@ class BmwCarDataProvider:
                     container_diags.append(diag)
 
             active_container_id = self._select_active_container(container_diags)
-            if not active_container_id:
+            previous_active_container_id = active_container_id
+            self.status.force_reprobe_diagnostics["old_active_container_id"] = previous_active_container_id
+            if force_reprobe or not active_container_id:
                 created_container_id, created_diag = self._create_container_if_needed(
                     base=base,
                     headers=headers,
                     aggregate_payload=aggregate_payload,
                     capture_paths=capture_paths,
+                    force_reprobe=force_reprobe,
                 )
                 if created_diag:
+                    container_diags = [
+                        x for x in container_diags
+                        if str(x.get("container_id") or "") != str(created_diag.get("container_id") or "")
+                    ]
                     container_diags.append(created_diag)
                 if created_container_id and created_container_id not in container_ids:
                     container_ids.append(created_container_id)
-                active_container_id = created_container_id
+                if created_container_id:
+                    active_container_id = created_container_id
+                    rebuilt = bool(force_reprobe and previous_active_container_id and previous_active_container_id != created_container_id)
+                    self.status.force_reprobe_diagnostics["production_container_rebuilt"] = rebuilt
+                    if rebuilt:
+                        self.status.force_reprobe_diagnostics["old_container_cleanup"] = self._delete_probe_container(
+                            base=base,
+                            headers=headers,
+                            container_id=str(previous_active_container_id),
+                        )
+                elif force_reprobe:
+                    active_container_id = previous_active_container_id
 
             self.status.discovered_container_ids = list(container_ids)
             self.status.container_diagnostics = list(container_diags)
             self.status.active_container_id = active_container_id
+            self.status.force_reprobe_diagnostics["new_active_container_id"] = active_container_id
             self._persist_container_state(active_container_id=active_container_id, diagnostics=container_diags, source="refresh")
 
             if active_container_id:
@@ -667,6 +702,23 @@ class BmwCarDataProvider:
             self.status.vehicle_data_mode = "live_telematics" if isinstance(telematic_node, dict) and "_error" not in telematic_node else "static_only"
             if self.status.vehicle_data_mode != "live_telematics":
                 self.status.data_status = "partial"
+            descriptor_state_after = self._load_descriptor_validation_state()
+            probe_results = descriptor_state_after.get("probe_results") if isinstance(descriptor_state_after.get("probe_results"), list) else []
+            target_descriptor = str(self.status.force_reprobe_diagnostics.get("target_descriptor") or "")
+            target_probe_entries = [
+                x for x in probe_results
+                if isinstance(x, dict) and x.get("tested_descriptors") == [target_descriptor]
+            ]
+            if target_probe_entries:
+                latest_target_probe = target_probe_entries[-1]
+                self.status.force_reprobe_diagnostics["descriptor_reprobe_attempted"] = bool(
+                    force_reprobe or len(target_probe_entries) >= 1
+                )
+                self.status.force_reprobe_diagnostics["descriptor_accepted"] = bool(latest_target_probe.get("success"))
+                self.status.force_reprobe_diagnostics["descriptor_rejected"] = not bool(latest_target_probe.get("success"))
+            elif force_reprobe:
+                self.status.force_reprobe_diagnostics["descriptor_reprobe_attempted"] = True
+
             return {
                 "ok": bool(self.vehicles),
                 "vehicles": len(self.vehicles),
@@ -682,6 +734,7 @@ class BmwCarDataProvider:
                 "container_diagnostics": list(self.status.container_diagnostics),
                 "container_auto_create_attempted": self.status.container_auto_create_attempted,
                 "container_auto_create_succeeded": self.status.container_auto_create_succeeded,
+                "force_reprobe_diagnostics": dict(self.status.force_reprobe_diagnostics),
             }
         except Exception as exc:
             self.status.last_error = str(exc)
@@ -704,6 +757,7 @@ class BmwCarDataProvider:
                 "capture_files": capture_paths,
                 "container_auto_create_attempted": self.status.container_auto_create_attempted,
                 "container_auto_create_succeeded": self.status.container_auto_create_succeeded,
+                "force_reprobe_diagnostics": dict(self.status.force_reprobe_diagnostics),
             }
 
     def _discover_vehicle_ids(self, discovery_payload: Any) -> tuple[list[str], list[dict[str, Any]]]:
@@ -839,5 +893,5 @@ class BmwCarDataProvider:
         else:
             self.status.data_status = "partial"
 
-    def manual_refresh(self) -> dict[str, Any]:
-        return self.refresh_once()
+    def manual_refresh(self, *, force_reprobe: bool = False) -> dict[str, Any]:
+        return self.refresh_once(force_reprobe=force_reprobe)
