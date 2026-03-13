@@ -202,10 +202,9 @@ DEFAULT_CONFIG = {
     },
     "ev_vehicle_data": {
         "enabled": False,
-        "source": "manual",
+        "source": "bmw_cardata",
         "bmw_enabled": False,
         "bmw_client_id": "",
-        "bmw_stream_enabled": False,
         "bmw_token_cache_path": "local_state/bmw_token.json",
         "bmw_raw_event_store_path": "local_state/bmw_raw_events.jsonl",
         "bmw_vehicle_state_store_path": "local_state/bmw_vehicle_state.json",
@@ -213,10 +212,6 @@ DEFAULT_CONFIG = {
         "bmw_poll_idle_seconds": 900,
         "bmw_healthcheck_seconds": 300,
         "bmw_debug": False,
-        "charger_max_power_kw": None,
-        "petrol_price_eur_per_l": None,
-        "petrol_consumption_l_per_100km": None,
-        "ready_by_time": None,
     },
     "load_profile": {
         "load_profile_24h": LOAD_PROFILE,
@@ -619,6 +614,21 @@ def build_effective_config(user_cfg: dict) -> dict:
             "pv.loss_model='combined' already includes inverter losses; forcing pv.inverter_eff=1.0 to avoid double-counting."
         )
         pv_cfg["inverter_eff"] = 1.0
+
+    ev_cfg = merged_cfg.get("ev_vehicle_data")
+    if isinstance(ev_cfg, dict):
+        ev_enabled = bool(ev_cfg.get("enabled", False))
+        ev_cfg["source"] = "bmw_cardata"
+        ev_cfg["bmw_enabled"] = ev_enabled
+        for legacy_key in (
+            "bmw_stream_enabled",
+            "charger_max_power_kw",
+            "petrol_price_eur_per_l",
+            "petrol_consumption_l_per_100km",
+            "ready_by_time",
+        ):
+            ev_cfg.pop(legacy_key, None)
+
     validate_config(merged_cfg)
     return merged_cfg
 

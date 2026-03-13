@@ -339,10 +339,10 @@ def build_settings_payload(effective_cfg: dict, valid_model_ids: set[str]) -> tu
         },
         "ev_vehicle_data": {
             "enabled": bool(ui.get("cfg_ev_enabled", False)),
-            "source": "bmw_cardata" if str(ui.get("cfg_ev_source", "Manual")) == "BMW CarData" else "manual",
-            "bmw_enabled": bool(ui.get("cfg_ev_enabled", False) and str(ui.get("cfg_ev_source", "Manual")) == "BMW CarData"),
+            "source": "bmw_cardata",
+            "bmw_enabled": bool(ui.get("cfg_ev_enabled", False)),
             "bmw_client_id": str(ui.get("cfg_bmw_client_id", "")).strip(),
-            "bmw_stream_enabled": True,
+            "bmw_active_vehicle_id": str(ui.get("cfg_bmw_active_vehicle_id", "")).strip() or None,
             "bmw_token_cache_path": str((effective_cfg.get("ev_vehicle_data", {}) or {}).get("bmw_token_cache_path", "local_state/bmw_token.json")),
             "bmw_raw_event_store_path": str((effective_cfg.get("ev_vehicle_data", {}) or {}).get("bmw_raw_event_store_path", "local_state/bmw_raw_events.jsonl")),
             "bmw_vehicle_state_store_path": str((effective_cfg.get("ev_vehicle_data", {}) or {}).get("bmw_vehicle_state_store_path", "local_state/bmw_vehicle_state.json")),
@@ -350,10 +350,6 @@ def build_settings_payload(effective_cfg: dict, valid_model_ids: set[str]) -> tu
             "bmw_poll_idle_seconds": 900,
             "bmw_healthcheck_seconds": 300,
             "bmw_debug": False,
-            "charger_max_power_kw": float(ui["cfg_ev_charger_max_power_kw"]) if ui.get("cfg_ev_charger_max_power_kw") not in (None, "") else None,
-            "petrol_price_eur_per_l": float(ui["cfg_ev_petrol_price"]) if ui.get("cfg_ev_petrol_price") not in (None, "") else None,
-            "petrol_consumption_l_per_100km": float(ui["cfg_ev_petrol_consumption"]) if ui.get("cfg_ev_petrol_consumption") not in (None, "") else None,
-            "ready_by_time": str(ui.get("cfg_ev_ready_by_time") or "").strip() or None,
         },
         "load_profile": {
             "load_profile_24h": [float(v) for v in ui["cfg_load_profile"]],
@@ -3852,16 +3848,9 @@ with left:
         st.markdown("#### EV Vehicle Data")
         ev_cfg = (effective_cfg.get("ev_vehicle_data", {}) or {}) if isinstance(effective_cfg, dict) else {}
         cfg_ev_enabled = st.checkbox("EV integration enabled", value=bool(ev_cfg.get("enabled", False)))
-        cfg_ev_source = st.selectbox("Vehicle data source", options=["Manual", "BMW CarData"], index=1 if str(ev_cfg.get("source", "manual")) == "bmw_cardata" else 0)
         cfg_bmw_client_id = st.text_input("BMW client id", value=str(ev_cfg.get("bmw_client_id", "")), type="password")
-        ev_col1, ev_col2, ev_col3 = st.columns(3, vertical_alignment="bottom")
-        with ev_col1:
-            cfg_ev_charger_max_power_kw = st.number_input("Charger max power (kW)", min_value=0.0, value=float(ev_cfg.get("charger_max_power_kw") or 0.0), step=0.1)
-        with ev_col2:
-            cfg_ev_petrol_price = st.number_input("Petrol price (€/L)", min_value=0.0, value=float(ev_cfg.get("petrol_price_eur_per_l") or 0.0), step=0.01)
-        with ev_col3:
-            cfg_ev_petrol_consumption = st.number_input("Petrol consumption (L/100 km)", min_value=0.0, value=float(ev_cfg.get("petrol_consumption_l_per_100km") or 0.0), step=0.1)
-        cfg_ev_ready_by_time = st.text_input("Optional ready-by time (HH:MM)", value=str(ev_cfg.get("ready_by_time") or ""))
+        if cfg_ev_enabled and not str(cfg_bmw_client_id).strip():
+            ui_warning("BMW connection is incomplete: configure BMW client id to enable EV SOC from BMW CarData.")
 
         provider_status = {}
         vehicles_payload = {}
@@ -3876,10 +3865,28 @@ with left:
         status_cols[0].caption(f"Provider status: {provider_status.get('provider_status', 'unknown')}")
         status_cols[1].caption(f"Data status: {provider_status.get('data_status', 'unknown')}")
         vehicle_map = vehicles_payload.get("vehicles", {}) if isinstance(vehicles_payload, dict) else {}
+        vehicle_list = list(vehicle_map.values()) if isinstance(vehicle_map, dict) else []
         first_vehicle = next(iter(vehicle_map.values()), {}) if isinstance(vehicle_map, dict) else {}
+        selected_vehicle_id = str(ev_cfg.get("bmw_active_vehicle_id") or "")
         if first_vehicle:
             st.caption(f"Linked vehicle: {first_vehicle.get('display_name') or '-'} · {first_vehicle.get('vehicle_id')}")
             st.caption(f"Last vehicle update: {first_vehicle.get('last_update_ts')} · Freshness: {first_vehicle.get('freshness_seconds')}")
+        if len(vehicle_list) > 1:
+            vehicle_options = []
+            for vehicle in vehicle_list:
+                vehicle_id = str(vehicle.get("vehicle_id") or "").strip()
+                if not vehicle_id:
+                    continue
+                label = str(vehicle.get("display_name") or vehicle_id)
+                vehicle_options.append((label, vehicle_id))
+            if vehicle_options:
+                option_ids = [v[1] for v in vehicle_options]
+                default_idx = option_ids.index(selected_vehicle_id) if selected_vehicle_id in option_ids else 0
+                selected_label = st.selectbox("Active BMW vehicle", options=[v[0] for v in vehicle_options], index=default_idx)
+                for label, vehicle_id in vehicle_options:
+                    if label == selected_label:
+                        selected_vehicle_id = vehicle_id
+                        break
         st.caption(f"Stream connected: {'yes' if provider_status.get('stream_connected') else 'no'}")
         if st.button("Manual refresh", key="btn_ev_manual_refresh_settings"):
             try:
@@ -3888,16 +3895,6 @@ with left:
             except Exception as exc:
                 st.error(f"EV refresh failed: {exc}")
 
-        with st.expander("Advanced BMW connection details", expanded=False):
-            st.write("Configuration status: ready")
-            st.write("Last configuration update: 2026-03-11T14:32:48.079Z")
-            st.write("Host: customer.streaming-cardata.bmwgroup.com")
-            st.write("Port: 9000")
-            st.write("Topic: WBA51EH0X0CR89778")
-            st.write("Username: db9854dc-0db7-4a2a-9233-0de9eb762610")
-            st.write(f"Token status: {provider_status.get('provider_status', 'unknown')}")
-            st.write(f"Last auth refresh: {provider_status.get('last_auth_refresh')}")
-            st.write(f"Last raw event received: {provider_status.get('last_raw_event_received')}")
 
         cfg_load_profile = [float(v) for v in effective_cfg["load_profile"]["load_profile_24h"]]
 
@@ -3937,12 +3934,8 @@ with left:
             "cfg_cc_user": str(cfg_cc_user),
             "cfg_cc_pass": str(cfg_cc_pass),
             "cfg_ev_enabled": bool(cfg_ev_enabled),
-            "cfg_ev_source": str(cfg_ev_source),
             "cfg_bmw_client_id": str(cfg_bmw_client_id),
-            "cfg_ev_charger_max_power_kw": float(cfg_ev_charger_max_power_kw),
-            "cfg_ev_petrol_price": float(cfg_ev_petrol_price),
-            "cfg_ev_petrol_consumption": float(cfg_ev_petrol_consumption),
-            "cfg_ev_ready_by_time": str(cfg_ev_ready_by_time),
+            "cfg_bmw_active_vehicle_id": str(selected_vehicle_id),
             "cfg_load_profile": cfg_load_profile,
             "saved_sat": bool((effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}).get("use_satellite_nowcast_0_6h", False)),
             "cfg_max_grid_charge_power_kw": float(user_max_ac_kw),
