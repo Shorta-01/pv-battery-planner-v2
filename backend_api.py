@@ -1616,6 +1616,7 @@ class BackendState:
             raise RuntimeError(f"INV-T4 violation: expected 24 hourly slots, got {len(tomorrow_index)}")
 
         pv = pd.DataFrame(index=tomorrow_index)
+        pv_temperature_metadata = core.pv_temperature_metadata()
         pv["pv_east_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_east_p50.reindex(pv.index), errors="coerce")
         pv["pv_south_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_south_p50.reindex(pv.index), errors="coerce")
         pv["pv_total_unclipped_kwh"] = pd.to_numeric(ensemble_tomorrow.pv_ensemble_unclipped_p50.reindex(pv.index), errors="coerce")
@@ -1634,6 +1635,7 @@ class BackendState:
         split_total = total_e + total_s
         ratio_e, ratio_s = (total_e / split_total, total_s / split_total) if split_total > 0 else (0.5, 0.5)
         pv = core.ensure_pv_columns(pv, split_ratio=(ratio_e, ratio_s))
+        pv.attrs.update(pv_temperature_metadata)
 
         cons_profile = core.load_consumption_profile_kwh_per_hour()
         cons = core.build_consumption_forecast(cons_profile, yesterday_kwh, target_date, tz)
@@ -1993,6 +1995,7 @@ class BackendState:
             "pv_totals_kwh": pv_totals_kwh,
             "pv_tomorrow_low_high_kwh": pv_tomorrow_low_high_kwh,
             "pv_week_ahead": pv_week_ahead,
+            "pv_temperature_metadata": pv_temperature_metadata,
             "tomorrow_weather_code": int(tomorrow_weather_code) if tomorrow_weather_code is not None else None,
             "tomorrow_weather_code_source_model_id": tomorrow_source_model_id,
             "tomorrow_weather_code_source_model_label": tomorrow_source_label,
@@ -2036,6 +2039,7 @@ class BackendState:
                 "pv_tomorrow_low_high_kwh": pv_tomorrow_low_high_kwh,
                 "pv_tomorrow_model_spread_kwh": pv_model_spread,
                 "pv_week_ahead": pv_week_ahead,
+                "pv_temperature_metadata": pv_temperature_metadata,
                 "ensemble_method_week_ahead": ensemble_method_week,
                 "missing_vars_by_model": getattr(ensemble_tomorrow, "missing_vars_by_model", {}),
                 "derived_irradiance_by_model": getattr(ensemble_tomorrow, "derived_irradiance_by_model", {}),

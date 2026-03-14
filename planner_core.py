@@ -51,6 +51,8 @@ try:
 except Exception:
     PVLIB_AVAILABLE = False
 
+PVLIB_REQUIRED_ERROR_MESSAGE = "pvlib is required for PV forecast calculations"
+
 PRINT_MODE = "compact"
 logger = logging.getLogger(__name__)
 
@@ -932,6 +934,7 @@ def wind_speed_module_height_from_10m(
 
 
 def pvlib_location_from_loc(loc: "Location", tz_use: str) -> "pvlib.location.Location":
+    require_pvlib()
     return pvlib.location.Location(
         latitude=loc.latitude,
         longitude=loc.longitude,
@@ -2452,6 +2455,7 @@ def estimate_pv_with_pvlib(
     *,
     allow_synthetic_ghi_mask: "pd.Series | None" = None,
 ) -> Tuple["pd.Series", "pd.Series", "pd.Series", "pd.Series"]:
+    require_pvlib()
     tz_use = tz or TIMEZONE
     pvloc = pvlib_location_from_loc(loc, tz_use)
     times = df.index
@@ -2745,8 +2749,7 @@ def build_pv_forecast(
     *,
     allow_synthetic_ghi_mask: "pd.Series | None" = None,
 ) -> "pd.DataFrame":
-    if not PVLIB_AVAILABLE:
-        raise SystemExit("pvlib is required. Install with: pip install pvlib")
+    require_pvlib()
 
     (
         east_ac_kwh_clipped,
@@ -2784,13 +2787,25 @@ def build_pv_forecast(
 
     out = ensure_pv_columns(out, split_ratio=(0.5, 0.5))
     validate_pv_outputs(out)
-    out.attrs["pv_method"] = "pvlib"
-    out.attrs["temperature_wind_input_source"] = PV_TEMPERATURE_WIND_INPUT_SOURCE
-    out.attrs["effective_module_wind_height_m"] = float(PV_EFFECTIVE_MODULE_WIND_HEIGHT_M)
-    out.attrs["forecast_wind_reference_height_m"] = float(PV_FORECAST_WIND_REFERENCE_HEIGHT_M)
-    out.attrs["faiman_u0"] = float(PV_TEMPERATURE_FAIMAN_U0)
-    out.attrs["faiman_u1"] = float(PV_TEMPERATURE_FAIMAN_U1)
+    out.attrs.update(pv_temperature_metadata())
     return out
+
+
+def pv_temperature_metadata() -> dict[str, float | str]:
+    return {
+        "pv_method": "pvlib",
+        "temperature_model": PV_TEMPERATURE_MODEL,
+        "temperature_wind_input_source": PV_TEMPERATURE_WIND_INPUT_SOURCE,
+        "effective_module_wind_height_m": float(PV_EFFECTIVE_MODULE_WIND_HEIGHT_M),
+        "forecast_wind_reference_height_m": float(PV_FORECAST_WIND_REFERENCE_HEIGHT_M),
+        "faiman_u0": float(PV_TEMPERATURE_FAIMAN_U0),
+        "faiman_u1": float(PV_TEMPERATURE_FAIMAN_U1),
+    }
+
+
+def require_pvlib() -> None:
+    if not PVLIB_AVAILABLE:
+        raise RuntimeError(PVLIB_REQUIRED_ERROR_MESSAGE)
 
 
 def ensure_pv_columns(df: "pd.DataFrame", *, prefer_split: bool = True, split_ratio: tuple[float, float] = (0.0, 1.0)) -> "pd.DataFrame":
@@ -2881,8 +2896,7 @@ def _soft_daylight_factor_from_elevation(elev_deg: float) -> float:
 
 
 def compute_solar_elevation_series(index: "pd.DatetimeIndex", loc: Location) -> "pd.Series":
-    if not PVLIB_AVAILABLE:
-        raise RuntimeError("pvlib is required for solar elevation daylight gating")
+    require_pvlib()
     latitude = float(loc.latitude)
     longitude = float(loc.longitude)
     solpos = pvlib.solarposition.get_solarposition(index, latitude, longitude, altitude=effective_elevation_m(loc.elevation_m))
