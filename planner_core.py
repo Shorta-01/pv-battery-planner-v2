@@ -731,16 +731,21 @@ def resolve_location_metadata(
     fallback_elevation_m: float | object | None = None,
     force_refresh: bool = False,
 ) -> dict:
-    timezone_value = str(fallback_timezone or TIMEZONE).strip() or TIMEZONE
+    runtime = _runtime_state_snapshot()
+    timezone_value = str(fallback_timezone or runtime.timezone).strip() or runtime.timezone
     try:
         _ = ZoneInfo(timezone_value)
     except Exception:
-        timezone_value = TIMEZONE
+        timezone_value = runtime.timezone
 
     try:
-        elevation_value = float(fallback_elevation_m) if fallback_elevation_m is not None else float(ELEVATION_M)
+        elevation_value = (
+            float(fallback_elevation_m)
+            if fallback_elevation_m is not None
+            else float(runtime.elevation_m_default)
+        )
     except (TypeError, ValueError):
-        elevation_value = float(ELEVATION_M)
+        elevation_value = float(runtime.elevation_m_default)
 
     warnings: list[str] = []
     try:
@@ -797,7 +802,8 @@ def applied_config(cfg: dict):
 
 
 def get_effective_config() -> dict:
-    effective_cfg = copy.deepcopy(EFFECTIVE_CFG)
+    runtime = _runtime_state_snapshot()
+    effective_cfg = runtime.effective_cfg
     pv_cfg = effective_cfg.get("pv")
     if isinstance(pv_cfg, dict):
         pv_cfg.pop(LEGACY_TILT_KEY, None)
@@ -818,8 +824,9 @@ def validate_flow_invariants(flows_df: "pd.DataFrame", context: str, *, tol: flo
     if flows_df.empty:
         return
 
-    soc_lo = (MIN_SOC * 100.0) - tol
-    soc_hi = (BATTERY_MAX_SOC * 100.0) + tol
+    runtime = _runtime_state_snapshot()
+    soc_lo = (runtime.min_soc * 100.0) - tol
+    soc_hi = (runtime.battery_max_soc * 100.0) + tol
 
     def _as_float(row: "pd.Series", col: str) -> float:
         return float(row[col]) if col in row else 0.0
@@ -866,7 +873,7 @@ def validate_flow_invariants(flows_df: "pd.DataFrame", context: str, *, tol: flo
         )
 
         if context in {"full_day", "expensive_hours"} and not is_pure_night_charge_row:
-            delivered_from_batt = batt_discharge_kwh * BATTERY_DISCHARGE_EFF
+            delivered_from_batt = batt_discharge_kwh * runtime.battery_discharge_eff
             rhs = pv_to_load_kwh + delivered_from_batt + grid_import_kwh
             diff = load_kwh - rhs
             if abs(diff) > tol:
@@ -878,7 +885,11 @@ def validate_flow_invariants(flows_df: "pd.DataFrame", context: str, *, tol: flo
                 )
 
         if context == "night":
-            expected_grid_import = batt_charge_kwh / BATTERY_AC_CHARGE_EFF if BATTERY_AC_CHARGE_EFF > 0 else 0.0
+            expected_grid_import = (
+                batt_charge_kwh / runtime.battery_ac_charge_eff
+                if runtime.battery_ac_charge_eff > 0
+                else 0.0
+            )
             diff = grid_import_kwh - expected_grid_import
             if abs(diff) > tol:
                 raise RuntimeError(
@@ -985,6 +996,32 @@ class PlannerOutput:
     cutoff_note: str
     cutoff_reason: str
     charge_note: str
+
+
+@dataclass(frozen=True)
+class PlannerRuntimeStateSnapshot:
+    timezone: str
+    elevation_m_default: float
+    min_soc: float
+    battery_max_soc: float
+    battery_discharge_eff: float
+    battery_ac_charge_eff: float
+    offpeak_windows_by_dow: dict[int, list[tuple[str, str]]]
+    effective_cfg: dict
+
+
+def _runtime_state_snapshot() -> PlannerRuntimeStateSnapshot:
+    with _CONFIG_STATE_LOCK:
+        return PlannerRuntimeStateSnapshot(
+            timezone=str(TIMEZONE),
+            elevation_m_default=float(ELEVATION_M),
+            min_soc=float(MIN_SOC),
+            battery_max_soc=float(BATTERY_MAX_SOC),
+            battery_discharge_eff=float(BATTERY_DISCHARGE_EFF),
+            battery_ac_charge_eff=float(BATTERY_AC_CHARGE_EFF),
+            offpeak_windows_by_dow=copy.deepcopy(OFFPEAK_WINDOWS_BY_DOW),
+            effective_cfg=copy.deepcopy(EFFECTIVE_CFG),
+        )
 
 
 @dataclass
@@ -1146,8 +1183,25 @@ def total_window_hours(windows: List[Tuple[str, str]]) -> float:
     return sum(window_duration_hours(s, e) for s, e in windows)
 
 
+def _runtime_tariff_cfg() -> dict:
+    runtime = _runtime_state_snapshot()
+    tariff_cfg = runtime.effective_cfg.get("tariff") if isinstance(runtime.effective_cfg, dict) else None
+    if isinstance(tariff_cfg, dict):
+        return tariff_cfg
+    return DEFAULT_CONFIG["tariff"]
+
+
+def _runtime_timezone() -> str:
+    return _runtime_state_snapshot().timezone
+
+
+def _runtime_offpeak_windows_for_weekday(weekday: int) -> List[Tuple[str, str]]:
+    runtime = _runtime_state_snapshot()
+    return normalize_windows(runtime.offpeak_windows_by_dow.get(int(weekday), []))
+
+
 def get_offpeak_windows(for_date: dt.date) -> List[Tuple[str, str]]:
-    return normalize_windows(OFFPEAK_WINDOWS_BY_DOW.get(for_date.weekday(), []))
+    return _runtime_offpeak_windows_for_weekday(for_date.weekday())
 
 
 def get_offpeak_windows_for_date(for_date: dt.date, cfg: Optional[dict] = None) -> List[Tuple[str, str]]:
@@ -1196,7 +1250,7 @@ def get_offpeak_mask_overnight_session(index: pd.DatetimeIndex, charge_date: dt.
     if len(index) == 0 or not windows:
         return pd.Series(False, index=index, dtype=bool)
 
-    t0 = pd.Timestamp(dt.datetime.combine(charge_date, dt.time(0, 0)), tz=TIMEZONE)
+    t0 = pd.Timestamp(dt.datetime.combine(charge_date, dt.time(0, 0)), tz=_runtime_timezone())
     t1 = t0 + dt.timedelta(days=1)
     t2 = t1 + dt.timedelta(days=1)
     normalized = pd.DatetimeIndex(index)
@@ -1223,7 +1277,7 @@ def get_offpeak_mask_overnight_session(index: pd.DatetimeIndex, charge_date: dt.
 
 def get_charge_session_index(charge_date: dt.date, cfg: Optional[dict] = None, start_hhmm: str = "22:00") -> pd.DatetimeIndex:
     hh, mm = (int(v) for v in str(start_hhmm).split(":"))
-    session_start = pd.Timestamp(dt.datetime.combine(charge_date, dt.time(hh, mm)), tz=TIMEZONE)
+    session_start = pd.Timestamp(dt.datetime.combine(charge_date, dt.time(hh, mm)), tz=_runtime_timezone())
     session_end = session_start + dt.timedelta(days=1)
     idx = pd.date_range(session_start, session_end, freq="h", inclusive="left")
     mask = get_offpeak_mask(idx, cfg)
@@ -1234,8 +1288,8 @@ def _night_offpeak_window_for_charge_date(
     charge_date: dt.date,
     tariff_cfg: Optional[dict] = None,
 ) -> tuple[dt.datetime, dt.datetime, int]:
-    cfg = tariff_cfg or EFFECTIVE_CFG.get("tariff", {})
-    charge_midnight_ts = pd.Timestamp(dt.datetime.combine(charge_date, dt.time(0, 0)), tz=TIMEZONE)
+    cfg = tariff_cfg or _runtime_tariff_cfg()
+    charge_midnight_ts = pd.Timestamp(dt.datetime.combine(charge_date, dt.time(0, 0)), tz=_runtime_timezone())
     next_midnight_ts = charge_midnight_ts + dt.timedelta(days=1)
 
     charge_windows = normalize_windows(get_offpeak_windows_for_date(charge_date, cfg))
