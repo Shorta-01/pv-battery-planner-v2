@@ -1,5 +1,6 @@
 import pandas as pd
 import weather_ensemble as we
+import planner_core as core
 
 
 def test_classify_day_types():
@@ -26,3 +27,55 @@ def test_weights_sum_and_bias():
     expert = we._weights_for_day_type(base, models, day_type="fronty_wet", expert_mode=True)
     assert abs(sum(expert.values()) - 1.0) < 1e-9
     assert expert["knmi_harmonie_arome"] == base["knmi_harmonie_arome"]
+
+
+def test_ensemble_day_type_fronty_wet_with_daylight_rain() -> None:
+    idx = pd.date_range(pd.Timestamp("2026-01-10 00:00:00", tz="Europe/Brussels"), periods=24, freq="h")
+    wet_df = pd.DataFrame(
+        {
+            "cloud_cover_pct": [92.0] * 24,
+            "weather_code": [61.0] * 24,
+            "precip_probability_pct": [85.0] * 24,
+            "precip_mm": [0.6] * 24,
+            "rain_mm": [0.4] * 24,
+        },
+        index=idx,
+    )
+    weather = {
+        "knmi_harmonie_arome": core.ForecastResult(df=wet_df, sunrise=idx[7].to_pydatetime(), sunset=idx[17].to_pydatetime()),
+        "dwd_icon_eu": core.ForecastResult(df=wet_df, sunrise=idx[7].to_pydatetime(), sunset=idx[17].to_pydatetime()),
+    }
+    assert we._classify_day_type_from_ensemble(weather, idx) == "fronty_wet"
+
+
+def test_ensemble_day_type_not_dependent_on_primary_model_order() -> None:
+    idx = pd.date_range(pd.Timestamp("2026-01-10 00:00:00", tz="Europe/Brussels"), periods=24, freq="h")
+    clear_df = pd.DataFrame(
+        {
+            "cloud_cover_pct": [10.0] * 24,
+            "weather_code": [1.0] * 24,
+            "precip_probability_pct": [5.0] * 24,
+            "precip_mm": [0.0] * 24,
+            "rain_mm": [0.0] * 24,
+        },
+        index=idx,
+    )
+    wet_df = pd.DataFrame(
+        {
+            "cloud_cover_pct": [95.0] * 24,
+            "weather_code": [63.0] * 24,
+            "precip_probability_pct": [90.0] * 24,
+            "precip_mm": [0.8] * 24,
+            "rain_mm": [0.6] * 24,
+        },
+        index=idx,
+    )
+    a = {
+        "clear": core.ForecastResult(df=clear_df, sunrise=idx[7].to_pydatetime(), sunset=idx[17].to_pydatetime()),
+        "wet": core.ForecastResult(df=wet_df, sunrise=idx[7].to_pydatetime(), sunset=idx[17].to_pydatetime()),
+    }
+    b = {
+        "wet": core.ForecastResult(df=wet_df, sunrise=idx[7].to_pydatetime(), sunset=idx[17].to_pydatetime()),
+        "clear": core.ForecastResult(df=clear_df, sunrise=idx[7].to_pydatetime(), sunset=idx[17].to_pydatetime()),
+    }
+    assert we._classify_day_type_from_ensemble(a, idx) == we._classify_day_type_from_ensemble(b, idx)

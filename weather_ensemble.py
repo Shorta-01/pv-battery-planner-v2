@@ -100,7 +100,8 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "params": {"models": "knmi_harmonie_arome_netherlands"},
         "badges": ["🏅", "📡", "∑"],
         "recommended_for_be": True,
-        "max_days": 7,
+        "max_days": 3,
+        "forecast_length_hours": 60,
         "tier": "medium",
         "supports_15min_radiation": False,
         "capability": {
@@ -118,6 +119,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "badges": ["🏅", "📡", "☀️", "⏱️"],
         "recommended_for_be": True,
         "max_days": 2,
+        "forecast_length_hours": 48,
         "tier": "short",
         "supports_15min_radiation": True,
         "capability": {
@@ -134,7 +136,8 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "params": {},
         "badges": ["🏅", "🌐", "☀️"],
         "recommended_for_be": True,
-        "max_days": 7,
+        "max_days": 15,
+        "forecast_length_hours": 360,
         "tier": "global",
         "supports_15min_radiation": False,
         "capability": {
@@ -152,6 +155,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "badges": ["", "", "☀️"],
         "recommended_for_be": True,
         "max_days": 15,
+        "forecast_length_hours": 360,
         "tier": "global",
         "supports_15min_radiation": False,
         "capability": {
@@ -168,7 +172,8 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "params": {"models": "icon_eu"},
         "badges": ["🇪🇺", "☀️"],
         "recommended_for_be": True,
-        "max_days": 7,
+        "max_days": 5,
+        "forecast_length_hours": 120,
         "tier": "medium",
         "supports_15min_radiation": False,
         "capability": {
@@ -186,6 +191,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "badges": ["🇪🇺", "∑"],
         "recommended_for_be": True,
         "max_days": 4,
+        "forecast_length_hours": 96,
         "tier": "medium",
         "supports_15min_radiation": False,
         "capability": {
@@ -203,6 +209,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
         "badges": ["🌐", "☀️", "🗓️"],
         "recommended_for_be": True,
         "max_days": 16,
+        "forecast_length_hours": 384,
         "tier": "global",
         "supports_15min_radiation": False,
         "capability": {
@@ -218,6 +225,7 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
 MODEL_CAPS: dict[str, dict[str, Any]] = {
     model_id: {
         "max_days": int(spec.get("max_days", 0) or 0),
+        "forecast_length_hours": int(spec.get("forecast_length_hours", int(spec.get("max_days", 0) or 0) * 24) or 0),
         "has_native_dni_dhi": bool(
             (spec.get("capability", {}) or {}).get("direct_native")
             and (spec.get("capability", {}) or {}).get("diffuse_native")
@@ -256,7 +264,7 @@ def dedupe_models_by_source(model_ids: list[str]) -> tuple[list[str], list[str]]
             entries,
             key=lambda item: (
                 0 if bool(WEATHER_MODELS[item[1]].get("recommended_for_be", False)) else 1,
-                -int(WEATHER_MODELS[item[1]].get("max_days", 0) or 0),
+                -_forecast_length_hours_for_model(item[1]),
                 tier_order.get(str(WEATHER_MODELS[item[1]].get("tier") or "global"), 9),
                 item[1],
             ),
@@ -285,6 +293,7 @@ def get_model_caps(model_id: str) -> dict[str, Any]:
     if caps is None:
         return {
             "max_days": 0,
+            "forecast_length_hours": 0,
             "has_native_dni_dhi": False,
             "supports_15min_radiation": False,
             "tier": "global",
@@ -301,6 +310,15 @@ def _stable_available_model_order(selected: list[str], mapping: dict[str, Any]) 
 def _stable_first_available_model(selected: list[str], mapping: dict[str, Any]) -> str | None:
     ordered = _stable_available_model_order(selected, mapping)
     return ordered[0] if ordered else None
+
+
+def _forecast_length_hours_for_model(model_id: str) -> int:
+    spec = WEATHER_MODELS.get(model_id, {})
+    hours = int(spec.get("forecast_length_hours", 0) or 0)
+    if hours > 0:
+        return hours
+    max_days = int(spec.get("max_days", 0) or 0)
+    return max(24, max_days * 24)
 
 
 def auto_select_models_for_location(lat: float | object, lon: float | None = None, requested_days: int = 1) -> list[str]:
@@ -321,11 +339,12 @@ def auto_select_models_for_location(lat: float | object, lon: float | None = Non
         lat_valid = False
 
     horizon = max(1, int(requested_days or 1))
+    horizon_hours = horizon * 24
 
     eligible = [
         model_id
         for model_id, spec in WEATHER_MODELS.items()
-        if int(spec.get("max_days", 0) or 0) >= horizon
+        if _forecast_length_hours_for_model(model_id) >= horizon_hours
     ]
 
     stable_priority = [
@@ -381,12 +400,13 @@ def auto_select_models_for_location(lat: float | object, lon: float | None = Non
 def select_week_ahead_models(*, requested_days: int = 7) -> list[str]:
     """Return all weather models valid for week-ahead horizons in stable deterministic order."""
     horizon = max(1, int(requested_days or 1))
+    horizon_hours = horizon * 24
     tier_order = {"short": 0, "medium": 1, "global": 2}
 
     eligible = [
         model_id
         for model_id, spec in WEATHER_MODELS.items()
-        if int(spec.get("max_days", 0) or 0) >= horizon
+        if _forecast_length_hours_for_model(model_id) >= horizon_hours
     ]
 
     selected = sorted(
@@ -394,7 +414,7 @@ def select_week_ahead_models(*, requested_days: int = 7) -> list[str]:
         key=lambda model_id: (
             0 if bool(WEATHER_MODELS[model_id].get("recommended_for_be", False)) else 1,
             tier_order.get(str(WEATHER_MODELS[model_id].get("tier") or "global"), 9),
-            -int(WEATHER_MODELS[model_id].get("max_days", 0) or 0),
+            -_forecast_length_hours_for_model(model_id),
             model_id,
         ),
     )
@@ -486,6 +506,9 @@ BASE_HOURLY_VARIABLES = [
     "shortwave_radiation",
     "cloud_cover",
     "weather_code",
+    "precipitation_probability",
+    "precipitation",
+    "rain",
 ]
 
 IRRADIANCE_HOURLY_VARIABLES = [
@@ -510,6 +533,9 @@ WEATHER_DISPLAY_VARS = [
     "shortwave_radiation",
     "direct_normal_irradiance",
     "diffuse_radiation",
+    "precipitation_probability",
+    "precipitation",
+    "rain",
 ]
 
 FORECAST_FALLBACK_MODELS: dict[str, str] = {
@@ -590,9 +616,17 @@ def local_day_hourly_index(target_date: dt.date, tzname: str) -> pd.DatetimeInde
     return pd.date_range(start=start, end=end, freq="h", inclusive="left")
 
 
-def local_horizon_hourly_index(target_date: dt.date, tzname: str, horizon_days: int = 1) -> pd.DatetimeIndex:
+def local_horizon_hourly_index(
+    target_date: dt.date,
+    tzname: str,
+    horizon_days: int = 1,
+    horizon_hours: int | None = None,
+) -> pd.DatetimeIndex:
     start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=tzname)
-    end = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=max(1, int(horizon_days))), dt.time(0, 0)), tz=tzname)
+    if horizon_hours is not None:
+        end = start + dt.timedelta(hours=max(1, int(horizon_hours)))
+    else:
+        end = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=max(1, int(horizon_days))), dt.time(0, 0)), tz=tzname)
     return pd.date_range(start=start, end=end, freq="h", inclusive="left")
 
 
@@ -1205,25 +1239,58 @@ def _log_model_fetch(
     )
 
 
-def _decompose_from_ghi(df: pd.DataFrame, loc: core.Location, tz: str) -> pd.DataFrame:
+def _decompose_from_ghi(df: pd.DataFrame, loc: core.Location, tz: str) -> tuple[pd.DataFrame, str]:
     if not core.PVLIB_AVAILABLE:
-        return df
+        return df, "unavailable"
     import pvlib  # type: ignore
 
+    out = df.copy()
+    ghi = pd.to_numeric(out.get("ghi_wm2"), errors="coerce").clip(lower=0.0)
+    dni_existing = pd.to_numeric(out.get("dni_wm2"), errors="coerce") if "dni_wm2" in out.columns else pd.Series(np.nan, index=out.index)
+    dhi_existing = pd.to_numeric(out.get("dhi_wm2"), errors="coerce") if "dhi_wm2" in out.columns else pd.Series(np.nan, index=out.index)
+    missing_mask = ghi.notna() & (dni_existing.isna() | dhi_existing.isna())
+    if not bool(missing_mask.any()):
+        out["dni_wm2"] = dni_existing
+        out["dhi_wm2"] = dhi_existing
+        return out, "none"
+
     pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz)
-    solpos = pvloc.get_solarposition(df.index)
-    ghi = pd.to_numeric(df["ghi_wm2"], errors="coerce").fillna(0.0).clip(lower=0.0)
-    disc = pvlib.irradiance.disc(ghi, solpos["apparent_zenith"], df.index)
-    dni = pd.to_numeric(disc["dni"], errors="coerce").fillna(0.0).clip(lower=0.0)
-    cos_zen = pd.to_numeric(solpos["apparent_zenith"], errors="coerce").apply(lambda z: max(0.0, math.cos(math.radians(z))) if pd.notna(z) else 0.0)
-    dhi = (ghi - (dni * cos_zen)).fillna(0.0).clip(lower=0.0)
+    solpos = pvloc.get_solarposition(out.index)
+    zenith = pd.to_numeric(solpos.get("apparent_zenith"), errors="coerce").reindex(out.index)
+    cos_zen = zenith.apply(lambda z: max(0.0, math.cos(math.radians(z))) if pd.notna(z) else 0.0).clip(lower=0.0, upper=1.0)
+    low_sun_mask = (cos_zen <= 0.065) | (ghi <= 20.0)
 
-    dni_existing = pd.to_numeric(df.get("dni_wm2"), errors="coerce") if "dni_wm2" in df.columns else pd.Series(np.nan, index=df.index)
-    dhi_existing = pd.to_numeric(df.get("dhi_wm2"), errors="coerce") if "dhi_wm2" in df.columns else pd.Series(np.nan, index=df.index)
+    method_used = "none"
+    dni_out = dni_existing.copy()
+    dhi_out = dhi_existing.copy()
 
-    df["dni_wm2"] = dni_existing.where(dni_existing.notna(), dni)
-    df["dhi_wm2"] = dhi_existing.where(dhi_existing.notna(), dhi)
-    return df
+    valid_dirint = bool((ghi.notna() & zenith.notna()).sum() >= 3)
+    if valid_dirint:
+        with contextlib.suppress(Exception):
+            dirint_dni = pd.to_numeric(pvlib.irradiance.dirint(ghi.fillna(0.0), zenith, out.index), errors="coerce").reindex(out.index)
+            dirint_dni = dirint_dni.where(~low_sun_mask, 0.0).clip(lower=0.0)
+            fill_dni_mask = missing_mask & dni_out.isna()
+            dni_out = dni_out.where(~fill_dni_mask, dirint_dni)
+            closure_dhi = (ghi - (dni_out.fillna(0.0) * cos_zen)).clip(lower=0.0)
+            fill_dhi_mask = missing_mask & dhi_out.isna() & dni_out.notna()
+            dhi_out = dhi_out.where(~fill_dhi_mask, closure_dhi)
+            method_used = "dirint_closure"
+
+    unresolved = missing_mask & (dni_out.isna() | dhi_out.isna())
+    if bool(unresolved.any()):
+        with contextlib.suppress(Exception):
+            erbs = pvlib.irradiance.erbs(ghi.fillna(0.0), zenith, out.index)
+            erbs_dni = pd.to_numeric(erbs.get("dni"), errors="coerce").reindex(out.index).clip(lower=0.0)
+            erbs_dhi = pd.to_numeric(erbs.get("dhi"), errors="coerce").reindex(out.index).clip(lower=0.0)
+            fill_dni_mask = unresolved & dni_out.isna()
+            fill_dhi_mask = unresolved & dhi_out.isna()
+            dni_out = dni_out.where(~fill_dni_mask, erbs_dni)
+            dhi_out = dhi_out.where(~fill_dhi_mask, erbs_dhi)
+            method_used = "erbs" if method_used == "none" else "dirint_closure+erbs"
+
+    out["dni_wm2"] = pd.to_numeric(dni_out, errors="coerce").clip(lower=0.0)
+    out["dhi_wm2"] = pd.to_numeric(dhi_out, errors="coerce").clip(lower=0.0)
+    return out, method_used
 
 
 def _cache_key(model_id: str, lat: float, lon: float, tz: str, target_date: dt.date, elevation_m: float | None = None) -> tuple:
@@ -1299,7 +1366,8 @@ def _finalize_irradiance_components(
     loc: core.Location,
     tz: str,
     missing_vars: list[str],
-) -> tuple[pd.Series, pd.Series, list[str], bool]:
+    return_details: bool = False,
+) -> tuple[pd.Series, pd.Series, list[str], bool] | tuple[pd.Series, pd.Series, list[str], bool, dict[str, Any]]:
     dni_out = pd.to_numeric(dni, errors="coerce")
     dhi_out = pd.to_numeric(dhi, errors="coerce")
     ghi_out = pd.to_numeric(ghi, errors="coerce")
@@ -1315,6 +1383,7 @@ def _finalize_irradiance_components(
     ghi_usable = bool(((ghi_out.notna()) & (ghi_out > 0)).any())
     before_missing_count = int((dni_out.isna() | dhi_out.isna()).sum())
 
+    reconstruction_method = "none"
     if needs_derivation and ghi_usable:
         irradiance_df = pd.DataFrame(
             {
@@ -1324,7 +1393,7 @@ def _finalize_irradiance_components(
             },
             index=ghi_out.index,
         )
-        irradiance_df = _decompose_from_ghi(irradiance_df, loc, tz)
+        irradiance_df, reconstruction_method = _decompose_from_ghi(irradiance_df, loc, tz)
         dni_out = pd.to_numeric(irradiance_df["dni_wm2"], errors="coerce")
         dhi_out = pd.to_numeric(irradiance_df["dhi_wm2"], errors="coerce")
     after_missing_count = int((dni_out.isna() | dhi_out.isna()).sum())
@@ -1342,6 +1411,12 @@ def _finalize_irradiance_components(
         else:
             missing_set.discard(field)
 
+    details = {
+        "reconstruction_method": reconstruction_method,
+        "derived_irradiance_hours": int(derived_irradiance_hours),
+    }
+    if return_details:
+        return dni_out, dhi_out, sorted(missing_set), derived_irradiance, details
     return dni_out, dhi_out, sorted(missing_set), derived_irradiance
 
 
@@ -1394,9 +1469,12 @@ def fetch_open_meteo_weather(
         raise RuntimeError(f"Unsupported weather model: {model_id}")
 
     spec = WEATHER_MODELS[model_id]
-    model_max_days = max(1, int(spec.get("max_days", 1)))
+    model_forecast_length_hours = _forecast_length_hours_for_model(model_id)
+    model_max_days = max(1, int(math.ceil(model_forecast_length_hours / 24.0)))
     requested_days_int = int(max(1, requested_days))
-    horizon_days = max(1, min(requested_days_int, model_max_days))
+    requested_hours = requested_days_int * 24
+    horizon_hours = max(1, min(requested_hours, model_forecast_length_hours))
+    horizon_days = max(1, int(math.ceil(horizon_hours / 24.0)))
 
     cache_extra_key = json.dumps(extra_params, sort_keys=True, default=str) if extra_params else ""
     key = (
@@ -1420,8 +1498,11 @@ def fetch_open_meteo_weather(
             "source": "in_memory_cache",
             "cache_hit": True,
             "requested_days": int(requested_days_int),
+            "requested_hours": int(requested_hours),
             "horizon_days": int(horizon_days),
+            "horizon_hours": int(horizon_hours),
             "model_max_days": int(model_max_days),
+            "forecast_length_hours": int(model_forecast_length_hours),
             "derived_irradiance_hours": int(cached_derived_hours),
         }
 
@@ -1473,8 +1554,11 @@ def fetch_open_meteo_weather(
         "circuit_breaker_open": bool(circuit_open),
         "circuit_breaker_open_for_seconds": int(open_for_seconds),
         "requested_days": int(requested_days_int),
+        "requested_hours": int(requested_hours),
         "horizon_days": int(horizon_days),
+        "horizon_hours": int(horizon_hours),
         "model_max_days": int(model_max_days),
+        "forecast_length_hours": int(model_forecast_length_hours),
     }
     request_params = dict(params)
     request_endpoint = str(endpoint_override or spec["endpoint"])
@@ -1635,6 +1719,9 @@ def fetch_open_meteo_weather(
     df["temp_air_c"] = _series("temperature_2m", 10.0).ffill().bfill().fillna(10.0)
     df["wind_speed_ms"] = _series("wind_speed_10m", 1.0).fillna(1.0).clip(lower=0.0)
     df["cloud_cover_pct"] = _series("cloud_cover", 0.0).fillna(0.0).clip(lower=0.0)
+    df["precip_probability_pct"] = _series("precipitation_probability", np.nan).clip(lower=0.0, upper=100.0)
+    df["precip_mm"] = _series("precipitation", np.nan).clip(lower=0.0)
+    df["rain_mm"] = _series("rain", np.nan).clip(lower=0.0)
     ghi = _series("shortwave_radiation", np.nan, record_missing=False).clip(lower=0.0)
     ghi_input_missing_hours = int(ghi.isna().sum())
     ghi_input_missing = ghi_input_missing_hours == len(ghi.index)
@@ -1707,31 +1794,24 @@ def fetch_open_meteo_weather(
 
     dni_candidate = pd.to_numeric(dni_candidate, errors="coerce")
     dhi_candidate = pd.to_numeric(dhi_candidate, errors="coerce")
-    before_missing_count = int((dni_candidate.isna() | dhi_candidate.isna()).sum())
+    reconstruction_target_mask = pd.to_numeric(df["ghi_wm2"], errors="coerce").notna() & (dni_candidate.isna() | dhi_candidate.isna())
     derived_physical = False
     filled_gaps = False
-    dni_mixed_present_missing = dni_candidate.notna().any() and dni_candidate.isna().any()
-    if dni_mixed_present_missing:
-        filled_gaps = True
-        dni_candidate = dni_candidate.ffill().bfill()
-    dhi_mixed_present_missing = dhi_candidate.notna().any() and dhi_candidate.isna().any()
-    if dhi_mixed_present_missing:
-        filled_gaps = True
-        dhi_candidate = dhi_candidate.ffill().bfill()
 
-
-    dni_final, dhi_final, missing_vars, derived_irradiance = _finalize_irradiance_components(
+    dni_final, dhi_final, missing_vars, derived_irradiance, irr_details = _finalize_irradiance_components(
         ghi=df["ghi_wm2"],
         dni=dni_candidate,
         dhi=dhi_candidate,
         loc=loc,
         tz=tz,
         missing_vars=missing_vars,
+        return_details=True,
     )
-    after_missing_count = int((dni_final.isna() | dhi_final.isna()).sum())
-    derived_irradiance_hours = max(0, before_missing_count - after_missing_count)
+    recovered_mask = reconstruction_target_mask & dni_final.notna() & dhi_final.notna()
+    derived_irradiance_hours = int(recovered_mask.sum())
     derived_physical = bool(derived_irradiance)
     fetch_meta["derived_irradiance_hours"] = int(derived_irradiance_hours)
+    fetch_meta["irradiance_reconstruction_method"] = str((irr_details or {}).get("reconstruction_method") or "none")
     fetch_meta["filled_irradiance_gaps"] = bool(filled_gaps)
     df["dni_wm2"] = dni_final
     df["dhi_wm2"] = dhi_final
@@ -1750,7 +1830,17 @@ def fetch_open_meteo_weather(
     df["dni_wm2"] = pd.to_numeric(df["dni_wm2"], errors="coerce").fillna(0.0).clip(lower=0.0)
     df["dhi_wm2"] = pd.to_numeric(df["dhi_wm2"], errors="coerce").fillna(0.0).clip(lower=0.0)
 
-    base_cols = ["temp_air_c", "ghi_wm2", "dni_wm2", "dhi_wm2", "cloud_cover_pct", "wind_speed_ms"]
+    base_cols = [
+        "temp_air_c",
+        "ghi_wm2",
+        "dni_wm2",
+        "dhi_wm2",
+        "cloud_cover_pct",
+        "wind_speed_ms",
+        "precip_probability_pct",
+        "precip_mm",
+        "rain_mm",
+    ]
     inst_cols = [c for c in ["ghi_inst_wm2", "dni_inst_wm2", "dhi_inst_wm2", "bhi_inst_wm2"] if c in df.columns]
     df = df[base_cols + inst_cols]
     idx = pd.to_datetime(df.index, errors="coerce")
@@ -1764,7 +1854,7 @@ def fetch_open_meteo_weather(
     df = df[~df.index.isna()]
     df = df[~df.index.duplicated(keep="last")].sort_index()
 
-    expected_index = local_horizon_hourly_index(target_date, tz, horizon_days)
+    expected_index = local_horizon_hourly_index(target_date, tz, horizon_days=horizon_days, horizon_hours=horizon_hours)
     df = df.reindex(expected_index)
 
     availability = availability.reindex(df.index, fill_value=False).astype(bool)
@@ -1780,13 +1870,17 @@ def fetch_open_meteo_weather(
     derived_weather_code = False
     if weather_code_series.isna().all():
         cloud_cover_series = pd.to_numeric(df.get("cloud_cover_pct"), errors="coerce") if "cloud_cover_pct" in df.columns else pd.Series(np.nan, index=df.index)
+        precip_prob_series = pd.to_numeric(df.get("precip_probability_pct"), errors="coerce") if "precip_probability_pct" in df.columns else pd.Series(np.nan, index=df.index)
+        precip_mm_series = pd.to_numeric(df.get("precip_mm"), errors="coerce") if "precip_mm" in df.columns else pd.Series(np.nan, index=df.index)
+        rain_mm_series = pd.to_numeric(df.get("rain_mm"), errors="coerce") if "rain_mm" in df.columns else pd.Series(np.nan, index=df.index)
         if cloud_cover_series.notna().any():
-            # UI continuity fallback only: this is intentionally simple and does not attempt full WMO weather code logic.
             weather_code_series = pd.Series(3.0, index=df.index, dtype=float)
             weather_code_series.loc[cloud_cover_series <= 20.0] = 0.0
             weather_code_series.loc[(cloud_cover_series > 20.0) & (cloud_cover_series <= 50.0)] = 2.0
             weather_code_series.loc[(cloud_cover_series > 50.0) & (cloud_cover_series <= 80.0)] = 3.0
             weather_code_series.loc[cloud_cover_series > 80.0] = 3.0
+            wet_mask = (precip_prob_series >= 55.0) | (precip_mm_series >= 0.2) | (rain_mm_series >= 0.1)
+            weather_code_series.loc[wet_mask] = 61.0
         else:
             weather_code_series = pd.Series(3.0, index=df.index, dtype=float)
         derived_weather_code = True
@@ -1805,6 +1899,9 @@ def fetch_open_meteo_weather(
     _alias("temperature_2m", "temp_air_c")
     _alias("wind_speed_10m", "wind_speed_ms")
     _alias("cloud_cover", "cloud_cover_pct")
+    _alias("precipitation_probability", "precip_probability_pct")
+    _alias("precipitation", "precip_mm")
+    _alias("rain", "rain_mm")
 
     daily = data.get("daily") if isinstance(data.get("daily"), dict) else {}
     sunrise = pd.to_datetime((daily.get("sunrise") or [None])[0], errors="coerce")
@@ -1843,8 +1940,11 @@ def fetch_open_meteo_weather(
             "derived_irradiance_hours": int(derived_irradiance_hours),
             "filled_irradiance_gaps": bool(filled_gaps),
             "requested_days": int(requested_days_int),
+            "requested_hours": int(requested_hours),
             "horizon_days": int(horizon_days),
+            "horizon_hours": int(horizon_hours),
             "model_max_days": int(model_max_days),
+            "forecast_length_hours": int(model_forecast_length_hours),
         },
     )
     return forecast, list(set(missing_vars)), bool(derived_public), fetch_meta
@@ -1877,6 +1977,69 @@ def classify_day_type(
         return "stable_clear"
     if cloud_std >= DAY_TYPE_HIGH_STD_THRESHOLD or cloud_delta >= DAY_TYPE_HIGH_MEAN_DELTA_THRESHOLD:
         return "variable_cloudy"
+    return "variable_cloudy"
+
+
+def _classify_day_type_from_ensemble(
+    weather_by_model: dict[str, core.ForecastResult],
+    canonical_index: pd.DatetimeIndex,
+    model_weights_hint: dict[str, float] | None = None,
+) -> str:
+    if not weather_by_model:
+        return "variable_cloudy"
+
+    model_scores: list[tuple[str, float, float, float, float]] = []
+    for model_id, forecast in weather_by_model.items():
+        df = forecast.df.reindex(canonical_index)
+        if df.empty:
+            continue
+        def _series(name: str) -> pd.Series:
+            vals = df.get(name)
+            if isinstance(vals, pd.Series):
+                return pd.to_numeric(vals, errors="coerce").reindex(canonical_index)
+            return pd.Series(np.nan, index=canonical_index, dtype=float)
+        hours = canonical_index.hour
+        daylight_mask = pd.Series((hours >= 8) & (hours <= 17), index=canonical_index)
+        subset = df.loc[daylight_mask]
+        if subset.empty:
+            subset = df
+
+        cloud = _series("cloud_cover_pct").loc[subset.index]
+        wmo = _series("weather_code").loc[subset.index]
+        precip_prob = _series("precip_probability_pct").loc[subset.index]
+        precip_mm = _series("precip_mm").loc[subset.index]
+        rain_mm = _series("rain_mm").loc[subset.index]
+
+        wet_signal = (
+            wmo.isin(DAY_TYPE_PRECIP_WEATHER_CODES)
+            | (precip_prob >= 55.0)
+            | (precip_mm >= 0.2)
+            | (rain_mm >= 0.1)
+        )
+        overcast_signal = cloud >= DAY_TYPE_MOSTLY_OVERCAST_THRESHOLD
+        clear_signal = wmo.isin(DAY_TYPE_CLEAR_WEATHER_CODES) & (cloud <= 30.0) & (precip_prob.fillna(0.0) < 30.0)
+
+        wet_ratio = float(wet_signal.mean()) if len(wet_signal) else 0.0
+        overcast_ratio = float(overcast_signal.mean()) if len(overcast_signal) else 0.0
+        clear_ratio = float(clear_signal.mean()) if len(clear_signal) else 0.0
+        model_weight = float((model_weights_hint or {}).get(model_id, DEFAULT_WEIGHTED_BELGIUM.get(model_id, 1.0)))
+        model_scores.append((model_id, model_weight, wet_ratio, overcast_ratio, clear_ratio))
+
+    if not model_scores:
+        return "variable_cloudy"
+
+    total_weight = sum(max(0.0, row[1]) for row in model_scores) or float(len(model_scores))
+    wet_weight = sum(max(0.0, w) * wet for _, w, wet, _, _ in model_scores) / total_weight
+    overcast_weight = sum(max(0.0, w) * ov for _, w, _, ov, _ in model_scores) / total_weight
+    clear_weight = sum(max(0.0, w) * cl for _, w, _, _, cl in model_scores) / total_weight
+    wet_models = sum(1 for _, _, wet, ov, _ in model_scores if wet >= 0.35 or ov >= 0.60)
+
+    if wet_models >= 2 and wet_weight >= 0.35:
+        return "fronty_wet"
+    if wet_weight >= 0.30 or overcast_weight >= 0.60:
+        return "fronty_wet"
+    if clear_weight >= 0.70 and wet_weight < 0.10 and overcast_weight < 0.20:
+        return "stable_clear"
     return "variable_cloudy"
 
 
@@ -2034,6 +2197,7 @@ def _weighted_ensemble(
     missing_vars_by_model: dict[str, list[str]] | None = None,
     derived_irradiance_by_model: dict[str, bool] | None = None,
     derived_irradiance_hours_by_model: dict[str, int] | None = None,
+    derived_weather_code_by_model: dict[str, bool] | None = None,
 ) -> tuple[pd.Series, dict[str, float] | None, dict[str, float] | None]:
     weighted_subset = dict(dynamic_weights or {})
     if not weighted_subset:
@@ -2048,6 +2212,9 @@ def _weighted_ensemble(
         missing = set((missing_vars_by_model or {}).get(model_id, []))
         derived = bool((derived_irradiance_by_model or {}).get(model_id))
         has_irr_missing = bool(missing.intersection(IRR_CRITICAL))
+        wet_vars = {"weather_code", "precipitation_probability", "precipitation", "rain"}
+        wet_missing_count = int(len(missing.intersection(wet_vars)))
+        derived_weather_code = bool((derived_weather_code_by_model or {}).get(model_id, False))
         factor = 1.0
         if has_irr_missing and derived:
             factor = 0.50
@@ -2065,6 +2232,14 @@ def _weighted_ensemble(
         else:
             hours_factor = 0.60
         factor *= float(hours_factor)
+        if wet_missing_count >= 3:
+            factor *= 0.70
+        elif wet_missing_count == 2:
+            factor *= 0.82
+        elif wet_missing_count == 1:
+            factor *= 0.92
+        if derived_weather_code:
+            factor *= 0.82
 
         factor = max(min_weight_factor, float(factor))
         quality_factors[model_id] = factor
@@ -2214,7 +2389,8 @@ def build_ensemble_forecast(
     fetch_meta_by_model: dict[str, dict[str, Any]] = {}
 
     horizon_days = max(1, int(requested_days))
-    canonical_index = local_horizon_hourly_index(target_date, tz, horizon_days)
+    requested_hours = horizon_days * 24
+    canonical_index = local_horizon_hourly_index(target_date, tz, horizon_days=horizon_days, horizon_hours=requested_hours)
     day_type = "variable_cloudy"
 
     def _fetch_and_prepare(model_id: str) -> tuple[str, core.ForecastResult, list[str], bool, int, dict[str, Any], int, int]:
@@ -2228,16 +2404,13 @@ def build_ensemble_forecast(
             requested_days=horizon_days,
         )
         requested_days_int = int(max(1, fetch_meta.get("requested_days", horizon_days)))
+        requested_hours_int = int(max(1, fetch_meta.get("requested_hours", requested_days_int * 24)))
         model_horizon_days = int(max(1, fetch_meta.get("horizon_days", requested_days_int)))
+        model_horizon_hours = int(max(1, fetch_meta.get("horizon_hours", model_horizon_days * 24)))
 
-        overlap_days = int(min(requested_days_int, model_horizon_days))
-        overlap_end = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=overlap_days), dt.time(0, 0)), tz=tz)
-        overlap_index = canonical_index[canonical_index < overlap_end]
-
-        tail_days = int(max(0, requested_days_int - model_horizon_days))
-        tail_start = overlap_end
-        tail_end = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=overlap_days + tail_days), dt.time(0, 0)), tz=tz)
-        tail_index = canonical_index[(canonical_index >= tail_start) & (canonical_index < tail_end)]
+        overlap_hours = int(min(requested_hours_int, model_horizon_hours))
+        overlap_index = canonical_index[:overlap_hours]
+        tail_index = canonical_index[overlap_hours:requested_hours_int]
         tail_hours_expected = int(len(tail_index))
         missing_overlap = int(weather.df.reindex(overlap_index).isna().all(axis=1).sum()) if len(overlap_index) else 0
         missing_tail = int(weather.df.reindex(tail_index).isna().all(axis=1).sum()) if len(tail_index) else 0
@@ -2248,12 +2421,12 @@ def build_ensemble_forecast(
         fetch_meta["expected_tail_hours"] = int(tail_hours_expected)
         if _LOGGER.isEnabledFor(logging.DEBUG):
             _LOGGER.debug(
-                "[weather_ensemble] model=%s requested_days=%s spec_max_days=%s fetch_meta_keys=%s model_horizon_days=%s",
+                "[weather_ensemble] model=%s requested_days=%s spec_max_days=%s fetch_meta_keys=%s model_horizon_hours=%s",
                 model_id,
                 requested_days_int,
                 int(WEATHER_MODELS.get(model_id, {}).get("max_days", requested_days_int)),
                 sorted(fetch_meta.keys()) if isinstance(fetch_meta, dict) else [],
-                model_horizon_days,
+                model_horizon_hours,
             )
         if len(overlap_index) and missing_overlap > 0 and _LOGGER.isEnabledFor(logging.DEBUG):
             _LOGGER.debug(
@@ -2308,7 +2481,7 @@ def build_ensemble_forecast(
             int(fetch_meta.get("derived_irradiance_hours", 0)),
             fetch_meta,
             int(requested_days_int),
-            int(model_horizon_days),
+            int(model_horizon_hours),
         )
 
     max_workers = min(max(len(selected), 1), 5)
@@ -2325,7 +2498,7 @@ def build_ensemble_forecast(
                     derived_irradiance_hours,
                     fetch_meta,
                     requested_days_int,
-                    model_horizon_days,
+                    model_horizon_hours,
                 ) = fut.result()
                 missing_vars_by_model[model_id] = missing_vars
                 derived_irradiance_by_model[model_id] = bool(derived_irradiance)
@@ -2407,10 +2580,11 @@ def build_ensemble_forecast(
     for model_id, weather in weather_ok.items():
         fetch_meta = fetch_meta_by_model.get(model_id, {})
         requested_days_int = int(max(1, fetch_meta.get("requested_days", horizon_days)))
+        requested_hours_int = int(max(1, fetch_meta.get("requested_hours", requested_days_int * 24)))
         model_horizon_days = int(max(1, fetch_meta.get("horizon_days", requested_days_int)))
-        overlap_days = int(min(requested_days_int, model_horizon_days))
-        overlap_end = pd.Timestamp(dt.datetime.combine(target_date + dt.timedelta(days=overlap_days), dt.time(0, 0)), tz=tz)
-        overlap_index = canonical_index[canonical_index < overlap_end]
+        model_horizon_hours = int(max(1, fetch_meta.get("horizon_hours", model_horizon_days * 24)))
+        overlap_hours = int(min(requested_hours_int, model_horizon_hours))
+        overlap_index = canonical_index[:overlap_hours]
         overlap_hours_by_model[model_id] = int(len(overlap_index))
         model_weather_df = weather.df.reindex(canonical_index).copy()
         pv_input_df = model_weather_df.loc[overlap_index].copy() if len(overlap_index) else model_weather_df.iloc[:0].copy()
@@ -2527,13 +2701,11 @@ def build_ensemble_forecast(
     elif use_satellite_nowcast_0_6h and requested_days > 1:
         satellite_nowcast_reason = "skipped (week-ahead horizon)"
 
-    primary_for_day_type = _stable_first_available_model(selected, weather_ok)
-    if primary_for_day_type and primary_for_day_type in weather_ok:
-        primary_df = weather_ok[primary_for_day_type].df.reindex(canonical_index)
-        day_type = classify_day_type(
-            hourly_cloud_cover_series=pd.to_numeric(primary_df.get("cloud_cover_pct"), errors="coerce") if "cloud_cover_pct" in primary_df.columns else None,
-            hourly_weather_code_series=pd.to_numeric(primary_df.get("weather_code"), errors="coerce") if "weather_code" in primary_df.columns else None,
-        )
+    day_type = _classify_day_type_from_ensemble(
+        weather_by_model=weather_ok,
+        canonical_index=canonical_index,
+        model_weights_hint=DEFAULT_WEIGHTED_BELGIUM,
+    )
 
     def _ensemble_column(column_name: str) -> tuple[pd.Series, dict[str, float] | None, dict[str, float]]:
         model_series = per_model_pv_columns[column_name]
@@ -2559,6 +2731,7 @@ def build_ensemble_forecast(
             missing_vars_by_model=missing_vars_by_model,
             derived_irradiance_by_model=derived_irradiance_by_model,
             derived_irradiance_hours_by_model=derived_irradiance_hours_by_model,
+            derived_weather_code_by_model=derived_weather_code_by_model,
         )
         return out, weights, quality_factors
 
