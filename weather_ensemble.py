@@ -550,10 +550,7 @@ def validate_pvlib_runtime(require_production_quality: bool = True) -> bool:
     if core.PVLIB_AVAILABLE:
         return True
     if require_production_quality:
-        raise RuntimeError(
-            "pvlib is required for reliable irradiance decomposition and PV forecasting. "
-            "This runtime is not valid for production forecasting without pvlib."
-        )
+        core.require_pvlib()
     return False
 
 def _nan_safe_hourly_median(matrix: pd.DataFrame) -> pd.Series:
