@@ -185,7 +185,7 @@ def test_fetch_open_meteo_sets_derived_flag_from_missing_dni_dhi(monkeypatch: py
         tz="Europe/Brussels",
         target_date=dt.date(2026, 1, 10),
     )
-    assert derived is True
+    assert derived is False
 
     payload_missing = {
         "hourly": {
@@ -209,7 +209,7 @@ def test_fetch_open_meteo_sets_derived_flag_from_missing_dni_dhi(monkeypatch: py
 
 
 
-def test_fetch_open_meteo_partially_missing_dni_dhi_backfills_gaps(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex) -> None:
+def test_fetch_open_meteo_partially_missing_dni_dhi_reconstructs_without_ffill(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex) -> None:
     payload_partial = {
         "hourly": {
             "time": [ts.isoformat() for ts in hourly_index],
@@ -232,9 +232,11 @@ def test_fetch_open_meteo_partially_missing_dni_dhi_backfills_gaps(monkeypatch: 
         target_date=dt.date(2026, 1, 10),
     )
     assert derived is True
-    assert forecast.df["dni_wm2"].isna().sum() == 0
-    assert forecast.df["dhi_wm2"].isna().sum() == 0
-    assert forecast.df["dni_wm2"].iloc[2] == pytest.approx(50.0)
+    assert forecast.df["dni_wm2"].isna().sum() <= 1
+    assert forecast.df["dhi_wm2"].isna().sum() <= 1
+    assert _meta["filled_irradiance_gaps"] is False
+    assert _meta["derived_irradiance_hours"] > 0
+    assert _meta["irradiance_reconstruction_method"] in {"dirint_closure", "dirint_closure+erbs", "erbs"}
 
 
 
@@ -311,6 +313,9 @@ def test_fetch_open_meteo_knmi_requests_dni_dhi_when_supported(monkeypatch: pyte
     hourly_requested = str(calls[0]["hourly"])
     assert "direct_normal_irradiance" in hourly_requested
     assert "diffuse_radiation" in hourly_requested
+    assert "precipitation_probability" in hourly_requested
+    assert "precipitation" in hourly_requested
+    assert "rain" in hourly_requested
 def test_fetch_open_meteo_retries_404_with_forecast_endpoint(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex) -> None:
     payload = {
         "hourly": {
@@ -350,7 +355,7 @@ def test_fetch_open_meteo_retries_404_with_forecast_endpoint(monkeypatch: pytest
     assert calls[0][0] == we.WEATHER_MODELS["knmi_harmonie_arome"]["endpoint"]
     assert calls[1][0] == "https://api.open-meteo.com/v1/forecast"
     assert calls[1][1] == "knmi_seamless"
-    assert derived is True
+    assert derived is False
     assert forecast.df["ghi_wm2"].iloc[0] == pytest.approx(100.0)
 
 
@@ -395,7 +400,7 @@ def test_fetch_open_meteo_retries_400_with_forecast_endpoint_for_model_support_e
     assert calls[0][0] == we.WEATHER_MODELS["knmi_harmonie_arome"]["endpoint"]
     assert calls[1][0] == "https://api.open-meteo.com/v1/forecast"
     assert calls[1][1] == "knmi_seamless"
-    assert derived is True
+    assert derived is False
     assert forecast.df["ghi_wm2"].iloc[0] == pytest.approx(100.0)
 
 
@@ -1033,3 +1038,38 @@ def test_weighted_ensemble_applies_quality_penalties(hourly_index: pd.DatetimeIn
     assert quality["dwd_icon_d2"] == pytest.approx(0.60)
     assert quality["ecmwf_ifs"] == pytest.approx(0.80)
     assert weights["knmi_harmonie_arome"] > weights["ecmwf_ifs"] > weights["dwd_icon_d2"]
+
+def test_fetch_open_meteo_derived_hours_matches_recovered_timestamps(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex) -> None:
+    payload_partial = {
+        "hourly": {
+            "time": [ts.isoformat() for ts in hourly_index],
+            "temperature_2m": [10.0] * 24,
+            "wind_speed_10m": [1.0] * 24,
+            "shortwave_radiation": [0.0] * 6 + [250.0] * 8 + [0.0] * 10,
+            "direct_normal_irradiance": [None] * 24,
+            "diffuse_radiation": [None] * 24,
+            "cloud_cover": [70.0] * 24,
+        },
+        "daily": {"sunrise": [hourly_index[7].isoformat()], "sunset": [hourly_index[17].isoformat()]},
+    }
+    we._WEATHER_CACHE.clear()
+    monkeypatch.setattr(we, "_request_open_meteo", lambda *args, **kwargs: payload_partial)
+    _, _, derived, meta = we.fetch_open_meteo_weather(
+        model_id="ecmwf_ifs",
+        loc=core.Location(name="x", latitude=50.8, longitude=4.3),
+        tz="Europe/Brussels",
+        target_date=dt.date(2026, 1, 10),
+    )
+    assert derived is True
+    assert meta["derived_irradiance_hours"] > 0
+
+
+def test_model_horizon_uses_exact_hours() -> None:
+    assert we._forecast_length_hours_for_model("knmi_harmonie_arome") == 60
+    assert we._forecast_length_hours_for_model("dwd_icon_d2") == 48
+    assert we._forecast_length_hours_for_model("ecmwf_ifs") == 360
+
+    selected_3_days = we.select_week_ahead_models(requested_days=3)
+    assert "dwd_icon_d2" not in selected_3_days
+    assert "knmi_harmonie_arome" not in selected_3_days
+    assert "ecmwf_ifs" in selected_3_days

@@ -117,3 +117,9 @@ def test_unified_low_high_matches_p10_p90_from_quantiles() -> None:
     assert low == pytest.approx(result["pv_totals_kwh"]["p10"])
     assert high == pytest.approx(result["pv_totals_kwh"]["p90"])
     assert result["pv_tomorrow_low_high_kwh"]["valid_models"] >= 2
+
+
+def test_pv_outlook_headline_not_weather_wording() -> None:
+    app_source = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8", errors="replace")
+    assert "day · {pv_quality_dict['pv_total_kwh']:.1f} kWh" not in app_source
+    assert "PV outlook · {pv_quality_dict['pv_total_kwh']:.1f} kWh" in app_source

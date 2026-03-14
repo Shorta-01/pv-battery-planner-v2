@@ -1881,7 +1881,10 @@ def render_pv_quality_widget(
             f"{header_html}"
             "</div>"
             "<div style='margin-top:0.35rem;font-size:0.95rem;font-weight:650;'>"
-            f"{pv_label} day · {pv_quality_dict['pv_total_kwh']:.1f} kWh"
+            f"PV outlook · {pv_quality_dict['pv_total_kwh']:.1f} kWh"
+            "</div>"
+            "<div style='margin-top:0.12rem;font-size:0.75rem;opacity:0.82;'>"
+            f"PV quality: {pv_label}"
             "</div>"
             + pv_range_html
             + f"<div style='margin-top:0.45rem;height:{UI_PROGRESS_BAR_HEIGHT_PX}px;border-radius:999px;overflow:hidden;background:rgba(255,255,255,0.12);'>"
