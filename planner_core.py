@@ -161,6 +161,7 @@ DEFAULT_CONFIG = {
         "longitude": LONGITUDE,
         "elevation_m": ELEVATION_M,
         "timezone": TIMEZONE,
+        "auto_resolve_metadata": True,
         "address_structured": {
             "street": "",
             "house_number": "",
@@ -613,6 +614,20 @@ def apply_config(cfg: dict) -> None:
 def build_effective_config(user_cfg: dict) -> dict:
     migrated_cfg = migrate_legacy_tilt_config(user_cfg)
     merged_cfg = deep_update(copy.deepcopy(DEFAULT_CONFIG), migrated_cfg)
+    location_cfg = merged_cfg.get("location", {}) if isinstance(merged_cfg.get("location"), dict) else {}
+    incoming_location_cfg = migrated_cfg.get("location", {}) if isinstance(migrated_cfg.get("location"), dict) else {}
+
+    if bool(incoming_location_cfg.get("auto_resolve_metadata", False)):
+        resolved_meta = resolve_location_metadata(
+            latitude=location_cfg.get("latitude"),
+            longitude=location_cfg.get("longitude"),
+            fallback_timezone=location_cfg.get("timezone"),
+            fallback_elevation_m=location_cfg.get("elevation_m"),
+            force_refresh=False,
+        )
+        location_cfg["timezone"] = resolved_meta["timezone"]
+        location_cfg["elevation_m"] = resolved_meta["elevation_m"]
+
     pv_cfg = merged_cfg.get("pv", {}) if isinstance(merged_cfg.get("pv"), dict) else {}
 
     legacy_global_calibration = pv_cfg.get("pv_calibration_factor")
@@ -650,6 +665,101 @@ def build_effective_config(user_cfg: dict) -> dict:
 
     validate_config(merged_cfg)
     return merged_cfg
+
+
+def _fetch_open_meteo_timezone(latitude: float, longitude: float) -> str | None:
+    try:
+        data = _request_json(
+            service="open-meteo-timezone",
+            url="https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": float(latitude),
+                "longitude": float(longitude),
+                "hourly": "temperature_2m",
+                "forecast_days": 1,
+            },
+        )
+    except ExternalServiceError:
+        return None
+
+    timezone_name = str(data.get("timezone") or "").strip()
+    if not timezone_name:
+        return None
+    try:
+        _ = ZoneInfo(timezone_name)
+    except Exception:
+        return None
+    return timezone_name
+
+
+def _fetch_open_meteo_elevation_m(latitude: float, longitude: float) -> float | None:
+    try:
+        data = _request_json(
+            service="open-meteo-elevation",
+            url="https://api.open-meteo.com/v1/elevation",
+            params={"latitude": float(latitude), "longitude": float(longitude)},
+        )
+    except ExternalServiceError:
+        return None
+
+    elevation = data.get("elevation") if isinstance(data, dict) else None
+    if isinstance(elevation, list):
+        elevation = elevation[0] if elevation else None
+    try:
+        return None if elevation is None else float(elevation)
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_location_metadata(
+    *,
+    latitude: float | object,
+    longitude: float | object,
+    fallback_timezone: str | object | None = None,
+    fallback_elevation_m: float | object | None = None,
+    force_refresh: bool = False,
+) -> dict:
+    timezone_value = str(fallback_timezone or TIMEZONE).strip() or TIMEZONE
+    try:
+        _ = ZoneInfo(timezone_value)
+    except Exception:
+        timezone_value = TIMEZONE
+
+    try:
+        elevation_value = float(fallback_elevation_m) if fallback_elevation_m is not None else float(ELEVATION_M)
+    except (TypeError, ValueError):
+        elevation_value = float(ELEVATION_M)
+
+    warnings: list[str] = []
+    try:
+        lat = float(latitude)
+        lon = float(longitude)
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            raise ValueError("invalid coordinate range")
+    except (TypeError, ValueError):
+        warnings.append("location metadata auto-resolve skipped: invalid latitude/longitude")
+        return {"timezone": timezone_value, "elevation_m": elevation_value, "warnings": warnings}
+
+    if (not force_refresh) and timezone_value and (fallback_elevation_m is not None):
+        return {"timezone": timezone_value, "elevation_m": elevation_value, "warnings": warnings}
+
+    resolved_timezone = _fetch_open_meteo_timezone(lat, lon)
+    if resolved_timezone:
+        timezone_value = resolved_timezone
+    else:
+        warnings.append("location metadata auto-resolve: timezone lookup failed; using fallback")
+
+    resolved_elevation = _fetch_open_meteo_elevation_m(lat, lon)
+    if resolved_elevation is not None:
+        elevation_value = resolved_elevation
+    else:
+        warnings.append("location metadata auto-resolve: elevation lookup failed; using fallback")
+
+    return {
+        "timezone": timezone_value,
+        "elevation_m": elevation_value,
+        "warnings": warnings,
+    }
 
 
 def resolve_pv_loss_multipliers(performance_ratio: float, inverter_eff: float, loss_model: str) -> tuple[float, float]:

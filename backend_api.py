@@ -1055,8 +1055,23 @@ class BackendState:
             return ZoneInfo("Europe/Brussels")
 
     def _apply_config(self, config: dict) -> dict:
-        merged = core.set_user_config(config)
+        config_in = copy.deepcopy(config) if isinstance(config, dict) else {}
+        loc_cfg = config_in.get("location", {}) if isinstance(config_in.get("location"), dict) else {}
+        resolved_meta = core.resolve_location_metadata(
+            latitude=loc_cfg.get("latitude"),
+            longitude=loc_cfg.get("longitude"),
+            fallback_timezone=loc_cfg.get("timezone"),
+            fallback_elevation_m=loc_cfg.get("elevation_m"),
+            force_refresh=True,
+        )
+        if isinstance(loc_cfg, dict):
+            loc_cfg["timezone"] = resolved_meta["timezone"]
+            loc_cfg["elevation_m"] = resolved_meta["elevation_m"]
+            loc_cfg["auto_resolve_metadata"] = True
+        merged = core.set_user_config(config_in)
         self.settings["config"] = merged
+        if resolved_meta.get("warnings"):
+            logger.warning("Location metadata auto-derive warnings: %s", "; ".join(str(w) for w in resolved_meta.get("warnings", [])))
         return merged
 
 
@@ -1089,11 +1104,14 @@ class BackendState:
         )
 
     def update_settings(self, payload: SettingsPayload) -> dict:
-        _ = ZoneInfo(payload.timezone)
         dt.datetime.strptime(payload.nightly_run_time, "%H:%M")
         merged = self._apply_config(payload.config)
         loc_cfg = merged.get("location", {}) if isinstance(merged, dict) else {}
-        canonical_tz = str(loc_cfg.get("timezone") or payload.timezone)
+        canonical_tz = str(loc_cfg.get("timezone") or payload.timezone or "Europe/Brussels")
+        try:
+            _ = ZoneInfo(canonical_tz)
+        except Exception:
+            canonical_tz = "Europe/Brussels"
         self.bmw_service.update_config(self._resolved_ev_runtime_config(merged))
         self.settings.update(
             {
