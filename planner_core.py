@@ -101,8 +101,14 @@ PV_CALIBRATION_FACTOR_EAST = 1.00
 PV_CALIBRATION_FACTOR_SOUTH = 1.00
 PV_GAMMA_PDC = -0.003
 PV_TEMPERATURE_MODEL = "faiman"
-PV_TEMPERATURE_FAIMAN_U0 = 25.0
-PV_TEMPERATURE_FAIMAN_U1 = 6.84
+# Project rooftop-oriented Faiman defaults (explicit, non-learned baseline).
+# These are intentionally centralized so they can later be calibrated against site actuals.
+PV_TEMPERATURE_FAIMAN_U0 = 20.0
+PV_TEMPERATURE_FAIMAN_U1 = 4.0
+PV_TEMPERATURE_WIND_INPUT_SOURCE = "module_height_from_10m"
+PV_EFFECTIVE_MODULE_WIND_HEIGHT_M = 2.5
+PV_FORECAST_WIND_REFERENCE_HEIGHT_M = 10.0
+PVLIB_LOCATION_ALTITUDE_FALLBACK_M = 0.0
 
 # Irradiance consistency controls
 IRR_REL_ERR_MEDIAN_THRESHOLD = 0.25
@@ -900,6 +906,38 @@ SUN_HOUR_THRESHOLD_KWH = 0.05
 # DATA STRUCTS
 # ============================================================
 
+
+
+def effective_elevation_m(elevation_m: float | None, *, fallback_m: float = PVLIB_LOCATION_ALTITUDE_FALLBACK_M) -> float:
+    try:
+        return float(elevation_m) if elevation_m is not None else float(fallback_m)
+    except (TypeError, ValueError):
+        return float(fallback_m)
+
+
+def wind_speed_module_height_from_10m(
+    wind_speed_10m_ms: "pd.Series",
+    *,
+    module_height_m: float = PV_EFFECTIVE_MODULE_WIND_HEIGHT_M,
+    reference_height_m: float = PV_FORECAST_WIND_REFERENCE_HEIGHT_M,
+) -> "pd.Series":
+    """Scale 10 m forecast wind to effective module/roof height using a log profile."""
+    ws10 = pd.to_numeric(wind_speed_10m_ms, errors="coerce").fillna(1.0).clip(lower=0.0)
+    h_ref = max(float(reference_height_m), 0.5)
+    h_mod = max(float(module_height_m), 0.5)
+    # Neutral log-profile with roughness length representative of suburban rooftops.
+    z0 = 0.3
+    scale = math.log(h_mod / z0) / math.log(h_ref / z0)
+    return (ws10 * scale).clip(lower=0.0)
+
+
+def pvlib_location_from_loc(loc: "Location", tz_use: str) -> "pvlib.location.Location":
+    return pvlib.location.Location(
+        latitude=loc.latitude,
+        longitude=loc.longitude,
+        tz=tz_use,
+        altitude=effective_elevation_m(loc.elevation_m),
+    )
 @dataclass
 class Location:
     name: str
@@ -2369,12 +2407,7 @@ def irradiance_sanity_warnings(
 
     if PVLIB_AVAILABLE and getattr(df.index, "tz", None) is not None:
         try:
-            pvloc = pvlib.location.Location(
-                latitude=loc.latitude,
-                longitude=loc.longitude,
-                tz=tz,
-                altitude=float(loc.elevation_m or 0.0),
-            )
+            pvloc = pvlib_location_from_loc(loc, tz)
             clear = pvloc.get_clearsky(df.index.tz_convert(tz), model="ineichen")
             clear_ghi = pd.to_numeric(clear.get("ghi"), errors="coerce").reindex(df.index).fillna(0.0).clip(lower=0.0)
             measured_wh = float(ghi.fillna(0.0).clip(lower=0.0).sum())
@@ -2420,12 +2453,7 @@ def estimate_pv_with_pvlib(
     allow_synthetic_ghi_mask: "pd.Series | None" = None,
 ) -> Tuple["pd.Series", "pd.Series", "pd.Series", "pd.Series"]:
     tz_use = tz or TIMEZONE
-    pvloc = pvlib.location.Location(
-        latitude=loc.latitude,
-        longitude=loc.longitude,
-        tz=tz_use,
-        altitude=float(loc.elevation_m or 0.0),
-    )
+    pvloc = pvlib_location_from_loc(loc, tz_use)
     times = df.index
     if getattr(times, "tz", None) is None:
         raise ValueError("Forecast times index must be timezone-aware before pvlib calculations.")
@@ -2582,8 +2610,13 @@ def estimate_pv_with_pvlib(
     dni = dni.clip(lower=0.0)
     dhi = dhi.clip(lower=0.0)
 
-    wind_raw = df_local["wind_speed_ms"] if "wind_speed_ms" in df_local.columns else pd.Series(1.0, index=df_local.index)
-    wind_speed = pd.to_numeric(wind_raw, errors="coerce").fillna(1.0).clip(lower=0.0)
+    wind_raw_10m = df_local["wind_speed_ms"] if "wind_speed_ms" in df_local.columns else pd.Series(1.0, index=df_local.index)
+    wind_speed_10m = pd.to_numeric(wind_raw_10m, errors="coerce").fillna(1.0).clip(lower=0.0)
+    wind_speed_module = wind_speed_module_height_from_10m(
+        wind_speed_10m,
+        module_height_m=PV_EFFECTIVE_MODULE_WIND_HEIGHT_M,
+        reference_height_m=PV_FORECAST_WIND_REFERENCE_HEIGHT_M,
+    )
     temp_air = pd.to_numeric(df_local["temp_air_c"], errors="coerce").ffill().bfill().fillna(10.0)
 
     dt_h = timestep_hours(df_local.index)
@@ -2622,7 +2655,7 @@ def estimate_pv_with_pvlib(
         temp_cell = pvlib.temperature.faiman(
             poa_global=poa,
             temp_air=temp_air,
-            wind_speed=wind_speed,
+            wind_speed=wind_speed_module,
             u0=float(PV_TEMPERATURE_FAIMAN_U0),
             u1=float(PV_TEMPERATURE_FAIMAN_U1),
         )
@@ -2752,6 +2785,11 @@ def build_pv_forecast(
     out = ensure_pv_columns(out, split_ratio=(0.5, 0.5))
     validate_pv_outputs(out)
     out.attrs["pv_method"] = "pvlib"
+    out.attrs["temperature_wind_input_source"] = PV_TEMPERATURE_WIND_INPUT_SOURCE
+    out.attrs["effective_module_wind_height_m"] = float(PV_EFFECTIVE_MODULE_WIND_HEIGHT_M)
+    out.attrs["forecast_wind_reference_height_m"] = float(PV_FORECAST_WIND_REFERENCE_HEIGHT_M)
+    out.attrs["faiman_u0"] = float(PV_TEMPERATURE_FAIMAN_U0)
+    out.attrs["faiman_u1"] = float(PV_TEMPERATURE_FAIMAN_U1)
     return out
 
 
@@ -2847,7 +2885,7 @@ def compute_solar_elevation_series(index: "pd.DatetimeIndex", loc: Location) -> 
         raise RuntimeError("pvlib is required for solar elevation daylight gating")
     latitude = float(loc.latitude)
     longitude = float(loc.longitude)
-    solpos = pvlib.solarposition.get_solarposition(index, latitude, longitude, altitude=loc.elevation_m)
+    solpos = pvlib.solarposition.get_solarposition(index, latitude, longitude, altitude=effective_elevation_m(loc.elevation_m))
     elev = pd.to_numeric(solpos.get("apparent_elevation"), errors="coerce")
     return pd.Series(elev.values, index=index, dtype=float)
 
