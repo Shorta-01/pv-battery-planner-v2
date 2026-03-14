@@ -1357,6 +1357,7 @@ class BackendState:
                     requested_days=1,
                     use_satellite_nowcast_0_6h=effective_use_sat,
                     expert_mode=(mode == "expert"),
+                    selection_mode=("expert" if mode == "expert" else "auto"),
                 )
         except RuntimeError as exc:
             if "All weather model requests failed" not in str(exc):
@@ -1450,6 +1451,7 @@ class BackendState:
                     requested_days=7,
                     use_satellite_nowcast_0_6h=False,
                     expert_mode=False,
+                    selection_mode="auto",
                 )
         except Exception as exc:
             ensemble_week = None
@@ -1657,6 +1659,7 @@ class BackendState:
                     requested_days=1,
                     use_satellite_nowcast_0_6h=use_nowcast,
                     expert_mode=False,
+                    selection_mode="auto",
                 )
                 start_h = core._to_local_ts(now_local, tz).ceil("h")
                 end_h = core._to_local_ts(offpeak_start, tz).floor("h")

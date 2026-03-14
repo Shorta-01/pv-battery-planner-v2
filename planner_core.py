@@ -105,7 +105,7 @@ IRR_REL_ERR_MEDIAN_THRESHOLD = 0.25
 IRR_REL_ERR_POINT_THRESHOLD = 0.35
 IRR_BAD_POINT_FRACTION = 0.40
 IRR_MIN_GHI_WM2 = 5.0
-IRR_REPAIR_METHOD = "disc"  # or "erbs"
+IRR_REPAIR_METHOD = "dirint_closure"  # fallback: "erbs"
 IRRADIANCE_HOURLY_MAX_WM2 = 1400.0
 IRRADIANCE_HOURLY_EXTREME_WM2 = 2500.0
 IRRADIANCE_DAILY_CLEARSKY_FACTOR = 1.35
@@ -2355,21 +2355,39 @@ def estimate_pv_with_pvlib(
         trans = 1.0 - (CLOUD_ATTENUATION_WEIGHT * (cloud_fraction ** CLOUD_ATTENUATION_EXPONENT))
         return trans.clip(lower=CLOUD_TRANSMITTANCE_MIN, upper=1.0)
 
-    def derive_irradiance_from_ghi(ghi_in: "pd.Series") -> Tuple["pd.Series", "pd.Series", "pd.Series"]:
+    def derive_irradiance_from_ghi(ghi_in: "pd.Series") -> Tuple["pd.Series", "pd.Series", "pd.Series", str]:
         ghi_s = pd.to_numeric(ghi_in, errors="coerce").reindex(df_local.index).clip(lower=0.0)
+        zenith_local = pd.to_numeric(solpos["apparent_zenith"], errors="coerce").reindex(df_local.index)
+        cos_zen_local = zenith_local.apply(lambda z: max(0.0, math.cos(math.radians(z))) if pd.notna(z) else 0.0)
+
+        method = "erbs"
+        dni_s = pd.Series(np.nan, index=df_local.index, dtype=float)
         repair_method = IRR_REPAIR_METHOD.lower()
-        if repair_method == "erbs":
-            decomp = pvlib.irradiance.erbs(ghi_s.fillna(0.0), solpos["apparent_zenith"], times)
-            dni_s = pd.to_numeric(decomp["dni"], errors="coerce").fillna(0.0).clip(lower=0.0)
-            dhi_s = pd.to_numeric(decomp["dhi"], errors="coerce").fillna(0.0).clip(lower=0.0)
+        if repair_method != "erbs":
+            try:
+                dirint_raw = pvlib.irradiance.dirint(ghi_s.fillna(0.0), zenith_local, times)
+                dni_s = pd.to_numeric(dirint_raw, errors="coerce").reindex(df_local.index)
+                method = "dirint_closure"
+            except Exception:
+                dni_s = pd.Series(np.nan, index=df_local.index, dtype=float)
+
+        if dni_s.isna().all():
+            decomp = pvlib.irradiance.erbs(ghi_s.fillna(0.0), zenith_local, times)
+            dni_s = pd.to_numeric(decomp["dni"], errors="coerce").reindex(df_local.index)
+            dhi_s = pd.to_numeric(decomp["dhi"], errors="coerce").reindex(df_local.index)
+            method = "erbs"
         else:
-            decomp = pvlib.irradiance.disc(ghi_s.fillna(0.0), solpos["apparent_zenith"], times)
-            dni_s = pd.to_numeric(decomp["dni"], errors="coerce").fillna(0.0).clip(lower=0.0)
-            cos_zen_local = pd.to_numeric(solpos["apparent_zenith"], errors="coerce").apply(
-                lambda z: max(0.0, math.cos(math.radians(z))) if pd.notna(z) else 0.0
-            )
-            dhi_s = (ghi_s.fillna(0.0) - (dni_s * cos_zen_local)).clip(lower=0.0)
-        return ghi_s.astype(float), dni_s.astype(float), dhi_s.astype(float)
+            dni_s = dni_s.where(zenith_local < 87.0, 0.0)
+            dhi_s = (ghi_s.fillna(0.0) - (dni_s.fillna(0.0) * cos_zen_local)).clip(lower=0.0)
+            if dhi_s.isna().any():
+                decomp = pvlib.irradiance.erbs(ghi_s.fillna(0.0), zenith_local, times)
+                erbs_dhi = pd.to_numeric(decomp["dhi"], errors="coerce").reindex(df_local.index)
+                dhi_s = dhi_s.where(dhi_s.notna(), erbs_dhi)
+                method = "dirint_closure+erbs"
+
+        dni_s = pd.to_numeric(dni_s, errors="coerce").fillna(0.0).clip(lower=0.0)
+        dhi_s = pd.to_numeric(dhi_s, errors="coerce").fillna(0.0).clip(lower=0.0)
+        return ghi_s.astype(float), dni_s.astype(float), dhi_s.astype(float), method
 
     irradiance_cols = ["ghi_wm2", "dni_wm2", "dhi_wm2"]
     cs = pvloc.get_clearsky(times, model="ineichen")
@@ -2395,16 +2413,18 @@ def estimate_pv_with_pvlib(
         if dni_inst.notna().any() and dhi_inst.notna().any():
             dni = dni_inst
             dhi = dhi_inst
+            _repair_method_used = "upstream"
         else:
-            ghi, dni, dhi = derive_irradiance_from_ghi(ghi)
+            ghi, dni, dhi, _repair_method_used = derive_irradiance_from_ghi(ghi)
         missing_inputs = ghi.isna() & daylight
     elif "dni_wm2" in df_local.columns and "dhi_wm2" in df_local.columns and provider_ghi.notna().any():
         dni = pd.to_numeric(df_local["dni_wm2"], errors="coerce")
         dhi = pd.to_numeric(df_local["dhi_wm2"], errors="coerce")
         ghi = ghi_final
+        _repair_method_used = "upstream"
         missing_inputs = ghi_final.isna() & daylight
     else:
-        ghi, dni, dhi = derive_irradiance_from_ghi(ghi_final)
+        ghi, dni, dhi, _repair_method_used = derive_irradiance_from_ghi(ghi_final)
         missing_inputs = ghi_final.isna() & daylight
 
     zenith = pd.to_numeric(solpos["apparent_zenith"], errors="coerce").reindex(df_local.index)
@@ -2423,24 +2443,9 @@ def estimate_pv_with_pvlib(
         return float(rel_err_valid.median()), float((rel_err_valid > IRR_REL_ERR_POINT_THRESHOLD).mean()), valid
 
     median_rel_err, fraction_bad_points, _ = irradiance_consistency_stats(ghi, dni, dhi)
-    if median_rel_err is not None and fraction_bad_points is not None:
-        if (median_rel_err > IRR_REL_ERR_MEDIAN_THRESHOLD) or (fraction_bad_points > IRR_BAD_POINT_FRACTION):
-            repair_method = IRR_REPAIR_METHOD.lower()
-            if repair_method == "erbs":
-                erbs_out = pvlib.irradiance.erbs(ghi, solpos["apparent_zenith"], times)
-                dni = pd.to_numeric(erbs_out["dni"], errors="coerce").reindex(df_local.index).fillna(0.0).clip(lower=0.0)
-                dhi = pd.to_numeric(erbs_out["dhi"], errors="coerce").reindex(df_local.index).fillna(0.0).clip(lower=0.0)
-            else:
-                disc_out = pvlib.irradiance.disc(ghi, solpos["apparent_zenith"], times)
-                dni = pd.to_numeric(disc_out["dni"], errors="coerce").reindex(df_local.index).fillna(0.0).clip(lower=0.0)
-                dhi = (ghi - (dni * cos_zenith)).fillna(0.0).clip(lower=0.0)
-                repair_method = "disc"
-            dni = pd.to_numeric(dni, errors="coerce").reindex(df_local.index).astype(float).clip(lower=0.0)
-            dhi = pd.to_numeric(dhi, errors="coerce").reindex(df_local.index).astype(float).clip(lower=0.0)
-            print(
-                f"Irradiance repair applied (median_rel_err={median_rel_err:.3f}, bad_fraction={fraction_bad_points:.3f}) "
-                f"using method={repair_method}"
-            )
+    should_rerepair = (_repair_method_used != "upstream") and median_rel_err is not None and fraction_bad_points is not None
+    if should_rerepair and ((median_rel_err > IRR_REL_ERR_MEDIAN_THRESHOLD) or (fraction_bad_points > IRR_BAD_POINT_FRACTION)):
+        ghi, dni, dhi, _repair_method_used = derive_irradiance_from_ghi(ghi)
 
     ghi = ghi.clip(lower=0.0)
     dni = dni.clip(lower=0.0)
