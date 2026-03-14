@@ -61,12 +61,13 @@ logger = logging.getLogger(__name__)
 CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
 LEGACY_TILT_KEY = "tilt_" "common_deg"
 
-# --- Locatie
+# --- Locatie (Belgium-only product scope; coordinates/elevation still drive local forecast precision)
 ADDRESS_QUERY = "Voetvolkstraat 14, 1502 Lembeek, Belgium"
 USE_GEOCODING = False
 LATITUDE = 50.71864
 LONGITUDE = 4.21247
 TIMEZONE = "Europe/Brussels"
+ELEVATION_M = 60.0
 
 # --- PV-installatie (zadeldak: 2 vlakken)
 PANEL_WP = 440
@@ -99,6 +100,9 @@ PV_CALIBRATION_FACTOR = 1.00
 PV_CALIBRATION_FACTOR_EAST = 1.00
 PV_CALIBRATION_FACTOR_SOUTH = 1.00
 PV_GAMMA_PDC = -0.003
+PV_TEMPERATURE_MODEL = "faiman"
+PV_TEMPERATURE_FAIMAN_U0 = 25.0
+PV_TEMPERATURE_FAIMAN_U1 = 6.84
 
 # Irradiance consistency controls
 IRR_REL_ERR_MEDIAN_THRESHOLD = 0.25
@@ -155,7 +159,7 @@ DEFAULT_CONFIG = {
         "address_query": ADDRESS_QUERY,
         "latitude": LATITUDE,
         "longitude": LONGITUDE,
-        "elevation_m": None,
+        "elevation_m": ELEVATION_M,
         "timezone": TIMEZONE,
         "address_structured": {
             "street": "",
@@ -372,6 +376,11 @@ def validate_config(cfg: dict) -> None:
         raise ValueError("location.latitude must be in [-90, 90].")
     if not (-180.0 <= float(location["longitude"]) <= 180.0):
         raise ValueError("location.longitude must be in [-180, 180].")
+    if location.get("elevation_m") is None:
+        raise ValueError("location.elevation_m is required for Belgium-local weather/PV precision.")
+    elevation_m = float(location["elevation_m"])
+    if not (-500.0 <= elevation_m <= 9000.0):
+        raise ValueError("location.elevation_m must be in [-500, 9000].")
     if not (0.0 < float(pv["performance_ratio"]) <= 1.0):
         raise ValueError("pv.performance_ratio must be in (0, 1].")
     if not (0.0 < float(pv["inverter_eff"]) <= 1.0):
@@ -2027,6 +2036,8 @@ def _fetch_weather_payload(loc: Location, target_date: dt.date, tz_use: str) -> 
         ]),
         "daily": ",".join(["sunrise", "sunset"]),
     }
+    if loc.elevation_m is not None:
+        params["elevation"] = int(round(float(loc.elevation_m)))
 
     data = _request_json(service=service, url=url, params=params)
 
@@ -2248,7 +2259,12 @@ def irradiance_sanity_warnings(
 
     if PVLIB_AVAILABLE and getattr(df.index, "tz", None) is not None:
         try:
-            pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz)
+            pvloc = pvlib.location.Location(
+                latitude=loc.latitude,
+                longitude=loc.longitude,
+                tz=tz,
+                altitude=float(loc.elevation_m or 0.0),
+            )
             clear = pvloc.get_clearsky(df.index.tz_convert(tz), model="ineichen")
             clear_ghi = pd.to_numeric(clear.get("ghi"), errors="coerce").reindex(df.index).fillna(0.0).clip(lower=0.0)
             measured_wh = float(ghi.fillna(0.0).clip(lower=0.0).sum())
@@ -2294,7 +2310,12 @@ def estimate_pv_with_pvlib(
     allow_synthetic_ghi_mask: "pd.Series | None" = None,
 ) -> Tuple["pd.Series", "pd.Series", "pd.Series", "pd.Series"]:
     tz_use = tz or TIMEZONE
-    pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz_use)
+    pvloc = pvlib.location.Location(
+        latitude=loc.latitude,
+        longitude=loc.longitude,
+        tz=tz_use,
+        altitude=float(loc.elevation_m or 0.0),
+    )
     times = df.index
     if getattr(times, "tz", None) is None:
         raise ValueError("Forecast times index must be timezone-aware before pvlib calculations.")
@@ -2488,14 +2509,12 @@ def estimate_pv_with_pvlib(
             )
             iam_modifier = pvlib.iam.ashrae(aoi, b=PV_IAM_ASHRAE_B)
             poa = (poa * pd.to_numeric(iam_modifier, errors="coerce").fillna(0.0).clip(lower=0.0, upper=1.0)).fillna(0.0)
-        temp_model_params = pvlib.temperature.TEMPERATURE_MODEL_PARAMETERS["sapm"]["close_mount_glass_glass"]
-        temp_cell = pvlib.temperature.sapm_cell(
+        temp_cell = pvlib.temperature.faiman(
             poa_global=poa,
             temp_air=temp_air,
             wind_speed=wind_speed,
-            a=float(temp_model_params["a"]),
-            b=float(temp_model_params["b"]),
-            deltaT=float(temp_model_params["deltaT"]),
+            u0=float(PV_TEMPERATURE_FAIMAN_U0),
+            u1=float(PV_TEMPERATURE_FAIMAN_U1),
         )
         dc_w = pvlib.pvsystem.pvwatts_dc(
             poa, pdc0=pdc0_kw * 1000.0, gamma_pdc=PV_GAMMA_PDC, temp_cell=temp_cell

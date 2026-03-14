@@ -1323,6 +1323,11 @@ class BackendState:
         run_at_utc = _utc_now_iso()
         run_id = str(uuid.uuid4())
         config_hash = compute_config_hash(cfg)
+
+        # Production planning quality: fast_mode is developer-only and explicitly opt-in via env flag.
+        debug_fast_mode_enabled = str(os.getenv("PVBP_ENABLE_DEBUG_FAST_MODE", "")).strip() == "1"
+        effective_fast_mode = bool(fast_mode) and bool(debug_fast_mode_enabled) and mode == "expert"
+
         inputs_used = {
             "soc_now_percent": float(soc_percent),
             "soc_at_22_percent": None,
@@ -1339,7 +1344,8 @@ class BackendState:
             "forecast_mode": mode,
             "ensemble_method": ensemble_method_tomorrow,
             "pv_uncertainty_enabled": bool(pv_uncertainty),
-            "fast_mode": bool(fast_mode),
+            "fast_mode": bool(effective_fast_mode),
+            "fast_mode_requested": bool(fast_mode),
             "use_satellite_nowcast_0_6h": bool(effective_use_sat),
         }
 
@@ -1353,7 +1359,7 @@ class BackendState:
                     ensemble_method=ensemble_method_tomorrow,
                     pv_uncertainty=bool(pv_uncertainty),
                     accuracy_mode=True,
-                    fast_mode=bool(fast_mode),
+                    fast_mode=bool(effective_fast_mode),
                     requested_days=1,
                     use_satellite_nowcast_0_6h=effective_use_sat,
                     expert_mode=(mode == "expert"),
@@ -1418,7 +1424,8 @@ class BackendState:
                     "failure_reasons_by_model": failed_reasons,
                     "failed_model_reasons": failed_reasons,
                     "model_live_failed_used_cached": {},
-                    "fast_mode": bool(fast_mode),
+                    "fast_mode": bool(effective_fast_mode),
+            "fast_mode_requested": bool(fast_mode),
                 "model_selection_reason": getattr(ensemble_tomorrow, "model_selection_reason", None),
                 "dynamic_daylight_method": getattr(ensemble_tomorrow, "dynamic_daylight_method", None),
                 "forecast_quality_tier": getattr(ensemble_tomorrow, "forecast_quality_tier", None),
@@ -2022,7 +2029,8 @@ class BackendState:
                 "failed_model_reasons": getattr(ensemble_tomorrow, "failed_model_reasons", {}),
                 "model_live_failed_used_cached": getattr(ensemble_tomorrow, "model_live_failed_used_cached", {}),
                 "deduped_models_dropped": getattr(ensemble_tomorrow, "deduped_models_dropped", None),
-                "fast_mode": bool(fast_mode),
+                "fast_mode": bool(effective_fast_mode),
+            "fast_mode_requested": bool(fast_mode),
                 "model_selection_reason": getattr(ensemble_tomorrow, "model_selection_reason", None),
                 "dynamic_daylight_method": getattr(ensemble_tomorrow, "dynamic_daylight_method", None),
                 "forecast_quality_tier": getattr(ensemble_tomorrow, "forecast_quality_tier", None),

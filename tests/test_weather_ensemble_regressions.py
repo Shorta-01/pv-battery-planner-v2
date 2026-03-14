@@ -112,7 +112,7 @@ def test_build_ensemble_mean_ignores_missing_model_hours(monkeypatch: pytest.Mon
     assert out.pv_ensemble_p50.iloc[2] == pytest.approx(6.0)
 
 
-def test_fast_mode_limits_models(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex) -> None:
+def test_fast_mode_does_not_limit_models_in_production_quality_path(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex) -> None:
     loc = core.Location(name="x", latitude=50.8, longitude=4.3)
     weather_df = pd.DataFrame(
         {
@@ -160,8 +160,8 @@ def test_fast_mode_limits_models(monkeypatch: pytest.MonkeyPatch, hourly_index: 
         fast_mode=True,
     )
 
-    assert sorted(calls) == ["dwd_icon_d2", "ecmwf_ifs"]
-    assert sorted(out.selected_models) == ["dwd_icon_d2", "ecmwf_ifs"]
+    assert sorted(calls) == ["dwd_icon_d2", "ecmwf_ifs", "knmi_harmonie_arome"]
+    assert sorted(out.selected_models) == ["dwd_icon_d2", "ecmwf_ifs", "knmi_harmonie_arome"]
 
 
 def test_fetch_open_meteo_sets_derived_flag_from_missing_dni_dhi(monkeypatch: pytest.MonkeyPatch, hourly_index: pd.DatetimeIndex) -> None:
