@@ -1290,6 +1290,157 @@ class BackendState:
 
         return planning_state
 
+    def _normalize_run_config(
+        self,
+        *,
+        target_date: dt.date,
+        soc_percent: float,
+        weather_models: list[str] | None,
+        forecast_mode: str | None,
+        ensemble_method: str,
+        use_satellite_nowcast_0_6h_override: bool | None,
+    ) -> dict:
+        cfg = self.settings["config"]
+        loc_cfg = cfg.get("location", {})
+        tz = str(loc_cfg.get("timezone", "Europe/Brussels"))
+        loc = core.Location(
+            name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
+            latitude=float(loc_cfg["latitude"]),
+            longitude=float(loc_cfg["longitude"]),
+            elevation_m=float(loc_cfg["elevation_m"]) if loc_cfg.get("elevation_m") is not None else None,
+        )
+
+        mode = str(forecast_mode or "auto").lower().strip()
+        if mode not in ("auto", "expert"):
+            mode = "auto"
+
+        if mode == "expert":
+            tomorrow_models = list(weather_models or [])
+            if not tomorrow_models:
+                tomorrow_models = auto_select_models_for_location(loc, requested_days=1)
+        else:
+            tomorrow_models = auto_select_models_for_location(loc.latitude, loc.longitude, requested_days=1)
+        week_models = select_week_ahead_models(requested_days=7, lat=loc.latitude, lon=loc.longitude)
+        if not tomorrow_models:
+            raise HTTPException(status_code=400, detail="Select at least one weather model.")
+
+        normalized_ensemble_method = str(ensemble_method).lower().strip()
+        ensemble_method_tomorrow = "weighted"
+        ensemble_method_week = "median"
+        weather_cfg = cfg.get("weather", {}) if isinstance(cfg, dict) else {}
+        store_provider_payloads = bool(weather_cfg.get("store_provider_payloads", False)) if isinstance(weather_cfg, dict) else False
+        requested_use_sat = bool(weather_cfg.get("use_satellite_nowcast_0_6h", False)) if isinstance(weather_cfg, dict) else False
+        now_utc = dt.datetime.now(dt.timezone.utc)
+        requested_days = max(1, (target_date - now_utc.astimezone(ZoneInfo(tz)).date()).days)
+        if mode == "auto":
+            if requested_days > 1:
+                effective_use_sat = False
+            else:
+                effective_use_sat = should_use_satellite_nowcast_auto(
+                    latitude=loc.latitude,
+                    longitude=loc.longitude,
+                    timezone_name=tz,
+                    requested_days=1,
+                    now_utc=now_utc,
+                )
+        elif use_satellite_nowcast_0_6h_override is not None:
+            effective_use_sat = bool(use_satellite_nowcast_0_6h_override)
+        else:
+            effective_use_sat = requested_use_sat
+
+        ev_state = self._get_planning_ready_ev_state()
+        ev_warning = ev_state.get("warning")
+        vehicles = ev_state.get("vehicles") if isinstance(ev_state.get("vehicles"), dict) else {}
+        fallback_to_cached_state = bool(ev_state.get("fallback_to_cached_state", bool(vehicles)))
+        fallback_reason = ev_state.get("fallback_reason")
+        if vehicles:
+            first = next(iter(vehicles.values()))
+            ev_soc = first.get("soc_pct")
+            ev_status = str(first.get("data_status") or "")
+            if ev_soc is not None and ev_status in {"fresh", "aging", "fallback"}:
+                soc_percent = float(ev_soc)
+
+        return {
+            "cfg": cfg,
+            "loc_cfg": loc_cfg,
+            "tz": tz,
+            "loc": loc,
+            "mode": mode,
+            "tomorrow_models": tomorrow_models,
+            "week_models": week_models,
+            "normalized_ensemble_method": normalized_ensemble_method,
+            "ensemble_method_tomorrow": ensemble_method_tomorrow,
+            "ensemble_method_week": ensemble_method_week,
+            "store_provider_payloads": store_provider_payloads,
+            "effective_use_sat": effective_use_sat,
+            "ev_warning": ev_warning,
+            "fallback_to_cached_state": fallback_to_cached_state,
+            "fallback_reason": fallback_reason,
+            "soc_percent": soc_percent,
+        }
+
+    def _daily_totals_nullable(self, series: pd.Series | None, *, tz: str, days: int = 7) -> list[float | None]:
+        if series is None or len(series) == 0:
+            return [None] * days
+        s = pd.to_numeric(series, errors="coerce")
+        if not isinstance(s.index, pd.DatetimeIndex):
+            return [None] * days
+        if s.index.tz is None:
+            s = s.copy()
+            s.index = s.index.tz_localize(tz)
+        else:
+            s = s.tz_convert(tz)
+        daily = s.resample("D").sum(min_count=1)
+        out: list[float | None] = []
+        for i in range(days):
+            if i >= len(daily):
+                out.append(None)
+            else:
+                v = daily.iloc[i]
+                out.append(None if pd.isna(v) else float(v))
+        return out
+
+    def _daily_counts_nullable(self, series: pd.Series | None, *, tz: str, days: int = 7) -> list[int | None]:
+        if series is None or len(series) == 0:
+            return [None] * days
+        s = pd.to_numeric(series, errors="coerce")
+        if not isinstance(s.index, pd.DatetimeIndex):
+            return [None] * days
+        if s.index.tz is None:
+            s = s.copy()
+            s.index = s.index.tz_localize(tz)
+        else:
+            s = s.tz_convert(tz)
+        daily = s.resample("D").median()
+        out: list[int | None] = []
+        for i in range(days):
+            if i >= len(daily) or pd.isna(daily.iloc[i]):
+                out.append(None)
+            else:
+                out.append(int(round(float(daily.iloc[i]))))
+        return out
+
+    def _daily_coverage(self, series: pd.Series | None, *, tz: str, days: int = 7) -> list[float | None]:
+        if series is None or len(series) == 0:
+            return [None] * days
+        s = pd.to_numeric(series, errors="coerce")
+        if not isinstance(s.index, pd.DatetimeIndex):
+            return [None] * days
+        if s.index.tz is None:
+            s = s.copy()
+            s.index = s.index.tz_localize(tz)
+        else:
+            s = s.tz_convert(tz)
+        daily_valid = s.notna().resample("D").sum()
+        daily_total = s.resample("D").size()
+        out: list[float | None] = []
+        for i in range(days):
+            if i >= len(daily_total) or daily_total.iloc[i] <= 0:
+                out.append(None)
+            else:
+                out.append(float(daily_valid.iloc[i] / daily_total.iloc[i]))
+        return out
+
     def _run(
         self,
         target_date: dt.date,
@@ -1306,65 +1457,30 @@ class BackendState:
     ) -> dict:
         diagnostics = _RunDiagnostics()
         with diagnostics.stage("config_normalization"):
-            cfg = self.settings["config"]
-            loc_cfg = cfg.get("location", {})
-            tz = str(loc_cfg.get("timezone", "Europe/Brussels"))
-            loc = core.Location(
-                name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
-                latitude=float(loc_cfg["latitude"]),
-                longitude=float(loc_cfg["longitude"]),
-                elevation_m=float(loc_cfg["elevation_m"]) if loc_cfg.get("elevation_m") is not None else None,
+            normalized = self._normalize_run_config(
+                target_date=target_date,
+                soc_percent=soc_percent,
+                weather_models=weather_models,
+                forecast_mode=forecast_mode,
+                ensemble_method=ensemble_method,
+                use_satellite_nowcast_0_6h_override=use_satellite_nowcast_0_6h_override,
             )
-
-            mode = str(forecast_mode or "auto").lower().strip()
-            if mode not in ("auto", "expert"):
-                mode = "auto"
-
-            if mode == "expert":
-                tomorrow_models = list(weather_models or [])
-                if not tomorrow_models:
-                    tomorrow_models = auto_select_models_for_location(loc, requested_days=1)
-            else:
-                tomorrow_models = auto_select_models_for_location(loc.latitude, loc.longitude, requested_days=1)
-            week_models = select_week_ahead_models(requested_days=7, lat=loc.latitude, lon=loc.longitude)
-            if not tomorrow_models:
-                raise HTTPException(status_code=400, detail="Select at least one weather model.")
-
-            normalized_ensemble_method = str(ensemble_method).lower().strip()
-            ensemble_method_tomorrow = "weighted"
-            ensemble_method_week = "median"
-            weather_cfg = cfg.get("weather", {}) if isinstance(cfg, dict) else {}
-            store_provider_payloads = bool(weather_cfg.get("store_provider_payloads", False)) if isinstance(weather_cfg, dict) else False
-            requested_use_sat = bool(weather_cfg.get("use_satellite_nowcast_0_6h", False)) if isinstance(weather_cfg, dict) else False
-            now_utc = dt.datetime.now(dt.timezone.utc)
-            requested_days = max(1, (target_date - now_utc.astimezone(ZoneInfo(tz)).date()).days)
-            if mode == "auto":
-                if requested_days > 1:
-                    effective_use_sat = False
-                else:
-                    effective_use_sat = should_use_satellite_nowcast_auto(
-                        latitude=loc.latitude,
-                        longitude=loc.longitude,
-                        timezone_name=tz,
-                        requested_days=1,
-                        now_utc=now_utc,
-                    )
-            elif use_satellite_nowcast_0_6h_override is not None:
-                effective_use_sat = bool(use_satellite_nowcast_0_6h_override)
-            else:
-                effective_use_sat = requested_use_sat
-
-            ev_state = self._get_planning_ready_ev_state()
-            ev_warning = ev_state.get("warning")
-            vehicles = ev_state.get("vehicles") if isinstance(ev_state.get("vehicles"), dict) else {}
-            fallback_to_cached_state = bool(ev_state.get("fallback_to_cached_state", bool(vehicles)))
-            fallback_reason = ev_state.get("fallback_reason")
-            if vehicles:
-                first = next(iter(vehicles.values()))
-                ev_soc = first.get("soc_pct")
-                ev_status = str(first.get("data_status") or "")
-                if ev_soc is not None and ev_status in {"fresh", "aging", "fallback"}:
-                    soc_percent = float(ev_soc)
+            cfg = normalized["cfg"]
+            loc_cfg = normalized["loc_cfg"]
+            tz = normalized["tz"]
+            loc = normalized["loc"]
+            mode = normalized["mode"]
+            tomorrow_models = normalized["tomorrow_models"]
+            week_models = normalized["week_models"]
+            normalized_ensemble_method = normalized["normalized_ensemble_method"]
+            ensemble_method_tomorrow = normalized["ensemble_method_tomorrow"]
+            ensemble_method_week = normalized["ensemble_method_week"]
+            store_provider_payloads = normalized["store_provider_payloads"]
+            effective_use_sat = normalized["effective_use_sat"]
+            ev_warning = normalized["ev_warning"]
+            fallback_to_cached_state = normalized["fallback_to_cached_state"]
+            fallback_reason = normalized["fallback_reason"]
+            soc_percent = float(normalized["soc_percent"])
 
         run_at_utc = _utc_now_iso()
         run_id = str(uuid.uuid4())
@@ -1534,72 +1650,10 @@ class BackendState:
             if missing_important:
                 warnings.append(f"important vars missing: {model_id} ({', '.join(missing_important)})")
 
-        def _daily_totals_nullable(series: pd.Series | None, days: int = 7) -> list[float | None]:
-            if series is None or len(series) == 0:
-                return [None] * days
-            s = pd.to_numeric(series, errors="coerce")
-            if not isinstance(s.index, pd.DatetimeIndex):
-                return [None] * days
-            if s.index.tz is None:
-                s = s.copy()
-                s.index = s.index.tz_localize(tz)
-            else:
-                s = s.tz_convert(tz)
-            daily = s.resample("D").sum(min_count=1)
-            out: list[float | None] = []
-            for i in range(days):
-                if i >= len(daily):
-                    out.append(None)
-                else:
-                    v = daily.iloc[i]
-                    out.append(None if pd.isna(v) else float(v))
-            return out
-
-        def _daily_counts_nullable(series: pd.Series | None, days: int = 7) -> list[int | None]:
-            if series is None or len(series) == 0:
-                return [None] * days
-            s = pd.to_numeric(series, errors="coerce")
-            if not isinstance(s.index, pd.DatetimeIndex):
-                return [None] * days
-            if s.index.tz is None:
-                s = s.copy()
-                s.index = s.index.tz_localize(tz)
-            else:
-                s = s.tz_convert(tz)
-            daily = s.resample("D").median()
-            out: list[int | None] = []
-            for i in range(days):
-                if i >= len(daily) or pd.isna(daily.iloc[i]):
-                    out.append(None)
-                else:
-                    out.append(int(round(float(daily.iloc[i]))))
-            return out
-
-        def _daily_coverage(series: pd.Series | None, days: int = 7) -> list[float | None]:
-            if series is None or len(series) == 0:
-                return [None] * days
-            s = pd.to_numeric(series, errors="coerce")
-            if not isinstance(s.index, pd.DatetimeIndex):
-                return [None] * days
-            if s.index.tz is None:
-                s = s.copy()
-                s.index = s.index.tz_localize(tz)
-            else:
-                s = s.tz_convert(tz)
-            daily_valid = s.notna().resample("D").sum()
-            daily_total = s.resample("D").size()
-            out: list[float | None] = []
-            for i in range(days):
-                if i >= len(daily_total) or daily_total.iloc[i] <= 0:
-                    out.append(None)
-                else:
-                    out.append(float(daily_valid.iloc[i] / daily_total.iloc[i]))
-            return out
-
         if ensemble_week is not None:
-            pv_totals_p50 = _daily_totals_nullable(ensemble_week.pv_ensemble_p50)
-            pv_totals_p10 = _daily_totals_nullable(ensemble_week.pv_ensemble_p10)
-            pv_totals_p90 = _daily_totals_nullable(ensemble_week.pv_ensemble_p90)
+            pv_totals_p50 = self._daily_totals_nullable(ensemble_week.pv_ensemble_p50, tz=tz)
+            pv_totals_p10 = self._daily_totals_nullable(ensemble_week.pv_ensemble_p10, tz=tz)
+            pv_totals_p90 = self._daily_totals_nullable(ensemble_week.pv_ensemble_p90, tz=tz)
             primary_id = getattr(ensemble_week, "weather_primary_model_id", None)
             weather_by_model = getattr(ensemble_week, "weather_by_model", {}) or {}
             weights_used_week = getattr(ensemble_week, "weights_used", None)
@@ -1615,9 +1669,10 @@ class BackendState:
             derived_weather_code_by_model_week = {}
             week_models_used_count_per_hour = None
 
-        week_models_count_per_day = _daily_counts_nullable(week_models_used_count_per_hour)
-        week_coverage_per_day = _daily_coverage(
-            getattr(ensemble_week, "pv_ensemble_p50", None) if ensemble_week is not None else None
+        week_models_count_per_day = self._daily_counts_nullable(week_models_used_count_per_hour, tz=tz)
+        week_coverage_per_day = self._daily_coverage(
+            getattr(ensemble_week, "pv_ensemble_p50", None) if ensemble_week is not None else None,
+            tz=tz,
         )
 
         pv_week_ahead_all = _build_pv_week_ahead(
