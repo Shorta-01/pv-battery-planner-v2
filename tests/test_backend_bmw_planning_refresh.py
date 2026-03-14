@@ -63,17 +63,19 @@ def test_ev_disabled_skips_refresh(monkeypatch, tmp_path):
     assert fake.manual_refresh_calls == 0
 
 
-def test_fresh_cache_uses_cached_data_without_refresh(monkeypatch, tmp_path):
+def test_fresh_cache_still_refreshes_before_planning(monkeypatch, tmp_path):
     state = _new_state(monkeypatch, tmp_path)
     state.settings["config"]["ev_vehicle_data"] = {"enabled": True, "bmw_healthcheck_seconds": 300}
-    fake = _FakeBmwService([_base_vehicle(soc=54.0, freshness=120)])
+    fake = _FakeBmwService([_base_vehicle(soc=54.0, freshness=120), _base_vehicle(soc=54.0, freshness=10)])
     state.bmw_service = fake
 
     out = state._get_planning_ready_ev_state()
 
-    assert out["refresh_attempted"] is False
+    assert out["refresh_attempted"] is True
+    assert out["refresh_reason"] == "run_forecast"
+    assert out["refresh_succeeded"] is True
     assert out["vehicles"]["vehicle-1"]["soc_pct"] == 54.0
-    assert fake.manual_refresh_calls == 0
+    assert fake.manual_refresh_calls == 1
 
 
 def test_stale_cache_refreshes_and_uses_refreshed_state(monkeypatch, tmp_path):
@@ -87,6 +89,7 @@ def test_stale_cache_refreshes_and_uses_refreshed_state(monkeypatch, tmp_path):
     out = state._get_planning_ready_ev_state()
 
     assert out["refresh_attempted"] is True
+    assert out["refresh_reason"] == "run_forecast"
     assert out["refresh_succeeded"] is True
     assert out["vehicles"]["vehicle-1"]["soc_pct"] == 73.0
     assert "live refresh succeeded" in out["warning"]
@@ -102,7 +105,7 @@ def test_no_cache_refresh_fails_with_warning(monkeypatch, tmp_path):
 
     assert out["refresh_attempted"] is True
     assert out["vehicles"] == {}
-    assert "no BMW vehicle data available" in out["warning"]
+    assert "no BMW vehicle data is available" in out["warning"]
     assert "auth_required" in out["warning"]
 
 
@@ -162,5 +165,5 @@ def test_missing_soc_refreshes_before_planning(monkeypatch, tmp_path):
     out = state._get_planning_ready_ev_state()
 
     assert out["refresh_attempted"] is True
-    assert out["refresh_reason"] == "missing_soc"
+    assert out["refresh_reason"] == "run_forecast"
     assert out["vehicles"]["vehicle-1"]["soc_pct"] == 66.0

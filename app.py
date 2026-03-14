@@ -4410,7 +4410,7 @@ with left:
         )
 
         range_state = ((ev_status.get("field_states") or {}).get("range_km"))
-        range_label = format_ev_km(ev_status.get("range_km"), unknown_label="Not provided by BMW yet") if range_state != "bmw_missing" else "Not provided by BMW yet"
+        range_label = format_ev_km(ev_status.get("range_km"), unknown_label="BMW did not provide range") if range_state != "bmw_missing" else "BMW did not provide range"
 
         deadline_state = ev_status.get("deadline_state")
         deadline_label = str(ev_status.get("deadline_time") or "").strip() if deadline_state == "configured" else "Not set"
@@ -4419,7 +4419,7 @@ with left:
         if power_state == "not_charging":
             charge_power_label = "Not charging"
         elif power_state == "waiting_for_bmw_power":
-            charge_power_label = "Not provided by BMW yet"
+            charge_power_label = "BMW did not provide charge power"
         elif power_state == "waiting_for_bmw_status":
             charge_power_label = "Waiting for BMW status"
         else:
@@ -4429,7 +4429,7 @@ with left:
         if full_state == "ready":
             expected_full_label = format_ev_datetime(ev_status.get("expected_full_charge_ts"), unknown_label="Unavailable")
         elif full_state == "waiting_for_bmw_eta":
-            expected_full_label = "Waiting for BMW ETA"
+            expected_full_label = "Waiting for BMW data"
         elif full_state == "waiting_for_power_limit":
             expected_full_label = "Waiting for BMW power limit"
         elif full_state == "waiting_for_soc":
@@ -4445,18 +4445,17 @@ with left:
 
         if soc_pct is None:
             headline = "Battery status unavailable"
-        elif is_charging is True:
-            headline = f"{soc_pct:.0f}% battery · charging now"
-        elif is_plugged is True:
-            headline = f"{soc_pct:.0f}% battery · plugged in, waiting"
-        elif is_plugged is False:
-            headline = f"{soc_pct:.0f}% battery · not plugged in"
         else:
-            headline = f"{soc_pct:.0f}% battery · waiting for BMW status"
+            status_text = "charging now" if is_charging is True else "plugged in, waiting" if is_plugged is True else "not plugged in" if is_plugged is False else "waiting for BMW status"
+            range_km = _safe_float(ev_status.get("range_km"), float("nan"))
+            if pd.notna(range_km):
+                headline = f"{soc_pct:.0f}% / {range_km:.0f} km · {status_text}"
+            else:
+                headline = f"{soc_pct:.0f}% battery · {status_text}"
 
         metric_items = [
             ("Plugged in", format_ev_bool(is_plugged, true_label="Yes", false_label="No", unknown_label="Unknown")),
-            ("Charging now", format_ev_bool(is_charging, true_label="Yes", false_label="No", unknown_label="Unknown")),
+            ("Charging now", format_ev_bool(is_charging, true_label="Yes", false_label="No", unknown_label="BMW did not provide charging status")),
             ("Charge power", charge_power_label),
             ("Full charge at", expected_full_label),
             ("Deadline", deadline_label),

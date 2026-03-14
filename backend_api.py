@@ -1202,25 +1202,7 @@ class BackendState:
         if not enabled:
             return planning_state
 
-        refresh_reason = None
-        if not vehicles:
-            refresh_reason = "no_cached_data"
-        else:
-            first_vehicle = next(iter(vehicles.values()))
-            soc_val = first_vehicle.get("soc_pct") if isinstance(first_vehicle, dict) else None
-            try:
-                soc_missing = soc_val in (None, "")
-            except Exception:
-                soc_missing = True
-            freshness_seconds = self._bmw_vehicle_freshness_seconds(first_vehicle)
-            if soc_missing:
-                refresh_reason = "missing_soc"
-            elif freshness_seconds is None or freshness_seconds > threshold_seconds:
-                refresh_reason = "stale_cache"
-
-        if refresh_reason is None:
-            planning_state["refresh_reason"] = "cached_fresh"
-            return planning_state
+        refresh_reason = "run_forecast"
 
         planning_state["refresh_attempted"] = True
         planning_state["refresh_reason"] = refresh_reason
@@ -1237,35 +1219,29 @@ class BackendState:
             refreshed_vehicles = vehicles
         planning_state["vehicles"] = refreshed_vehicles
 
-        if refresh_reason == "stale_cache":
-            if refresh_ok:
-                planning_state["warning"] = (
-                    f"BMW data was stale (>{threshold_seconds}s); live refresh succeeded before planning."
-                )
-            else:
-                reason = refresh_result.get("reason") if isinstance(refresh_result, dict) else "unknown"
-                if vehicles:
-                    planning_state["warning"] = (
-                        f"BMW data was stale (>{threshold_seconds}s); live refresh failed ({reason}), using last known EV state."
-                    )
+        if refresh_ok:
+            planning_state["warning"] = "BMW live refresh succeeded before planning."
+        else:
+            reason = refresh_result.get("reason") if isinstance(refresh_result, dict) else "unknown"
+            if vehicles:
+                first_vehicle = next(iter(vehicles.values())) if isinstance(vehicles, dict) and vehicles else {}
+                freshness_seconds = self._bmw_vehicle_freshness_seconds(first_vehicle) if isinstance(first_vehicle, dict) else None
+                if freshness_seconds is None:
+                    stale_hint = "unknown freshness"
+                elif freshness_seconds > threshold_seconds:
+                    stale_hint = f"stale (>{threshold_seconds}s)"
                 else:
-                    planning_state["warning"] = (
-                        f"BMW data was stale (>{threshold_seconds}s); live refresh failed ({reason}) and no BMW vehicle data is available."
-                    )
-        elif refresh_reason == "missing_soc":
-            if refresh_ok:
-                planning_state["warning"] = "BMW SOC was missing; live refresh succeeded before planning."
-            else:
-                reason = refresh_result.get("reason") if isinstance(refresh_result, dict) else "unknown"
-                planning_state["warning"] = f"BMW SOC missing and refresh failed ({reason}); using last known EV state."
-        elif not planning_state["vehicles"]:
-            if refresh_ok:
-                planning_state["warning"] = "BMW EV integration enabled, but no BMW vehicle data available."
-            else:
-                reason = refresh_result.get("reason") if isinstance(refresh_result, dict) else "unknown"
+                    stale_hint = f"{freshness_seconds}s old"
                 planning_state["warning"] = (
-                    f"BMW EV integration enabled, but no BMW vehicle data available (refresh failed: {reason})."
+                    f"BMW live refresh failed ({reason}); using last known EV state ({stale_hint})."
                 )
+            else:
+                planning_state["warning"] = (
+                    f"BMW live refresh failed ({reason}) and no BMW vehicle data is available."
+                )
+
+        if not planning_state["vehicles"] and refresh_ok:
+            planning_state["warning"] = "BMW EV integration enabled, but no BMW vehicle data available after live refresh."
 
         return planning_state
 

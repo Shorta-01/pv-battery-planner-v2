@@ -274,6 +274,7 @@ def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[Normalize
             charge_settings.get("acCurrentLimitA"),
         ))
         soc_pct = _as_float(_first(
+            _descriptor_value(telematic, "vehicle.drivetrain.electricEngine.battery.stateOfCharge"),
             _descriptor_value(telematic, "vehicle.drivetrain.electricEngine.charging.level"),
             _dig(telematic, "socPct"),
             _dig(telematic, "soc"),
@@ -291,9 +292,26 @@ def map_bmw_payload_to_vehicle_states(payload: dict[str, Any]) -> list[Normalize
             soc_pct=soc_pct,
             is_plugged=is_plugged,
             is_charging=is_charging,
-            range_km=_as_float(_first(_dig(telematic, "rangeKm"), _dig(telematic, "remainingRangeKm"), _dig(tele_range, "electricKm"), range_data.get("electricKm"))),
-            time_to_full_min=_as_int(_first(_dig(telematic, "timeToFullMin"), _dig(telematic, "remainingTimeToFullMinutes"), _dig(tele_charging, "remainingTimeToFullMinutes"), charging.get("remainingTimeToFullMinutes"))),
-            charge_power_kw=_as_float(_first(_dig(telematic, "chargePowerKw"), _dig(tele_charging, "chargePowerKw"), charging.get("chargePowerKw"))),
+            range_km=_as_float(_first(
+                _descriptor_value(telematic, "vehicle.drivetrain.electricEngine.range.electric"),
+                _dig(telematic, "rangeKm"),
+                _dig(telematic, "remainingRangeKm"),
+                _dig(tele_range, "electricKm"),
+                range_data.get("electricKm"),
+            )),
+            time_to_full_min=_as_int(_first(
+                _descriptor_value(telematic, "vehicle.drivetrain.electricEngine.charging.timeToComplete"),
+                _dig(telematic, "timeToFullMin"),
+                _dig(telematic, "remainingTimeToFullMinutes"),
+                _dig(tele_charging, "remainingTimeToFullMinutes"),
+                charging.get("remainingTimeToFullMinutes"),
+            )),
+            charge_power_kw=_as_float(_first(
+                _descriptor_value(telematic, "vehicle.drivetrain.electricEngine.charging.power"),
+                _dig(telematic, "chargePowerKw"),
+                _dig(tele_charging, "chargePowerKw"),
+                charging.get("chargePowerKw"),
+            )),
             ac_current_limit_a=ac_current_limit_a,
             battery_capacity_kwh=_as_float(_first(_dig(tele_battery, "capacityKwh"), battery.get("capacityKwh"))),
             charging_mode=_first(charge_settings.get("chargingMode"), str(charging_status_raw) if charging_status_raw is not None else None),

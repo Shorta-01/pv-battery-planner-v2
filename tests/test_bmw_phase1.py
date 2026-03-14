@@ -171,6 +171,32 @@ def test_mapping_real_telematic_charging_level_maps_soc_pct():
     assert st.raw_fields["telematicData"]["telematicData"]["vehicle.drivetrain.electricEngine.charging.level"]["value"] == "71"
 
 
+
+
+def test_mapping_descriptor_first_ev_fields_populate_core_metrics():
+    payload = {
+        "GET /customers/vehicles/WBA51EH0X0CR89778/telematicData?containerId=CONT1": {
+            "telematicData": {
+                "vehicle.drivetrain.electricEngine.battery.stateOfCharge": {"timestamp": "2026-03-13T09:00:07.000Z", "unit": "%", "value": "44"},
+                "vehicle.drivetrain.electricEngine.range.electric": {"timestamp": "2026-03-13T09:00:07.000Z", "unit": "km", "value": "29"},
+                "vehicle.drivetrain.electricEngine.charging.timeToComplete": {"timestamp": "2026-03-13T09:00:07.000Z", "unit": "min", "value": "90"},
+                "vehicle.drivetrain.electricEngine.charging.power": {"timestamp": "2026-03-13T09:00:07.000Z", "unit": "kW", "value": "6.9"},
+                "vehicle.drivetrain.electricEngine.charging.status": {"timestamp": "2026-03-13T09:00:07.000Z", "unit": None, "value": "CHARGINGACTIVE"},
+                "vehicle.body.chargingPort.status": {"timestamp": "2026-03-13T09:00:07.000Z", "unit": None, "value": "CONNECTED"},
+            }
+        }
+    }
+
+    states = map_bmw_payload_to_vehicle_states(payload)
+    assert len(states) == 1
+    st = states[0]
+    assert st.soc_pct == 44
+    assert st.range_km == 29
+    assert st.time_to_full_min == 90
+    assert st.charge_power_kw == 6.9
+    assert st.is_charging is True
+    assert st.is_plugged is True
+
 def test_derivations_energy_and_economics():
     st = NormalizedVehicleState(vehicle_id="V1", soc_pct=40, battery_capacity_kwh=80, is_plugged=True, data_status="fresh", range_km=250)
     out = apply_planner_derivations(
