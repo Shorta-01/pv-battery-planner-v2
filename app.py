@@ -238,6 +238,8 @@ def normalize_effective_cfg_to_payload(effective_cfg: dict, valid_model_ids: set
             "peak_grid_price_eur_per_kwh": float(tariff_cfg.get("peak_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["peak_grid_price_eur_per_kwh"])),
             "offpeak_grid_price_eur_per_kwh": float(tariff_cfg.get("offpeak_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["offpeak_grid_price_eur_per_kwh"])),
             "injection_grid_price_eur_per_kwh": float(tariff_cfg.get("injection_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["injection_grid_price_eur_per_kwh"])),
+            "optimization_mode": str(tariff_cfg.get("optimization_mode", core.DEFAULT_CONFIG["tariff"].get("optimization_mode", "window_only"))),
+            "night_load_from_battery": bool(tariff_cfg.get("night_load_from_battery", core.DEFAULT_CONFIG["tariff"].get("night_load_from_battery", False))),
             "allow_injection_to_grid": bool(tariff_cfg.get("allow_injection_to_grid", core.DEFAULT_CONFIG["tariff"].get("allow_injection_to_grid", True))),
             "max_grid_import_kw": float(tariff_cfg.get("max_grid_import_kw", core.DEFAULT_CONFIG["tariff"].get("max_grid_import_kw", 0.0))),
             "offpeak_windows_by_dow": tariff_cfg.get("offpeak_windows_by_dow", core.DEFAULT_CONFIG["tariff"]["offpeak_windows_by_dow"]),
@@ -336,6 +338,8 @@ def build_settings_payload(effective_cfg: dict, valid_model_ids: set[str]) -> tu
             "peak_grid_price_eur_per_kwh": float(ui["cfg_peak_price_input"]),
             "offpeak_grid_price_eur_per_kwh": float(ui["cfg_offpeak_price_input"]),
             "injection_grid_price_eur_per_kwh": float(ui["cfg_injection_price_input"]),
+            "optimization_mode": str((effective_cfg.get("tariff", {}) or {}).get("optimization_mode", core.DEFAULT_CONFIG["tariff"].get("optimization_mode", "window_only"))),
+            "night_load_from_battery": bool((effective_cfg.get("tariff", {}) or {}).get("night_load_from_battery", core.DEFAULT_CONFIG["tariff"].get("night_load_from_battery", False))),
             "allow_injection_to_grid": bool(ui.get("cfg_allow_injection_to_grid", effective_cfg.get("tariff", {}).get("allow_injection_to_grid", True))),
             "max_grid_import_kw": float(ui.get("cfg_max_grid_import_kw", effective_cfg.get("tariff", {}).get("max_grid_import_kw", 0.0))),
             "offpeak_windows_by_dow": [

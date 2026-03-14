@@ -5,7 +5,8 @@
     "battery_max_discharge_kw": 5.0,
     "max_ac_charge_kw_hard_limit": 5.0,
     "max_cutoff_soc_percent": 100.0,
-    "min_soc_percent": 5.0
+    "min_soc_percent": 5.0,
+    "battery_max_soc_percent": 100.0
   },
   "load_profile": {
     "load_profile_24h": [
@@ -104,6 +105,7 @@
       ]
     ],
     "peak_grid_price_eur_per_kwh": 0.3,
-    "optimization_mode": "window_only"
+    "optimization_mode": "window_only",
+    "night_load_from_battery": false
   }
 }
