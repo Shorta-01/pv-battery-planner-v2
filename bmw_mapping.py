@@ -16,6 +16,15 @@ BMW_PLUG_STATUS_BOOL_MAP: dict[str, bool] = {
     "DISCONNECTED": False,
 }
 
+CRITICAL_EV_DESCRIPTOR_FIELDS: dict[str, str] = {
+    "vehicle.drivetrain.electricEngine.battery.stateOfCharge": "soc_pct",
+    "vehicle.drivetrain.electricEngine.range.electric": "range_km",
+    "vehicle.drivetrain.electricEngine.charging.status": "is_charging",
+    "vehicle.drivetrain.electricEngine.charging.timeToComplete": "time_to_full_min",
+    "vehicle.drivetrain.electricEngine.charging.power": "charge_power_kw",
+    "vehicle.body.chargingPort.status": "is_plugged",
+}
+
 
 def _as_float(v: Any) -> float | None:
     try:
@@ -69,8 +78,117 @@ def _as_bool_from_known_map(value: Any, mapping: dict[str, bool]) -> bool | None
 def _descriptor_value(telematic: dict[str, Any], key: str, field: str = "value") -> Any:
     node = telematic.get(key)
     if isinstance(node, dict):
-        return node.get(field)
+        value = node.get(field)
+        if value is not None and value != "":
+            return value
+        if isinstance(node.get("values"), dict):
+            v = node.get("values", {}).get(field)
+            if v is not None and v != "":
+                return v
+        if isinstance(node.get("data"), dict):
+            v = node.get("data", {}).get(field)
+            if v is not None and v != "":
+                return v
+        if field == "value" and isinstance(node.get("measurement"), dict):
+            v = node.get("measurement", {}).get("value")
+            if v is not None and v != "":
+                return v
+        if field == "value" and isinstance(node.get("raw"), dict):
+            v = node.get("raw", {}).get("value")
+            if v is not None and v != "":
+                return v
     return None
+
+
+def extract_vehicle_telematic_payload(payload: dict[str, Any], vehicle_id: str | None) -> dict[str, Any]:
+    vehicles = _extract_vehicles_list(payload)
+    if not vehicles:
+        return {}
+    chosen: dict[str, Any] | None = None
+    for row in vehicles:
+        row_vid = str(row.get("vin") or row.get("vehicleId") or row.get("id") or "").strip()
+        if vehicle_id and row_vid == vehicle_id:
+            chosen = row
+            break
+        if chosen is None:
+            chosen = row
+    if not isinstance(chosen, dict):
+        return {}
+    telematic = chosen.get("telematicData") if isinstance(chosen.get("telematicData"), dict) else {}
+    if isinstance(telematic.get("telematicData"), dict):
+        telematic = telematic.get("telematicData")
+    return telematic if isinstance(telematic, dict) else {}
+
+
+def _safe_preview(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:80]
+    if isinstance(value, dict):
+        keys = sorted(str(k) for k in value.keys())
+        return {"type": "dict", "keys": keys[:6]}
+    if isinstance(value, list):
+        return {"type": "list", "len": len(value)}
+    return str(value)[:80]
+
+
+def build_critical_ev_field_evidence(telematic: dict[str, Any], accepted_descriptors: list[str]) -> dict[str, Any]:
+    tele_charging = telematic.get("charging") if isinstance(telematic.get("charging"), dict) else {}
+    tele_battery = telematic.get("battery") if isinstance(telematic.get("battery"), dict) else {}
+    tele_range = telematic.get("range") if isinstance(telematic.get("range"), dict) else {}
+    fallbacks: dict[str, list[Any]] = {
+        "vehicle.drivetrain.electricEngine.battery.stateOfCharge": [
+            _dig(telematic, "socPct"),
+            _dig(telematic, "soc"),
+            _dig(tele_battery, "socPercent"),
+            _dig(tele_battery, "socPct"),
+        ],
+        "vehicle.drivetrain.electricEngine.range.electric": [
+            _dig(telematic, "rangeKm"),
+            _dig(telematic, "remainingRangeKm"),
+            _dig(tele_range, "electricKm"),
+        ],
+        "vehicle.drivetrain.electricEngine.charging.status": [
+            _dig(telematic, "chargingStatus"),
+            _dig(telematic, "chargingState"),
+            _dig(tele_charging, "chargingState"),
+            _dig(telematic, "isCharging"),
+            _dig(tele_charging, "isCharging"),
+        ],
+        "vehicle.drivetrain.electricEngine.charging.timeToComplete": [
+            _dig(telematic, "timeToFullMin"),
+            _dig(telematic, "remainingTimeToFullMinutes"),
+            _dig(tele_charging, "remainingTimeToFullMinutes"),
+        ],
+        "vehicle.drivetrain.electricEngine.charging.power": [
+            _dig(telematic, "chargePowerKw"),
+            _dig(tele_charging, "chargePowerKw"),
+            _dig(telematic, "chargingPower"),
+        ],
+        "vehicle.body.chargingPort.status": [
+            _dig(telematic, "plugStatus"),
+            _dig(telematic, "plugConnectionState"),
+            _dig(tele_charging, "plugConnectionState"),
+            _dig(tele_charging, "plugState"),
+            _dig(telematic, "isPlugged"),
+            _dig(tele_charging, "isPlugged"),
+        ],
+    }
+    out: dict[str, Any] = {}
+    for descriptor in CRITICAL_EV_DESCRIPTOR_FIELDS:
+        raw_descriptor = _descriptor_value(telematic, descriptor)
+        fallback = _first(*(fallbacks.get(descriptor) or []))
+        raw = _first(raw_descriptor, fallback)
+        out[descriptor] = {
+            "descriptor_active": descriptor in set(accepted_descriptors),
+            "raw_value_present": raw is not None and raw != "",
+            "raw_value_preview": _safe_preview(raw),
+            "value_source": "descriptor" if raw_descriptor is not None and raw_descriptor != "" else "fallback" if fallback is not None and fallback != "" else "missing",
+        }
+    return out
 
 def freshness_bucket(last_update_ts: dt.datetime | None, now: dt.datetime | None = None) -> tuple[str, int | None]:
     if last_update_ts is None:

@@ -4434,7 +4434,12 @@ with left:
         )
 
         range_state = ((ev_status.get("field_states") or {}).get("range_km"))
-        range_label = format_ev_km(ev_status.get("range_km"), unknown_label="BMW did not provide range") if range_state != "bmw_missing" else "BMW did not provide range"
+        if range_state == "bmw_missing":
+            range_label = "BMW did not provide range"
+        elif range_state == "setup_incomplete":
+            range_label = "Range not available from current BMW setup"
+        else:
+            range_label = format_ev_km(ev_status.get("range_km"), unknown_label="Unavailable")
 
         deadline_state = ev_status.get("deadline_state")
         deadline_label = str(ev_status.get("deadline_time") or "").strip() if deadline_state == "configured" else "Not set"
@@ -4444,6 +4449,8 @@ with left:
             charge_power_label = "Not charging"
         elif power_state == "waiting_for_bmw_power":
             charge_power_label = "BMW did not provide charge power"
+        elif power_state == "setup_incomplete":
+            charge_power_label = "Charge power not available from current BMW setup"
         elif power_state == "waiting_for_bmw_status":
             charge_power_label = "Waiting for BMW status"
         else:
@@ -4464,6 +4471,8 @@ with left:
             expected_full_label = "Not plugged"
         elif full_state == "waiting_for_bmw_status":
             expected_full_label = "Waiting for BMW data"
+        elif full_state == "setup_incomplete":
+            expected_full_label = "Not available from current BMW setup"
         else:
             expected_full_label = "Unavailable"
 
@@ -4479,7 +4488,7 @@ with left:
 
         metric_items = [
             ("Plugged in", format_ev_bool(is_plugged, true_label="Yes", false_label="No", unknown_label="Unknown")),
-            ("Charging now", format_ev_bool(is_charging, true_label="Yes", false_label="No", unknown_label="BMW did not provide charging status")),
+            ("Charging now", "Charging status not available from current BMW setup" if ((ev_status.get("field_states") or {}).get("charging_setup") != "ready" and is_charging is None) else format_ev_bool(is_charging, true_label="Yes", false_label="No", unknown_label="BMW did not provide charging status")),
             ("Charge power", charge_power_label),
             ("Full charge at", expected_full_label),
             ("Deadline", deadline_label),
@@ -4528,7 +4537,11 @@ with left:
 
         if APP_DEBUG:
             with card.expander("EV diagnostics", expanded=False):
-                st.json({"ev_status": ev_status}, expanded=False)
+                st.json({
+                    "ev_status": ev_status,
+                    "bmw_ev_diagnostics": ev_status.get("bmw_ev_diagnostics"),
+                    "field_states": ev_status.get("field_states"),
+                }, expanded=False)
 
 
     forecast_mode, selected_models, sat_nowcast_for_run = render_weather_models_panel()

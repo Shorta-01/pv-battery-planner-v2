@@ -60,6 +60,8 @@ def test_ev_disabled_skips_refresh(monkeypatch, tmp_path):
 
     assert out["refresh_attempted"] is False
     assert out["refresh_reason"] == "ev_disabled"
+    assert out["fallback_to_cached_state"] is False
+    assert out["fallback_reason"] is None
     assert fake.manual_refresh_calls == 0
 
 
@@ -74,6 +76,8 @@ def test_fresh_cache_still_refreshes_before_planning(monkeypatch, tmp_path):
     assert out["refresh_attempted"] is True
     assert out["refresh_reason"] == "run_forecast"
     assert out["refresh_succeeded"] is True
+    assert out["fallback_to_cached_state"] is False
+    assert out["fallback_reason"] is None
     assert out["vehicles"]["vehicle-1"]["soc_pct"] == 54.0
     assert fake.manual_refresh_calls == 1
 
@@ -105,6 +109,8 @@ def test_no_cache_refresh_fails_with_warning(monkeypatch, tmp_path):
 
     assert out["refresh_attempted"] is True
     assert out["vehicles"] == {}
+    assert out["fallback_to_cached_state"] is False
+    assert out["fallback_reason"] == "auth_required"
     assert "no BMW vehicle data is available" in out["warning"]
     assert "auth_required" in out["warning"]
 
@@ -120,6 +126,8 @@ def test_stale_cache_refresh_fails_keeps_last_known_vehicle(monkeypatch, tmp_pat
 
     assert out["refresh_attempted"] is True
     assert out["vehicles"]["vehicle-1"]["soc_pct"] == 31.0
+    assert out["fallback_to_cached_state"] is True
+    assert out["fallback_reason"] == "poll_failed"
     assert "using last known EV state" in out["warning"]
 
 

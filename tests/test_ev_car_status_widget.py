@@ -72,6 +72,8 @@ def test_app_widget_uses_unified_status_labels_and_debug() -> None:
 
     assert "Not charging" in fn_block
     assert "BMW did not provide charge power" in fn_block
+    assert "Charge power not available from current BMW setup" in fn_block
+    assert "Range not available from current BMW setup" in fn_block
     assert "Not set" in fn_block
     assert "unknown_label=\"Unknown\"" in fn_block
     assert "Power from OCPP" not in fn_block
@@ -138,6 +140,7 @@ def test_app_widget_tri_state_unknown_status_labels() -> None:
 
     assert 'status_chip_text = "Unknown"' in fn_block
     assert 'expected_full_label = "Waiting for BMW data"' in fn_block
+    assert 'expected_full_label = "Not available from current BMW setup"' in fn_block
     assert 'charge_power_label = "Waiting for BMW status"' in fn_block
     assert 'status_chip_text = "Charging" if bool(is_charging)' not in fn_block
     assert 'headline = f"{soc_pct:.0f}% / {range_km:.0f} km · {status_text}"' in fn_block

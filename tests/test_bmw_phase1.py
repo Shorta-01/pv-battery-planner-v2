@@ -227,6 +227,58 @@ def test_multi_vehicle_storage_roundtrip(tmp_path):
     assert set(loaded.keys()) == {"a", "b"}
 
 
+def test_build_critical_ev_field_evidence_proves_presence_and_missing() -> None:
+    from bmw_mapping import build_critical_ev_field_evidence
+
+    telematic = {
+        "vehicle.drivetrain.electricEngine.range.electric": {"value": "125"},
+        "charging": {"chargingState": "CHARGINGACTIVE", "chargePowerKw": 6.5},
+    }
+    accepted = [
+        "vehicle.drivetrain.electricEngine.range.electric",
+        "vehicle.drivetrain.electricEngine.charging.status",
+        "vehicle.drivetrain.electricEngine.charging.power",
+    ]
+    evidence = build_critical_ev_field_evidence(telematic, accepted)
+
+    assert evidence["vehicle.drivetrain.electricEngine.range.electric"]["descriptor_active"] is True
+    assert evidence["vehicle.drivetrain.electricEngine.range.electric"]["raw_value_present"] is True
+    assert evidence["vehicle.drivetrain.electricEngine.battery.stateOfCharge"]["raw_value_present"] is False
+    assert evidence["vehicle.drivetrain.electricEngine.charging.status"]["raw_value_present"] is True
+
+
+def test_mapping_fallback_nested_value_shapes_for_critical_fields() -> None:
+    payload = {
+        "GET /customers/vehicles/VIN123/telematicData?containerId=C1": {
+            "telematicData": {
+                "vehicle.drivetrain.electricEngine.battery.stateOfCharge": {"values": {"value": "48"}},
+                "vehicle.drivetrain.electricEngine.range.electric": {"data": {"value": "201"}},
+                "vehicle.drivetrain.electricEngine.charging.timeToComplete": {"measurement": {"value": "77"}},
+                "vehicle.drivetrain.electricEngine.charging.power": {"raw": {"value": "4.4"}},
+                "charging": {"chargingState": "CHARGINGACTIVE", "plugConnectionState": "CONNECTED"},
+            }
+        }
+    }
+    states = map_bmw_payload_to_vehicle_states(payload)
+    assert len(states) == 1
+    st = states[0]
+    assert st.soc_pct == 48
+    assert st.range_km == 201
+    assert st.time_to_full_min == 77
+    assert st.charge_power_kw == 4.4
+    assert st.is_charging is True
+    assert st.is_plugged is True
+
+
+def test_provider_critical_missing_descriptors_detection(tmp_path: Path) -> None:
+    storage = BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json"))
+    auth = BmwAuthClient(client_id="cid", token_cache_path=str(tmp_path / "token.json"))
+    provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=storage, auth=auth)
+    missing = provider._critical_missing_descriptors(["vehicle.drivetrain.electricEngine.range.electric"])
+    assert "vehicle.drivetrain.electricEngine.battery.stateOfCharge" in missing
+    assert "vehicle.drivetrain.electricEngine.range.electric" not in missing
+
+
 class _DummyResponse:
     def __init__(self, status_code=200, payload=None, text=""):
         self.status_code = status_code
