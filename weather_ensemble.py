@@ -589,7 +589,7 @@ def should_use_satellite_nowcast_auto(
     try:
         import pvlib  # type: ignore
 
-        pvloc = pvlib.location.Location(latitude=float(latitude), longitude=float(longitude), tz=str(tz.key))
+        pvloc = pvlib.location.Location(latitude=float(latitude), longitude=float(longitude), tz=str(tz.key), altitude=core.PVLIB_LOCATION_ALTITUDE_FALLBACK_M)
         solpos = pvloc.get_solarposition(sample_times)
         elevations = pd.to_numeric(solpos.get("apparent_elevation"), errors="coerce")
         return bool((elevations > 0).fillna(False).any())
@@ -913,7 +913,7 @@ def check_irradiance_sanity(
         try:
             import pvlib  # type: ignore
 
-            pvloc = pvlib.location.Location(latitude=loc_use.latitude, longitude=loc_use.longitude, tz=tz_use, altitude=float(loc_use.elevation_m or 0.0))
+            pvloc = pvlib.location.Location(latitude=loc_use.latitude, longitude=loc_use.longitude, tz=tz_use, altitude=core.effective_elevation_m(loc_use.elevation_m))
             cs = pvloc.get_clearsky(df.index.tz_convert(tz_use), model="ineichen")
             clear_ghi = pd.to_numeric(cs.get("ghi"), errors="coerce").reindex(df.index).fillna(0.0).clip(lower=0.0)
             measured_wh = float(ghi.fillna(0.0).clip(lower=0.0).sum())
@@ -1391,7 +1391,7 @@ def _decompose_from_ghi(df: pd.DataFrame, loc: core.Location, tz: str) -> tuple[
         out["dhi_wm2"] = dhi_existing
         return out, "none"
 
-    pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz, altitude=float(loc.elevation_m or 0.0))
+    pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz, altitude=core.effective_elevation_m(loc.elevation_m))
     solpos = pvloc.get_solarposition(out.index)
     zenith = pd.to_numeric(solpos.get("apparent_zenith"), errors="coerce").reindex(out.index)
     cos_zen = zenith.apply(lambda z: max(0.0, math.cos(math.radians(z))) if pd.notna(z) else 0.0).clip(lower=0.0, upper=1.0)
@@ -1908,7 +1908,7 @@ def fetch_open_meteo_weather(
     if core.PVLIB_AVAILABLE and dni_candidate.isna().any() and bhi.notna().any():
         import pvlib  # type: ignore
 
-        pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz, altitude=float(loc.elevation_m or 0.0))
+        pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz, altitude=core.effective_elevation_m(loc.elevation_m))
         solpos = pvloc.get_solarposition(df.index)
         cos_zen = pd.to_numeric(solpos.get("apparent_zenith"), errors="coerce").apply(
             lambda z: max(0.0, math.cos(math.radians(z))) if pd.notna(z) else 0.0
@@ -2046,7 +2046,7 @@ def fetch_open_meteo_weather(
         if core.PVLIB_AVAILABLE:
             import pvlib  # type: ignore
 
-            pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz, altitude=float(loc.elevation_m or 0.0))
+            pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz, altitude=core.effective_elevation_m(loc.elevation_m))
             date_index = pd.DatetimeIndex([pd.Timestamp(dt.datetime.combine(target_date, dt.time(12, 0)), tz=tz)])
             sun_times = pvloc.get_sun_rise_set_transit(date_index)
             sunrise = pd.to_datetime(sun_times["sunrise"].iloc[0], errors="coerce")
@@ -2103,7 +2103,7 @@ def _productive_daylight_mask(index: pd.DatetimeIndex, forecast: core.ForecastRe
             lat = float(latitude if latitude is not None else np.nan)
             lon = float(longitude if longitude is not None else np.nan)
             if math.isfinite(lat) and math.isfinite(lon):
-                pvloc = pvlib.location.Location(latitude=lat, longitude=lon, tz=str(index.tz), altitude=0.0)
+                pvloc = pvlib.location.Location(latitude=lat, longitude=lon, tz=str(index.tz), altitude=core.PVLIB_LOCATION_ALTITUDE_FALLBACK_M)
                 sol = pvloc.get_solarposition(index)
                 elev = pd.to_numeric(sol.get("apparent_elevation"), errors="coerce")
                 return (elev >= float(min_elevation_deg)).fillna(False)
