@@ -1519,6 +1519,41 @@ class BackendState:
             "weather_by_model": {},
         }
 
+    def _persist_error_run_payload(self, *, error_payload: dict, diagnostics: _RunDiagnostics, diag_error: dict[str, object]) -> dict:
+        with diagnostics.stage("db_write"):
+            insert_forecast_run(str(SQLITE_PATH), error_payload)
+            self.latest_diagnostics = diag_error
+            self.latest_result = error_payload
+        self.history.append(_to_history_summary(error_payload))
+        self.history = self.history[-MAX_HISTORY:]
+        self._save_results()
+        return error_payload
+
+    def _persist_success_run_payload(
+        self,
+        *,
+        payload: dict,
+        diagnostics: _RunDiagnostics,
+        diag_success: dict[str, object],
+        target_date: dt.date,
+        status: str,
+    ) -> dict:
+        with diagnostics.stage("db_write"):
+            insert_forecast_run(str(SQLITE_PATH), payload)
+            self.latest_diagnostics = diag_success
+            self.latest_result = payload
+        self.history.append(_to_history_summary(payload))
+        self.history = self.history[-MAX_HISTORY:]
+        self.settings["last_successful_for_target_date"] = target_date.isoformat()
+        self._save_results()
+        self._save_settings()
+
+        final_diag = diagnostics.finalize(success=True, status=status)
+        payload["run_diagnostics"] = final_diag
+        payload["run_duration_ms"] = int(float(final_diag.get("total_run_ms", 0.0)))
+        self.latest_diagnostics = final_diag
+        return payload
+
     def _build_run_metrics_payload(
         self,
         *,
@@ -1939,13 +1974,7 @@ class BackendState:
                 yesterday_kwh=float(yesterday_kwh),
                 weights_used=getattr(exc, "weights_used", None),
             )
-            insert_forecast_run(str(SQLITE_PATH), error_payload)
-            self.latest_diagnostics = diag_error
-            self.latest_result = error_payload
-            self.history.append(_to_history_summary(error_payload))
-            self.history = self.history[-MAX_HISTORY:]
-            self._save_results()
-            return error_payload
+            return self._persist_error_run_payload(error_payload=error_payload, diagnostics=diagnostics, diag_error=diag_error)
 
         warnings: list[str] = [ev_warning] if isinstance(ev_warning, str) and ev_warning.strip() else []
         try:
@@ -2423,19 +2452,13 @@ class BackendState:
                 fast_mode=fast_mode,
                 store_provider_payloads=store_provider_payloads,
             )
-        with diagnostics.stage("db_write"):
-            insert_forecast_run(str(SQLITE_PATH), payload)
-            self.latest_diagnostics = diag_success
-            self.latest_result = payload
-        self.history.append(_to_history_summary(payload))
-        self.history = self.history[-MAX_HISTORY:]
-        self.settings["last_successful_for_target_date"] = target_date.isoformat()
-        self._save_results()
-        self._save_settings()
-        final_diag = diagnostics.finalize(success=True, status=status)
-        payload["run_diagnostics"] = final_diag
-        payload["run_duration_ms"] = int(float(final_diag.get("total_run_ms", 0.0)))
-        self.latest_diagnostics = final_diag
+        payload = self._persist_success_run_payload(
+            payload=payload,
+            diagnostics=diagnostics,
+            diag_success=diag_success,
+            target_date=target_date,
+            status=status,
+        )
         del detail_df, flows_df, pv, weather
         gc.collect()
         return payload
