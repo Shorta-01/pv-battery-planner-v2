@@ -231,6 +231,8 @@ def normalize_effective_cfg_to_payload(effective_cfg: dict, valid_model_ids: set
             "latitude": float(location_cfg.get("latitude", core.LATITUDE)),
             "longitude": float(location_cfg.get("longitude", core.LONGITUDE)),
             "timezone": str(location_cfg.get("timezone", core.TIMEZONE)),
+            "elevation_m": _safe_float(location_cfg.get("elevation_m"), core.ELEVATION_M),
+            "auto_resolve_metadata": True,
         },
         "tariff": {
             "peak_grid_price_eur_per_kwh": float(tariff_cfg.get("peak_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["peak_grid_price_eur_per_kwh"])),
@@ -326,7 +328,9 @@ def build_settings_payload(effective_cfg: dict, valid_model_ids: set[str]) -> tu
             },
             "latitude": float(ui["cfg_latitude"]),
             "longitude": float(ui["cfg_longitude"]),
-            "timezone": str(st.session_state.get("loc_timezone", "")).strip(),
+            "timezone": str((effective_cfg.get("location", {}) or {}).get("timezone", core.TIMEZONE)).strip() or core.TIMEZONE,
+            "elevation_m": _safe_float((effective_cfg.get("location", {}) or {}).get("elevation_m"), core.ELEVATION_M),
+            "auto_resolve_metadata": True,
         },
         "tariff": {
             "peak_grid_price_eur_per_kwh": float(ui["cfg_peak_price_input"]),
@@ -362,6 +366,7 @@ def build_settings_payload(effective_cfg: dict, valid_model_ids: set[str]) -> tu
             "battery_kwh": float(ui["cfg_battery_kwh"]),
             "min_soc_percent": float(ui["cfg_min_soc_percent"]),
             "max_cutoff_soc_percent": float(ui["cfg_max_cutoff_soc_percent"]),
+            "battery_max_soc_percent": float((effective_cfg.get("battery", {}) or {}).get("battery_max_soc_percent", core.BATTERY_MAX_SOC_PERCENT)),
             "battery_max_charge_kw": float(ui["cfg_battery_max_charge_kw"]),
             "battery_max_discharge_kw": float(ui["cfg_battery_max_discharge_kw"]),
             "max_ac_charge_kw_hard_limit": float(ui["cfg_max_ac_charge_kw_hard_limit"]),
@@ -424,15 +429,10 @@ def validate_sidebar_readiness(
 
     lat = float(ui["cfg_latitude"])
     lon = float(ui["cfg_longitude"])
-    tz_name = str(st.session_state.get("loc_timezone", "")).strip()
     if not (-90.0 <= lat <= 90.0):
         issues["Location"].append("Latitude must be between -90 and 90.")
     if not (-180.0 <= lon <= 180.0):
         issues["Location"].append("Longitude must be between -180 and 180.")
-    try:
-        ZoneInfo(tz_name)
-    except Exception:
-        issues["Location"].append("Timezone must be a valid IANA name (example: Europe/Brussels).")
 
     day_names = ui.get("day_names", [])
     for day_idx, (from_value, to_value) in enumerate(ui.get("tariff_inputs", [])):
