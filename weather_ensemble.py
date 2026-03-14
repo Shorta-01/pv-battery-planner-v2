@@ -26,7 +26,7 @@ import planner_core as core
 import db_sqlite
 
 DEFAULT_ACCURACY_MODELS = ["knmi_harmonie_arome", "dwd_icon_d2", "ecmwf_ifs"]
-DEFAULT_WEIGHTED_BELGIUM = {
+DEFAULT_WEIGHTED_AUTO = {
     "knmi_harmonie_arome": 0.45,
     "dwd_icon_d2": 0.35,
     "ecmwf_ifs": 0.20,
@@ -34,6 +34,7 @@ DEFAULT_WEIGHTED_BELGIUM = {
     "meteofrance_seamless": 0.10,
     "gfs": 0.05,
 }
+DEFAULT_WEIGHTED_BELGIUM = DEFAULT_WEIGHTED_AUTO
 
 DAY_TYPE_CLEAR_WEATHER_CODES = {0, 1}
 DAY_TYPE_PRECIP_WEATHER_CODES = {
@@ -222,6 +223,16 @@ WEATHER_MODELS: dict[str, dict[str, Any]] = {
     },
 }
 
+MODEL_COVERAGE_HINTS: dict[str, str] = {
+    "knmi_harmonie_arome": "benelux",
+    "dwd_icon_d2": "germany_plus",
+    "dwd_icon_eu": "europe",
+    "meteofrance_seamless": "europe",
+    "ecmwf_ifs": "global",
+    "ecmwf_aifs": "global",
+    "gfs": "global",
+}
+
 MODEL_CAPS: dict[str, dict[str, Any]] = {
     model_id: {
         "max_days": int(spec.get("max_days", 0) or 0),
@@ -263,9 +274,8 @@ def dedupe_models_by_source(model_ids: list[str]) -> tuple[list[str], list[str]]
         winner = sorted(
             entries,
             key=lambda item: (
-                0 if bool(WEATHER_MODELS[item[1]].get("recommended_for_be", False)) else 1,
-                -_forecast_length_hours_for_model(item[1]),
                 tier_order.get(str(WEATHER_MODELS[item[1]].get("tier") or "global"), 9),
+                -_forecast_length_hours_for_model(item[1]),
                 item[1],
             ),
         )[0][1]
@@ -321,7 +331,7 @@ def _forecast_length_hours_for_model(model_id: str) -> int:
     return max(24, max_days * 24)
 
 
-def auto_select_models_for_location(lat: float | object, lon: float | None = None, requested_days: int = 1) -> list[str]:
+def _coerce_lat_lon(lat: float | object, lon: float | None = None) -> tuple[float, float, bool]:
     lat_valid = True
     if lon is None and hasattr(lat, "latitude") and hasattr(lat, "longitude"):
         _lat = float(getattr(lat, "latitude"))
@@ -331,96 +341,119 @@ def auto_select_models_for_location(lat: float | object, lon: float | None = Non
             _lat = float(lat)
             _lon = float(lon if lon is not None else 0.0)
         except (TypeError, ValueError):
-            _lat = 0.0
-            _lon = 0.0
-            lat_valid = False
-
+            _lat, _lon, lat_valid = 0.0, 0.0, False
     if not (-90.0 <= _lat <= 90.0 and -180.0 <= _lon <= 180.0):
         lat_valid = False
-
-    horizon = max(1, int(requested_days or 1))
-    horizon_hours = horizon * 24
-
-    eligible = [
-        model_id
-        for model_id, spec in WEATHER_MODELS.items()
-        if _forecast_length_hours_for_model(model_id) >= horizon_hours
-    ]
-
-    stable_priority = [
-        "ecmwf_ifs",
-        "dwd_icon_eu",
-        "meteofrance_seamless",
-        "gfs",
-        "knmi_harmonie_arome",
-        "dwd_icon_d2",
-    ]
-
-    def _pick_preferred(preferred_order: list[str], *, max_models: int = 4) -> list[str]:
-        selected = [m for m in preferred_order if m in eligible]
-        if len(selected) < 2:
-            for model_id in stable_priority:
-                if model_id in eligible and model_id not in selected:
-                    selected.append(model_id)
-                    if len(selected) >= max(2, max_models):
-                        break
-        return selected[:max_models]
-
-    if not lat_valid:
-        chosen = _pick_preferred(stable_priority)
-        deduped, _ = dedupe_models_by_source(chosen or eligible[:1])
-        return deduped
-
-    in_benelux = 49.0 <= _lat <= 54.0 and 2.0 <= _lon <= 8.0
-    in_europe = 35.0 <= _lat <= 72.0 and -15.0 <= _lon <= 35.0
-
-    if in_benelux:
-        preferred = (
-            ["knmi_harmonie_arome", "dwd_icon_d2", "dwd_icon_eu", "ecmwf_ifs"]
-            if horizon <= 2
-            else ["knmi_harmonie_arome", "dwd_icon_eu", "ecmwf_ifs", "gfs"]
-        )
-        chosen = _pick_preferred(preferred)
-    elif in_europe:
-        chosen = _pick_preferred(["dwd_icon_eu", "meteofrance_seamless", "ecmwf_ifs", "gfs"])
-    else:
-        chosen = _pick_preferred(["ecmwf_ifs", "gfs"])
-
-    if chosen:
-        deduped, _ = dedupe_models_by_source(chosen)
-        return deduped
-    if eligible:
-        deduped, _ = dedupe_models_by_source(eligible[:1])
-        return deduped
-    fallback_any = [m for m in stable_priority if m in WEATHER_MODELS]
-    deduped, _ = dedupe_models_by_source(fallback_any[:1])
-    return deduped
+    return _lat, _lon, lat_valid
 
 
-def select_week_ahead_models(*, requested_days: int = 7) -> list[str]:
-    """Return all weather models valid for week-ahead horizons in stable deterministic order."""
-    horizon = max(1, int(requested_days or 1))
-    horizon_hours = horizon * 24
+def get_candidate_models_for_location(
+    *,
+    latitude: float,
+    longitude: float,
+    horizon_hours: int,
+    requested_start: pd.Timestamp | None = None,
+    requested_end: pd.Timestamp | None = None,
+) -> list[str]:
+    _ = (requested_start, requested_end)
     tier_order = {"short": 0, "medium": 1, "global": 2}
+    coverage_priority = {"benelux": 0, "germany_plus": 1, "europe": 2, "global": 3}
 
-    eligible = [
-        model_id
-        for model_id, spec in WEATHER_MODELS.items()
-        if _forecast_length_hours_for_model(model_id) >= horizon_hours
-    ]
+    in_benelux = 49.0 <= float(latitude) <= 54.0 and 2.0 <= float(longitude) <= 8.0
+    in_europe = 35.0 <= float(latitude) <= 72.0 and -15.0 <= float(longitude) <= 35.0
 
-    selected = sorted(
-        eligible,
+    candidates = []
+    for model_id in WEATHER_MODELS:
+        if _forecast_length_hours_for_model(model_id) < int(horizon_hours):
+            continue
+        coverage = MODEL_COVERAGE_HINTS.get(model_id, "global")
+        if coverage == "benelux" and not in_benelux:
+            continue
+        if coverage in {"germany_plus", "europe"} and not in_europe:
+            continue
+        candidates.append(model_id)
+
+    ranked = sorted(
+        candidates,
         key=lambda model_id: (
-            0 if bool(WEATHER_MODELS[model_id].get("recommended_for_be", False)) else 1,
+            coverage_priority.get(MODEL_COVERAGE_HINTS.get(model_id, "global"), 9),
             tier_order.get(str(WEATHER_MODELS[model_id].get("tier") or "global"), 9),
             -_forecast_length_hours_for_model(model_id),
             model_id,
         ),
     )
-    deduped, _ = dedupe_models_by_source(selected)
+    deduped, _ = dedupe_models_by_source(ranked)
     return deduped
 
+
+def auto_select_models_for_location_and_horizon(
+    *,
+    latitude: float | object,
+    longitude: float | None,
+    horizon_hours: int,
+    requested_start: pd.Timestamp | None = None,
+    requested_end: pd.Timestamp | None = None,
+    max_models: int = 4,
+) -> tuple[list[str], str]:
+    lat, lon, lat_valid = _coerce_lat_lon(latitude, longitude)
+    stable_priority = ["ecmwf_ifs", "ecmwf_aifs", "dwd_icon_eu", "meteofrance_seamless", "gfs", "knmi_harmonie_arome", "dwd_icon_d2"]
+
+    if not lat_valid:
+        eligible = [m for m in stable_priority if _forecast_length_hours_for_model(m) >= int(horizon_hours) and m in WEATHER_MODELS]
+        deduped, _ = dedupe_models_by_source(eligible[:max_models] or stable_priority[:1])
+        return deduped, "fallback_invalid_location"
+
+    candidates = get_candidate_models_for_location(
+        latitude=lat,
+        longitude=lon,
+        horizon_hours=int(horizon_hours),
+        requested_start=requested_start,
+        requested_end=requested_end,
+    )
+    if not candidates:
+        eligible_global = [m for m in ["ecmwf_ifs", "ecmwf_aifs", "gfs"] if _forecast_length_hours_for_model(m) >= int(horizon_hours)]
+        deduped, _ = dedupe_models_by_source(eligible_global[:max_models] or ["ecmwf_ifs"])
+        return deduped, "fallback_global_only"
+
+    regional_first = [m for m in candidates if MODEL_COVERAGE_HINTS.get(m) != "global"]
+    global_only = [m for m in candidates if MODEL_COVERAGE_HINTS.get(m) == "global"]
+    ordered = (regional_first + global_only)[:max_models]
+    deduped, _ = dedupe_models_by_source(ordered)
+    reason = "regional_plus_global" if regional_first else "global_only_by_location"
+    return deduped, reason
+
+
+def auto_select_models_for_location(lat: float | object, lon: float | None = None, requested_days: int = 1) -> list[str]:
+    selected, _ = auto_select_models_for_location_and_horizon(
+        latitude=lat,
+        longitude=lon,
+        horizon_hours=max(1, int(requested_days or 1)) * 24,
+    )
+    return selected
+
+
+def select_week_ahead_models(*, requested_days: int = 7, lat: float | object | None = None, lon: float | None = None) -> list[str]:
+    """Return weather models valid for week-ahead horizons using the same geolocation/horizon selector."""
+    selected, _ = auto_select_models_for_location_and_horizon(
+        latitude=lat if lat is not None else 0.0,
+        longitude=lon,
+        horizon_hours=max(1, int(requested_days or 1)) * 24,
+        max_models=6,
+    )
+    return selected
+
+
+
+
+def validate_pvlib_runtime(require_production_quality: bool = True) -> bool:
+    if core.PVLIB_AVAILABLE:
+        return True
+    if require_production_quality:
+        raise RuntimeError(
+            "pvlib is required for reliable irradiance decomposition and PV forecasting. "
+            "This runtime is not valid for production forecasting without pvlib."
+        )
+    return False
 
 def _nan_safe_hourly_median(matrix: pd.DataFrame) -> pd.Series:
     """
@@ -606,6 +639,9 @@ class EnsembleWeatherResult:
     pv_tomorrow_model_spread_kwh: dict[str, float | int | None] | None = None
     pv_models_used_count_per_hour: pd.Series | None = None
     deduped_models_dropped: list[str] | None = None
+    model_selection_reason: str | None = None
+    dynamic_daylight_method: str | None = None
+    forecast_quality_tier: str | None = None
 
 
 def local_day_hourly_index(target_date: dt.date, tzname: str) -> pd.DatetimeIndex:
@@ -1952,6 +1988,44 @@ def fetch_open_meteo_weather(
 
 
 
+
+
+def _productive_daylight_mask(index: pd.DatetimeIndex, forecast: core.ForecastResult | None = None, *, latitude: float | None = None, longitude: float | None = None, min_elevation_deg: float = 6.0) -> pd.Series:
+    if not isinstance(index, pd.DatetimeIndex) or index.empty:
+        return pd.Series(dtype=bool)
+    tz = index.tz
+    if tz is None:
+        index = index.tz_localize("UTC")
+    if core.PVLIB_AVAILABLE and forecast is not None and hasattr(forecast, "df"):
+        try:
+            import pvlib  # type: ignore
+
+            lat = float(latitude if latitude is not None else np.nan)
+            lon = float(longitude if longitude is not None else np.nan)
+            if math.isfinite(lat) and math.isfinite(lon):
+                pvloc = pvlib.location.Location(latitude=lat, longitude=lon, tz=str(index.tz))
+                sol = pvloc.get_solarposition(index)
+                elev = pd.to_numeric(sol.get("apparent_elevation"), errors="coerce")
+                return (elev >= float(min_elevation_deg)).fillna(False)
+        except Exception:
+            pass
+    sunrise = pd.Timestamp(getattr(forecast, "sunrise", pd.NaT)) if forecast is not None else pd.NaT
+    sunset = pd.Timestamp(getattr(forecast, "sunset", pd.NaT)) if forecast is not None else pd.NaT
+    if pd.notna(sunrise) and pd.notna(sunset):
+        if sunrise.tzinfo is None:
+            sunrise = sunrise.tz_localize(index.tz)
+        else:
+            sunrise = sunrise.tz_convert(index.tz)
+        if sunset.tzinfo is None:
+            sunset = sunset.tz_localize(index.tz)
+        else:
+            sunset = sunset.tz_convert(index.tz)
+        day_len = max(0.0, float((sunset - sunrise).total_seconds()))
+        pad = dt.timedelta(seconds=day_len * 0.1)
+        return pd.Series((index >= (sunrise + pad)) & (index <= (sunset - pad)), index=index)
+    hours = index.hour
+    return pd.Series((hours >= 9) & (hours <= 16), index=index)
+
 def classify_day_type(
     hourly_cloud_cover_series: pd.Series | None,
     hourly_weather_code_series: pd.Series | None,
@@ -1998,9 +2072,8 @@ def _classify_day_type_from_ensemble(
             if isinstance(vals, pd.Series):
                 return pd.to_numeric(vals, errors="coerce").reindex(canonical_index)
             return pd.Series(np.nan, index=canonical_index, dtype=float)
-        hours = canonical_index.hour
-        daylight_mask = pd.Series((hours >= 8) & (hours <= 17), index=canonical_index)
-        subset = df.loc[daylight_mask]
+        daylight_mask = _productive_daylight_mask(canonical_index, forecast, latitude=getattr(forecast, "latitude", None), longitude=getattr(forecast, "longitude", None))
+        subset = df.loc[daylight_mask.reindex(canonical_index, fill_value=False)]
         if subset.empty:
             subset = df
 
@@ -2022,7 +2095,7 @@ def _classify_day_type_from_ensemble(
         wet_ratio = float(wet_signal.mean()) if len(wet_signal) else 0.0
         overcast_ratio = float(overcast_signal.mean()) if len(overcast_signal) else 0.0
         clear_ratio = float(clear_signal.mean()) if len(clear_signal) else 0.0
-        model_weight = float((model_weights_hint or {}).get(model_id, DEFAULT_WEIGHTED_BELGIUM.get(model_id, 1.0)))
+        model_weight = float((model_weights_hint or {}).get(model_id, DEFAULT_WEIGHTED_AUTO.get(model_id, 1.0)))
         model_scores.append((model_id, model_weight, wet_ratio, overcast_ratio, clear_ratio))
 
     if not model_scores:
@@ -2051,7 +2124,7 @@ def _weights_for_day_type(
 ) -> dict[str, float]:
     base = {m: float((base_weights or {}).get(m, 0.0) or 0.0) for m in model_ids}
     if not base:
-        base = {m: float(DEFAULT_WEIGHTED_BELGIUM.get(m, 1.0)) for m in model_ids}
+        base = {m: float(DEFAULT_WEIGHTED_AUTO.get(m, 1.0)) for m in model_ids}
 
     if expert_mode:
         total = float(sum(v for v in base.values() if v > 0.0))
@@ -2201,7 +2274,7 @@ def _weighted_ensemble(
 ) -> tuple[pd.Series, dict[str, float] | None, dict[str, float] | None]:
     weighted_subset = dict(dynamic_weights or {})
     if not weighted_subset:
-        weighted_subset = {m: DEFAULT_WEIGHTED_BELGIUM[m] for m in selected_models if m in DEFAULT_WEIGHTED_BELGIUM}
+        weighted_subset = {m: DEFAULT_WEIGHTED_AUTO[m] for m in selected_models if m in DEFAULT_WEIGHTED_AUTO}
     if not weighted_subset:
         return pd.concat(series_map.values(), axis=1).mean(axis=1), None, None
 
@@ -2293,6 +2366,30 @@ def fetch_satellite_radiation_nowcast(lat: float, lon: float, tz: str, forecast_
     return df.sort_index()
 
 
+
+
+def _forecast_quality_tier(
+    selected_models: list[str],
+    quality_weight_factors_by_model: dict[str, float],
+    derived_irradiance_hours_by_model: dict[str, int],
+    missing_vars_by_model: dict[str, list[str]],
+) -> str:
+    if not selected_models:
+        return "low"
+    global_models = sum(1 for m in selected_models if MODEL_COVERAGE_HINTS.get(m) == "global")
+    avg_q = float(np.mean(list(quality_weight_factors_by_model.values()))) if quality_weight_factors_by_model else 1.0
+    derived_hours = float(sum(int(derived_irradiance_hours_by_model.get(m, 0) or 0) for m in selected_models)) / float(max(1, len(selected_models)))
+    wet_missing = 0
+    for m in selected_models:
+        missing = set(missing_vars_by_model.get(m, []))
+        if missing.intersection({"weather_code", "precipitation_probability", "precipitation", "rain"}):
+            wet_missing += 1
+    if global_models == len(selected_models) or avg_q < 0.72 or derived_hours >= 10 or wet_missing >= max(1, len(selected_models) // 2):
+        return "low"
+    if avg_q < 0.88 or derived_hours >= 4 or global_models >= max(1, len(selected_models) // 2):
+        return "medium"
+    return "high"
+
 def build_weather_ensemble_table(
     weather_ok: dict[str, core.ForecastResult],
     index: pd.DatetimeIndex,
@@ -2354,7 +2451,15 @@ def build_ensemble_forecast(
     use_satellite_nowcast_0_6h: bool = False,
     expert_mode: bool = False,
 ) -> EnsembleWeatherResult:
-    selected = weather_models[:] if weather_models else DEFAULT_ACCURACY_MODELS[:]
+    selection_reason = "manual"
+    if weather_models:
+        selected = weather_models[:]
+    else:
+        selected, selection_reason = auto_select_models_for_location_and_horizon(
+            latitude=loc.latitude,
+            longitude=loc.longitude,
+            horizon_hours=max(1, int(requested_days)) * 24,
+        )
     selected = [m for m in selected if m in WEATHER_MODELS]
     selected, deduped_models_dropped = dedupe_models_by_source(selected)
     if fast_mode:
@@ -2505,6 +2610,8 @@ def build_ensemble_forecast(
                 derived_weather_code_by_model[model_id] = bool(fetch_meta.get("derived_weather_code", False)) if isinstance(fetch_meta, dict) else False
                 derived_irradiance_hours_by_model[model_id] = int(derived_irradiance_hours)
                 fetch_meta_by_model[model_id] = dict(fetch_meta) if isinstance(fetch_meta, dict) else {}
+                weather.latitude = float(loc.latitude)
+                weather.longitude = float(loc.longitude)
                 weather_ok[model_id] = weather
                 model_live_failed_used_cached[model_id] = bool(fetch_meta.get("live_failed_used_cached", False))
                 provider_payload = fetch_meta.get("provider_payload") if isinstance(fetch_meta, dict) else None
@@ -2704,7 +2811,7 @@ def build_ensemble_forecast(
     day_type = _classify_day_type_from_ensemble(
         weather_by_model=weather_ok,
         canonical_index=canonical_index,
-        model_weights_hint=DEFAULT_WEIGHTED_BELGIUM,
+        model_weights_hint=DEFAULT_WEIGHTED_AUTO,
     )
 
     def _ensemble_column(column_name: str) -> tuple[pd.Series, dict[str, float] | None, dict[str, float]]:
@@ -2717,7 +2824,7 @@ def build_ensemble_forecast(
         model_keys = list(model_series.keys())
         dynamic_weights = _load_dynamic_weights(model_keys) or {}
         if not dynamic_weights:
-            dynamic_weights = {m: float(DEFAULT_WEIGHTED_BELGIUM.get(m, 1.0)) for m in model_keys}
+            dynamic_weights = {m: float(DEFAULT_WEIGHTED_AUTO.get(m, 1.0)) for m in model_keys}
         dynamic_weights = _weights_for_day_type(
             base_weights=dynamic_weights,
             model_ids=model_keys,
@@ -2844,4 +2951,12 @@ def build_ensemble_forecast(
         nowcast_used_hours=int(satellite_nowcast_hours),
         nowcast_blend_hours=2,
         deduped_models_dropped=deduped_models_dropped,
+        model_selection_reason=selection_reason,
+        dynamic_daylight_method="solar_elevation_threshold_or_sunrise_sunset_fallback",
+        forecast_quality_tier=_forecast_quality_tier(
+            selected_models=[m for m in selected if m in per_model_pv_columns["pv_total_kwh"]],
+            quality_weight_factors_by_model=quality_weight_factors_by_model,
+            derived_irradiance_hours_by_model=derived_irradiance_hours_by_model,
+            missing_vars_by_model=missing_vars_by_model,
+        ),
     )
