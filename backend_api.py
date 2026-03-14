@@ -60,6 +60,7 @@ from weather_ensemble import (
     get_model_caps,
     weather_models_payload,
     select_week_ahead_models,
+    validate_pvlib_runtime,
 )
 
 LOCAL_STATE_DIR = Path("local_state")
@@ -1281,7 +1282,7 @@ class BackendState:
                     tomorrow_models = auto_select_models_for_location(loc, requested_days=1)
             else:
                 tomorrow_models = auto_select_models_for_location(loc.latitude, loc.longitude, requested_days=1)
-            week_models = select_week_ahead_models(requested_days=7)
+            week_models = select_week_ahead_models(requested_days=7, lat=loc.latitude, lon=loc.longitude)
             if not tomorrow_models:
                 raise HTTPException(status_code=400, detail="Select at least one weather model.")
 
@@ -1417,6 +1418,9 @@ class BackendState:
                     "failed_model_reasons": failed_reasons,
                     "model_live_failed_used_cached": {},
                     "fast_mode": bool(fast_mode),
+                "model_selection_reason": getattr(ensemble_tomorrow, "model_selection_reason", None),
+                "dynamic_daylight_method": getattr(ensemble_tomorrow, "dynamic_daylight_method", None),
+                "forecast_quality_tier": getattr(ensemble_tomorrow, "forecast_quality_tier", None),
                 },
                 "forecast_mode_effective": mode,
                 "tomorrow_models_used": [],
@@ -1943,6 +1947,7 @@ class BackendState:
                 "grid_import_cap_load_exceeds_hours": int(grid_import_cap_load_exceeds_events),
                 "week_models_used": list(week_models),
                 "week_models_count": int(len(week_models)),
+                "forecast_quality_tier": getattr(ensemble_tomorrow, "forecast_quality_tier", None),
                 "pv_week_models_used_count_per_hour": self._serialize_series(week_models_used_count_per_hour) if isinstance(week_models_used_count_per_hour, pd.Series) else None,
                 "pv_week_valid_model_count_per_day": week_models_count_per_day,
                 "pv_week_coverage_per_day": week_coverage_per_day,
@@ -1966,6 +1971,12 @@ class BackendState:
             "tomorrow_weather_code_source_max_days": tomorrow_source_max_days,
             "forecast_mode_effective": mode,
             "tomorrow_models_used": tomorrow_models_used,
+            "selected_weather_models": tomorrow_models_used,
+            "model_selection_reason": getattr(ensemble_tomorrow, "model_selection_reason", None),
+            "dynamic_daylight_method": getattr(ensemble_tomorrow, "dynamic_daylight_method", None),
+            "forecast_quality_tier": getattr(ensemble_tomorrow, "forecast_quality_tier", None),
+            "requires_pvlib": True,
+            "pvlib_validated": True,
             "week_ahead_models_considered": list(week_models),
             "week_models_used": list(week_models),
             "pv_week_models_used_count_per_hour": self._serialize_series(week_models_used_count_per_hour) if isinstance(week_models_used_count_per_hour, pd.Series) else None,
@@ -2009,6 +2020,9 @@ class BackendState:
                 "model_live_failed_used_cached": getattr(ensemble_tomorrow, "model_live_failed_used_cached", {}),
                 "deduped_models_dropped": getattr(ensemble_tomorrow, "deduped_models_dropped", None),
                 "fast_mode": bool(fast_mode),
+                "model_selection_reason": getattr(ensemble_tomorrow, "model_selection_reason", None),
+                "dynamic_daylight_method": getattr(ensemble_tomorrow, "dynamic_daylight_method", None),
+                "forecast_quality_tier": getattr(ensemble_tomorrow, "forecast_quality_tier", None),
                 "tomorrow_weather_code": int(tomorrow_weather_code) if tomorrow_weather_code is not None else None,
                 "tomorrow_weather_code_source_model_id": tomorrow_source_model_id,
                 "tomorrow_weather_code_source_model_label": tomorrow_source_label,
@@ -2188,6 +2202,12 @@ class BackendState:
 
 
 app = FastAPI(title="PV Battery Planner Backend")
+
+
+@app.on_event("startup")
+def _validate_forecast_runtime_dependencies() -> None:
+    validate_pvlib_runtime(require_production_quality=True)
+
 
 
 def _log_backend_error_event(*, request: Request, exc: BaseException, error_type: str, severity: str, title: str, extra: dict | None = None) -> None:
