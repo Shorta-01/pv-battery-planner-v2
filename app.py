@@ -1750,6 +1750,17 @@ def _build_cycle_savings_html(
     return savings_html
 
 
+def _pv_outlook_badge_html(icon: str, label: str, value_kwh: float, tooltip: str) -> str:
+    return (
+        f"<span title='{_esc_attr(tooltip)}' "
+        "style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
+        "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
+        "border-radius:999px;font-size:0.74rem;font-weight:650;'>"
+        f"<span>{icon}</span><span>{_esc(label)} {float(value_kwh):.1f} kWh</span>"
+        "</span>"
+    )
+
+
 def render_pv_quality_widget(
     container,
     pv_df: pd.DataFrame,
@@ -1762,7 +1773,7 @@ def render_pv_quality_widget(
     tomorrow_source_label: str | None = None,
     tomorrow_source_days: int | float | str | None = None,
     forecast_total_load_kwh: float | None = None,
-    est_export_curtail_kwh: float | None = None,
+    est_injection_kwh: float | None = None,
     planning_metrics: dict | None = None,
 ) -> None:
     _ = pv_df
@@ -1853,21 +1864,21 @@ def render_pv_quality_widget(
     micro_metrics_parts: list[str] = []
     if forecast_total_load_kwh is not None and not pd.isna(forecast_total_load_kwh):
         micro_metrics_parts.append(
-            "<span title='Forecast total load (kWh) for tomorrow (00–24).' "
-            "style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
-            "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
-            "border-radius:999px;font-size:0.74rem;font-weight:650;'>"
-            f"<span>🧾</span><span>{float(forecast_total_load_kwh):.1f}</span>"
-            "</span>"
+            _pv_outlook_badge_html(
+                icon="🏠",
+                label="Load",
+                value_kwh=float(forecast_total_load_kwh),
+                tooltip="Estimated total household load for tomorrow (00–24).",
+            )
         )
-    if est_export_curtail_kwh is not None and not pd.isna(est_export_curtail_kwh) and float(est_export_curtail_kwh) > 0.1:
+    if est_injection_kwh is not None and not pd.isna(est_injection_kwh) and float(est_injection_kwh) > 0.1:
         micro_metrics_parts.append(
-            "<span title='Estimated export/curtailment (kWh) for tomorrow.' "
-            "style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
-            "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
-            "border-radius:999px;font-size:0.74rem;font-weight:650;'>"
-            f"<span>📤</span><span>{float(est_export_curtail_kwh):.1f}</span>"
-            "</span>"
+            _pv_outlook_badge_html(
+                icon="📤",
+                label="Injection",
+                value_kwh=float(est_injection_kwh),
+                tooltip="Estimated grid injection for tomorrow.",
+            )
         )
     micro_metrics_html = (
         "<div style='margin-top:0.45rem;display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;'>"
@@ -1919,6 +1930,12 @@ def render_pv_quality_widget(
         ),
         unsafe_allow_html=True,
     )
+
+
+def _resolve_est_injection_kwh(flows_df: pd.DataFrame | None, metrics_grid_export: float | None) -> float:
+    if flows_df is not None and not flows_df.empty and "grid_export_kwh" in flows_df.columns:
+        return float(pd.to_numeric(flows_df["grid_export_kwh"], errors="coerce").fillna(0.0).sum())
+    return float(metrics_grid_export or 0.0)
 
 
 def render_offpeak_plan_summary(
@@ -4955,9 +4972,7 @@ if run_clicked or st.session_state.get("last_run_result"):
             elif metrics.get("cons_forecast_kwh") is not None:
                 load_total_value = float(_safe_float(metrics.get("cons_forecast_kwh"), 0.0))
 
-            curtailed_total = float(pd.to_numeric(flows_df.get("curtailed_kwh", 0.0), errors="coerce").fillna(0.0).sum()) if flows_df is not None and not flows_df.empty else 0.0
-            export_total = float(pd.to_numeric(flows_df.get("grid_export_kwh", 0.0), errors="coerce").fillna(0.0).sum()) if flows_df is not None and not flows_df.empty else float(grid_export or 0.0)
-            export_curtail_total = export_total + curtailed_total
+            injection_total = _resolve_est_injection_kwh(flows_df, grid_export)
 
             weather_primary_model_id = result.get("weather_primary_model_id")
             weather_ensemble_table_payload = result.get("weather_ensemble_table")
@@ -5017,7 +5032,7 @@ if run_clicked or st.session_state.get("last_run_result"):
                     tomorrow_source_label=tomorrow_source_label,
                     tomorrow_source_days=tomorrow_source_days,
                     forecast_total_load_kwh=load_total_value,
-                    est_export_curtail_kwh=export_curtail_total,
+                    est_injection_kwh=injection_total,
                     effective_cfg=effective_cfg,
                     planning_metrics=metrics,
                 )
