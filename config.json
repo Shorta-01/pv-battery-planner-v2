@@ -40,7 +40,8 @@
     "latitude": 50.71864,
     "longitude": 4.21247,
     "timezone": "Europe/Brussels",
-    "use_geocoding": false
+    "use_geocoding": false,
+    "elevation_m": 60.0
   },
   "pv": {
     "array_east_panels": 7,

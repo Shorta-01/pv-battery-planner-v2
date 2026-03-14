@@ -25,7 +25,8 @@ from urllib3.util.retry import Retry
 import planner_core as core
 import db_sqlite
 
-DEFAULT_ACCURACY_MODELS = ["knmi_harmonie_arome", "dwd_icon_d2", "ecmwf_ifs"]
+# Belgium-first product scope: keep strong short-horizon regional stack + global anchor.
+DEFAULT_ACCURACY_MODELS = ["knmi_harmonie_arome", "dwd_icon_d2", "dwd_icon_eu", "ecmwf_ifs"]
 DEFAULT_WEIGHTED_AUTO = {
     "knmi_harmonie_arome": 0.45,
     "dwd_icon_d2": 0.35,
@@ -361,6 +362,19 @@ def _base_weight_for_model(model_id: str, provided_weights: dict[str, float] | N
     return float(UNKNOWN_MODEL_WEIGHT_FALLBACK)
 
 
+
+
+def _is_in_belgium(lat: float, lon: float) -> bool:
+    # Belgium-only product scope; geolocation remains required for local precision inside Belgium.
+    return 49.45 <= float(lat) <= 51.55 and 2.20 <= float(lon) <= 6.50
+
+
+def _belgium_short_horizon_stack() -> list[str]:
+    return ["knmi_harmonie_arome", "dwd_icon_d2", "dwd_icon_eu", "ecmwf_ifs"]
+
+
+def _belgium_week_ahead_stack() -> list[str]:
+    return ["ecmwf_ifs", "ecmwf_aifs", "gfs"]
 def _is_in_benelux(lat: float, lon: float) -> bool:
     return 49.0 <= float(lat) <= 54.0 and 2.0 <= float(lon) <= 8.0
 
@@ -469,7 +483,7 @@ def auto_select_models_for_location_and_horizon(
     max_models: int = 4,
 ) -> tuple[list[str], str]:
     lat, lon, lat_valid = _coerce_lat_lon(latitude, longitude)
-    stable_priority = ["ecmwf_ifs", "ecmwf_aifs", "dwd_icon_eu", "meteofrance_seamless", "gfs", "knmi_harmonie_arome", "dwd_icon_d2"]
+    stable_priority = ["knmi_harmonie_arome", "dwd_icon_d2", "dwd_icon_eu", "ecmwf_ifs", "ecmwf_aifs", "gfs", "meteofrance_seamless"]
 
     if not lat_valid:
         eligible = [m for m in stable_priority if _forecast_length_hours_for_model(m) >= int(horizon_hours) and m in WEATHER_MODELS]
@@ -489,6 +503,15 @@ def auto_select_models_for_location_and_horizon(
         return deduped, "fallback_global_only"
 
     ordered = _rank_models_for_horizon(candidates, int(horizon_hours))
+
+    if _is_in_belgium(lat, lon):
+        if int(horizon_hours) <= SHORT_HORIZON_HOURS:
+            preferred = [m for m in _belgium_short_horizon_stack() if m in ordered]
+            ordered = preferred + [m for m in ordered if m not in preferred]
+        else:
+            preferred = [m for m in _belgium_week_ahead_stack() if m in ordered]
+            ordered = preferred + [m for m in ordered if m not in preferred]
+
     ordered = _ensure_global_anchor(ordered, max_models=max_models)
     deduped, _ = dedupe_models_by_source(ordered)
     if len(deduped) > max_models:
@@ -890,7 +913,7 @@ def check_irradiance_sanity(
         try:
             import pvlib  # type: ignore
 
-            pvloc = pvlib.location.Location(latitude=loc_use.latitude, longitude=loc_use.longitude, tz=tz_use)
+            pvloc = pvlib.location.Location(latitude=loc_use.latitude, longitude=loc_use.longitude, tz=tz_use, altitude=float(loc_use.elevation_m or 0.0))
             cs = pvloc.get_clearsky(df.index.tz_convert(tz_use), model="ineichen")
             clear_ghi = pd.to_numeric(cs.get("ghi"), errors="coerce").reindex(df.index).fillna(0.0).clip(lower=0.0)
             measured_wh = float(ghi.fillna(0.0).clip(lower=0.0).sum())
@@ -1368,7 +1391,7 @@ def _decompose_from_ghi(df: pd.DataFrame, loc: core.Location, tz: str) -> tuple[
         out["dhi_wm2"] = dhi_existing
         return out, "none"
 
-    pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz)
+    pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz, altitude=float(loc.elevation_m or 0.0))
     solpos = pvloc.get_solarposition(out.index)
     zenith = pd.to_numeric(solpos.get("apparent_zenith"), errors="coerce").reindex(out.index)
     cos_zen = zenith.apply(lambda z: max(0.0, math.cos(math.radians(z))) if pd.notna(z) else 0.0).clip(lower=0.0, upper=1.0)
@@ -1621,7 +1644,7 @@ def fetch_open_meteo_weather(
         }
 
     hourly_variables = BASE_HOURLY_VARIABLES[:] + IRRADIANCE_HOURLY_VARIABLES
-    include_instant_hourly = bool(accuracy_mode) and (not bool(fast_mode)) and int(requested_days_int) == 1
+    include_instant_hourly = bool(accuracy_mode) and int(requested_days_int) == 1
     if include_instant_hourly:
         hourly_variables += INSTANT_IRRADIANCE_HOURLY_VARIABLES
     location_bucket = _provider_cache_location_bucket(loc.latitude, loc.longitude, loc.elevation_m)
@@ -1648,7 +1671,6 @@ def fetch_open_meteo_weather(
         model_id == "dwd_icon_d2"
         and bool(spec.get("supports_15min_radiation", False))
         and bool(accuracy_mode)
-        and not bool(fast_mode)
         and _is_central_europe(loc.latitude, loc.longitude)
     )
     if use_icon15:
@@ -1886,7 +1908,7 @@ def fetch_open_meteo_weather(
     if core.PVLIB_AVAILABLE and dni_candidate.isna().any() and bhi.notna().any():
         import pvlib  # type: ignore
 
-        pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz)
+        pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz, altitude=float(loc.elevation_m or 0.0))
         solpos = pvloc.get_solarposition(df.index)
         cos_zen = pd.to_numeric(solpos.get("apparent_zenith"), errors="coerce").apply(
             lambda z: max(0.0, math.cos(math.radians(z))) if pd.notna(z) else 0.0
@@ -2024,7 +2046,7 @@ def fetch_open_meteo_weather(
         if core.PVLIB_AVAILABLE:
             import pvlib  # type: ignore
 
-            pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz)
+            pvloc = pvlib.location.Location(latitude=loc.latitude, longitude=loc.longitude, tz=tz, altitude=float(loc.elevation_m or 0.0))
             date_index = pd.DatetimeIndex([pd.Timestamp(dt.datetime.combine(target_date, dt.time(12, 0)), tz=tz)])
             sun_times = pvloc.get_sun_rise_set_transit(date_index)
             sunrise = pd.to_datetime(sun_times["sunrise"].iloc[0], errors="coerce")
@@ -2081,7 +2103,7 @@ def _productive_daylight_mask(index: pd.DatetimeIndex, forecast: core.ForecastRe
             lat = float(latitude if latitude is not None else np.nan)
             lon = float(longitude if longitude is not None else np.nan)
             if math.isfinite(lat) and math.isfinite(lon):
-                pvloc = pvlib.location.Location(latitude=lat, longitude=lon, tz=str(index.tz))
+                pvloc = pvlib.location.Location(latitude=lat, longitude=lon, tz=str(index.tz), altitude=0.0)
                 sol = pvloc.get_solarposition(index)
                 elev = pd.to_numeric(sol.get("apparent_elevation"), errors="coerce")
                 return (elev >= float(min_elevation_deg)).fillna(False)
@@ -2545,13 +2567,6 @@ def build_ensemble_forecast(
         )
     selected = [m for m in selected if m in WEATHER_MODELS]
     selected, deduped_models_dropped = dedupe_models_by_source(selected)
-    if fast_mode:
-        if weather_models and not auto_mode:
-            selected = selected[:2]
-        else:
-            selected = [m for m in DEFAULT_ACCURACY_MODELS if m in WEATHER_MODELS][:2]
-        selected, extra_dropped = dedupe_models_by_source(selected)
-        deduped_models_dropped = (deduped_models_dropped or []) + extra_dropped
     if not selected:
         raise RuntimeError("Select at least one weather model.")
 
