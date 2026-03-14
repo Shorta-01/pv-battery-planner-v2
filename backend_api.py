@@ -1847,6 +1847,214 @@ class BackendState:
             "provider_payloads_by_model": ((getattr(ensemble_tomorrow, "provider_payloads_by_model", {}) or {}) if store_provider_payloads else {}),
         }
 
+    def _dedupe_warnings_and_status(self, warnings: list[str]) -> tuple[list[str], str]:
+        deduped_warnings = list(dict.fromkeys(warnings))
+        return deduped_warnings, ("degraded" if deduped_warnings else "ok")
+
+    def _append_ensemble_diagnostic_warnings(self, *, warnings: list[str], ensemble_tomorrow) -> None:
+        important_weather_vars = set(WEATHER_DISPLAY_VARS)
+        for model_id in getattr(ensemble_tomorrow, "failed_models", []) or []:
+            failed_reasons = getattr(ensemble_tomorrow, "failed_model_reasons", {})
+            reason = failed_reasons.get(model_id) if isinstance(failed_reasons, dict) else None
+            reason_msg = str(reason.get("message") or reason.get("category") or "unknown") if isinstance(reason, dict) else "unknown"
+            warnings.append(f"model failed: {model_id} ({reason_msg})")
+
+        derived_hours_by_model = getattr(ensemble_tomorrow, "derived_irradiance_hours_by_model", {})
+        for model_id, used_derived in (getattr(ensemble_tomorrow, "derived_irradiance_by_model", {}) or {}).items():
+            derived_hours = int(derived_hours_by_model.get(model_id, 0)) if isinstance(derived_hours_by_model, dict) else 0
+            if used_derived and derived_hours > 0:
+                warnings.append(f"derived irradiance used: {model_id}")
+
+        for model_id, used_cached in getattr(ensemble_tomorrow, "model_live_failed_used_cached", {}).items():
+            if used_cached:
+                warnings.append(f"model_live_failed_used_cached=true: {model_id}")
+
+        for model_id, missing_vars in (getattr(ensemble_tomorrow, "missing_vars_by_model", {}) or {}).items():
+            if not missing_vars:
+                continue
+            missing_important = sorted(var for var in set(missing_vars) if var in important_weather_vars)
+            if missing_important:
+                warnings.append(f"important vars missing: {model_id} ({', '.join(missing_important)})")
+
+    def _derive_week_ahead_metadata(self, *, ensemble_week, target_date: dt.date, tz: str) -> dict:
+        if ensemble_week is not None:
+            pv_totals_p50 = self._daily_totals_nullable(ensemble_week.pv_ensemble_p50, tz=tz)
+            pv_totals_p10 = self._daily_totals_nullable(ensemble_week.pv_ensemble_p10, tz=tz)
+            pv_totals_p90 = self._daily_totals_nullable(ensemble_week.pv_ensemble_p90, tz=tz)
+            primary_id = getattr(ensemble_week, "weather_primary_model_id", None)
+            weather_by_model = getattr(ensemble_week, "weather_by_model", {}) or {}
+            weights_used_week = getattr(ensemble_week, "weights_used", None)
+            derived_weather_code_by_model_week = getattr(ensemble_week, "derived_weather_code_by_model", {}) or {}
+            week_models_used_count_per_hour = getattr(ensemble_week, "pv_models_used_count_per_hour", None)
+        else:
+            pv_totals_p50 = [None] * 7
+            pv_totals_p10 = [None] * 7
+            pv_totals_p90 = [None] * 7
+            primary_id = None
+            weather_by_model = {}
+            weights_used_week = None
+            derived_weather_code_by_model_week = {}
+            week_models_used_count_per_hour = None
+
+        week_models_count_per_day = self._daily_counts_nullable(week_models_used_count_per_hour, tz=tz)
+        week_coverage_per_day = self._daily_coverage(
+            getattr(ensemble_week, "pv_ensemble_p50", None) if ensemble_week is not None else None,
+            tz=tz,
+        )
+
+        pv_week_ahead_all = _build_pv_week_ahead(
+            target_date=target_date,
+            tz=tz,
+            pv_totals_p50=pv_totals_p50,
+            pv_totals_p10=pv_totals_p10,
+            pv_totals_p90=pv_totals_p90,
+            weather_by_model=weather_by_model,
+            weights_used=weights_used_week,
+            weather_primary_model_id=primary_id,
+            derived_weather_code_by_model=derived_weather_code_by_model_week,
+            weather_ensemble_df=getattr(getattr(ensemble_week, "weather_ensemble_table", None), "df", None),
+        )
+
+        return {
+            "week_models_used_count_per_hour": week_models_used_count_per_hour,
+            "week_models_count_per_day": week_models_count_per_day,
+            "week_coverage_per_day": week_coverage_per_day,
+            "pv_week_ahead": pv_week_ahead_all[1:7],
+        }
+
+    def _append_invariant_warnings(
+        self,
+        *,
+        warnings: list[str],
+        pv: pd.DataFrame,
+        canonical_tomorrow_total_kwh: float | None,
+        tomorrow_index_dst_adjusted: bool,
+    ) -> None:
+        inv_warnings: list[str] = []
+        hourly_sum = float(pd.to_numeric(pv["pv_total_kwh"], errors="coerce").sum(min_count=1)) if "pv_total_kwh" in pv.columns else float("nan")
+        if (canonical_tomorrow_total_kwh is not None and not pd.isna(canonical_tomorrow_total_kwh) and not pd.isna(hourly_sum) and abs(canonical_tomorrow_total_kwh - hourly_sum) > 0.01):
+            inv_warnings.append("INV-T1 failed: forecast total PV != PV Outlook hourly sum")
+        total_series = pd.to_numeric(pv["pv_total_kwh"], errors="coerce")
+        if ((total_series < 0) & total_series.notna()).any():
+            inv_warnings.append("INV-T2 failed: negative hourly PV detected")
+        east_south = pd.to_numeric(pv["pv_east_kwh"], errors="coerce") + pd.to_numeric(pv["pv_south_kwh"], errors="coerce")
+        mismatch = (total_series - east_south).abs()
+        if ((mismatch > 0.01) & total_series.notna() & east_south.notna()).any():
+            inv_warnings.append("INV-T3 failed: pv_total_kwh != pv_east_kwh + pv_south_kwh")
+        if len(pv.index) != 24 or pv.index.has_duplicates:
+            inv_warnings.append("INV-T4 failed: tomorrow index is not exactly 24 unique hourly points")
+        if tomorrow_index_dst_adjusted:
+            inv_warnings.append("INV-T4 note: DST normalization applied to preserve 24 hourly points")
+        warnings.extend(inv_warnings)
+
+    def _derive_pv_output_metadata(self, *, pv: pd.DataFrame, ensemble_tomorrow, canonical_tomorrow_total_kwh: float | None) -> dict:
+        pv_totals_kwh = {
+            "p50": canonical_tomorrow_total_kwh,
+            "p10": (
+                float(pd.to_numeric(pv["pv_total_low_kwh"], errors="coerce").sum(min_count=1))
+                if "pv_total_low_kwh" in pv.columns and not pd.isna(pd.to_numeric(pv["pv_total_low_kwh"], errors="coerce").sum(min_count=1))
+                else (float(ensemble_tomorrow.pv_ensemble_p10.sum(min_count=1)) if ensemble_tomorrow.pv_ensemble_p10 is not None else None)
+            ),
+            "p90": (
+                float(pd.to_numeric(pv["pv_total_high_kwh"], errors="coerce").sum(min_count=1))
+                if "pv_total_high_kwh" in pv.columns and not pd.isna(pd.to_numeric(pv["pv_total_high_kwh"], errors="coerce").sum(min_count=1))
+                else (float(ensemble_tomorrow.pv_ensemble_p90.sum(min_count=1)) if ensemble_tomorrow.pv_ensemble_p90 is not None else None)
+            ),
+        }
+        pv_model_spread = getattr(ensemble_tomorrow, "pv_tomorrow_model_spread_kwh", None)
+        if not isinstance(pv_model_spread, dict):
+            legacy_pv_low_high = getattr(ensemble_tomorrow, "pv_tomorrow_low_high_kwh", None)
+            pv_model_spread = legacy_pv_low_high if isinstance(legacy_pv_low_high, dict) else None
+
+        selected_models = [str(m) for m in getattr(ensemble_tomorrow, "selected_models", []) if isinstance(m, str)]
+        failed_models = {str(m) for m in getattr(ensemble_tomorrow, "failed_models", []) if isinstance(m, str)}
+        per_model_pv_totals = getattr(ensemble_tomorrow, "per_model_pv_totals_kwh", {})
+        quantile_contributors = [
+            model_id
+            for model_id in selected_models
+            if model_id not in failed_models and pd.notna(pd.to_numeric(pd.Series([per_model_pv_totals.get(model_id)]), errors="coerce").iloc[0])
+        ]
+        fallback_valid_models = int(len(quantile_contributors))
+        spread_valid_models_raw = (pv_model_spread or {}).get("valid_models") if isinstance(pv_model_spread, dict) else None
+        spread_valid_models_num = pd.to_numeric(pd.Series([spread_valid_models_raw]), errors="coerce").iloc[0]
+        spread_valid_models = int(spread_valid_models_num) if not pd.isna(spread_valid_models_num) else 0
+        valid_models_for_range = spread_valid_models if spread_valid_models > 0 else fallback_valid_models
+
+        p10_num = pd.to_numeric(pd.Series([pv_totals_kwh.get("p10")]), errors="coerce").iloc[0]
+        p90_num = pd.to_numeric(pd.Series([pv_totals_kwh.get("p90")]), errors="coerce").iloc[0]
+        if not pd.isna(p10_num) and not pd.isna(p90_num):
+            pv_tomorrow_low_high_kwh = {
+                "low": float(p10_num),
+                "high": float(p90_num),
+                "valid_models": int(valid_models_for_range),
+            }
+        else:
+            pv_tomorrow_low_high_kwh = {
+                "low": None,
+                "high": None,
+                "valid_models": int(valid_models_for_range),
+            }
+
+        return {
+            "pv_totals_kwh": pv_totals_kwh,
+            "pv_model_spread": pv_model_spread,
+            "pv_tomorrow_low_high_kwh": pv_tomorrow_low_high_kwh,
+        }
+
+    def _derive_tomorrow_source_metadata(self, *, weather_df: pd.DataFrame, pv_index: pd.Index, ensemble_tomorrow) -> dict:
+        tomorrow_weather_code = _best_of_day_weather_code(weather_df.reindex(pv_index)[["weather_code"]]) if "weather_code" in weather_df.columns else None
+        if tomorrow_weather_code is None and "weather_code" in weather_df.columns:
+            wc_first = pd.to_numeric(weather_df.reindex(pv_index)["weather_code"], errors="coerce").dropna()
+            tomorrow_weather_code = int(wc_first.iloc[0]) if not wc_first.empty else None
+        tomorrow_source_model_id = getattr(ensemble_tomorrow, "weather_primary_model_id", None)
+        tomorrow_source_label = (WEATHER_MODELS.get(tomorrow_source_model_id) or {}).get("label") if tomorrow_source_model_id else None
+        tomorrow_source_max_days = _model_max_days(tomorrow_source_model_id) if tomorrow_source_model_id else None
+        return {
+            "tomorrow_weather_code": tomorrow_weather_code,
+            "tomorrow_source_model_id": tomorrow_source_model_id,
+            "tomorrow_source_label": tomorrow_source_label,
+            "tomorrow_source_max_days": tomorrow_source_max_days,
+        }
+
+    def _build_system_snapshot(self, *, loc_cfg: dict, cfg: dict, tz: str) -> dict:
+        return {
+            "lat": loc_cfg.get("latitude"),
+            "lon": loc_cfg.get("longitude"),
+            "timezone": tz,
+            "tilt": cfg.get("arrays", {}).get("south", {}).get("tilt_deg"),
+            "azimuth": cfg.get("arrays", {}).get("south", {}).get("azimuth_deg"),
+            "dc_kwp": cfg.get("arrays", {}).get("south", {}).get("dc_capacity_kwp"),
+            "battery_kwh": cfg.get("battery", {}).get("capacity_kwh"),
+            "inverter_ac_limit_kw": cfg.get("inverter", {}).get("ac_limit_kw"),
+            "loss_factor": cfg.get("system", {}).get("loss_factor"),
+        }
+
+    def _enrich_inputs_used_soc_and_decision(
+        self,
+        *,
+        inputs_used: dict,
+        hours_until_offpeak_start: float,
+        soc_offpeak_confidence: str,
+        soc_offpeak_method: str,
+        soc_offpeak_debug: dict,
+        effective_daily_kwh: float,
+        used_history: bool,
+        pv_credit_available: bool,
+        decision_quantile: str,
+        decision_reason: str,
+    ) -> None:
+        inputs_used["soc_offpeak_start_hours_until"] = float(hours_until_offpeak_start)
+        inputs_used["soc_offpeak_start_confidence"] = str(soc_offpeak_confidence)
+        inputs_used["soc_offpeak_start_method"] = str(soc_offpeak_method)
+        inputs_used["soc_offpeak_start_load_kwh_window"] = float(soc_offpeak_debug.get("load_kwh_window", 0.0))
+        inputs_used["soc_offpeak_start_pv_credit_kwh"] = float(soc_offpeak_debug.get("pv_credit_kwh", 0.0))
+        inputs_used["soc_offpeak_start_effective_daily_kwh_used"] = float(soc_offpeak_debug.get("effective_daily_kwh_used", effective_daily_kwh))
+        inputs_used["soc_offpeak_start_used_history"] = bool(soc_offpeak_debug.get("used_history", used_history))
+        inputs_used["soc_offpeak_start_pv_credit_available"] = bool(soc_offpeak_debug.get("pv_credit_available", pv_credit_available))
+        inputs_used["soc_offpeak_start_peak_overlap"] = bool(soc_offpeak_debug.get("peak_overlap", False))
+        inputs_used["pv_decision_scenario"] = decision_quantile
+        inputs_used["pv_decision_reason"] = decision_reason
+
     def _run(
         self,
         target_date: dt.date,
@@ -1997,71 +2205,19 @@ class BackendState:
             ensemble_week = None
             warnings.append(f"pv_week_ahead_ensemble_failed={type(exc).__name__}:{exc}")
 
-        important_weather_vars = set(WEATHER_DISPLAY_VARS)
-        for model_id in getattr(ensemble_tomorrow, "failed_models", []) or []:
-            failed_reasons = getattr(ensemble_tomorrow, "failed_model_reasons", {})
-            reason = failed_reasons.get(model_id) if isinstance(failed_reasons, dict) else None
-            reason_msg = str(reason.get("message") or reason.get("category") or "unknown") if isinstance(reason, dict) else "unknown"
-            warnings.append(f"model failed: {model_id} ({reason_msg})")
+        self._append_ensemble_diagnostic_warnings(warnings=warnings, ensemble_tomorrow=ensemble_tomorrow)
 
-        derived_hours_by_model = getattr(ensemble_tomorrow, "derived_irradiance_hours_by_model", {})
-        for model_id, used_derived in (getattr(ensemble_tomorrow, "derived_irradiance_by_model", {}) or {}).items():
-            derived_hours = int(derived_hours_by_model.get(model_id, 0)) if isinstance(derived_hours_by_model, dict) else 0
-            if used_derived and derived_hours > 0:
-                warnings.append(f"derived irradiance used: {model_id}")
-
-        for model_id, used_cached in getattr(ensemble_tomorrow, "model_live_failed_used_cached", {}).items():
-            if used_cached:
-                warnings.append(f"model_live_failed_used_cached=true: {model_id}")
-
-        for model_id, missing_vars in (getattr(ensemble_tomorrow, "missing_vars_by_model", {}) or {}).items():
-            if not missing_vars:
-                continue
-            missing_important = sorted(var for var in set(missing_vars) if var in important_weather_vars)
-            if missing_important:
-                warnings.append(f"important vars missing: {model_id} ({', '.join(missing_important)})")
-
-        if ensemble_week is not None:
-            pv_totals_p50 = self._daily_totals_nullable(ensemble_week.pv_ensemble_p50, tz=tz)
-            pv_totals_p10 = self._daily_totals_nullable(ensemble_week.pv_ensemble_p10, tz=tz)
-            pv_totals_p90 = self._daily_totals_nullable(ensemble_week.pv_ensemble_p90, tz=tz)
-            primary_id = getattr(ensemble_week, "weather_primary_model_id", None)
-            weather_by_model = getattr(ensemble_week, "weather_by_model", {}) or {}
-            weights_used_week = getattr(ensemble_week, "weights_used", None)
-            derived_weather_code_by_model_week = getattr(ensemble_week, "derived_weather_code_by_model", {}) or {}
-            week_models_used_count_per_hour = getattr(ensemble_week, "pv_models_used_count_per_hour", None)
-        else:
-            pv_totals_p50 = [None] * 7
-            pv_totals_p10 = [None] * 7
-            pv_totals_p90 = [None] * 7
-            primary_id = None
-            weather_by_model = {}
-            weights_used_week = None
-            derived_weather_code_by_model_week = {}
-            week_models_used_count_per_hour = None
-
-        week_models_count_per_day = self._daily_counts_nullable(week_models_used_count_per_hour, tz=tz)
-        week_coverage_per_day = self._daily_coverage(
-            getattr(ensemble_week, "pv_ensemble_p50", None) if ensemble_week is not None else None,
-            tz=tz,
-        )
-
-        pv_week_ahead_all = _build_pv_week_ahead(
+        week_ahead_metadata = self._derive_week_ahead_metadata(
+            ensemble_week=ensemble_week,
             target_date=target_date,
             tz=tz,
-            pv_totals_p50=pv_totals_p50,
-            pv_totals_p10=pv_totals_p10,
-            pv_totals_p90=pv_totals_p90,
-            weather_by_model=weather_by_model,
-            weights_used=weights_used_week,
-            weather_primary_model_id=primary_id,
-            derived_weather_code_by_model=derived_weather_code_by_model_week,
-            weather_ensemble_df=getattr(getattr(ensemble_week, "weather_ensemble_table", None), "df", None),
         )
-        pv_week_ahead = pv_week_ahead_all[1:7]
+        week_models_used_count_per_hour = week_ahead_metadata["week_models_used_count_per_hour"]
+        week_models_count_per_day = week_ahead_metadata["week_models_count_per_day"]
+        week_coverage_per_day = week_ahead_metadata["week_coverage_per_day"]
+        pv_week_ahead = week_ahead_metadata["pv_week_ahead"]
 
-        warnings = list(dict.fromkeys(warnings))
-        status = "degraded" if warnings else "ok"
+        warnings, status = self._dedupe_warnings_and_status(warnings)
 
         with diagnostics.stage("pv_estimate"):
             weather = ensemble_tomorrow.weather_primary
@@ -2263,104 +2419,48 @@ class BackendState:
             )
             pv_quality.update(savings)
 
-        pv_totals_kwh = {
-            "p50": canonical_tomorrow_total_kwh,
-            "p10": (
-                float(pd.to_numeric(pv["pv_total_low_kwh"], errors="coerce").sum(min_count=1))
-                if "pv_total_low_kwh" in pv.columns and not pd.isna(pd.to_numeric(pv["pv_total_low_kwh"], errors="coerce").sum(min_count=1))
-                else (float(ensemble_tomorrow.pv_ensemble_p10.sum(min_count=1)) if ensemble_tomorrow.pv_ensemble_p10 is not None else None)
-            ),
-            "p90": (
-                float(pd.to_numeric(pv["pv_total_high_kwh"], errors="coerce").sum(min_count=1))
-                if "pv_total_high_kwh" in pv.columns and not pd.isna(pd.to_numeric(pv["pv_total_high_kwh"], errors="coerce").sum(min_count=1))
-                else (float(ensemble_tomorrow.pv_ensemble_p90.sum(min_count=1)) if ensemble_tomorrow.pv_ensemble_p90 is not None else None)
-            ),
-        }
-        pv_model_spread = getattr(ensemble_tomorrow, "pv_tomorrow_model_spread_kwh", None)
-        if not isinstance(pv_model_spread, dict):
-            legacy_pv_low_high = getattr(ensemble_tomorrow, "pv_tomorrow_low_high_kwh", None)
-            pv_model_spread = legacy_pv_low_high if isinstance(legacy_pv_low_high, dict) else None
+        pv_output_metadata = self._derive_pv_output_metadata(
+            pv=pv,
+            ensemble_tomorrow=ensemble_tomorrow,
+            canonical_tomorrow_total_kwh=canonical_tomorrow_total_kwh,
+        )
+        pv_totals_kwh = pv_output_metadata["pv_totals_kwh"]
+        pv_model_spread = pv_output_metadata["pv_model_spread"]
+        pv_tomorrow_low_high_kwh = pv_output_metadata["pv_tomorrow_low_high_kwh"]
 
-        selected_models = [str(m) for m in getattr(ensemble_tomorrow, "selected_models", []) if isinstance(m, str)]
-        failed_models = {str(m) for m in getattr(ensemble_tomorrow, "failed_models", []) if isinstance(m, str)}
-        per_model_pv_totals = getattr(ensemble_tomorrow, "per_model_pv_totals_kwh", {})
-        quantile_contributors = [
-            model_id
-            for model_id in selected_models
-            if model_id not in failed_models and pd.notna(pd.to_numeric(pd.Series([per_model_pv_totals.get(model_id)]), errors="coerce").iloc[0])
-        ]
-        fallback_valid_models = int(len(quantile_contributors))
-        spread_valid_models_raw = (pv_model_spread or {}).get("valid_models") if isinstance(pv_model_spread, dict) else None
-        spread_valid_models_num = pd.to_numeric(pd.Series([spread_valid_models_raw]), errors="coerce").iloc[0]
-        spread_valid_models = int(spread_valid_models_num) if not pd.isna(spread_valid_models_num) else 0
-        valid_models_for_range = spread_valid_models if spread_valid_models > 0 else fallback_valid_models
+        tomorrow_source_metadata = self._derive_tomorrow_source_metadata(
+            weather_df=weather.df,
+            pv_index=pv.index,
+            ensemble_tomorrow=ensemble_tomorrow,
+        )
+        tomorrow_weather_code = tomorrow_source_metadata["tomorrow_weather_code"]
+        tomorrow_source_model_id = tomorrow_source_metadata["tomorrow_source_model_id"]
+        tomorrow_source_label = tomorrow_source_metadata["tomorrow_source_label"]
+        tomorrow_source_max_days = tomorrow_source_metadata["tomorrow_source_max_days"]
 
-        p10_num = pd.to_numeric(pd.Series([pv_totals_kwh.get("p10")]), errors="coerce").iloc[0]
-        p90_num = pd.to_numeric(pd.Series([pv_totals_kwh.get("p90")]), errors="coerce").iloc[0]
-        if not pd.isna(p10_num) and not pd.isna(p90_num):
-            pv_tomorrow_low_high_kwh = {
-                "low": float(p10_num),
-                "high": float(p90_num),
-                "valid_models": int(valid_models_for_range),
-            }
-        else:
-            pv_tomorrow_low_high_kwh = {
-                "low": None,
-                "high": None,
-                "valid_models": int(valid_models_for_range),
-            }
+        self._append_invariant_warnings(
+            warnings=warnings,
+            pv=pv,
+            canonical_tomorrow_total_kwh=canonical_tomorrow_total_kwh,
+            tomorrow_index_dst_adjusted=tomorrow_index_dst_adjusted,
+        )
+        warnings, status = self._dedupe_warnings_and_status(warnings)
 
-        tomorrow_weather_code = _best_of_day_weather_code(weather.df.reindex(pv.index)[["weather_code"]]) if "weather_code" in weather.df.columns else None
-        if tomorrow_weather_code is None and "weather_code" in weather.df.columns:
-            wc_first = pd.to_numeric(weather.df.reindex(pv.index)["weather_code"], errors="coerce").dropna()
-            tomorrow_weather_code = int(wc_first.iloc[0]) if not wc_first.empty else None
-        tomorrow_source_model_id = getattr(ensemble_tomorrow, "weather_primary_model_id", None)
-        tomorrow_source_label = (WEATHER_MODELS.get(tomorrow_source_model_id) or {}).get("label") if tomorrow_source_model_id else None
-        tomorrow_source_max_days = _model_max_days(tomorrow_source_model_id) if tomorrow_source_model_id else None
-
-        inv_warnings: list[str] = []
-        hourly_sum = float(pd.to_numeric(pv["pv_total_kwh"], errors="coerce").sum(min_count=1)) if "pv_total_kwh" in pv.columns else float("nan")
-        if (canonical_tomorrow_total_kwh is not None and not pd.isna(canonical_tomorrow_total_kwh) and not pd.isna(hourly_sum) and abs(canonical_tomorrow_total_kwh - hourly_sum) > 0.01):
-            inv_warnings.append("INV-T1 failed: forecast total PV != PV Outlook hourly sum")
-        total_series = pd.to_numeric(pv["pv_total_kwh"], errors="coerce")
-        if ((total_series < 0) & total_series.notna()).any():
-            inv_warnings.append("INV-T2 failed: negative hourly PV detected")
-        east_south = pd.to_numeric(pv["pv_east_kwh"], errors="coerce") + pd.to_numeric(pv["pv_south_kwh"], errors="coerce")
-        mismatch = (total_series - east_south).abs()
-        if ((mismatch > 0.01) & total_series.notna() & east_south.notna()).any():
-            inv_warnings.append("INV-T3 failed: pv_total_kwh != pv_east_kwh + pv_south_kwh")
-        if len(pv.index) != 24 or pv.index.has_duplicates:
-            inv_warnings.append("INV-T4 failed: tomorrow index is not exactly 24 unique hourly points")
-        if tomorrow_index_dst_adjusted:
-            inv_warnings.append("INV-T4 note: DST normalization applied to preserve 24 hourly points")
-        warnings.extend(inv_warnings)
-        warnings = list(dict.fromkeys(warnings))
-        status = "degraded" if warnings else "ok"
-
-        system_snapshot = {
-            "lat": loc_cfg.get("latitude"),
-            "lon": loc_cfg.get("longitude"),
-            "timezone": tz,
-            "tilt": cfg.get("arrays", {}).get("south", {}).get("tilt_deg"),
-            "azimuth": cfg.get("arrays", {}).get("south", {}).get("azimuth_deg"),
-            "dc_kwp": cfg.get("arrays", {}).get("south", {}).get("dc_capacity_kwp"),
-            "battery_kwh": cfg.get("battery", {}).get("capacity_kwh"),
-            "inverter_ac_limit_kw": cfg.get("inverter", {}).get("ac_limit_kw"),
-            "loss_factor": cfg.get("system", {}).get("loss_factor"),
-        }
+        system_snapshot = self._build_system_snapshot(loc_cfg=loc_cfg, cfg=cfg, tz=tz)
         tomorrow_models_used = list(getattr(ensemble_tomorrow, "selected_models", []) or [])
 
-        inputs_used["soc_offpeak_start_hours_until"] = float(hours_until_offpeak_start)
-        inputs_used["soc_offpeak_start_confidence"] = str(soc_offpeak_confidence)
-        inputs_used["soc_offpeak_start_method"] = str(soc_offpeak_method)
-        inputs_used["soc_offpeak_start_load_kwh_window"] = float(soc_offpeak_debug.get("load_kwh_window", 0.0))
-        inputs_used["soc_offpeak_start_pv_credit_kwh"] = float(soc_offpeak_debug.get("pv_credit_kwh", 0.0))
-        inputs_used["soc_offpeak_start_effective_daily_kwh_used"] = float(soc_offpeak_debug.get("effective_daily_kwh_used", effective_daily_kwh))
-        inputs_used["soc_offpeak_start_used_history"] = bool(soc_offpeak_debug.get("used_history", used_history))
-        inputs_used["soc_offpeak_start_pv_credit_available"] = bool(soc_offpeak_debug.get("pv_credit_available", pv_credit_available))
-        inputs_used["soc_offpeak_start_peak_overlap"] = bool(soc_offpeak_debug.get("peak_overlap", False))
-        inputs_used["pv_decision_scenario"] = decision_quantile
-        inputs_used["pv_decision_reason"] = decision_reason
+        self._enrich_inputs_used_soc_and_decision(
+            inputs_used=inputs_used,
+            hours_until_offpeak_start=float(hours_until_offpeak_start),
+            soc_offpeak_confidence=str(soc_offpeak_confidence),
+            soc_offpeak_method=str(soc_offpeak_method),
+            soc_offpeak_debug=soc_offpeak_debug,
+            effective_daily_kwh=float(effective_daily_kwh),
+            used_history=bool(used_history),
+            pv_credit_available=bool(pv_credit_available),
+            decision_quantile=decision_quantile,
+            decision_reason=decision_reason,
+        )
 
         diag_success = diagnostics.finalize(success=True, status=status)
         run_duration_ms = int(float(diag_success.get("total_run_ms", 0.0)))
