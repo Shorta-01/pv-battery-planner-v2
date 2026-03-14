@@ -1357,8 +1357,8 @@ class BackendState:
             ev_state = self._get_planning_ready_ev_state()
             ev_warning = ev_state.get("warning")
             vehicles = ev_state.get("vehicles") if isinstance(ev_state.get("vehicles"), dict) else {}
-            planning_state["fallback_to_cached_state"] = bool(vehicles)
-            planning_state["fallback_reason"] = str(reason or "unknown")
+            fallback_to_cached_state = bool(ev_state.get("fallback_to_cached_state", bool(vehicles)))
+            fallback_reason = ev_state.get("fallback_reason")
             if vehicles:
                 first = next(iter(vehicles.values()))
                 ev_soc = first.get("soc_pct")
