@@ -9,11 +9,37 @@ import requests
 
 from bmw_auth import BmwAuthClient
 from bmw_cardata_contract import CreateContainerRequest
-from bmw_mapping import apply_planner_derivations, map_bmw_payload_to_vehicle_states
+from bmw_mapping import (
+    CRITICAL_EV_DESCRIPTOR_FIELDS,
+    apply_planner_derivations,
+    build_critical_ev_field_evidence,
+    extract_vehicle_telematic_payload,
+    map_bmw_payload_to_vehicle_states,
+)
 from bmw_models import BmwProviderStatus, NormalizedVehicleState, RawEventRecord, parse_dt, utcnow
 from bmw_storage import BmwStorage
 
 logger = logging.getLogger(__name__)
+
+CRITICAL_EV_DESCRIPTORS = list(CRITICAL_EV_DESCRIPTOR_FIELDS.keys())
+
+
+def _descriptor_alias(descriptor: str) -> str:
+    return descriptor.split(".")[-1].replace("stateOfCharge", "soc").replace("timeToComplete", "time_to_complete")
+
+
+def _safe_preview(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:80]
+    if isinstance(value, dict):
+        return {"type": "dict", "keys": sorted(str(k) for k in value.keys())[:6]}
+    if isinstance(value, list):
+        return {"type": "list", "len": len(value)}
+    return str(value)[:80]
 
 
 PHASE1_CONTAINER_DEFINITION: dict[str, Any] = {
@@ -253,6 +279,66 @@ class BmwCarDataProvider:
                 "descriptor_profile": self._phase1_container_create_request(final_accepted).to_json_body(),
             }
         )
+
+    def _critical_missing_descriptors(self, accepted_descriptors: list[str]) -> list[str]:
+        accepted = set(self._build_technical_descriptors(accepted_descriptors))
+        return [d for d in CRITICAL_EV_DESCRIPTORS if d not in accepted]
+
+    def _build_bmw_ev_diagnostics(
+        self,
+        *,
+        aggregate_payload: dict[str, Any],
+        target_vehicle_id: str | None,
+        accepted_before: list[str],
+        accepted_after: list[str],
+        missing_before: list[str],
+        missing_after: list[str],
+        reprobe_triggered: bool,
+        reprobe_reason: str,
+        active_container_id: str | None,
+        refresh_attempted: bool,
+        refresh_succeeded: bool,
+        fallback_to_cached_state: bool,
+        fallback_reason: str | None,
+    ) -> dict[str, Any]:
+        telematic = extract_vehicle_telematic_payload(aggregate_payload, target_vehicle_id)
+        per_descriptor = build_critical_ev_field_evidence(telematic, accepted_after)
+        fields: dict[str, Any] = {}
+        for descriptor, field_name in CRITICAL_EV_DESCRIPTOR_FIELDS.items():
+            alias = f"{field_name}_evidence"
+            fields[alias] = dict(per_descriptor.get(descriptor) or {})
+            fields[alias]["descriptor"] = descriptor
+
+        vehicle_state = self.vehicles.get(str(target_vehicle_id or ""))
+        normalized = {
+            "soc_pct": vehicle_state.soc_pct if vehicle_state else None,
+            "range_km": vehicle_state.range_km if vehicle_state else None,
+            "is_charging": vehicle_state.is_charging if vehicle_state else None,
+            "time_to_full_min": vehicle_state.time_to_full_min if vehicle_state else None,
+            "charge_power_kw": vehicle_state.charge_power_kw if vehicle_state else None,
+            "is_plugged": vehicle_state.is_plugged if vehicle_state else None,
+            "expected_full_charge_ts": vehicle_state.expected_full_charge_ts.replace(microsecond=0).isoformat() if vehicle_state and vehicle_state.expected_full_charge_ts else None,
+        }
+        return {
+            "critical_candidate_descriptors": list(CRITICAL_EV_DESCRIPTORS),
+            "accepted_descriptors": list(accepted_after),
+            "missing_critical_descriptors": list(missing_after),
+            "accepted_before": list(accepted_before),
+            "accepted_after": list(accepted_after),
+            "missing_before": list(missing_before),
+            "missing_after": list(missing_after),
+            "reprobe_triggered": reprobe_triggered,
+            "reprobe_reason": reprobe_reason,
+            "active_container_id": active_container_id,
+            "refresh_attempted": refresh_attempted,
+            "refresh_succeeded": refresh_succeeded,
+            "fallback_to_cached_state": fallback_to_cached_state,
+            "fallback_reason": fallback_reason,
+            "raw_field_evidence": fields,
+            "normalized_outputs": normalized,
+            "telematic_payload_seen": bool(telematic),
+            "telematic_payload_keys_preview": _safe_preview(sorted(telematic.keys())[:10]) if telematic else [],
+        }
 
     def _execute_container_create_attempt(
         self,
@@ -537,6 +623,7 @@ class BmwCarDataProvider:
         self.status.vehicle_data_mode = "unknown"
         self.status.container_auto_create_attempted = False
         self.status.container_auto_create_succeeded = False
+        self.status.bmw_ev_diagnostics = {}
         self.status.force_reprobe_diagnostics = {
             "force_mode": bool(force_reprobe),
             "target_descriptor": "vehicle.drivetrain.electricEngine.charging.level",
@@ -586,6 +673,7 @@ class BmwCarDataProvider:
                     "discovered_container_ids": list(self.status.discovered_container_ids),
                     "active_container_id": self.status.active_container_id,
                     "container_diagnostics": list(self.status.container_diagnostics),
+                    "bmw_ev_diagnostics": dict(self.status.bmw_ev_diagnostics),
                 }
 
             target_vehicle_id = self._select_active_vehicle(discovered_ids, mapping_diagnostics)
@@ -622,16 +710,33 @@ class BmwCarDataProvider:
                 if str(diag.get("container_id") or "") and all(str(x.get("container_id") or "") != str(diag.get("container_id") or "") for x in container_diags):
                     container_diags.append(diag)
 
+            descriptor_state_before = self._load_descriptor_validation_state()
+            accepted_before = self._build_technical_descriptors(
+                descriptor_state_before.get("accepted_descriptors") if isinstance(descriptor_state_before.get("accepted_descriptors"), list) else []
+            )
+            missing_before = self._critical_missing_descriptors(accepted_before)
+
             active_container_id = self._select_active_container(container_diags)
             previous_active_container_id = active_container_id
             self.status.force_reprobe_diagnostics["old_active_container_id"] = previous_active_container_id
-            if force_reprobe or not active_container_id:
+            reprobe_triggered = False
+            reprobe_reason = "none"
+            should_rebuild = bool(force_reprobe or not active_container_id or bool(missing_before))
+            if force_reprobe:
+                reprobe_reason = "force_reprobe"
+            elif not active_container_id:
+                reprobe_reason = "missing_active_container"
+            elif missing_before:
+                reprobe_reason = "missing_critical_descriptors"
+
+            if should_rebuild:
+                reprobe_triggered = True
                 created_container_id, created_diag = self._create_container_if_needed(
                     base=base,
                     headers=headers,
                     aggregate_payload=aggregate_payload,
                     capture_paths=capture_paths,
-                    force_reprobe=force_reprobe,
+                    force_reprobe=force_reprobe or bool(missing_before),
                 )
                 if created_diag:
                     container_diags = [
@@ -703,6 +808,10 @@ class BmwCarDataProvider:
             if self.status.vehicle_data_mode != "live_telematics":
                 self.status.data_status = "partial"
             descriptor_state_after = self._load_descriptor_validation_state()
+            accepted_after = self._build_technical_descriptors(
+                descriptor_state_after.get("accepted_descriptors") if isinstance(descriptor_state_after.get("accepted_descriptors"), list) else []
+            )
+            missing_after = self._critical_missing_descriptors(accepted_after)
             probe_results = descriptor_state_after.get("probe_results") if isinstance(descriptor_state_after.get("probe_results"), list) else []
             target_descriptor = str(self.status.force_reprobe_diagnostics.get("target_descriptor") or "")
             target_probe_entries = [
@@ -718,6 +827,28 @@ class BmwCarDataProvider:
                 self.status.force_reprobe_diagnostics["descriptor_rejected"] = not bool(latest_target_probe.get("success"))
             elif force_reprobe:
                 self.status.force_reprobe_diagnostics["descriptor_reprobe_attempted"] = True
+            self.status.force_reprobe_diagnostics["accepted_before"] = list(accepted_before)
+            self.status.force_reprobe_diagnostics["accepted_after"] = list(accepted_after)
+            self.status.force_reprobe_diagnostics["missing_before"] = list(missing_before)
+            self.status.force_reprobe_diagnostics["missing_after"] = list(missing_after)
+            self.status.force_reprobe_diagnostics["reprobe_triggered"] = reprobe_triggered
+            self.status.force_reprobe_diagnostics["reprobe_reason"] = reprobe_reason
+
+            self.status.bmw_ev_diagnostics = self._build_bmw_ev_diagnostics(
+                aggregate_payload=aggregate_payload,
+                target_vehicle_id=target_vehicle_id,
+                accepted_before=accepted_before,
+                accepted_after=accepted_after,
+                missing_before=missing_before,
+                missing_after=missing_after,
+                reprobe_triggered=reprobe_triggered,
+                reprobe_reason=reprobe_reason,
+                active_container_id=active_container_id,
+                refresh_attempted=True,
+                refresh_succeeded=bool(self.vehicles),
+                fallback_to_cached_state=False,
+                fallback_reason=None,
+            )
 
             return {
                 "ok": bool(self.vehicles),
@@ -735,6 +866,7 @@ class BmwCarDataProvider:
                 "container_auto_create_attempted": self.status.container_auto_create_attempted,
                 "container_auto_create_succeeded": self.status.container_auto_create_succeeded,
                 "force_reprobe_diagnostics": dict(self.status.force_reprobe_diagnostics),
+                "bmw_ev_diagnostics": dict(self.status.bmw_ev_diagnostics),
             }
         except Exception as exc:
             self.status.last_error = str(exc)
@@ -758,6 +890,7 @@ class BmwCarDataProvider:
                 "container_auto_create_attempted": self.status.container_auto_create_attempted,
                 "container_auto_create_succeeded": self.status.container_auto_create_succeeded,
                 "force_reprobe_diagnostics": dict(self.status.force_reprobe_diagnostics),
+                "bmw_ev_diagnostics": dict(self.status.bmw_ev_diagnostics),
             }
 
     def _discover_vehicle_ids(self, discovery_payload: Any) -> tuple[list[str], list[dict[str, Any]]]:

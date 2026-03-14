@@ -91,6 +91,7 @@ class BmwProviderStatus:
     container_auto_create_attempted: bool = False
     container_auto_create_succeeded: bool = False
     force_reprobe_diagnostics: dict[str, Any] = field(default_factory=dict)
+    bmw_ev_diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -121,6 +122,7 @@ class BmwProviderStatus:
             "container_auto_create_attempted": self.container_auto_create_attempted,
             "container_auto_create_succeeded": self.container_auto_create_succeeded,
             "force_reprobe_diagnostics": dict(self.force_reprobe_diagnostics),
+            "bmw_ev_diagnostics": dict(self.bmw_ev_diagnostics),
         }
 
 

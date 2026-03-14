@@ -1230,6 +1230,8 @@ class BackendState:
             "refresh_reason": "ev_disabled" if not enabled else "cached_fresh",
             "warning": None,
             "threshold_seconds": threshold_seconds,
+            "fallback_to_cached_state": False,
+            "fallback_reason": None,
         }
 
         try:
@@ -1260,8 +1262,12 @@ class BackendState:
 
         if refresh_ok:
             planning_state["warning"] = "BMW live refresh succeeded before planning."
+            planning_state["fallback_to_cached_state"] = False
+            planning_state["fallback_reason"] = None
         else:
             reason = refresh_result.get("reason") if isinstance(refresh_result, dict) else "unknown"
+            planning_state["fallback_to_cached_state"] = bool(vehicles)
+            planning_state["fallback_reason"] = str(reason or "unknown")
             if vehicles:
                 first_vehicle = next(iter(vehicles.values())) if isinstance(vehicles, dict) and vehicles else {}
                 freshness_seconds = self._bmw_vehicle_freshness_seconds(first_vehicle) if isinstance(first_vehicle, dict) else None
@@ -1351,6 +1357,8 @@ class BackendState:
             ev_state = self._get_planning_ready_ev_state()
             ev_warning = ev_state.get("warning")
             vehicles = ev_state.get("vehicles") if isinstance(ev_state.get("vehicles"), dict) else {}
+            planning_state["fallback_to_cached_state"] = bool(vehicles)
+            planning_state["fallback_reason"] = str(reason or "unknown")
             if vehicles:
                 first = next(iter(vehicles.values()))
                 ev_soc = first.get("soc_pct")

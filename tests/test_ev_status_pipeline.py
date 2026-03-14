@@ -154,3 +154,48 @@ def test_deadline_configured_and_eta_derived_from_power_when_needed() -> None:
     assert out["expected_full_charge_ts"] is not None
     assert out["field_states"]["expected_full_charge_ts"] == "ready"
 
+
+
+def test_range_setup_incomplete_state_from_bmw_diagnostics() -> None:
+    out = build_unified_ev_status(
+        ev_cfg={"enabled": True},
+        runtime_ev_cfg={"charger_max_power_kw": 7.4},
+        bmw_provider_status={
+            "bmw_ev_diagnostics": {
+                "missing_critical_descriptors": ["vehicle.drivetrain.electricEngine.range.electric"],
+                "raw_field_evidence": {
+                    "range_km_evidence": {
+                        "descriptor": "vehicle.drivetrain.electricEngine.range.electric",
+                        "descriptor_active": False,
+                        "raw_value_present": False,
+                    }
+                },
+            }
+        },
+        bmw_vehicles=_vehicle(range_km=None),
+        evse_status={"connected": False, "enabled": True},
+    )
+    assert out["field_states"]["range_km"] == "setup_incomplete"
+    assert out["range_source"] == "setup_incomplete"
+
+
+def test_range_bmw_missing_only_when_descriptor_active_and_raw_missing() -> None:
+    out = build_unified_ev_status(
+        ev_cfg={"enabled": True},
+        runtime_ev_cfg={"charger_max_power_kw": 7.4},
+        bmw_provider_status={
+            "bmw_ev_diagnostics": {
+                "missing_critical_descriptors": [],
+                "raw_field_evidence": {
+                    "range_km_evidence": {
+                        "descriptor": "vehicle.drivetrain.electricEngine.range.electric",
+                        "descriptor_active": True,
+                        "raw_value_present": False,
+                    }
+                },
+            }
+        },
+        bmw_vehicles=_vehicle(range_km=None),
+        evse_status={"connected": False, "enabled": True},
+    )
+    assert out["field_states"]["range_km"] == "bmw_missing"

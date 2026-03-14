@@ -32,9 +32,7 @@ def _to_float(value: Any) -> float | None:
 
 def _to_int(value: Any) -> int | None:
     num = _to_float(value)
-    if num is None:
-        return None
-    return int(num)
+    return int(num) if num is not None else None
 
 
 def _bmw_threshold_seconds(ev_cfg: dict[str, Any]) -> int:
@@ -72,6 +70,24 @@ def _is_bmw_soc_usable(vehicle: dict[str, Any], threshold_seconds: int) -> tuple
     return False, "bmw_stale", freshness
 
 
+def _bmw_diag_field(diag: dict[str, Any], field_name: str) -> dict[str, Any]:
+    raw = diag.get("raw_field_evidence") if isinstance(diag.get("raw_field_evidence"), dict) else {}
+    node = raw.get(f"{field_name}_evidence")
+    return node if isinstance(node, dict) else {}
+
+
+def _setup_state_for_field(diag: dict[str, Any], field_name: str) -> str:
+    field = _bmw_diag_field(diag, field_name)
+    if field.get("descriptor_active") is False:
+        return "descriptor_inactive"
+    missing = diag.get("missing_critical_descriptors") if isinstance(diag.get("missing_critical_descriptors"), list) else []
+    if field.get("descriptor") in set(str(x) for x in missing):
+        return "descriptor_inactive"
+    if diag.get("reprobe_triggered") and missing:
+        return "reprobe_pending"
+    return "ready"
+
+
 def build_unified_ev_status(
     *,
     ev_cfg: dict[str, Any],
@@ -84,6 +100,7 @@ def build_unified_ev_status(
     vehicle = next(iter((bmw_vehicles or {}).values()), {}) if isinstance(bmw_vehicles, dict) else {}
     threshold_seconds = _bmw_threshold_seconds(ev_cfg or {})
     warnings: list[str] = []
+    bmw_diag = bmw_provider_status.get("bmw_ev_diagnostics") if isinstance(bmw_provider_status, dict) and isinstance(bmw_provider_status.get("bmw_ev_diagnostics"), dict) else {}
 
     soc_ok, soc_source, freshness_seconds = _is_bmw_soc_usable(vehicle, threshold_seconds)
     soc_pct = _to_float(vehicle.get("soc_pct")) if soc_ok else None
@@ -95,18 +112,31 @@ def build_unified_ev_status(
     plugged_source = "bmw" if is_plugged is not None else "unavailable"
 
     is_charging = vehicle.get("is_charging")
-    charging_source = "bmw" if is_charging is not None else "unavailable"
+    charging_setup_state = _setup_state_for_field(bmw_diag, "is_charging")
+    charging_evidence = _bmw_diag_field(bmw_diag, "is_charging")
+    charging_source = "bmw" if is_charging is not None else ("setup_incomplete" if charging_setup_state != "ready" else "bmw_missing" if charging_evidence.get("raw_value_present") is False else "unavailable")
 
     bmw_power = _to_float(vehicle.get("charge_power_kw"))
+    charge_power_setup_state = _setup_state_for_field(bmw_diag, "charge_power_kw")
+    charge_power_evidence = _bmw_diag_field(bmw_diag, "charge_power_kw")
     if bmw_power is not None:
         charge_power_kw = bmw_power
         charge_power_source = "bmw"
     else:
         charge_power_kw = None
-        charge_power_source = "unavailable"
+        charge_power_source = "setup_incomplete" if charge_power_setup_state != "ready" else "bmw_missing" if charge_power_evidence.get("raw_value_present") is False else "unavailable"
 
     range_km = _to_float(vehicle.get("range_km"))
-    range_source = "bmw" if range_km is not None else "bmw_missing"
+    range_setup_state = _setup_state_for_field(bmw_diag, "range_km")
+    range_evidence = _bmw_diag_field(bmw_diag, "range_km")
+    if range_km is not None:
+        range_source = "bmw"
+    elif range_setup_state != "ready":
+        range_source = "setup_incomplete"
+    elif range_evidence.get("raw_value_present") is False or not range_evidence:
+        range_source = "bmw_missing"
+    else:
+        range_source = "unavailable"
 
     deadline_raw = str((ev_cfg or {}).get("ev_charge_deadline_time") or "").strip()
     deadline_time = deadline_raw or None
@@ -117,15 +147,13 @@ def build_unified_ev_status(
     if energy_needed_kwh is None and battery_capacity_kwh is not None and soc_pct is not None:
         energy_needed_kwh = max(0.0, battery_capacity_kwh * (100.0 - soc_pct) / 100.0)
 
-    limit_candidates = [
-        _to_float(vehicle.get("effective_charge_power_limit_kw")),
-        _to_float(runtime_ev_cfg.get("charger_max_power_kw")),
-    ]
+    limit_candidates = [_to_float(vehicle.get("effective_charge_power_limit_kw")), _to_float(runtime_ev_cfg.get("charger_max_power_kw"))]
     limit_candidates = [v for v in limit_candidates if v is not None and v > 0]
     effective_limit_kw = min(limit_candidates) if limit_candidates else None
 
     bmw_expected_full_charge_ts = _parse_ts(vehicle.get("expected_full_charge_ts"))
     bmw_time_to_full_min = _to_int(vehicle.get("time_to_full_min"))
+    eta_setup_state = _setup_state_for_field(bmw_diag, "time_to_full_min")
 
     full_charge_state = "unavailable"
     expected_full_charge_ts = None
@@ -156,19 +184,19 @@ def build_unified_ev_status(
         else:
             full_charge_state = "waiting_for_bmw_eta" if is_charging is True else "waiting_for_power_limit"
 
+    if eta_setup_state != "ready" and expected_full_charge_ts is None and full_charge_state in {"waiting_for_bmw_eta", "waiting_for_bmw_status", "unavailable"}:
+        full_charge_state = "setup_incomplete"
+
     freshness_label = "BMW freshness unknown"
     if freshness_seconds is not None:
-        if freshness_seconds < 60:
-            freshness_label = f"{freshness_seconds}s ago"
-        elif freshness_seconds < 3600:
-            freshness_label = f"{int(round(freshness_seconds / 60.0))}m ago"
-        else:
-            freshness_label = f"{freshness_seconds / 3600.0:.1f}h ago"
+        freshness_label = f"{freshness_seconds}s ago" if freshness_seconds < 60 else f"{int(round(freshness_seconds / 60.0))}m ago" if freshness_seconds < 3600 else f"{freshness_seconds / 3600.0:.1f}h ago"
 
     if soc_source == "bmw_stale":
         warnings.append("Using last known BMW data; SOC is stale.")
 
-    if is_charging is True and charge_power_kw is None:
+    if charge_power_setup_state != "ready":
+        charge_power_state = "setup_incomplete"
+    elif is_charging is True and charge_power_kw is None:
         charge_power_state = "waiting_for_bmw_power"
     elif is_charging is False:
         charge_power_state = "not_charging"
@@ -179,7 +207,7 @@ def build_unified_ev_status(
     else:
         charge_power_state = "unavailable"
 
-    out = {
+    return {
         "enabled": enabled,
         "provider": {
             "bmw": bmw_provider_status or {},
@@ -195,6 +223,7 @@ def build_unified_ev_status(
             "range_km": range_source,
             "expected_full_charge_ts": expected_full_charge_source,
             "deadline_time": "config",
+            "bmw_ev_diagnostics": "bmw",
         },
         "soc_pct": soc_pct,
         "soc_source": soc_source,
@@ -216,14 +245,17 @@ def build_unified_ev_status(
         "warnings": warnings,
         "field_states": {
             "soc_pct": "available" if soc_pct is not None else ("stale" if soc_source == "bmw_stale" else "unavailable"),
+            "range_setup": range_setup_state,
+            "charging_setup": charging_setup_state,
+            "charge_power_setup": charge_power_setup_state,
             "charge_power_kw": charge_power_state,
-            "range_km": "available" if range_km is not None else "bmw_missing",
+            "range_km": "available" if range_km is not None else ("setup_incomplete" if range_setup_state != "ready" else "bmw_missing" if range_evidence.get("raw_value_present") is False or not range_evidence else "unavailable"),
             "deadline_time": deadline_state,
             "expected_full_charge_ts": full_charge_state,
         },
+        "bmw_ev_diagnostics": bmw_diag,
         "derived": {
             "energy_needed_kwh": energy_needed_kwh,
             "effective_charge_power_limit_kw": effective_limit_kw,
         },
     }
-    return out

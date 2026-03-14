@@ -144,5 +144,6 @@ class BmwService:
             "container_auto_create_attempted": self.provider.status.container_auto_create_attempted,
             "container_auto_create_succeeded": self.provider.status.container_auto_create_succeeded,
             "force_reprobe_diagnostics": dict(self.provider.status.force_reprobe_diagnostics),
+            "bmw_ev_diagnostics": dict(self.provider.status.bmw_ev_diagnostics),
             "device_flow_session": safe_session,
         }
