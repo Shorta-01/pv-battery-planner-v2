@@ -623,9 +623,13 @@ def build_effective_config(user_cfg: dict) -> dict:
     migrated_cfg = migrate_legacy_tilt_config(user_cfg)
     merged_cfg = deep_update(copy.deepcopy(DEFAULT_CONFIG), migrated_cfg)
     location_cfg = merged_cfg.get("location", {}) if isinstance(merged_cfg.get("location"), dict) else {}
-    incoming_location_cfg = migrated_cfg.get("location", {}) if isinstance(migrated_cfg.get("location"), dict) else {}
+    auto_resolve = bool(location_cfg.get("auto_resolve_metadata", True))
+    needs_metadata = (
+        location_cfg.get("elevation_m") is None
+        or not str(location_cfg.get("timezone") or "").strip()
+    )
 
-    if bool(incoming_location_cfg.get("auto_resolve_metadata", False)):
+    if auto_resolve and needs_metadata:
         resolved_meta = resolve_location_metadata(
             latitude=location_cfg.get("latitude"),
             longitude=location_cfg.get("longitude"),
