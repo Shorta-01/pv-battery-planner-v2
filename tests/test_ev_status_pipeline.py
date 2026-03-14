@@ -139,3 +139,18 @@ def test_explicit_false_and_true_regression_semantics() -> None:
         evse_status={"connected": False, "enabled": False},
     )
     assert explicit_true["field_states"]["charge_power_kw"] == "available"
+
+
+def test_deadline_configured_and_eta_derived_from_power_when_needed() -> None:
+    out = build_unified_ev_status(
+        ev_cfg={"enabled": True, "ev_charge_deadline_time": "06:30"},
+        runtime_ev_cfg={"charger_max_power_kw": 11.0},
+        bmw_provider_status={},
+        bmw_vehicles=_vehicle(expected_full_charge_ts=None, time_to_full_min=None, charge_power_kw=7.4, battery_capacity_kwh=80.0, soc_pct=50.0),
+        evse_status={"connected": False, "enabled": False},
+    )
+    assert out["deadline_state"] == "configured"
+    assert out["deadline_time"] == "06:30"
+    assert out["expected_full_charge_ts"] is not None
+    assert out["field_states"]["expected_full_charge_ts"] == "ready"
+
