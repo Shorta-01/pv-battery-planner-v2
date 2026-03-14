@@ -944,7 +944,27 @@ class BackendState:
         if SETTINGS_PATH.exists():
             loaded = self._read_json(SETTINGS_PATH, {})
             if isinstance(loaded, dict) and "config" in loaded:
-                merged = core.set_user_config(loaded["config"])
+                try:
+                    merged = core.set_user_config(loaded["config"])
+                except ValueError as exc:
+                    if "location.elevation_m is required" not in str(exc):
+                        raise
+                    repaired_cfg = copy.deepcopy(loaded["config"]) if isinstance(loaded.get("config"), dict) else {}
+                    loc_cfg = repaired_cfg.get("location")
+                    if not isinstance(loc_cfg, dict):
+                        loc_cfg = {}
+                        repaired_cfg["location"] = loc_cfg
+                    resolved_meta = core.resolve_location_metadata(
+                        latitude=loc_cfg.get("latitude"),
+                        longitude=loc_cfg.get("longitude"),
+                        fallback_timezone=loc_cfg.get("timezone"),
+                        fallback_elevation_m=loc_cfg.get("elevation_m"),
+                        force_refresh=False,
+                    )
+                    loc_cfg["timezone"] = resolved_meta["timezone"]
+                    loc_cfg["elevation_m"] = resolved_meta["elevation_m"]
+                    loc_cfg["auto_resolve_metadata"] = True
+                    merged = core.set_user_config(repaired_cfg)
                 loaded["config"] = merged
                 loaded.setdefault("nightly_run_time", DEFAULT_NIGHTLY_TIME)
                 loaded.setdefault("timezone", str(merged.get("location", {}).get("timezone") or "Europe/Brussels"))
