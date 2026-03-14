@@ -2055,6 +2055,217 @@ class BackendState:
         inputs_used["pv_decision_scenario"] = decision_quantile
         inputs_used["pv_decision_reason"] = decision_reason
 
+    def _estimate_soc_offpeak_context(
+        self,
+        *,
+        cfg: dict,
+        loc: core.Location,
+        tz: str,
+        target_date: dt.date,
+        soc_percent: float,
+        yesterday_kwh: float,
+        warnings: list[str],
+    ) -> dict:
+        offpeak_start, offpeak_end = core.compute_charging_window_for_target_date(target_date, cfg.get("tariff", {}))
+        now_local = dt.datetime.now(ZoneInfo(tz))
+        battery_kwh = float(cfg.get("battery", {}).get("battery_kwh", core.BATTERY_KWH))
+        min_soc_percent = float(cfg.get("battery", {}).get("min_soc_percent", core.MIN_SOC_PERCENT))
+
+        effective_daily_kwh, _effective_meta = fetch_effective_daily_kwh(SQLITE_PATH, lookback_runs=14, prefer_same_day_type=True)
+        used_history = effective_daily_kwh is not None
+        if effective_daily_kwh is None:
+            effective_daily_kwh = float(yesterday_kwh)
+
+        hours_until_offpeak_start = max(0.0, (offpeak_start - now_local).total_seconds() / 3600.0)
+        daytime_pv_window = (
+            offpeak_start.date() == now_local.date()
+            and 8 <= now_local.hour < 18
+            and hours_until_offpeak_start > 0
+        )
+        prelim_load_kwh = core.estimate_window_consumption_kwh(
+            start_local=now_local,
+            end_local=offpeak_start.to_pydatetime(),
+            effective_daily_kwh=float(effective_daily_kwh),
+        )
+        pv_credit_kwh = 0.0
+        pv_credit_available = not daytime_pv_window
+        if daytime_pv_window:
+            try:
+                loc_cfg_today = cfg.get("location", {})
+                today_date = now_local.date()
+                selected_today_models = auto_select_models_for_location(
+                    float(loc_cfg_today.get("latitude")),
+                    float(loc_cfg_today.get("longitude")),
+                    requested_days=1,
+                )
+                use_nowcast = should_use_satellite_nowcast_auto(
+                    float(loc_cfg_today.get("latitude")),
+                    float(loc_cfg_today.get("longitude")),
+                    requested_days=1,
+                ) and hours_until_offpeak_start <= 6
+                ensemble_today = build_ensemble_forecast(
+                    loc=loc,
+                    target_date=today_date,
+                    tz=tz,
+                    weather_models=selected_today_models,
+                    ensemble_method="weighted",
+                    pv_uncertainty=False,
+                    requested_days=1,
+                    use_satellite_nowcast_0_6h=use_nowcast,
+                    expert_mode=False,
+                    selection_mode="auto",
+                )
+                start_h = core._to_local_ts(now_local, tz).ceil("h")
+                end_h = core._to_local_ts(offpeak_start, tz).floor("h")
+                today_remaining_pv_kwh = 0.0
+                if end_h > start_h:
+                    pv_window = pd.to_numeric(
+                        ensemble_today.pv_ensemble_p50.reindex(pd.date_range(start_h, end_h, freq="h", inclusive="left")),
+                        errors="coerce",
+                    ).fillna(0.0)
+                    today_remaining_pv_kwh = float(pv_window.sum())
+                pv_credit_kwh = min(today_remaining_pv_kwh * 0.5, prelim_load_kwh)
+                pv_credit_available = True
+            except Exception as exc:
+                warnings.append(f"PV credit unavailable for SOC off-peak estimate: {exc}")
+                pv_credit_kwh = 0.0
+                pv_credit_available = False
+
+        estimated_soc_percent, hours_until_offpeak_start, soc_offpeak_confidence, soc_offpeak_method, soc_offpeak_debug = core.estimate_soc_at_offpeak_start(
+            soc_now_percent=float(soc_percent),
+            now_local=now_local,
+            offpeak_start=offpeak_start,
+            effective_daily_kwh=float(effective_daily_kwh),
+            pv_credit_kwh=float(pv_credit_kwh),
+            battery_kwh=battery_kwh,
+            min_soc_percent=min_soc_percent,
+            used_history=bool(used_history),
+            pv_credit_available=bool(pv_credit_available),
+        )
+        return {
+            "estimated_soc_percent": estimated_soc_percent,
+            "hours_until_offpeak_start": hours_until_offpeak_start,
+            "soc_offpeak_confidence": soc_offpeak_confidence,
+            "soc_offpeak_method": soc_offpeak_method,
+            "soc_offpeak_debug": soc_offpeak_debug,
+            "effective_daily_kwh": effective_daily_kwh,
+            "used_history": used_history,
+            "pv_credit_available": pv_credit_available,
+            "offpeak_start": offpeak_start,
+            "offpeak_end": offpeak_end,
+        }
+
+    def _assemble_planner_inputs(self, *, pv: pd.DataFrame, ensemble_tomorrow, soc_offpeak_confidence: str, pv_uncertainty: bool) -> dict:
+        decision_quantile, decision_reason = pick_decision_quantile(soc_offpeak_confidence, uncertainty_enabled=bool(pv_uncertainty))
+        if decision_quantile == "p50":
+            decision_series = ensemble_tomorrow.pv_ensemble_p50
+        else:
+            decision_series = getattr(ensemble_tomorrow, "pv_ensemble_p25", None)
+        if decision_series is None:
+            decision_series = ensemble_tomorrow.pv_ensemble_p50
+        if decision_series is None:
+            decision_series = ensemble_tomorrow.pv_ensemble_p50
+            pv["pv_total_decision_kwh"] = pd.to_numeric(decision_series.reindex(pv.index), errors="coerce")
+        return {
+            "decision_quantile": decision_quantile,
+            "decision_reason": decision_reason,
+        }
+
+    def _invoke_planner(
+        self,
+        *,
+        diagnostics: _RunDiagnostics,
+        target_date: dt.date,
+        weather,
+        pv: pd.DataFrame,
+        cons: pd.Series,
+        estimated_soc_percent: float,
+        buffer_percent: float,
+        user_max_ac_kw: float,
+    ) -> tuple:
+        with diagnostics.stage("planner_simulation"):
+            return core.run_detailed_plan(
+                target_date=target_date,
+                weather=weather,
+                pv_df=pv,
+                consumption_kwh=cons,
+                soc_at_22_percent=estimated_soc_percent,
+                buffer_percent=buffer_percent,
+                max_ac_charge_power_kw=user_max_ac_kw,
+            )
+
+    def _unpack_planner_result(self, *, cutoff_reason: str, flows_df: pd.DataFrame, cfg: dict, warnings: list[str]) -> dict:
+        cutoff_adjusted_for_pv_headroom = str(cutoff_reason).startswith("CONFLICT")
+        cutoff_adjustment_reason = (
+            "Cutoff lowered to preserve PV headroom for daytime surplus handling."
+            if cutoff_adjusted_for_pv_headroom
+            else ""
+        )
+        pv_surplus_store_econ_enabled = bool(flows_df.attrs.get("pv_surplus_store_econ_enabled", False))
+        pv_surplus_export_preferred_kwh = float(flows_df.attrs.get("pv_surplus_export_preferred_kwh", 0.0))
+        pv_surplus_store_preferred_kwh = float(flows_df.attrs.get("pv_surplus_store_preferred_kwh", 0.0))
+        pv_store_vs_export_decisions_count = int(flows_df.attrs.get("pv_store_vs_export_decisions_count", 0))
+        allow_injection_to_grid = bool(flows_df.attrs.get("allow_injection_to_grid", cfg.get("tariff", {}).get("allow_injection_to_grid", True)))
+        export_blocked_by_policy = bool(flows_df.attrs.get("export_blocked_by_policy", not allow_injection_to_grid))
+        blocked_export_kwh_total = float(flows_df.attrs.get("blocked_export_kwh_total", 0.0))
+        max_grid_import_kw = float(flows_df.attrs.get("max_grid_import_kw", cfg.get("tariff", {}).get("max_grid_import_kw", 0.0)))
+        grid_import_cap_active = bool(flows_df.attrs.get("grid_import_cap_active", max_grid_import_kw > 0.0))
+        grid_import_cap_binding_events = int(flows_df.attrs.get("grid_import_cap_binding_events", 0))
+        charge_effective_cap_kw = float(flows_df.attrs.get("charge_effective_cap_kw", 0.0))
+        charge_limit_reason_raw = str(flows_df.attrs.get("charge_limit_reason_raw", "none") or "none")
+        grid_import_cap_load_exceeds_events = int(flows_df.attrs.get("grid_import_cap_load_exceeds_events", 0))
+        grid_import_cap_limited_charge_kwh_total = float(flows_df.attrs.get("grid_import_cap_limited_charge_kwh_total", 0.0))
+        if not allow_injection_to_grid:
+            warnings.append(
+                "Grid injection is disabled by settings. Excess PV will be curtailed when battery storage is not available."
+            )
+        if grid_import_cap_active:
+            warnings.append(
+                f"Grid import cap is enabled: {max_grid_import_kw:g} kW. Battery grid charging may be limited to respect the cap."
+            )
+        if grid_import_cap_load_exceeds_events > 0:
+            warnings.append("Grid import cap exceeded by household load in some hours (cannot be enforced).")
+        if grid_import_cap_binding_events > 0:
+            warnings.append("Grid import cap limited battery charging; target may be unreachable.")
+        charge_limit_reason = "grid_import_cap" if grid_import_cap_binding_events > 0 else charge_limit_reason_raw
+        grid_import = float(flows_df.get("grid_import_kwh", pd.Series(dtype=float)).sum())
+        grid_export = float(flows_df.get("grid_export_kwh", pd.Series(dtype=float)).sum())
+
+        return {
+            "cutoff_adjusted_for_pv_headroom": cutoff_adjusted_for_pv_headroom,
+            "cutoff_adjustment_reason": cutoff_adjustment_reason,
+            "pv_surplus_store_econ_enabled": pv_surplus_store_econ_enabled,
+            "pv_surplus_export_preferred_kwh": pv_surplus_export_preferred_kwh,
+            "pv_surplus_store_preferred_kwh": pv_surplus_store_preferred_kwh,
+            "pv_store_vs_export_decisions_count": pv_store_vs_export_decisions_count,
+            "allow_injection_to_grid": allow_injection_to_grid,
+            "export_blocked_by_policy": export_blocked_by_policy,
+            "blocked_export_kwh_total": blocked_export_kwh_total,
+            "max_grid_import_kw": max_grid_import_kw,
+            "grid_import_cap_active": grid_import_cap_active,
+            "grid_import_cap_binding_events": grid_import_cap_binding_events,
+            "charge_effective_cap_kw": charge_effective_cap_kw,
+            "charge_limit_reason": charge_limit_reason,
+            "grid_import_cap_load_exceeds_events": grid_import_cap_load_exceeds_events,
+            "grid_import_cap_limited_charge_kwh_total": grid_import_cap_limited_charge_kwh_total,
+            "grid_import": grid_import,
+            "grid_export": grid_export,
+        }
+
+    def _build_post_planner_context(self, *, pv: pd.DataFrame, ensemble_tomorrow, cons: pd.Series) -> dict:
+        canonical_tomorrow_total_kwh = float(pd.to_numeric(pv["pv_total_kwh"], errors="coerce").sum(min_count=1)) if "pv_total_kwh" in pv.columns else None
+        if canonical_tomorrow_total_kwh is not None and pd.isna(canonical_tomorrow_total_kwh):
+            canonical_tomorrow_total_kwh = float(ensemble_tomorrow.pv_ensemble_p50.sum(min_count=1)) if ensemble_tomorrow.pv_ensemble_p50 is not None else None
+        tomorrow_coverage_hours = int(pd.to_numeric(pv.get("pv_total_kwh", pd.Series(dtype=float)), errors="coerce").notna().sum())
+        pv_forecast_kwh = canonical_tomorrow_total_kwh
+        cons_forecast_kwh = float(cons.sum())
+        return {
+            "canonical_tomorrow_total_kwh": canonical_tomorrow_total_kwh,
+            "tomorrow_coverage_hours": tomorrow_coverage_hours,
+            "pv_forecast_kwh": pv_forecast_kwh,
+            "cons_forecast_kwh": cons_forecast_kwh,
+        }
+
     def _run(
         self,
         target_date: dt.date,
@@ -2249,146 +2460,80 @@ class BackendState:
 
         cons_profile = core.load_consumption_profile_kwh_per_hour()
         cons = core.build_consumption_forecast(cons_profile, yesterday_kwh, target_date, tz)
-        offpeak_start, offpeak_end = core.compute_charging_window_for_target_date(target_date, cfg.get("tariff", {}))
-        now_local = dt.datetime.now(ZoneInfo(tz))
-        battery_kwh = float(cfg.get("battery", {}).get("battery_kwh", core.BATTERY_KWH))
-        min_soc_percent = float(cfg.get("battery", {}).get("min_soc_percent", core.MIN_SOC_PERCENT))
 
-        effective_daily_kwh, _effective_meta = fetch_effective_daily_kwh(SQLITE_PATH, lookback_runs=14, prefer_same_day_type=True)
-        used_history = effective_daily_kwh is not None
-        if effective_daily_kwh is None:
-            effective_daily_kwh = float(yesterday_kwh)
+        soc_context = self._estimate_soc_offpeak_context(
+            cfg=cfg,
+            loc=loc,
+            tz=tz,
+            target_date=target_date,
+            soc_percent=float(soc_percent),
+            yesterday_kwh=float(yesterday_kwh),
+            warnings=warnings,
+        )
+        estimated_soc_percent = float(soc_context["estimated_soc_percent"])
+        hours_until_offpeak_start = float(soc_context["hours_until_offpeak_start"])
+        soc_offpeak_confidence = str(soc_context["soc_offpeak_confidence"])
+        soc_offpeak_method = str(soc_context["soc_offpeak_method"])
+        soc_offpeak_debug = soc_context["soc_offpeak_debug"]
+        effective_daily_kwh = float(soc_context["effective_daily_kwh"])
+        used_history = bool(soc_context["used_history"])
+        pv_credit_available = bool(soc_context["pv_credit_available"])
+        offpeak_start = soc_context["offpeak_start"]
+        offpeak_end = soc_context["offpeak_end"]
 
-        hours_until_offpeak_start = max(0.0, (offpeak_start - now_local).total_seconds() / 3600.0)
-        daytime_pv_window = (
-            offpeak_start.date() == now_local.date()
-            and 8 <= now_local.hour < 18
-            and hours_until_offpeak_start > 0
-        )
-        prelim_load_kwh = core.estimate_window_consumption_kwh(
-            start_local=now_local,
-            end_local=offpeak_start.to_pydatetime(),
-            effective_daily_kwh=float(effective_daily_kwh),
-        )
-        pv_credit_kwh = 0.0
-        pv_credit_available = not daytime_pv_window
-        if daytime_pv_window:
-            try:
-                loc_cfg_today = cfg.get("location", {})
-                today_date = now_local.date()
-                selected_today_models = auto_select_models_for_location(
-                    float(loc_cfg_today.get("latitude")),
-                    float(loc_cfg_today.get("longitude")),
-                    requested_days=1,
-                )
-                use_nowcast = should_use_satellite_nowcast_auto(
-                    float(loc_cfg_today.get("latitude")),
-                    float(loc_cfg_today.get("longitude")),
-                    requested_days=1,
-                ) and hours_until_offpeak_start <= 6
-                ensemble_today = build_ensemble_forecast(
-                    loc=loc,
-                    target_date=today_date,
-                    tz=tz,
-                    weather_models=selected_today_models,
-                    ensemble_method="weighted",
-                    pv_uncertainty=False,
-                    requested_days=1,
-                    use_satellite_nowcast_0_6h=use_nowcast,
-                    expert_mode=False,
-                    selection_mode="auto",
-                )
-                start_h = core._to_local_ts(now_local, tz).ceil("h")
-                end_h = core._to_local_ts(offpeak_start, tz).floor("h")
-                today_remaining_pv_kwh = 0.0
-                if end_h > start_h:
-                    pv_window = pd.to_numeric(
-                        ensemble_today.pv_ensemble_p50.reindex(pd.date_range(start_h, end_h, freq="h", inclusive="left")),
-                        errors="coerce",
-                    ).fillna(0.0)
-                    today_remaining_pv_kwh = float(pv_window.sum())
-                pv_credit_kwh = min(today_remaining_pv_kwh * 0.5, prelim_load_kwh)
-                pv_credit_available = True
-            except Exception as exc:
-                warnings.append(f"PV credit unavailable for SOC off-peak estimate: {exc}")
-                pv_credit_kwh = 0.0
-                pv_credit_available = False
-
-        estimated_soc_percent, hours_until_offpeak_start, soc_offpeak_confidence, soc_offpeak_method, soc_offpeak_debug = core.estimate_soc_at_offpeak_start(
-            soc_now_percent=float(soc_percent),
-            now_local=now_local,
-            offpeak_start=offpeak_start,
-            effective_daily_kwh=float(effective_daily_kwh),
-            pv_credit_kwh=float(pv_credit_kwh),
-            battery_kwh=battery_kwh,
-            min_soc_percent=min_soc_percent,
-            used_history=bool(used_history),
-            pv_credit_available=bool(pv_credit_available),
-        )
         inputs_used["soc_at_22_percent"] = float(estimated_soc_percent)
         inputs_used["soc_offpeak_start_estimated_percent"] = float(estimated_soc_percent)
-        decision_quantile, decision_reason = pick_decision_quantile(soc_offpeak_confidence, uncertainty_enabled=bool(pv_uncertainty))
-        if decision_quantile == "p50":
-            decision_series = ensemble_tomorrow.pv_ensemble_p50
-        else:
-            decision_series = getattr(ensemble_tomorrow, "pv_ensemble_p25", None)
-        if decision_series is None:
-            decision_series = ensemble_tomorrow.pv_ensemble_p50
-        if decision_series is None:
-            decision_series = ensemble_tomorrow.pv_ensemble_p50
-            pv["pv_total_decision_kwh"] = pd.to_numeric(decision_series.reindex(pv.index), errors="coerce")
 
-        with diagnostics.stage("planner_simulation"):
-            detail_df, flows_df, soc_series, charge_kw, cutoff_soc, cutoff_reason, charge_note, charge_target_reachable, charge_warning_text = core.run_detailed_plan(
-                target_date=target_date,
-                weather=weather,
-                pv_df=pv,
-                consumption_kwh=cons,
-                soc_at_22_percent=estimated_soc_percent,
-                buffer_percent=buffer_percent,
-                max_ac_charge_power_kw=user_max_ac_kw,
-            )
-        cutoff_adjusted_for_pv_headroom = str(cutoff_reason).startswith("CONFLICT")
-        cutoff_adjustment_reason = (
-            "Cutoff lowered to preserve PV headroom for daytime surplus handling."
-            if cutoff_adjusted_for_pv_headroom
-            else ""
+        planner_input_context = self._assemble_planner_inputs(
+            pv=pv,
+            ensemble_tomorrow=ensemble_tomorrow,
+            soc_offpeak_confidence=soc_offpeak_confidence,
+            pv_uncertainty=bool(pv_uncertainty),
         )
-        pv_surplus_store_econ_enabled = bool(flows_df.attrs.get("pv_surplus_store_econ_enabled", False))
-        pv_surplus_export_preferred_kwh = float(flows_df.attrs.get("pv_surplus_export_preferred_kwh", 0.0))
-        pv_surplus_store_preferred_kwh = float(flows_df.attrs.get("pv_surplus_store_preferred_kwh", 0.0))
-        pv_store_vs_export_decisions_count = int(flows_df.attrs.get("pv_store_vs_export_decisions_count", 0))
-        allow_injection_to_grid = bool(flows_df.attrs.get("allow_injection_to_grid", cfg.get("tariff", {}).get("allow_injection_to_grid", True)))
-        export_blocked_by_policy = bool(flows_df.attrs.get("export_blocked_by_policy", not allow_injection_to_grid))
-        blocked_export_kwh_total = float(flows_df.attrs.get("blocked_export_kwh_total", 0.0))
-        max_grid_import_kw = float(flows_df.attrs.get("max_grid_import_kw", cfg.get("tariff", {}).get("max_grid_import_kw", 0.0)))
-        grid_import_cap_active = bool(flows_df.attrs.get("grid_import_cap_active", max_grid_import_kw > 0.0))
-        grid_import_cap_binding_events = int(flows_df.attrs.get("grid_import_cap_binding_events", 0))
-        charge_effective_cap_kw = float(flows_df.attrs.get("charge_effective_cap_kw", 0.0))
-        charge_limit_reason_raw = str(flows_df.attrs.get("charge_limit_reason_raw", "none") or "none")
-        grid_import_cap_load_exceeds_events = int(flows_df.attrs.get("grid_import_cap_load_exceeds_events", 0))
-        grid_import_cap_limited_charge_kwh_total = float(flows_df.attrs.get("grid_import_cap_limited_charge_kwh_total", 0.0))
-        if not allow_injection_to_grid:
-            warnings.append(
-                "Grid injection is disabled by settings. Excess PV will be curtailed when battery storage is not available."
-            )
-        if grid_import_cap_active:
-            warnings.append(
-                f"Grid import cap is enabled: {max_grid_import_kw:g} kW. Battery grid charging may be limited to respect the cap."
-            )
-        if grid_import_cap_load_exceeds_events > 0:
-            warnings.append("Grid import cap exceeded by household load in some hours (cannot be enforced).")
-        if grid_import_cap_binding_events > 0:
-            warnings.append("Grid import cap limited battery charging; target may be unreachable.")
-        charge_limit_reason = "grid_import_cap" if grid_import_cap_binding_events > 0 else charge_limit_reason_raw
-        grid_import = float(flows_df.get("grid_import_kwh", pd.Series(dtype=float)).sum())
-        grid_export = float(flows_df.get("grid_export_kwh", pd.Series(dtype=float)).sum())
-        canonical_tomorrow_total_kwh = (float(pd.to_numeric(pv["pv_total_kwh"], errors="coerce").sum(min_count=1)) if "pv_total_kwh" in pv.columns else None)
-        if canonical_tomorrow_total_kwh is not None and pd.isna(canonical_tomorrow_total_kwh):
-            canonical_tomorrow_total_kwh = float(ensemble_tomorrow.pv_ensemble_p50.sum(min_count=1)) if ensemble_tomorrow.pv_ensemble_p50 is not None else None
-        tomorrow_coverage_hours = int(pd.to_numeric(pv.get("pv_total_kwh", pd.Series(dtype=float)), errors="coerce").notna().sum())
-        pv_forecast_kwh = canonical_tomorrow_total_kwh
-        cons_forecast_kwh = float(cons.sum())
+        decision_quantile = planner_input_context["decision_quantile"]
+        decision_reason = planner_input_context["decision_reason"]
+
+        detail_df, flows_df, soc_series, charge_kw, cutoff_soc, cutoff_reason, charge_note, charge_target_reachable, charge_warning_text = self._invoke_planner(
+            diagnostics=diagnostics,
+            target_date=target_date,
+            weather=weather,
+            pv=pv,
+            cons=cons,
+            estimated_soc_percent=estimated_soc_percent,
+            buffer_percent=buffer_percent,
+            user_max_ac_kw=user_max_ac_kw,
+        )
+
+        planner_result_context = self._unpack_planner_result(
+            cutoff_reason=str(cutoff_reason),
+            flows_df=flows_df,
+            cfg=cfg,
+            warnings=warnings,
+        )
+        cutoff_adjusted_for_pv_headroom = bool(planner_result_context["cutoff_adjusted_for_pv_headroom"])
+        cutoff_adjustment_reason = str(planner_result_context["cutoff_adjustment_reason"])
+        pv_surplus_store_econ_enabled = bool(planner_result_context["pv_surplus_store_econ_enabled"])
+        pv_surplus_export_preferred_kwh = float(planner_result_context["pv_surplus_export_preferred_kwh"])
+        pv_surplus_store_preferred_kwh = float(planner_result_context["pv_surplus_store_preferred_kwh"])
+        pv_store_vs_export_decisions_count = int(planner_result_context["pv_store_vs_export_decisions_count"])
+        allow_injection_to_grid = bool(planner_result_context["allow_injection_to_grid"])
+        export_blocked_by_policy = bool(planner_result_context["export_blocked_by_policy"])
+        blocked_export_kwh_total = float(planner_result_context["blocked_export_kwh_total"])
+        max_grid_import_kw = float(planner_result_context["max_grid_import_kw"])
+        grid_import_cap_active = bool(planner_result_context["grid_import_cap_active"])
+        grid_import_cap_binding_events = int(planner_result_context["grid_import_cap_binding_events"])
+        charge_effective_cap_kw = float(planner_result_context["charge_effective_cap_kw"])
+        charge_limit_reason = str(planner_result_context["charge_limit_reason"])
+        grid_import_cap_load_exceeds_events = int(planner_result_context["grid_import_cap_load_exceeds_events"])
+        grid_import_cap_limited_charge_kwh_total = float(planner_result_context["grid_import_cap_limited_charge_kwh_total"])
+        grid_import = float(planner_result_context["grid_import"])
+        grid_export = float(planner_result_context["grid_export"])
+
+        post_planner_context = self._build_post_planner_context(pv=pv, ensemble_tomorrow=ensemble_tomorrow, cons=cons)
+        canonical_tomorrow_total_kwh = post_planner_context["canonical_tomorrow_total_kwh"]
+        tomorrow_coverage_hours = int(post_planner_context["tomorrow_coverage_hours"])
+        pv_forecast_kwh = post_planner_context["pv_forecast_kwh"]
+        cons_forecast_kwh = float(post_planner_context["cons_forecast_kwh"])
         if "load_kwh" not in pv.columns:
             pv = core.add_load_and_surplus_columns(pv, cons_forecast_kwh)
         with diagnostics.stage("savings_evaluation"):
