@@ -1385,9 +1385,10 @@ def _materialize_full_run_hourly_sections(hourly_rows: list[sqlite3.Row]) -> dic
         return {}
 
     idx = _hourly_materialization_index(hourly)
-    pv_df = _build_hourly_pv_section(hourly, idx)
-    flows_df = _build_hourly_flows_section(hourly, idx)
-    soc_df = _build_hourly_soc_section(hourly, idx)
+    numeric = _hourly_numeric_materialization_columns(hourly)
+    pv_df = _build_hourly_pv_section(numeric, idx)
+    flows_df = _build_hourly_flows_section(numeric, idx)
+    soc_df = _build_hourly_soc_section(numeric, idx)
     return {
         "pv": _to_split_orient_payload(pv_df),
         "flows": _to_split_orient_payload(flows_df),
@@ -1396,38 +1397,66 @@ def _materialize_full_run_hourly_sections(hourly_rows: list[sqlite3.Row]) -> dic
 
 
 def _hourly_rows_to_frame(hourly_rows: list[sqlite3.Row]) -> pd.DataFrame:
-    return pd.DataFrame([dict(row) for row in hourly_rows])
+    if not hourly_rows:
+        return pd.DataFrame()
+    first_row = hourly_rows[0]
+    if hasattr(first_row, "keys"):
+        return pd.DataFrame.from_records(hourly_rows, columns=list(first_row.keys()))
+    return pd.DataFrame.from_records(hourly_rows)
 
 
 def _hourly_materialization_index(hourly: pd.DataFrame) -> pd.Series:
     return pd.to_datetime(hourly["ts_local"], errors="coerce")
 
 
-def _build_hourly_pv_section(hourly: pd.DataFrame, idx: pd.Series) -> pd.DataFrame:
-    pv_df = pd.DataFrame(index=idx)
-    pv_df["pv_total_kwh"] = pd.to_numeric(hourly["pv_kwh"], errors="coerce")
-    pv_df["pv_total_unclipped_kwh"] = pd.to_numeric(hourly.get("pv_total_unclipped_kwh"), errors="coerce").fillna(pv_df["pv_total_kwh"])
-    pv_df["pv_east_kwh"] = pd.to_numeric(hourly.get("pv_east_kwh"), errors="coerce")
-    pv_df["pv_south_kwh"] = pd.to_numeric(hourly.get("pv_south_kwh"), errors="coerce").fillna(pv_df["pv_total_kwh"])
-    pv_df["pv_clipped_kwh"] = pd.to_numeric(hourly.get("pv_clipped_kwh"), errors="coerce")
-    pv_df["load_kwh"] = pd.to_numeric(hourly["load_kwh"], errors="coerce").fillna(0.0)
-    return pv_df
+def _hourly_numeric_materialization_columns(hourly: pd.DataFrame) -> dict[str, pd.Series]:
+    pv_total = pd.to_numeric(hourly["pv_kwh"], errors="coerce")
+    soc_pct = pd.to_numeric(hourly["soc_pct"], errors="coerce").fillna(0.0)
+    return {
+        "pv_total_kwh": pv_total,
+        "pv_total_unclipped_kwh": pd.to_numeric(hourly.get("pv_total_unclipped_kwh"), errors="coerce").fillna(pv_total),
+        "pv_east_kwh": pd.to_numeric(hourly.get("pv_east_kwh"), errors="coerce"),
+        "pv_south_kwh": pd.to_numeric(hourly.get("pv_south_kwh"), errors="coerce").fillna(pv_total),
+        "pv_clipped_kwh": pd.to_numeric(hourly.get("pv_clipped_kwh"), errors="coerce"),
+        "load_kwh": pd.to_numeric(hourly["load_kwh"], errors="coerce").fillna(0.0),
+        "grid_import_kwh": pd.to_numeric(hourly["grid_import_kwh"], errors="coerce").fillna(0.0),
+        "grid_export_kwh": pd.to_numeric(hourly["grid_export_kwh"], errors="coerce").fillna(0.0),
+        "batt_charge_kwh": pd.to_numeric(hourly["batt_charge_kwh"], errors="coerce").fillna(0.0),
+        "batt_discharge_kwh": pd.to_numeric(hourly["batt_discharge_kwh"], errors="coerce").fillna(0.0),
+        "soc_end_pct": soc_pct,
+        "soc_fraction": soc_pct / 100.0,
+    }
 
 
-def _build_hourly_flows_section(hourly: pd.DataFrame, idx: pd.Series) -> pd.DataFrame:
-    flows_df = pd.DataFrame(index=idx)
-    flows_df["grid_import_kwh"] = pd.to_numeric(hourly["grid_import_kwh"], errors="coerce").fillna(0.0)
-    flows_df["grid_export_kwh"] = pd.to_numeric(hourly["grid_export_kwh"], errors="coerce").fillna(0.0)
-    flows_df["batt_charge_kwh"] = pd.to_numeric(hourly["batt_charge_kwh"], errors="coerce").fillna(0.0)
-    flows_df["batt_discharge_kwh"] = pd.to_numeric(hourly["batt_discharge_kwh"], errors="coerce").fillna(0.0)
-    flows_df["soc_end_pct"] = pd.to_numeric(hourly["soc_pct"], errors="coerce").fillna(0.0)
-    return flows_df
+def _build_hourly_pv_section(numeric: dict[str, pd.Series], idx: pd.Series) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "pv_total_kwh": numeric["pv_total_kwh"],
+            "pv_total_unclipped_kwh": numeric["pv_total_unclipped_kwh"],
+            "pv_east_kwh": numeric["pv_east_kwh"],
+            "pv_south_kwh": numeric["pv_south_kwh"],
+            "pv_clipped_kwh": numeric["pv_clipped_kwh"],
+            "load_kwh": numeric["load_kwh"],
+        },
+        index=idx,
+    )
 
 
-def _build_hourly_soc_section(hourly: pd.DataFrame, idx: pd.Series) -> pd.DataFrame:
-    soc_series = pd.to_numeric(hourly["soc_pct"], errors="coerce").fillna(0.0) / 100.0
-    soc_series.index = idx
-    return soc_series.to_frame(name="value")
+def _build_hourly_flows_section(numeric: dict[str, pd.Series], idx: pd.Series) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "grid_import_kwh": numeric["grid_import_kwh"],
+            "grid_export_kwh": numeric["grid_export_kwh"],
+            "batt_charge_kwh": numeric["batt_charge_kwh"],
+            "batt_discharge_kwh": numeric["batt_discharge_kwh"],
+            "soc_end_pct": numeric["soc_end_pct"],
+        },
+        index=idx,
+    )
+
+
+def _build_hourly_soc_section(numeric: dict[str, pd.Series], idx: pd.Series) -> pd.DataFrame:
+    return pd.DataFrame({"value": numeric["soc_fraction"]}, index=idx)
 
 
 def _to_split_orient_payload(frame: pd.DataFrame) -> dict[str, Any]:
