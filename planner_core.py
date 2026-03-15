@@ -1919,12 +1919,17 @@ def compute_euro_savings_no_battery_vs_plan(
     """
     Returns cycle totals for a fixed 24h operational horizon from off-peak start, plus tomorrow detail.
     """
+    runtime = _runtime_state_snapshot()
+    timezone = runtime.timezone
+    enable_invariant_checks = runtime.enable_invariant_checks
+    battery_ac_charge_eff = runtime.battery_ac_charge_eff
+
     inj = float(tariff_cfg.get("injection_grid_price_eur_per_kwh", 0.0))
 
-    tomorrow_start = pd.Timestamp(dt.datetime.combine(tomorrow_date, dt.time(0, 0)), tz=TIMEZONE)
+    tomorrow_start = pd.Timestamp(dt.datetime.combine(tomorrow_date, dt.time(0, 0)), tz=timezone)
     tomorrow_end = tomorrow_start + dt.timedelta(days=1)
 
-    idx_tomorrow = pd.date_range(tomorrow_start, tomorrow_end, freq="h", inclusive="left", tz=TIMEZONE)
+    idx_tomorrow = pd.date_range(tomorrow_start, tomorrow_end, freq="h", inclusive="left", tz=timezone)
     window_start, window_end = compute_charging_window_for_target_date(tomorrow_date, tariff_cfg)
     windows_tom = normalize_windows(get_offpeak_windows_for_date(tomorrow_date, tariff_cfg))
     all_day = windows_tom == [("00:00", "24:00")]
@@ -1934,8 +1939,8 @@ def compute_euro_savings_no_battery_vs_plan(
         cycle_start = window_start
     cycle_end = cycle_start + dt.timedelta(hours=24)
 
-    idx_cycle = pd.date_range(cycle_start, cycle_end, freq="h", inclusive="left", tz=TIMEZONE)
-    if ENABLE_INVARIANT_CHECKS:
+    idx_cycle = pd.date_range(cycle_start, cycle_end, freq="h", inclusive="left", tz=timezone)
+    if enable_invariant_checks:
         assert len(idx_cycle) == 24, "Cycle horizon must always span 24 hourly slots."
 
     pv_baseline_col_used = "pv_total_decision_kwh" if "pv_total_decision_kwh" in pv_df.columns else "pv_total_kwh"
@@ -2041,7 +2046,7 @@ def compute_euro_savings_no_battery_vs_plan(
         dtype=float,
     )
 
-    if ENABLE_INVARIANT_CHECKS:
+    if enable_invariant_checks:
         small_eps = 1e-6
         assert abs(float(load_cycle.sum()) - float(total_consumption_kwh)) < small_eps, (
             "Cycle load mismatch: expected total_consumption_kwh over cycle horizon."
@@ -2088,7 +2093,7 @@ def compute_euro_savings_no_battery_vs_plan(
         cycle_stored_energy_delta_kwh = (cycle_end_soc - cycle_start_soc) * BATTERY_KWH
         cycle_soc_delta_pct = (cycle_end_soc - cycle_start_soc) * 100.0
         replacement_price = float(import_price_eur_per_kwh(cycle_end, tariff_cfg))
-        charge_eff = float(BATTERY_AC_CHARGE_EFF)
+        charge_eff = float(battery_ac_charge_eff)
         replacement_cost_per_stored_kwh = replacement_price / charge_eff if charge_eff > 1e-9 else 0.0
         terminal_battery_value_eur_cycle = cycle_stored_energy_delta_kwh * replacement_cost_per_stored_kwh
         savings_cycle_terminal_value_applied = True
@@ -2144,7 +2149,7 @@ def compute_euro_savings_no_battery_vs_plan(
     if len(hourly_savings_cycle_hour_labels) != 24:
         hourly_savings_cycle_hour_labels = [f"{h:02d}:00" for h in range(24)]
 
-    if ENABLE_INVARIANT_CHECKS:
+    if enable_invariant_checks:
         assert len(hourly_benefit_vs_grid_only_tomorrow_cash_list) == 24
         assert len(hourly_benefit_vs_grid_only_cycle_cash_list) == 24
 
@@ -3780,6 +3785,12 @@ def simulate_night_charging_series(
     tomorrow_date: Optional[dt.date] = None,
     precomputed_loads: Optional[pd.Series] = None,
 ) -> "pd.DataFrame":
+    runtime = _runtime_state_snapshot()
+    min_soc = runtime.min_soc
+    battery_max_soc = runtime.battery_max_soc
+    battery_discharge_eff = runtime.battery_discharge_eff
+    battery_ac_charge_eff = runtime.battery_ac_charge_eff
+    enable_invariant_checks = runtime.enable_invariant_checks
     cfg = tariff_cfg or _runtime_tariff_cfg()
     if session_start is None or session_end is None:
         if tomorrow_date is None:
@@ -3797,9 +3808,9 @@ def simulate_night_charging_series(
         cycle_loads = build_cycle_hourly_load_series(tomorrow_date, total_consumption_kwh, tariff_cfg=cfg)
         loads = pd.to_numeric(cycle_loads.reindex(idx), errors="coerce").fillna(0.0).astype(float)
     energy = max(0.0, min(1.0, soc_at_22)) * BATTERY_KWH
-    min_energy = MIN_SOC * BATTERY_KWH
-    max_energy = BATTERY_MAX_SOC * BATTERY_KWH
-    charge_cutoff_energy = min(MAX_CUTOFF_SOC, max(MIN_SOC, cutoff_soc)) * BATTERY_KWH
+    min_energy = min_soc * BATTERY_KWH
+    max_energy = battery_max_soc * BATTERY_KWH
+    charge_cutoff_energy = min(MAX_CUTOFF_SOC, max(min_soc, cutoff_soc)) * BATTERY_KWH
     night_load_from_battery = should_use_battery_for_offpeak_load(cfg)
     max_grid_import_kw = float((cfg or {}).get("max_grid_import_kw", 0.0))
     grid_import_cap_active = max_grid_import_kw > 0.0
@@ -3820,32 +3831,32 @@ def simulate_night_charging_series(
         if night_load_from_battery and remaining_load > 0:
             available = max(0.0, energy - min_energy)
             discharge_power_limited = BATTERY_MAX_DISCHARGE_KW * step_h
-            needed_from_batt = remaining_load / BATTERY_DISCHARGE_EFF if BATTERY_DISCHARGE_EFF > 0 else remaining_load
+            needed_from_batt = remaining_load / battery_discharge_eff if battery_discharge_eff > 0 else remaining_load
             discharge = min(available, needed_from_batt, discharge_power_limited)
             energy -= discharge
             batt_discharge_kwh = discharge
-            delivered = discharge * BATTERY_DISCHARGE_EFF
+            delivered = discharge * battery_discharge_eff
             remaining_load = max(0.0, remaining_load - delivered)
 
         in_overnight_window = (ts >= pd.Timestamp(session_start)) and (ts < pd.Timestamp(session_end))
         if in_overnight_window and energy < charge_cutoff_energy - 1e-9:
             charge_grid_kwh = min(charge_kw * step_h, BATTERY_MAX_CHARGE_KW * step_h)
             room = max(0.0, min(max_energy, charge_cutoff_energy) - energy)
-            charge_to_battery = min(room, charge_grid_kwh * BATTERY_AC_CHARGE_EFF)
+            charge_to_battery = min(room, charge_grid_kwh * battery_ac_charge_eff)
             if grid_import_cap_active:
                 cap_import_kwh = max_grid_import_kw * step_h
                 load_import_kwh = remaining_load
                 if load_import_kwh > cap_import_kwh + 1e-9:
                     grid_import_cap_load_exceeds_events += 1
                 charge_import_headroom_kwh = max(0.0, cap_import_kwh - load_import_kwh)
-                max_charge_to_battery_by_gridcap = charge_import_headroom_kwh * BATTERY_AC_CHARGE_EFF
+                max_charge_to_battery_by_gridcap = charge_import_headroom_kwh * battery_ac_charge_eff
                 unclamped_charge_to_battery = charge_to_battery
                 charge_to_battery = min(charge_to_battery, max_charge_to_battery_by_gridcap)
                 if unclamped_charge_to_battery - charge_to_battery > 1e-9:
                     grid_import_cap_binding_events += 1
                     grid_import_cap_limited_charge_kwh_total += (unclamped_charge_to_battery - charge_to_battery)
             if charge_to_battery > 0:
-                charging_grid_import = charge_to_battery / BATTERY_AC_CHARGE_EFF if BATTERY_AC_CHARGE_EFF > 0 else 0.0
+                charging_grid_import = charge_to_battery / battery_ac_charge_eff if battery_ac_charge_eff > 0 else 0.0
                 energy = min(max_energy, energy + charge_to_battery)
                 batt_charge_kwh = charge_to_battery
 
@@ -3869,7 +3880,7 @@ def simulate_night_charging_series(
     night_df.attrs["grid_import_cap_binding_events"] = int(grid_import_cap_binding_events)
     night_df.attrs["grid_import_cap_load_exceeds_events"] = int(grid_import_cap_load_exceeds_events)
     night_df.attrs["grid_import_cap_limited_charge_kwh_total"] = float(grid_import_cap_limited_charge_kwh_total)
-    if ENABLE_INVARIANT_CHECKS:
+    if enable_invariant_checks:
         validate_flow_invariants(night_df, "night")
     return night_df
 
@@ -3884,18 +3895,26 @@ def simulate_full_day_soc(
     tariff_cfg: Optional[dict] = None,
     pv_col: str = "pv_total_kwh",
 ) -> Tuple["pd.Series", "pd.DataFrame"]:
+    runtime = _runtime_state_snapshot()
+    timezone = runtime.timezone
+    min_soc = runtime.min_soc
+    battery_max_soc = runtime.battery_max_soc
+    battery_discharge_eff = runtime.battery_discharge_eff
+    battery_ac_charge_eff = runtime.battery_ac_charge_eff
+    enable_invariant_checks = runtime.enable_invariant_checks
+
     if pv_col not in df.columns:
         raise KeyError(f"simulate_full_day_soc missing pv_col={pv_col!r} in df columns")
 
-    tomorrow_start = pd.Timestamp(dt.datetime.combine(tomorrow_date, dt.time(0, 0)), tz=TIMEZONE)
+    tomorrow_start = pd.Timestamp(dt.datetime.combine(tomorrow_date, dt.time(0, 0)), tz=timezone)
     tomorrow_end = tomorrow_start + dt.timedelta(days=1)
-    tomorrow_idx = pd.date_range(tomorrow_start, tomorrow_end, freq="h", inclusive="left", tz=TIMEZONE)
+    tomorrow_idx = pd.date_range(tomorrow_start, tomorrow_end, freq="h", inclusive="left", tz=timezone)
 
     cfg = tariff_cfg or _runtime_tariff_cfg()
     window_start, window_end = compute_charging_window_for_target_date(tomorrow_date, cfg)
 
     cycle_loads = build_cycle_hourly_load_series(tomorrow_date, total_consumption_kwh, tariff_cfg=cfg)
-    night_loads = pd.to_numeric(cycle_loads.reindex(pd.date_range(window_start, window_end, freq="h", inclusive="left", tz=TIMEZONE)), errors="coerce").fillna(0.0).astype(float)
+    night_loads = pd.to_numeric(cycle_loads.reindex(pd.date_range(window_start, window_end, freq="h", inclusive="left", tz=timezone)), errors="coerce").fillna(0.0).astype(float)
 
     night_df = simulate_night_charging_series(
         soc_at_22,
@@ -3910,14 +3929,14 @@ def simulate_full_day_soc(
     day_start_ts = window_end
     soc_day_start = float(night_df.iloc[-1]["soc_end_pct"]) / 100.0 if not night_df.empty else soc_at_22
 
-    day_idx = pd.date_range(day_start_ts, tomorrow_end, freq="h", inclusive="left", tz=TIMEZONE)
+    day_idx = pd.date_range(day_start_ts, tomorrow_end, freq="h", inclusive="left", tz=timezone)
     dt_h = timestep_hours(day_idx)
     loads = pd.to_numeric(cycle_loads.reindex(day_idx), errors="coerce").fillna(0.0).astype(float)
     pv_total = pd.to_numeric(df[pv_col].reindex(day_idx), errors="coerce").fillna(0.0)
     pv_unclipped = pd.to_numeric(df.get("pv_total_unclipped_kwh", pv_total).reindex(day_idx), errors="coerce")
     pv_unclipped = pv_unclipped.combine_first(pv_total).fillna(0.0)
 
-    if ENABLE_INVARIANT_CHECKS:
+    if enable_invariant_checks:
         load_cycle_total_kwh = float(cycle_loads.sum())
         load_night_kwh = float(night_loads.sum())
         load_day_kwh = float(loads.sum())
@@ -3927,9 +3946,9 @@ def simulate_full_day_soc(
             raise ValueError("Night + day load total does not match target consumption.")
 
     energy = max(0.0, min(1.0, soc_day_start)) * BATTERY_KWH
-    min_energy = MIN_SOC * BATTERY_KWH
-    max_energy = BATTERY_MAX_SOC * BATTERY_KWH
-    charge_cutoff_energy = min(MAX_CUTOFF_SOC, max(MIN_SOC, cutoff_soc)) * BATTERY_KWH
+    min_energy = min_soc * BATTERY_KWH
+    max_energy = battery_max_soc * BATTERY_KWH
+    charge_cutoff_energy = min(MAX_CUTOFF_SOC, max(min_soc, cutoff_soc)) * BATTERY_KWH
 
     rows = []
     econ_eps = 1e-6
@@ -4035,31 +4054,31 @@ def simulate_full_day_soc(
         if allow_batt_for_load and remaining_load > 0:
             available = max(0.0, energy - min_energy)
             discharge_power_limited = BATTERY_MAX_DISCHARGE_KW * step_h
-            needed_from_batt = remaining_load / BATTERY_DISCHARGE_EFF if BATTERY_DISCHARGE_EFF > 0 else remaining_load
+            needed_from_batt = remaining_load / battery_discharge_eff if battery_discharge_eff > 0 else remaining_load
             discharge = min(available, needed_from_batt, discharge_power_limited)
             energy -= discharge
             batt_discharge_kwh = discharge
-            delivered = discharge * BATTERY_DISCHARGE_EFF
+            delivered = discharge * battery_discharge_eff
             remaining_load = max(0.0, remaining_load - delivered)
 
         if offpeak and energy < charge_cutoff_energy - 1e-9:
             charge_grid_kwh = min(charge_kw * step_h, BATTERY_MAX_CHARGE_KW * step_h)
             room = max(0.0, min(max_energy, charge_cutoff_energy) - energy)
-            charge_to_battery = min(room, charge_grid_kwh * BATTERY_AC_CHARGE_EFF)
+            charge_to_battery = min(room, charge_grid_kwh * battery_ac_charge_eff)
             if grid_import_cap_active:
                 cap_import_kwh = max_grid_import_kw * step_h
                 load_import_kwh = remaining_load
                 if load_import_kwh > cap_import_kwh + 1e-9:
                     grid_import_cap_load_exceeds_events += 1
                 charge_import_headroom_kwh = max(0.0, cap_import_kwh - load_import_kwh)
-                max_charge_to_battery_by_gridcap = charge_import_headroom_kwh * BATTERY_AC_CHARGE_EFF
+                max_charge_to_battery_by_gridcap = charge_import_headroom_kwh * battery_ac_charge_eff
                 unclamped_charge_to_battery = charge_to_battery
                 charge_to_battery = min(charge_to_battery, max_charge_to_battery_by_gridcap)
                 if unclamped_charge_to_battery - charge_to_battery > 1e-9:
                     grid_import_cap_binding_events += 1
                     grid_import_cap_limited_charge_kwh_total += (unclamped_charge_to_battery - charge_to_battery)
             if charge_to_battery > 0:
-                charging_grid_import = charge_to_battery / BATTERY_AC_CHARGE_EFF if BATTERY_AC_CHARGE_EFF > 0 else 0.0
+                charging_grid_import = charge_to_battery / battery_ac_charge_eff if battery_ac_charge_eff > 0 else 0.0
                 energy = min(max_energy, energy + charge_to_battery)
                 batt_charge_kwh += charge_to_battery
 
@@ -4085,7 +4104,7 @@ def simulate_full_day_soc(
     flows_df = pd.concat([night_tomorrow_df, day_flows_df]).sort_index()
     flows_df = flows_df[~flows_df.index.duplicated(keep="last")]
     flows_df = flows_df.reindex(tomorrow_idx).fillna(0.0)
-    if ENABLE_INVARIANT_CHECKS and not flows_df.index.is_unique:
+    if enable_invariant_checks and not flows_df.index.is_unique:
         raise ValueError("full_day flows contains duplicate timestamps")
     flows_df.attrs["pv_surplus_store_econ_enabled"] = bool(pv_surplus_store_econ_enabled)
     flows_df.attrs["pv_surplus_export_preferred_kwh"] = float(pv_surplus_export_preferred_kwh)
@@ -4100,7 +4119,7 @@ def simulate_full_day_soc(
     flows_df.attrs["grid_import_cap_load_exceeds_events"] = int(grid_import_cap_load_exceeds_events)
     flows_df.attrs["grid_import_cap_limited_charge_kwh_total"] = float(grid_import_cap_limited_charge_kwh_total)
     soc_series = pd.Series(pd.to_numeric(flows_df["soc_end_pct"], errors="coerce").fillna(0.0).values, index=tomorrow_idx, name="soc_percent")
-    if ENABLE_INVARIANT_CHECKS:
+    if enable_invariant_checks:
         validate_flow_invariants(flows_df, "full_day")
     return soc_series, flows_df
 
