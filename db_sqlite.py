@@ -23,6 +23,15 @@ CURRENT_CONFIG_SCHEMA_VERSION = 1
 MAX_PROVIDER_RESPONSE_CHARS = 250_000
 logger = logging.getLogger(__name__)
 
+def _log_context(**fields: object) -> str:
+    parts: list[str] = []
+    for key, value in fields.items():
+        if value is None:
+            continue
+        parts.append(f"{key}={value}")
+    return " ".join(parts)
+
+
 _SQLITE_PROFILE_ENV_VAR = "PVBP_SQLITE_PROFILE"
 _SQLITE_DEFAULT_PROFILE = "laptop"
 _SQLITE_PROFILE_ALIASES = {
@@ -844,6 +853,12 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
     target_date = str(payload.get("target_date") or "")
     if not target_date:
         raise ValueError("target_date is required")
+    op_context = _log_context(
+        operation="insert_forecast_run",
+        storage_action="upsert_forecast_run",
+        run_id=run_id,
+        target_date=target_date,
+    )
 
     run_at_utc = str(payload.get("run_at_utc") or _iso_utc_now())
     timezone = str(payload.get("timezone") or payload.get("system_snapshot", {}).get("timezone") or DEFAULT_TIMEZONE)
@@ -1075,17 +1090,21 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
                     )
                 except Exception:
                     logger.exception(
-                        "db_sqlite provider_payloads_persist_failed run_id=%s rows=%d",
-                        run_id,
+                        "db_sqlite provider_payloads_persist_failed rows=%d %s",
                         len(provider_payload_rows),
+                        _log_context(
+                            operation="insert_forecast_run",
+                            storage_action="insert_provider_payloads",
+                            run_id=run_id,
+                            target_date=target_date,
+                        ),
                     )
             conn.commit()
     except Exception:
         logger.exception(
-            "db_sqlite insert_forecast_run_failed run_id=%s target_date=%s status=%s",
-            run_id,
-            target_date,
+            "db_sqlite insert_forecast_run_failed status=%s %s",
             payload.get("status"),
+            op_context,
         )
         raise
 
@@ -1364,7 +1383,7 @@ def fetch_history_all_runs(db_path: str, limit_days: int | None = None) -> list[
     return [_summary_from_row(row) for row in rows]
 
 
-def _decode_json_payload(raw: Any, default: Any, *, field_name: str = "unknown") -> Any:
+def _decode_json_payload(raw: Any, default: Any, *, field_name: str = "unknown", run_id: str | None = None, operation: str = "decode_json_payload") -> Any:
     if raw is None:
         return default
     if isinstance(raw, (dict, list)):
@@ -1373,16 +1392,23 @@ def _decode_json_payload(raw: Any, default: Any, *, field_name: str = "unknown")
         try:
             return json.loads(raw)
         except (TypeError, ValueError, json.JSONDecodeError):
-            logger.warning("db_sqlite decode_json_payload_failed field=%s", field_name, exc_info=True)
+            logger.warning(
+                "db_sqlite decode_json_payload_failed field=%s %s",
+                field_name,
+                _log_context(operation=operation, storage_action="json_decode", run_id=run_id, field=field_name),
+                exc_info=True,
+            )
             return default
     return default
 
 
 def _full_run_shared_payload(row: sqlite3.Row) -> dict[str, Any]:
-    warnings = _decode_json_payload(row["warnings_json"], [], field_name="warnings_json")
-    inputs_used = _decode_json_payload(row["inputs_used_json"], {}, field_name="inputs_used_json")
-    config_json = _decode_json_payload(row["config_json"], {}, field_name="config_json")
-    weather_ensemble = _decode_json_payload(row["weather_ensemble_json"], {}, field_name="weather_ensemble_json")
+    run_id = str(row["run_id"])
+    decode_operation = "fetch_full_run_payload_decode"
+    warnings = _decode_json_payload(row["warnings_json"], [], field_name="warnings_json", run_id=run_id, operation=decode_operation)
+    inputs_used = _decode_json_payload(row["inputs_used_json"], {}, field_name="inputs_used_json", run_id=run_id, operation=decode_operation)
+    config_json = _decode_json_payload(row["config_json"], {}, field_name="config_json", run_id=run_id, operation=decode_operation)
+    weather_ensemble = _decode_json_payload(row["weather_ensemble_json"], {}, field_name="weather_ensemble_json", run_id=run_id, operation=decode_operation)
     return {
         "run_id": row["run_id"],
         "target_date": row["target_date"],
@@ -1549,27 +1575,49 @@ def _build_full_run_payload(row: sqlite3.Row, hourly_rows: list[sqlite3.Row]) ->
 
 
 def fetch_full_run_by_id(db_path: str, run_id: str) -> dict | None:
+    op_context = _log_context(
+        operation="fetch_full_run_by_id",
+        storage_action="select_full_run",
+        retrieval_target="run_id",
+        run_id=run_id,
+    )
     try:
         with _connect(db_path) as conn:
             row = _fetch_full_run_row(conn, run_id)
             if row is None:
+                logger.info("db_sqlite fetch_full_run_by_id_not_found %s", op_context)
                 return None
             hourly_rows = _fetch_full_run_hourly_rows(conn, row["run_id"])
         return _build_full_run_payload(row, hourly_rows)
     except Exception:
-        logger.exception("db_sqlite fetch_full_run_by_id_failed run_id=%s", run_id)
+        logger.exception("db_sqlite fetch_full_run_by_id_failed %s", op_context)
         raise
 
 
 def fetch_latest_full_run(db_path: str) -> dict | None:
+    op_context = _log_context(
+        operation="fetch_latest_full_run",
+        storage_action="select_latest_run",
+        retrieval_target="latest",
+    )
     try:
         with _connect(db_path) as conn:
             run_id = _fetch_latest_run_id(conn)
     except Exception:
-        logger.exception("db_sqlite fetch_latest_full_run_failed stage=lookup_latest_run_id")
+        logger.exception("db_sqlite fetch_latest_full_run_failed stage=lookup_latest_run_id %s", op_context)
         raise
     if run_id is None:
+        logger.info("db_sqlite fetch_latest_full_run_not_found %s", op_context)
         return None
+    logger.info(
+        "db_sqlite fetch_latest_full_run_resolved %s",
+        _log_context(
+            operation="fetch_latest_full_run",
+            storage_action="select_latest_run",
+            retrieval_target="latest",
+            run_id=run_id,
+        ),
+    )
     return fetch_full_run_by_id(db_path, run_id)
 
 
