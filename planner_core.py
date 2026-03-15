@@ -527,6 +527,150 @@ def validate_config(cfg: dict) -> None:
 
 
 def _apply_config_impl(cfg: dict, enforce_pv_defaults: bool) -> None:
+    applied = _derive_applied_runtime_values(cfg, enforce_pv_defaults)
+    _writeback_applied_pv_config(cfg["pv"], applied)
+    _apply_derived_runtime_globals(applied, cfg)
+
+
+@dataclass(frozen=True)
+class _AppliedRuntimeValues:
+    use_geocoding: bool
+    address_query: str
+    latitude: float
+    longitude: float
+    timezone: str
+    panel_wp: int
+    array_south_panels: int
+    array_east_panels: int
+    tilt_east_deg: float
+    tilt_south_deg: float
+    azimuth_east_deg: float
+    azimuth_south_deg: float
+    performance_ratio: float
+    inverter_eff: float
+    pv_loss_model: str
+    pv_iam_model: str
+    pv_iam_ashrae_b: float
+    pv_albedo: float | None
+    inverter_ac_model: str
+    pv_calibration_factor: float
+    pv_calibration_factor_east: float
+    pv_calibration_factor_south: float
+    inverter_ac_kw_limit: float
+    battery_kwh: float
+    min_soc_percent: float
+    max_cutoff_soc_percent: float
+    battery_max_soc_percent: float
+    battery_max_charge_kw: float
+    battery_max_discharge_kw: float
+    max_ac_charge_kw_hard_limit: float
+    load_profile: list[float]
+    peak_grid_price_eur_per_kwh: float
+    offpeak_grid_price_eur_per_kwh: float
+    injection_grid_price_eur_per_kwh: float
+    offpeak_windows_by_dow: dict[int, list[tuple[str, str]]]
+    enable_invariant_checks: bool
+    enforce_pv_defaults: bool
+
+
+def _derive_applied_runtime_values(cfg: dict, enforce_pv_defaults: bool) -> _AppliedRuntimeValues:
+    location = cfg["location"]
+    pv = cfg["pv"]
+    battery = cfg["battery"]
+    load_profile = cfg["load_profile"]
+    tariff = cfg["tariff"]
+    system = cfg.get("system", {})
+
+    inverter_eff = float(ENFORCED_PV_DEFAULTS["inverter_eff"]) if enforce_pv_defaults else float(pv.get("inverter_eff", INVERTER_EFF))
+    pv_loss_model = (
+        str(ENFORCED_PV_DEFAULTS["pv_loss_model"]).strip().lower()
+        if enforce_pv_defaults
+        else str(pv.get("pv_loss_model", pv.get("loss_model", PV_LOSS_MODEL))).strip().lower()
+    )
+    pv_iam_model = (
+        str(ENFORCED_PV_DEFAULTS["iam_model"]).strip().lower()
+        if enforce_pv_defaults
+        else str(pv.get("iam_model", PV_IAM_MODEL)).strip().lower()
+    )
+    pv_iam_ashrae_b = (
+        float(ENFORCED_PV_DEFAULTS["iam_ashrae_b"])
+        if enforce_pv_defaults
+        else float(pv.get("iam_ashrae_b", PV_IAM_ASHRAE_B) or ENFORCED_PV_DEFAULTS["iam_ashrae_b"])
+    )
+    pv_albedo = float(ENFORCED_PV_DEFAULTS["albedo"]) if enforce_pv_defaults else (None if pv.get("albedo") is None else float(pv.get("albedo")))
+    inverter_ac_model = (
+        str(ENFORCED_PV_DEFAULTS["inverter_ac_model"]).strip().lower()
+        if enforce_pv_defaults
+        else str(pv.get("inverter_ac_model", INVERTER_AC_MODEL)).strip().lower()
+    )
+
+    if pv_loss_model not in {"split", "combined"}:
+        raise ValueError("pv.pv_loss_model must be one of {'split', 'combined'}.")
+    if inverter_ac_model not in {"linear", "pvwatts"}:
+        raise ValueError("pv.inverter_ac_model must be one of {'linear', 'pvwatts'}.")
+    if pv_iam_model not in {"none", "ashrae"}:
+        raise ValueError("pv.iam_model must be one of {'none', 'ashrae'}.")
+
+    pv_calibration_factor = float(pv.get("pv_calibration_factor", 1.0) or 1.0)
+    base_calibration_factor_east_raw = pv.get("pv_calibration_factor_east", 1.0)
+    base_calibration_factor_south_raw = pv.get("pv_calibration_factor_south", 1.0)
+    base_calibration_factor_east = 1.0 if base_calibration_factor_east_raw is None else float(base_calibration_factor_east_raw)
+    base_calibration_factor_south = 1.0 if base_calibration_factor_south_raw is None else float(base_calibration_factor_south_raw)
+
+    return _AppliedRuntimeValues(
+        use_geocoding=bool(location["use_geocoding"]),
+        address_query=str(location["address_query"]),
+        latitude=float(location["latitude"]),
+        longitude=float(location["longitude"]),
+        timezone=str(location["timezone"]),
+        panel_wp=int(pv["panel_wp"]),
+        array_south_panels=int(pv["array_south_panels"]),
+        array_east_panels=int(pv["array_east_panels"]),
+        tilt_east_deg=float(pv["tilt_east_deg"]),
+        tilt_south_deg=float(pv["tilt_south_deg"]),
+        azimuth_east_deg=float(pv["azimuth_east_deg"]),
+        azimuth_south_deg=float(pv["azimuth_south_deg"]),
+        performance_ratio=float(pv["performance_ratio"]),
+        inverter_eff=inverter_eff,
+        pv_loss_model=pv_loss_model,
+        pv_iam_model=pv_iam_model,
+        pv_iam_ashrae_b=pv_iam_ashrae_b,
+        pv_albedo=pv_albedo,
+        inverter_ac_model=inverter_ac_model,
+        pv_calibration_factor=pv_calibration_factor,
+        pv_calibration_factor_east=pv_calibration_factor * base_calibration_factor_east,
+        pv_calibration_factor_south=pv_calibration_factor * base_calibration_factor_south,
+        inverter_ac_kw_limit=float(pv["inverter_ac_kw_limit"]),
+        battery_kwh=float(battery["battery_kwh"]),
+        min_soc_percent=float(battery["min_soc_percent"]),
+        max_cutoff_soc_percent=float(battery["max_cutoff_soc_percent"]),
+        battery_max_soc_percent=float(battery.get("battery_max_soc_percent", 100.0)),
+        battery_max_charge_kw=float(battery["battery_max_charge_kw"]),
+        battery_max_discharge_kw=float(battery["battery_max_discharge_kw"]),
+        max_ac_charge_kw_hard_limit=float(battery["max_ac_charge_kw_hard_limit"]),
+        load_profile=[float(v) for v in load_profile["load_profile_24h"]],
+        peak_grid_price_eur_per_kwh=float(tariff["peak_grid_price_eur_per_kwh"]),
+        offpeak_grid_price_eur_per_kwh=float(tariff["offpeak_grid_price_eur_per_kwh"]),
+        injection_grid_price_eur_per_kwh=float(tariff["injection_grid_price_eur_per_kwh"]),
+        offpeak_windows_by_dow=parse_offpeak_windows_by_dow(tariff["offpeak_windows_by_dow"]),
+        enable_invariant_checks=bool(system.get("enable_invariant_checks", ENABLE_INVARIANT_CHECKS)),
+        enforce_pv_defaults=enforce_pv_defaults,
+    )
+
+
+def _writeback_applied_pv_config(pv_cfg: dict, applied: _AppliedRuntimeValues) -> None:
+    if not applied.enforce_pv_defaults:
+        return
+    pv_cfg["inverter_eff"] = applied.inverter_eff
+    pv_cfg["loss_model"] = applied.pv_loss_model
+    pv_cfg["pv_loss_model"] = applied.pv_loss_model
+    pv_cfg["iam_model"] = applied.pv_iam_model
+    pv_cfg["iam_ashrae_b"] = applied.pv_iam_ashrae_b
+    pv_cfg["albedo"] = applied.pv_albedo
+    pv_cfg["inverter_ac_model"] = applied.inverter_ac_model
+
+
+def _apply_derived_runtime_globals(applied: _AppliedRuntimeValues, cfg: dict) -> None:
     global USE_GEOCODING, ADDRESS_QUERY, LATITUDE, LONGITUDE, TIMEZONE
     global PANEL_WP, ARRAY_SOUTH_PANELS, ARRAY_EAST_PANELS
     global TILT_EAST_DEG, TILT_SOUTH_DEG, AZIMUTH_EAST_DEG, AZIMUTH_SOUTH_DEG
@@ -538,77 +682,45 @@ def _apply_config_impl(cfg: dict, enforce_pv_defaults: bool) -> None:
     global PEAK_GRID_PRICE_EUR_PER_KWH, OFFPEAK_GRID_PRICE_EUR_PER_KWH, INJECTION_GRID_PRICE_EUR_PER_KWH
     global ENABLE_INVARIANT_CHECKS
 
-    location = cfg["location"]
-    pv = cfg["pv"]
-    battery = cfg["battery"]
-    load_profile = cfg["load_profile"]
-    tariff = cfg["tariff"]
-    system = cfg.get("system", {})
+    USE_GEOCODING = applied.use_geocoding
+    ADDRESS_QUERY = applied.address_query
+    LATITUDE = applied.latitude
+    LONGITUDE = applied.longitude
+    TIMEZONE = applied.timezone
 
-    USE_GEOCODING = bool(location["use_geocoding"])
-    ADDRESS_QUERY = str(location["address_query"])
-    LATITUDE = float(location["latitude"])
-    LONGITUDE = float(location["longitude"])
-    TIMEZONE = str(location["timezone"])
+    PANEL_WP = applied.panel_wp
+    ARRAY_SOUTH_PANELS = applied.array_south_panels
+    ARRAY_EAST_PANELS = applied.array_east_panels
+    TILT_EAST_DEG = applied.tilt_east_deg
+    TILT_SOUTH_DEG = applied.tilt_south_deg
+    AZIMUTH_EAST_DEG = applied.azimuth_east_deg
+    AZIMUTH_SOUTH_DEG = applied.azimuth_south_deg
+    PERFORMANCE_RATIO = applied.performance_ratio
+    INVERTER_EFF = applied.inverter_eff
+    PV_LOSS_MODEL = applied.pv_loss_model
+    PV_IAM_MODEL = applied.pv_iam_model
+    PV_IAM_ASHRAE_B = applied.pv_iam_ashrae_b
+    PV_ALBEDO = applied.pv_albedo
+    INVERTER_AC_MODEL = applied.inverter_ac_model
+    PV_CALIBRATION_FACTOR = applied.pv_calibration_factor
+    PV_CALIBRATION_FACTOR_EAST = applied.pv_calibration_factor_east
+    PV_CALIBRATION_FACTOR_SOUTH = applied.pv_calibration_factor_south
+    INVERTER_AC_KW_LIMIT = applied.inverter_ac_kw_limit
 
-    PANEL_WP = int(pv["panel_wp"])
-    ARRAY_SOUTH_PANELS = int(pv["array_south_panels"])
-    ARRAY_EAST_PANELS = int(pv["array_east_panels"])
-    TILT_EAST_DEG = float(pv["tilt_east_deg"])
-    TILT_SOUTH_DEG = float(pv["tilt_south_deg"])
-    AZIMUTH_EAST_DEG = float(pv["azimuth_east_deg"])
-    AZIMUTH_SOUTH_DEG = float(pv["azimuth_south_deg"])
-    PERFORMANCE_RATIO = float(pv["performance_ratio"])
-    if enforce_pv_defaults:
-        INVERTER_EFF = float(ENFORCED_PV_DEFAULTS["inverter_eff"])
-        PV_LOSS_MODEL = str(ENFORCED_PV_DEFAULTS["pv_loss_model"]).strip().lower()
-        PV_IAM_MODEL = str(ENFORCED_PV_DEFAULTS["iam_model"]).strip().lower()
-        PV_IAM_ASHRAE_B = float(ENFORCED_PV_DEFAULTS["iam_ashrae_b"])
-        PV_ALBEDO = float(ENFORCED_PV_DEFAULTS["albedo"])
-        INVERTER_AC_MODEL = str(ENFORCED_PV_DEFAULTS["inverter_ac_model"]).strip().lower()
-        pv["inverter_eff"] = INVERTER_EFF
-        pv["loss_model"] = PV_LOSS_MODEL
-        pv["pv_loss_model"] = PV_LOSS_MODEL
-        pv["iam_model"] = PV_IAM_MODEL
-        pv["iam_ashrae_b"] = PV_IAM_ASHRAE_B
-        pv["albedo"] = PV_ALBEDO
-        pv["inverter_ac_model"] = INVERTER_AC_MODEL
-    else:
-        INVERTER_EFF = float(pv.get("inverter_eff", INVERTER_EFF))
-        PV_LOSS_MODEL = str(pv.get("pv_loss_model", pv.get("loss_model", PV_LOSS_MODEL))).strip().lower()
-        PV_IAM_MODEL = str(pv.get("iam_model", PV_IAM_MODEL)).strip().lower()
-        PV_IAM_ASHRAE_B = float(pv.get("iam_ashrae_b", PV_IAM_ASHRAE_B) or ENFORCED_PV_DEFAULTS["iam_ashrae_b"])
-        PV_ALBEDO = None if pv.get("albedo") is None else float(pv.get("albedo"))
-        INVERTER_AC_MODEL = str(pv.get("inverter_ac_model", INVERTER_AC_MODEL)).strip().lower()
-    if PV_LOSS_MODEL not in {"split", "combined"}:
-        raise ValueError("pv.pv_loss_model must be one of {'split', 'combined'}.")
-    if INVERTER_AC_MODEL not in {"linear", "pvwatts"}:
-        raise ValueError("pv.inverter_ac_model must be one of {'linear', 'pvwatts'}.")
-    if PV_IAM_MODEL not in {"none", "ashrae"}:
-        raise ValueError("pv.iam_model must be one of {'none', 'ashrae'}.")
-    PV_CALIBRATION_FACTOR = float(pv.get("pv_calibration_factor", 1.0) or 1.0)
-    base_calibration_factor_east_raw = pv.get("pv_calibration_factor_east", 1.0)
-    base_calibration_factor_south_raw = pv.get("pv_calibration_factor_south", 1.0)
-    base_calibration_factor_east = 1.0 if base_calibration_factor_east_raw is None else float(base_calibration_factor_east_raw)
-    base_calibration_factor_south = 1.0 if base_calibration_factor_south_raw is None else float(base_calibration_factor_south_raw)
-    PV_CALIBRATION_FACTOR_EAST = PV_CALIBRATION_FACTOR * base_calibration_factor_east
-    PV_CALIBRATION_FACTOR_SOUTH = PV_CALIBRATION_FACTOR * base_calibration_factor_south
-    INVERTER_AC_KW_LIMIT = float(pv["inverter_ac_kw_limit"])
+    BATTERY_KWH = applied.battery_kwh
+    MIN_SOC_PERCENT = applied.min_soc_percent
+    MAX_CUTOFF_SOC_PERCENT = applied.max_cutoff_soc_percent
+    BATTERY_MAX_SOC_PERCENT = applied.battery_max_soc_percent
+    BATTERY_MAX_CHARGE_KW = applied.battery_max_charge_kw
+    BATTERY_MAX_DISCHARGE_KW = applied.battery_max_discharge_kw
+    MAX_AC_CHARGE_KW_HARD_LIMIT = applied.max_ac_charge_kw_hard_limit
 
-    BATTERY_KWH = float(battery["battery_kwh"])
-    MIN_SOC_PERCENT = float(battery["min_soc_percent"])
-    MAX_CUTOFF_SOC_PERCENT = float(battery["max_cutoff_soc_percent"])
-    BATTERY_MAX_SOC_PERCENT = float(battery.get("battery_max_soc_percent", 100.0))
-    BATTERY_MAX_CHARGE_KW = float(battery["battery_max_charge_kw"])
-    BATTERY_MAX_DISCHARGE_KW = float(battery["battery_max_discharge_kw"])
-    MAX_AC_CHARGE_KW_HARD_LIMIT = float(battery["max_ac_charge_kw_hard_limit"])
-
-    LOAD_PROFILE = [float(v) for v in load_profile["load_profile_24h"]]
-    PEAK_GRID_PRICE_EUR_PER_KWH = float(tariff["peak_grid_price_eur_per_kwh"])
-    OFFPEAK_GRID_PRICE_EUR_PER_KWH = float(tariff["offpeak_grid_price_eur_per_kwh"])
-    INJECTION_GRID_PRICE_EUR_PER_KWH = float(tariff["injection_grid_price_eur_per_kwh"])
-    OFFPEAK_WINDOWS_BY_DOW = parse_offpeak_windows_by_dow(tariff["offpeak_windows_by_dow"])
-    ENABLE_INVARIANT_CHECKS = bool(system.get("enable_invariant_checks", ENABLE_INVARIANT_CHECKS))
+    LOAD_PROFILE = applied.load_profile
+    PEAK_GRID_PRICE_EUR_PER_KWH = applied.peak_grid_price_eur_per_kwh
+    OFFPEAK_GRID_PRICE_EUR_PER_KWH = applied.offpeak_grid_price_eur_per_kwh
+    INJECTION_GRID_PRICE_EUR_PER_KWH = applied.injection_grid_price_eur_per_kwh
+    OFFPEAK_WINDOWS_BY_DOW = applied.offpeak_windows_by_dow
+    ENABLE_INVARIANT_CHECKS = applied.enable_invariant_checks
     MIN_SOC = MIN_SOC_PERCENT / 100.0
     MAX_CUTOFF_SOC = MAX_CUTOFF_SOC_PERCENT / 100.0
     BATTERY_MAX_SOC = BATTERY_MAX_SOC_PERCENT / 100.0
