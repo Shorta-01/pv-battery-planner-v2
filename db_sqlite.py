@@ -1334,52 +1334,55 @@ def fetch_history_all_runs(db_path: str, limit_days: int | None = None) -> list[
     return [_summary_from_row(row) for row in rows]
 
 
-def _build_full_run_payload(row: sqlite3.Row, hourly_rows: list[sqlite3.Row]) -> dict:
-    def _decode_json(raw: Any, default: Any) -> Any:
-        if raw is None:
-            return default
-        if isinstance(raw, (dict, list)):
-            return raw
-        if isinstance(raw, str):
-            try:
-                return json.loads(raw)
-            except (TypeError, ValueError, json.JSONDecodeError):
-                return default
+def _decode_json_payload(raw: Any, default: Any) -> Any:
+    if raw is None:
         return default
+    if isinstance(raw, (dict, list)):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return default
+    return default
 
-    warnings = _decode_json(row["warnings_json"], [])
-    inputs_used = _decode_json(row["inputs_used_json"], {})
-    config_json = _decode_json(row["config_json"], {})
-    weather_ensemble = _decode_json(row["weather_ensemble_json"], {})
-    pv_totals_kwh = {
-        "p10": _safe_float(row["pv_p10_kwh"]),
-        "p50": _safe_float(row["pv_p50_kwh"]),
-        "p90": _safe_float(row["pv_p90_kwh"]),
+
+def _full_run_shared_payload(row: sqlite3.Row) -> dict[str, Any]:
+    warnings = _decode_json_payload(row["warnings_json"], [])
+    inputs_used = _decode_json_payload(row["inputs_used_json"], {})
+    config_json = _decode_json_payload(row["config_json"], {})
+    weather_ensemble = _decode_json_payload(row["weather_ensemble_json"], {})
+    return {
+        "run_id": row["run_id"],
+        "target_date": row["target_date"],
+        "run_at_utc": row["run_at_utc"],
+        "run_type": row["run_type"] or "manual",
+        "status": row["status"],
+        "warnings_count": int(row["warnings_count"] or len(warnings)),
+        "warnings": warnings,
+        "inputs_used": inputs_used,
+        "config_hash": row["config_hash"] or "",
+        "config_json": config_json,
+        "weather_ensemble": weather_ensemble,
+        "pv_totals_kwh": {
+            "p10": _safe_float(row["pv_p10_kwh"]),
+            "p50": _safe_float(row["pv_p50_kwh"]),
+            "p90": _safe_float(row["pv_p90_kwh"]),
+        },
+        "metrics": {
+            "charge_kw": float(row["charge_kw"] or 0.0),
+            "cutoff_soc": float(row["cutoff_soc"] or 0.0) / 100.0,
+            "pv_forecast_kwh": _safe_float(row["pv_forecast_kwh"]),
+            "cons_forecast_kwh": _safe_float(row["cons_forecast_kwh"]),
+        },
+        "run_at": row["run_at_utc"],
     }
 
+
+def _materialize_full_run_hourly_sections(hourly_rows: list[sqlite3.Row]) -> dict[str, Any]:
     hourly = pd.DataFrame([dict(r) for r in hourly_rows])
     if hourly.empty:
-        return {
-            "run_id": row["run_id"],
-            "target_date": row["target_date"],
-            "run_at_utc": row["run_at_utc"],
-            "run_type": row["run_type"] or "manual",
-            "status": row["status"],
-            "warnings_count": int(row["warnings_count"] or len(warnings)),
-            "warnings": warnings,
-            "inputs_used": inputs_used,
-            "config_hash": row["config_hash"] or "",
-            "config_json": config_json,
-            "weather_ensemble": weather_ensemble,
-            "pv_totals_kwh": pv_totals_kwh,
-            "metrics": {
-                "charge_kw": float(row["charge_kw"] or 0.0),
-                "cutoff_soc": float(row["cutoff_soc"] or 0.0) / 100.0,
-                "pv_forecast_kwh": _safe_float(row["pv_forecast_kwh"]),
-                "cons_forecast_kwh": _safe_float(row["cons_forecast_kwh"]),
-            },
-            "run_at": row["run_at_utc"],
-        }
+        return {}
 
     idx = pd.to_datetime(hourly["ts_local"], errors="coerce")
     pv_df = pd.DataFrame(index=idx)
@@ -1399,80 +1402,78 @@ def _build_full_run_payload(row: sqlite3.Row, hourly_rows: list[sqlite3.Row]) ->
 
     soc_series = pd.to_numeric(hourly["soc_pct"], errors="coerce").fillna(0.0) / 100.0
     soc_series.index = idx
-
     return {
-        "run_id": row["run_id"],
-        "target_date": row["target_date"],
-        "run_at_utc": row["run_at_utc"],
-        "run_type": row["run_type"] or "manual",
-        "status": row["status"],
-        "warnings_count": int(row["warnings_count"] or len(warnings)),
-        "warnings": warnings,
-        "inputs_used": inputs_used,
-        "config_hash": row["config_hash"] or "",
-        "config_json": config_json,
-        "weather_ensemble": weather_ensemble,
-        "pv_totals_kwh": pv_totals_kwh,
         "pv": json.loads(pv_df.to_json(date_format="iso", orient="split")),
         "flows": json.loads(flows_df.to_json(date_format="iso", orient="split")),
         "soc": json.loads(soc_series.to_frame(name="value").to_json(date_format="iso", orient="split")),
-        "metrics": {
-            "charge_kw": float(row["charge_kw"] or 0.0),
-            "cutoff_soc": float(row["cutoff_soc"] or 0.0) / 100.0,
-            "pv_forecast_kwh": _safe_float(row["pv_forecast_kwh"]),
-            "cons_forecast_kwh": _safe_float(row["cons_forecast_kwh"]),
-        },
-        "run_at": row["run_at_utc"],
     }
+
+
+def _fetch_full_run_row(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT run_id, target_date, run_at_utc, run_type, timezone,
+               charge_kw, cutoff_soc, pv_forecast_kwh, cons_forecast_kwh,
+               status, warnings_count, warnings_json,
+               inputs_used_json, weather_ensemble_json,
+               pv_p10_kwh, pv_p50_kwh, pv_p90_kwh,
+               config_hash, config_json
+        FROM forecast_runs
+        WHERE run_id = ?
+        LIMIT 1
+        """,
+        (run_id,),
+    ).fetchone()
+
+
+def _fetch_full_run_hourly_rows(conn: sqlite3.Connection, run_id: str) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT ts_local, pv_kwh, pv_total_unclipped_kwh, pv_east_kwh, pv_south_kwh, pv_clipped_kwh,
+               load_kwh, grid_import_kwh, grid_export_kwh,
+               batt_charge_kwh, batt_discharge_kwh, soc_pct
+        FROM forecast_hourly
+        WHERE run_id = ?
+        ORDER BY ts_local ASC
+        """,
+        (run_id,),
+    ).fetchall()
+
+
+def _fetch_latest_run_id(conn: sqlite3.Connection) -> str | None:
+    row = conn.execute(
+        """
+        SELECT run_id
+        FROM forecast_runs
+        ORDER BY run_at_utc DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is None:
+        return None
+    return str(row["run_id"])
+
+
+def _build_full_run_payload(row: sqlite3.Row, hourly_rows: list[sqlite3.Row]) -> dict:
+    payload = _full_run_shared_payload(row)
+    payload.update(_materialize_full_run_hourly_sections(hourly_rows))
+    return payload
 
 
 def fetch_full_run_by_id(db_path: str, run_id: str) -> dict | None:
     with _connect(db_path) as conn:
-        row = conn.execute(
-            """
-            SELECT run_id, target_date, run_at_utc, run_type, timezone,
-                   charge_kw, cutoff_soc, pv_forecast_kwh, cons_forecast_kwh,
-                   status, warnings_count, warnings_json,
-                   inputs_used_json, weather_ensemble_json,
-                   pv_p10_kwh, pv_p50_kwh, pv_p90_kwh,
-                   config_hash, config_json
-            FROM forecast_runs
-            WHERE run_id = ?
-            LIMIT 1
-            """,
-            (run_id,),
-        ).fetchone()
+        row = _fetch_full_run_row(conn, run_id)
         if row is None:
             return None
-        hourly_rows = conn.execute(
-            """
-            SELECT ts_local, pv_kwh, pv_total_unclipped_kwh, pv_east_kwh, pv_south_kwh, pv_clipped_kwh,
-                   load_kwh, grid_import_kwh, grid_export_kwh,
-                   batt_charge_kwh, batt_discharge_kwh, soc_pct
-            FROM forecast_hourly
-            WHERE run_id = ?
-            ORDER BY ts_local ASC
-            """,
-            (row["run_id"],),
-        ).fetchall()
+        hourly_rows = _fetch_full_run_hourly_rows(conn, row["run_id"])
     return _build_full_run_payload(row, hourly_rows)
 
 
 def fetch_latest_full_run(db_path: str) -> dict | None:
     with _connect(db_path) as conn:
-        row = conn.execute(
-            """
-            SELECT run_id, target_date, run_at_utc, run_type, timezone,
-                   charge_kw, cutoff_soc, pv_forecast_kwh, cons_forecast_kwh,
-                   warnings_json
-            FROM forecast_runs
-            ORDER BY run_at_utc DESC
-            LIMIT 1
-            """
-        ).fetchone()
-        if row is None:
-            return None
-        run_id = str(row["run_id"])
+        run_id = _fetch_latest_run_id(conn)
+    if run_id is None:
+        return None
     return fetch_full_run_by_id(db_path, run_id)
 
 

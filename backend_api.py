@@ -102,6 +102,17 @@ def _json_payload_size_bytes(payload: object) -> int:
     return len(raw.encode("utf-8"))
 
 
+def _empty_diagnostics_payload() -> dict[str, object]:
+    return {
+        "timestamp_utc": _utc_now_iso(),
+        "status": "n/a",
+        "success": False,
+        "stage_timings_ms": {},
+        "payload_sizes_bytes": {},
+        "total_run_ms": 0.0,
+    }
+
+
 class _RunDiagnostics:
     def __init__(self) -> None:
         self.started_at = time.perf_counter()
@@ -826,19 +837,26 @@ class BackendState:
 
     def record_endpoint_payload_size(self, endpoint_key: str, payload: object) -> int:
         size_bytes = _json_payload_size_bytes(payload)
+        self._record_diagnostics_payload_size(endpoint_key, size_bytes)
+        return int(size_bytes)
+
+    def _ensure_latest_diagnostics_container(self) -> dict[str, object]:
         if not isinstance(self.latest_diagnostics, dict):
-            self.latest_diagnostics = {
-                "timestamp_utc": _utc_now_iso(),
-                "status": "n/a",
-                "success": False,
-                "stage_timings_ms": {},
-                "payload_sizes_bytes": {},
-                "total_run_ms": 0.0,
-            }
-        payload_sizes = self.latest_diagnostics.setdefault("payload_sizes_bytes", {})
+            self.latest_diagnostics = _empty_diagnostics_payload()
+        return self.latest_diagnostics
+
+    def _record_diagnostics_payload_size(self, endpoint_key: str, size_bytes: int) -> None:
+        diagnostics = self._ensure_latest_diagnostics_container()
+        payload_sizes = diagnostics.setdefault("payload_sizes_bytes", {})
         if isinstance(payload_sizes, dict):
             payload_sizes[endpoint_key] = int(size_bytes)
-        return int(size_bytes)
+
+    def _persist_latest_result_json(self) -> None:
+        self._write_json(LATEST_RESULT_PATH, self.latest_result)
+
+    def _persist_history_json(self) -> None:
+        self.history = self.history[-MAX_HISTORY:]
+        self._write_json(HISTORY_PATH, self.history)
 
     def _migrate_json_history_to_sqlite(self) -> None:
         payloads: list[dict] = []
@@ -1062,9 +1080,8 @@ class BackendState:
             self._save_settings()
 
     def _save_results(self) -> None:
-        self._write_json(LATEST_RESULT_PATH, self.latest_result)
-        self.history = self.history[-MAX_HISTORY:]
-        self._write_json(HISTORY_PATH, self.history)
+        self._persist_latest_result_json()
+        self._persist_history_json()
 
     def _tzinfo(self) -> ZoneInfo:
         loc_cfg = self.settings.get("config", {}).get("location", {}) if isinstance(self.settings.get("config"), dict) else {}
