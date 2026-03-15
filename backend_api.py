@@ -1538,7 +1538,14 @@ class BackendState:
 
     def _persist_error_run_payload(self, *, error_payload: dict, diagnostics: _RunDiagnostics, diag_error: dict[str, object]) -> dict:
         with diagnostics.stage("db_write"):
-            insert_forecast_run(str(SQLITE_PATH), error_payload)
+            try:
+                insert_forecast_run(str(SQLITE_PATH), error_payload)
+            except Exception:
+                logger.exception(
+                    "backend_api persist_error_run_payload_failed run_id=%s",
+                    error_payload.get("run_id"),
+                )
+                raise
             self.latest_diagnostics = diag_error
             self.latest_result = error_payload
         self.history.append(_to_history_summary(error_payload))
@@ -1556,7 +1563,15 @@ class BackendState:
         status: str,
     ) -> dict:
         with diagnostics.stage("db_write"):
-            insert_forecast_run(str(SQLITE_PATH), payload)
+            try:
+                insert_forecast_run(str(SQLITE_PATH), payload)
+            except Exception:
+                logger.exception(
+                    "backend_api persist_success_run_payload_failed run_id=%s status=%s",
+                    payload.get("run_id"),
+                    payload.get("status"),
+                )
+                raise
             self.latest_diagnostics = diag_success
             self.latest_result = payload
         self.history.append(_to_history_summary(payload))
@@ -2883,8 +2898,19 @@ def _log_backend_error_event(*, request: Request, exc: BaseException, error_type
     where = f"backend_api:{request.url.path}"
     body = format_exception_body(title=title, where=where, exc=exc, extra=extra)
     dedupe_key = compute_dedupe_key(source="backend", error_type=error_type, where=where, title=title, body=body)
+
+    log_method = logger.error if severity == "error" else logger.warning
+    log_method(
+        "backend_api error_event source=backend severity=%s error_type=%s where=%s title=%s",
+        severity,
+        error_type,
+        where,
+        title,
+        exc_info=exc if severity == "error" else False,
+    )
+
     try:
-        insert_error_event(
+        error_id = insert_error_event(
             str(SQLITE_PATH),
             source="backend",
             severity=severity,
@@ -2895,8 +2921,18 @@ def _log_backend_error_event(*, request: Request, exc: BaseException, error_type
             context=extra,
             dedupe_key=dedupe_key,
         )
+        logger.info(
+            "backend_api error_event_persisted error_id=%s error_type=%s where=%s",
+            error_id,
+            error_type,
+            where,
+        )
     except Exception:
-        pass
+        logger.exception(
+            "backend_api error_event_persist_failed error_type=%s where=%s",
+            error_type,
+            where,
+        )
 
 
 @app.exception_handler(core.ExternalServiceError)
@@ -2998,7 +3034,7 @@ async def ocpp_ws(websocket: WebSocket):
             user = str(cc.get("basic_user", "") or "")
             pw = str(cc.get("basic_pass", "") or "")
     except Exception:
-        pass
+        logger.warning("backend_api ocpp_ws_settings_read_failed path=%s", SETTINGS_PATH, exc_info=True)
 
     await evse_mgr.handle_websocket(websocket, enabled=enabled, basic_user=user, basic_pass=pw)
 
@@ -3202,7 +3238,7 @@ def evse_status(authorization: str | None = Header(default=None)) -> dict:
             cc = cfg.get("car_charger", {}) if isinstance(cfg, dict) else {}
             enabled = bool(cc.get("enabled", False))
     except Exception:
-        pass
+        logger.warning("backend_api evse_status_settings_read_failed path=%s", SETTINGS_PATH, exc_info=True)
     out = evse_mgr.status_dict()
     out["enabled"] = enabled
     out["ws_path"] = "/ocpp"
