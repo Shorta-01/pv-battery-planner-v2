@@ -905,9 +905,23 @@ def set_user_config(user_cfg: dict) -> dict:
     return get_effective_config()
 
 
-USER_CFG = load_config_file(CONFIG_PATH)
-EFFECTIVE_CFG = build_effective_config(USER_CFG)
-apply_config(EFFECTIVE_CFG)
+def _load_user_config_for_bootstrap(config_path: Path) -> dict:
+    return load_config_file(config_path)
+
+
+def _build_effective_config_for_bootstrap(user_cfg: dict) -> dict:
+    return build_effective_config(user_cfg)
+
+
+def _bootstrap_import_time_config(config_path: Path) -> None:
+    global USER_CFG
+    USER_CFG = _load_user_config_for_bootstrap(config_path)
+    effective_cfg = _build_effective_config_for_bootstrap(USER_CFG)
+    apply_config(effective_cfg)
+
+
+USER_CFG = {}
+_bootstrap_import_time_config(CONFIG_PATH)
 
 # Zon-uur indicator (voor "Sun%" in output)
 SUN_HOUR_THRESHOLD_KWH = 0.05
@@ -1193,6 +1207,14 @@ def _runtime_tariff_cfg() -> dict:
     if isinstance(tariff_cfg, dict):
         return tariff_cfg
     return DEFAULT_CONFIG["tariff"]
+
+
+def _runtime_location_cfg() -> dict:
+    runtime = _runtime_state_snapshot()
+    location_cfg = runtime.effective_cfg.get("location") if isinstance(runtime.effective_cfg, dict) else None
+    if isinstance(location_cfg, dict):
+        return location_cfg
+    return DEFAULT_CONFIG["location"]
 
 
 def _runtime_timezone() -> str:
@@ -1790,7 +1812,7 @@ def compute_euro_savings_no_battery_vs_plan(
     if bool(missing_cycle.any()):
         missing_idx = idx_cycle[missing_cycle]
         if PVLIB_AVAILABLE and len(missing_idx) > 0:
-            loc_cfg = EFFECTIVE_CFG.get("location", {})
+            loc_cfg = _runtime_location_cfg()
             loc = Location(
                 name=str(loc_cfg.get("address_query") or loc_cfg.get("name") or "Configured"),
                 latitude=float(loc_cfg.get("latitude", LATITUDE)),
@@ -3229,7 +3251,7 @@ def run_detailed_plan(
     if "load_kwh" not in pv.columns:
         pv = add_load_and_surplus_columns(pv, total_consumption_kwh)
 
-    tariff_cfg = EFFECTIVE_CFG.get("tariff", DEFAULT_CONFIG["tariff"]) if isinstance(EFFECTIVE_CFG, dict) else DEFAULT_CONFIG["tariff"]
+    tariff_cfg = _runtime_tariff_cfg()
     # Use the same PV series for both soc_low and soc_high to keep cutoff decision internally consistent.
     pv_col_for_planning = "pv_total_decision_kwh" if "pv_total_decision_kwh" in pv.columns else "pv_total_kwh"
     soc_low = compute_soc_low_timing_aware(pv, total_consumption_kwh, target_date, tariff_cfg=tariff_cfg, pv_col=pv_col_for_planning)
@@ -3357,7 +3379,7 @@ def plan_charge_power(
     user_cap_kw: Optional[float] = None,
     tariff_cfg: Optional[dict] = None,
 ) -> Tuple[float, float, str, float]:
-    cfg = tariff_cfg or EFFECTIVE_CFG["tariff"]
+    cfg = tariff_cfg or _runtime_tariff_cfg()
     target_date = charge_date + dt.timedelta(days=1)
     window_start, window_end = compute_charging_window_for_target_date(target_date, cfg)
     session_idx = get_charge_session_index_from_window(window_start, window_end)
@@ -3617,7 +3639,7 @@ def simulate_night_charging_series(
     tomorrow_date: Optional[dt.date] = None,
     precomputed_loads: Optional[pd.Series] = None,
 ) -> "pd.DataFrame":
-    cfg = tariff_cfg or EFFECTIVE_CFG["tariff"]
+    cfg = tariff_cfg or _runtime_tariff_cfg()
     if session_start is None or session_end is None:
         if tomorrow_date is None:
             raise ValueError("tomorrow_date is required when session_start/session_end are not provided.")
@@ -3728,7 +3750,7 @@ def simulate_full_day_soc(
     tomorrow_end = tomorrow_start + dt.timedelta(days=1)
     tomorrow_idx = pd.date_range(tomorrow_start, tomorrow_end, freq="h", inclusive="left", tz=TIMEZONE)
 
-    cfg = tariff_cfg or EFFECTIVE_CFG["tariff"]
+    cfg = tariff_cfg or _runtime_tariff_cfg()
     window_start, window_end = compute_charging_window_for_target_date(tomorrow_date, cfg)
 
     cycle_loads = build_cycle_hourly_load_series(tomorrow_date, total_consumption_kwh, tariff_cfg=cfg)
