@@ -12,6 +12,7 @@ from typing import Any
 import requests
 
 from bmw_models import BmwTokenData
+from bmw_logging import bmw_log_context
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +61,8 @@ class BmwAuthClient:
     def _raise_http_error(self, endpoint: str, resp: requests.Response, context: str) -> None:
         body_excerpt = resp.text[:300]
         logger.error(
-            "BMW auth: %s error status=%s endpoint=%s body_excerpt=%s",
-            context,
+            "BMW auth request failed %s status=%s endpoint=%s body_excerpt=%s",
+            bmw_log_context(operation="bmw_auth_http", bmw_operation="auth", phase=context),
             resp.status_code,
             endpoint,
             body_excerpt,
@@ -104,7 +105,8 @@ class BmwAuthClient:
             "scope": scope,
         }
         logger.info(
-            "BMW auth: device flow start request endpoint=%s form_encoded=%s param_keys=%s",
+            "BMW auth device-flow request %s endpoint=%s form_encoded=%s param_keys=%s",
+            bmw_log_context(operation="ev_device_flow_start", bmw_operation="device_flow", phase="request"),
             url,
             True,
             sorted(payload.keys()),
@@ -115,7 +117,12 @@ class BmwAuthClient:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             timeout=20,
         )
-        logger.info("BMW auth: device flow start response status=%s endpoint=%s", resp.status_code, url)
+        logger.info(
+            "BMW auth device-flow response %s status=%s endpoint=%s",
+            bmw_log_context(operation="ev_device_flow_start", bmw_operation="device_flow", phase="response"),
+            resp.status_code,
+            url,
+        )
         if resp.status_code >= 400:
             self._raise_http_error(url, resp, "device flow start")
         response_payload = resp.json()
@@ -139,7 +146,10 @@ class BmwAuthClient:
                 "interval": response_payload.get("interval"),
             }
         )
-        logger.info("BMW auth: device flow started")
+        logger.info(
+            "BMW auth device-flow started %s",
+            bmw_log_context(operation="ev_device_flow_start", bmw_operation="device_flow", phase="complete"),
+        )
         return response_payload
 
     def poll_device_token(self, device_code: str, interval_seconds: int = 5) -> BmwTokenData:
@@ -158,7 +168,8 @@ class BmwAuthClient:
             "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
         }
         logger.info(
-            "BMW auth: token poll request endpoint=%s form_encoded=%s param_keys=%s",
+            "BMW auth token poll request %s endpoint=%s form_encoded=%s param_keys=%s",
+            bmw_log_context(operation="ev_device_flow_poll", bmw_operation="device_flow", phase="request"),
             url,
             True,
             sorted(payload.keys()),
@@ -169,7 +180,12 @@ class BmwAuthClient:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             timeout=20,
         )
-        logger.info("BMW auth: token poll response status=%s endpoint=%s", resp.status_code, url)
+        logger.info(
+            "BMW auth token poll response %s status=%s endpoint=%s",
+            bmw_log_context(operation="ev_device_flow_poll", bmw_operation="device_flow", phase="response"),
+            resp.status_code,
+            url,
+        )
         if resp.status_code >= 400:
             self._raise_http_error(url, resp, "token poll")
         payload = resp.json()
@@ -183,7 +199,10 @@ class BmwAuthClient:
             expires_at=dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=expires_in),
         )
         self.save_token(token)
-        logger.info("BMW auth: token obtained and cached")
+        logger.info(
+            "BMW auth token obtained %s",
+            bmw_log_context(operation="ev_device_flow_poll", bmw_operation="device_flow", phase="token_cached"),
+        )
         return token
 
     def get_device_flow_session(self) -> dict[str, Any]:
@@ -209,7 +228,11 @@ class BmwAuthClient:
             timeout=20,
         )
         if resp.status_code >= 400:
-            logger.warning("BMW auth: refresh failed (status=%s)", resp.status_code)
+            logger.warning(
+                "BMW auth token refresh failed %s status=%s",
+                bmw_log_context(operation="bmw_refresh_if_possible", bmw_operation="token_refresh", phase="response"),
+                resp.status_code,
+            )
             return token
         payload = resp.json()
         expires_in = int(payload.get("expires_in", 3600))
@@ -222,5 +245,8 @@ class BmwAuthClient:
             expires_at=dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=expires_in),
         )
         self.save_token(refreshed)
-        logger.info("BMW auth: token refreshed")
+        logger.info(
+            "BMW auth token refreshed %s",
+            bmw_log_context(operation="bmw_refresh_if_possible", bmw_operation="token_refresh", phase="complete"),
+        )
         return refreshed
