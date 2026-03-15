@@ -1158,6 +1158,7 @@ class PlannerRuntimeStateSnapshot:
     timezone: str
     elevation_m_default: float
     min_soc: float
+    max_cutoff_soc: float
     battery_max_soc: float
     min_soc_percent: float
     battery_kwh: float
@@ -1182,6 +1183,7 @@ def _runtime_state_snapshot() -> PlannerRuntimeStateSnapshot:
             timezone=str(TIMEZONE),
             elevation_m_default=float(ELEVATION_M),
             min_soc=float(MIN_SOC),
+            max_cutoff_soc=float(MAX_CUTOFF_SOC),
             battery_max_soc=float(BATTERY_MAX_SOC),
             min_soc_percent=float(MIN_SOC_PERCENT),
             battery_kwh=float(BATTERY_KWH),
@@ -3274,9 +3276,15 @@ def compute_soc_low_timing_aware(
     tariff_cfg: Optional[dict] = None,
     pv_col: str = "pv_total_kwh",
 ) -> float:
+    runtime = _runtime_state_snapshot()
+    min_soc = runtime.min_soc
+    battery_kwh = runtime.battery_kwh
+    battery_discharge_eff = runtime.battery_discharge_eff
+    battery_ac_charge_eff = runtime.battery_ac_charge_eff
+
     expensive_windows = get_expensive_windows(for_date, tariff_cfg)
     if not expensive_windows:
-        return MIN_SOC
+        return min_soc
 
     loads = build_hourly_load_series(df.index, total_consumption_kwh)
     cum = 0.0
@@ -3285,7 +3293,7 @@ def compute_soc_low_timing_aware(
     optimization_mode = str((tariff_cfg or {}).get("optimization_mode", "window_only")).strip().lower()
     optimization_mode = optimization_mode if optimization_mode in {"window_only", "price_aware"} else "window_only"
     offpeak_price = float((tariff_cfg or {}).get("offpeak_grid_price_eur_per_kwh", OFFPEAK_GRID_PRICE_EUR_PER_KWH))
-    break_even_price = offpeak_price / max(1e-9, BATTERY_AC_CHARGE_EFF * BATTERY_DISCHARGE_EFF)
+    break_even_price = offpeak_price / max(1e-9, battery_ac_charge_eff * battery_discharge_eff)
 
     for ts in df.index:
         if not in_any_window(ts.time(), expensive_windows):
@@ -3305,9 +3313,9 @@ def compute_soc_low_timing_aware(
         if cum > max_cum:
             max_cum = cum
 
-    required_from_batt_kwh = max(0.0, max_cum) / BATTERY_DISCHARGE_EFF
-    soc_low = MIN_SOC + (required_from_batt_kwh / BATTERY_KWH)
-    soc_low = min(max(soc_low, MIN_SOC), 1.0)
+    required_from_batt_kwh = max(0.0, max_cum) / battery_discharge_eff
+    soc_low = min_soc + (required_from_batt_kwh / battery_kwh)
+    soc_low = min(max(soc_low, min_soc), 1.0)
     soc_low = min(1.0, soc_low + float(buffer_soc))
     return soc_low
 
@@ -3828,7 +3836,11 @@ def simulate_night_charging_series(
 ) -> "pd.DataFrame":
     runtime = _runtime_state_snapshot()
     min_soc = runtime.min_soc
+    max_cutoff_soc = runtime.max_cutoff_soc
     battery_max_soc = runtime.battery_max_soc
+    battery_kwh = runtime.battery_kwh
+    battery_max_charge_kw = runtime.battery_max_charge_kw
+    battery_max_discharge_kw = runtime.battery_max_discharge_kw
     battery_discharge_eff = runtime.battery_discharge_eff
     battery_ac_charge_eff = runtime.battery_ac_charge_eff
     enable_invariant_checks = runtime.enable_invariant_checks
@@ -3848,10 +3860,10 @@ def simulate_night_charging_series(
             tomorrow_date = session_end.date()
         cycle_loads = build_cycle_hourly_load_series(tomorrow_date, total_consumption_kwh, tariff_cfg=cfg)
         loads = pd.to_numeric(cycle_loads.reindex(idx), errors="coerce").fillna(0.0).astype(float)
-    energy = max(0.0, min(1.0, soc_at_22)) * BATTERY_KWH
-    min_energy = min_soc * BATTERY_KWH
-    max_energy = battery_max_soc * BATTERY_KWH
-    charge_cutoff_energy = min(MAX_CUTOFF_SOC, max(min_soc, cutoff_soc)) * BATTERY_KWH
+    energy = max(0.0, min(1.0, soc_at_22)) * battery_kwh
+    min_energy = min_soc * battery_kwh
+    max_energy = battery_max_soc * battery_kwh
+    charge_cutoff_energy = min(max_cutoff_soc, max(min_soc, cutoff_soc)) * battery_kwh
     night_load_from_battery = should_use_battery_for_offpeak_load(cfg)
     max_grid_import_kw = float((cfg or {}).get("max_grid_import_kw", 0.0))
     grid_import_cap_active = max_grid_import_kw > 0.0
@@ -3862,7 +3874,7 @@ def simulate_night_charging_series(
     rows = []
     for ts in idx:
         step_h = 1.0
-        soc_start_pct = (energy / BATTERY_KWH * 100.0) if BATTERY_KWH > 0 else 0.0
+        soc_start_pct = (energy / battery_kwh * 100.0) if battery_kwh > 0 else 0.0
         load = float(loads.loc[ts])
         remaining_load = load
         batt_discharge_kwh = 0.0
@@ -3871,7 +3883,7 @@ def simulate_night_charging_series(
 
         if night_load_from_battery and remaining_load > 0:
             available = max(0.0, energy - min_energy)
-            discharge_power_limited = BATTERY_MAX_DISCHARGE_KW * step_h
+            discharge_power_limited = battery_max_discharge_kw * step_h
             needed_from_batt = remaining_load / battery_discharge_eff if battery_discharge_eff > 0 else remaining_load
             discharge = min(available, needed_from_batt, discharge_power_limited)
             energy -= discharge
@@ -3881,7 +3893,7 @@ def simulate_night_charging_series(
 
         in_overnight_window = (ts >= pd.Timestamp(session_start)) and (ts < pd.Timestamp(session_end))
         if in_overnight_window and energy < charge_cutoff_energy - 1e-9:
-            charge_grid_kwh = min(charge_kw * step_h, BATTERY_MAX_CHARGE_KW * step_h)
+            charge_grid_kwh = min(charge_kw * step_h, battery_max_charge_kw * step_h)
             room = max(0.0, min(max_energy, charge_cutoff_energy) - energy)
             charge_to_battery = min(room, charge_grid_kwh * battery_ac_charge_eff)
             if grid_import_cap_active:
@@ -3902,7 +3914,7 @@ def simulate_night_charging_series(
                 batt_charge_kwh = charge_to_battery
 
         grid_import = remaining_load + charging_grid_import
-        soc_end_pct = (energy / BATTERY_KWH * 100.0) if BATTERY_KWH > 0 else soc_start_pct
+        soc_end_pct = (energy / battery_kwh * 100.0) if battery_kwh > 0 else soc_start_pct
         rows.append({
             "ts_local": ts,
             "load_kwh": float(load),
@@ -3939,9 +3951,15 @@ def simulate_full_day_soc(
     runtime = _runtime_state_snapshot()
     timezone = runtime.timezone
     min_soc = runtime.min_soc
+    max_cutoff_soc = runtime.max_cutoff_soc
     battery_max_soc = runtime.battery_max_soc
+    battery_kwh = runtime.battery_kwh
+    battery_max_charge_kw = runtime.battery_max_charge_kw
+    battery_max_discharge_kw = runtime.battery_max_discharge_kw
+    battery_pv_charge_eff = runtime.battery_pv_charge_eff
     battery_discharge_eff = runtime.battery_discharge_eff
     battery_ac_charge_eff = runtime.battery_ac_charge_eff
+    inverter_ac_kw_limit = runtime.inverter_ac_kw_limit
     enable_invariant_checks = runtime.enable_invariant_checks
 
     if pv_col not in df.columns:
@@ -3986,10 +4004,10 @@ def simulate_full_day_soc(
         if abs((load_night_kwh + load_day_kwh) - float(total_consumption_kwh)) > 1e-6:
             raise ValueError("Night + day load total does not match target consumption.")
 
-    energy = max(0.0, min(1.0, soc_day_start)) * BATTERY_KWH
-    min_energy = min_soc * BATTERY_KWH
-    max_energy = battery_max_soc * BATTERY_KWH
-    charge_cutoff_energy = min(MAX_CUTOFF_SOC, max(min_soc, cutoff_soc)) * BATTERY_KWH
+    energy = max(0.0, min(1.0, soc_day_start)) * battery_kwh
+    min_energy = min_soc * battery_kwh
+    max_energy = battery_max_soc * battery_kwh
+    charge_cutoff_energy = min(max_cutoff_soc, max(min_soc, cutoff_soc)) * battery_kwh
 
     rows = []
     econ_eps = 1e-6
@@ -4036,7 +4054,7 @@ def simulate_full_day_soc(
         pv_unclip = float(max(pv_unclipped.loc[ts], pv_ac_limited))
         load = float(loads.loc[ts])
 
-        soc_start_pct = (energy / BATTERY_KWH * 100.0) if BATTERY_KWH > 0 else 0.0
+        soc_start_pct = (energy / battery_kwh * 100.0) if battery_kwh > 0 else 0.0
         pv_to_load = min(pv_ac_limited, load)
         remaining_load = max(0.0, load - pv_to_load)
         pv_after_load = max(0.0, pv_ac_limited - pv_to_load)
@@ -4053,15 +4071,15 @@ def simulate_full_day_soc(
         pv_for_storage = pv_after_load + overflow
         if pv_for_storage > 0:
             room = max(0.0, max_energy - energy)
-            charge_power_limited = BATTERY_MAX_CHARGE_KW * step_h
-            pv_storage_headroom = room / BATTERY_PV_CHARGE_EFF if BATTERY_PV_CHARGE_EFF > 0 else 0.0
-            pv_charge_power_cap = charge_power_limited / BATTERY_PV_CHARGE_EFF if BATTERY_PV_CHARGE_EFF > 0 else 0.0
+            charge_power_limited = battery_max_charge_kw * step_h
+            pv_storage_headroom = room / battery_pv_charge_eff if battery_pv_charge_eff > 0 else 0.0
+            pv_charge_power_cap = charge_power_limited / battery_pv_charge_eff if battery_pv_charge_eff > 0 else 0.0
             max_pv_to_store = max(0.0, min(pv_for_storage, pv_storage_headroom, pv_charge_power_cap))
 
             prefer_export = False
             if allow_injection and pv_surplus_store_econ_enabled and max_pv_to_store > 0:
                 expected_displacement_price = peak_price if future_expensive_exists.get(ts, False) else offpeak_price
-                stored_value_per_kwh_pv = expected_displacement_price * BATTERY_PV_CHARGE_EFF * BATTERY_DISCHARGE_EFF
+                stored_value_per_kwh_pv = expected_displacement_price * battery_pv_charge_eff * battery_discharge_eff
                 prefer_export = export_price_now >= (stored_value_per_kwh_pv + econ_eps)
                 pv_store_vs_export_decisions_count += 1
                 if prefer_export:
@@ -4075,14 +4093,14 @@ def simulate_full_day_soc(
                 store = 0.0
                 pv_after_batt = pv_for_storage
             else:
-                pv_limited_store = pv_for_storage * BATTERY_PV_CHARGE_EFF
+                pv_limited_store = pv_for_storage * battery_pv_charge_eff
                 store = min(room, pv_limited_store, charge_power_limited)
                 energy += store
                 batt_charge_kwh += store
-                pv_used_for_batt = store / BATTERY_PV_CHARGE_EFF if BATTERY_PV_CHARGE_EFF > 0 else 0.0
+                pv_used_for_batt = store / battery_pv_charge_eff if battery_pv_charge_eff > 0 else 0.0
                 pv_after_batt = max(0.0, pv_for_storage - pv_used_for_batt)
 
-            export_limit = max(0.0, (INVERTER_AC_KW_LIMIT * step_h) - pv_to_load)
+            export_limit = max(0.0, (inverter_ac_kw_limit * step_h) - pv_to_load)
             effective_export_limit = export_limit if allow_injection else 0.0
             grid_export = min(pv_after_batt, effective_export_limit)
             if not allow_injection:
@@ -4094,7 +4112,7 @@ def simulate_full_day_soc(
 
         if allow_batt_for_load and remaining_load > 0:
             available = max(0.0, energy - min_energy)
-            discharge_power_limited = BATTERY_MAX_DISCHARGE_KW * step_h
+            discharge_power_limited = battery_max_discharge_kw * step_h
             needed_from_batt = remaining_load / battery_discharge_eff if battery_discharge_eff > 0 else remaining_load
             discharge = min(available, needed_from_batt, discharge_power_limited)
             energy -= discharge
@@ -4103,7 +4121,7 @@ def simulate_full_day_soc(
             remaining_load = max(0.0, remaining_load - delivered)
 
         if offpeak and energy < charge_cutoff_energy - 1e-9:
-            charge_grid_kwh = min(charge_kw * step_h, BATTERY_MAX_CHARGE_KW * step_h)
+            charge_grid_kwh = min(charge_kw * step_h, battery_max_charge_kw * step_h)
             room = max(0.0, min(max_energy, charge_cutoff_energy) - energy)
             charge_to_battery = min(room, charge_grid_kwh * battery_ac_charge_eff)
             if grid_import_cap_active:
@@ -4124,7 +4142,7 @@ def simulate_full_day_soc(
                 batt_charge_kwh += charge_to_battery
 
         grid_import = remaining_load + charging_grid_import
-        soc_end_pct = (energy / BATTERY_KWH * 100.0) if BATTERY_KWH > 0 else soc_start_pct
+        soc_end_pct = (energy / battery_kwh * 100.0) if battery_kwh > 0 else soc_start_pct
         rows.append({
             "time": ts,
             "load_kwh": load,
