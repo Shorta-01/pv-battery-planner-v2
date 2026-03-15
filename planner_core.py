@@ -1168,9 +1168,27 @@ class PlannerRuntimeStateSnapshot:
     battery_discharge_eff: float
     battery_ac_charge_eff: float
     inverter_ac_kw_limit: float
+    inverter_ac_model: str
     max_ac_charge_kw_hard_limit: float
     array_south_panels: int
     array_east_panels: int
+    tilt_east_deg: float
+    tilt_south_deg: float
+    azimuth_east_deg: float
+    azimuth_south_deg: float
+    performance_ratio: float
+    inverter_eff: float
+    pv_loss_model: str
+    pv_albedo: float | None
+    pv_iam_model: str
+    pv_iam_ashrae_b: float
+    pv_calibration_factor_east: float
+    pv_calibration_factor_south: float
+    pv_gamma_pdc: float
+    pv_temperature_faiman_u0: float
+    pv_temperature_faiman_u1: float
+    pv_effective_module_wind_height_m: float
+    pv_forecast_wind_reference_height_m: float
     load_profile_24h: list[float]
     enable_invariant_checks: bool
     offpeak_windows_by_dow: dict[int, list[tuple[str, str]]]
@@ -1193,9 +1211,27 @@ def _runtime_state_snapshot() -> PlannerRuntimeStateSnapshot:
             battery_discharge_eff=float(BATTERY_DISCHARGE_EFF),
             battery_ac_charge_eff=float(BATTERY_AC_CHARGE_EFF),
             inverter_ac_kw_limit=float(INVERTER_AC_KW_LIMIT),
+            inverter_ac_model=str(INVERTER_AC_MODEL),
             max_ac_charge_kw_hard_limit=float(MAX_AC_CHARGE_KW_HARD_LIMIT),
             array_south_panels=int(ARRAY_SOUTH_PANELS),
             array_east_panels=int(ARRAY_EAST_PANELS),
+            tilt_east_deg=float(TILT_EAST_DEG),
+            tilt_south_deg=float(TILT_SOUTH_DEG),
+            azimuth_east_deg=float(AZIMUTH_EAST_DEG),
+            azimuth_south_deg=float(AZIMUTH_SOUTH_DEG),
+            performance_ratio=float(PERFORMANCE_RATIO),
+            inverter_eff=float(INVERTER_EFF),
+            pv_loss_model=str(PV_LOSS_MODEL),
+            pv_albedo=(None if PV_ALBEDO is None else float(PV_ALBEDO)),
+            pv_iam_model=str(PV_IAM_MODEL),
+            pv_iam_ashrae_b=float(PV_IAM_ASHRAE_B),
+            pv_calibration_factor_east=float(PV_CALIBRATION_FACTOR_EAST),
+            pv_calibration_factor_south=float(PV_CALIBRATION_FACTOR_SOUTH),
+            pv_gamma_pdc=float(PV_GAMMA_PDC),
+            pv_temperature_faiman_u0=float(PV_TEMPERATURE_FAIMAN_U0),
+            pv_temperature_faiman_u1=float(PV_TEMPERATURE_FAIMAN_U1),
+            pv_effective_module_wind_height_m=float(PV_EFFECTIVE_MODULE_WIND_HEIGHT_M),
+            pv_forecast_wind_reference_height_m=float(PV_FORECAST_WIND_REFERENCE_HEIGHT_M),
             load_profile_24h=[float(v) for v in LOAD_PROFILE],
             enable_invariant_checks=bool(ENABLE_INVARIANT_CHECKS),
             offpeak_windows_by_dow=copy.deepcopy(OFFPEAK_WINDOWS_BY_DOW),
@@ -2716,7 +2752,8 @@ def estimate_pv_with_pvlib(
     allow_synthetic_ghi_mask: "pd.Series | None" = None,
 ) -> Tuple["pd.Series", "pd.Series", "pd.Series", "pd.Series"]:
     require_pvlib()
-    tz_use = tz or TIMEZONE
+    runtime = _runtime_state_snapshot()
+    tz_use = tz or runtime.timezone
     pvloc = pvlib_location_from_loc(loc, tz_use)
     times = df.index
     if getattr(times, "tz", None) is None:
@@ -2878,22 +2915,22 @@ def estimate_pv_with_pvlib(
     wind_speed_10m = pd.to_numeric(wind_raw_10m, errors="coerce").fillna(1.0).clip(lower=0.0)
     wind_speed_module = wind_speed_module_height_from_10m(
         wind_speed_10m,
-        module_height_m=PV_EFFECTIVE_MODULE_WIND_HEIGHT_M,
-        reference_height_m=PV_FORECAST_WIND_REFERENCE_HEIGHT_M,
+        module_height_m=runtime.pv_effective_module_wind_height_m,
+        reference_height_m=runtime.pv_forecast_wind_reference_height_m,
     )
     temp_air = pd.to_numeric(df_local["temp_air_c"], errors="coerce").ffill().bfill().fillna(10.0)
 
     dt_h = timestep_hours(df_local.index)
     dc_pr_multiplier, ac_inv_eff_multiplier = resolve_pv_loss_multipliers(
-        PERFORMANCE_RATIO,
-        INVERTER_EFF,
-        PV_LOSS_MODEL,
+        runtime.performance_ratio,
+        runtime.inverter_eff,
+        runtime.pv_loss_model,
     )
 
     def array_energy(tilt: float, az: float, pdc0_kw: float) -> Tuple["pd.Series", "pd.Series"]:
         irradiance_kwargs = {}
-        if PV_ALBEDO is not None:
-            irradiance_kwargs["albedo"] = PV_ALBEDO
+        if runtime.pv_albedo is not None:
+            irradiance_kwargs["albedo"] = runtime.pv_albedo
         irr = pvlib.irradiance.get_total_irradiance(
             surface_tilt=tilt,
             surface_azimuth=az,
@@ -2907,45 +2944,45 @@ def estimate_pv_with_pvlib(
             **irradiance_kwargs,
         )
         poa = irr["poa_global"].fillna(0).clip(lower=0)
-        if PV_IAM_MODEL == "ashrae":
+        if runtime.pv_iam_model == "ashrae":
             aoi = pvlib.irradiance.aoi(
                 surface_tilt=tilt,
                 surface_azimuth=az,
                 solar_zenith=solpos["apparent_zenith"],
                 solar_azimuth=solpos["azimuth"],
             )
-            iam_modifier = pvlib.iam.ashrae(aoi, b=PV_IAM_ASHRAE_B)
+            iam_modifier = pvlib.iam.ashrae(aoi, b=runtime.pv_iam_ashrae_b)
             poa = (poa * pd.to_numeric(iam_modifier, errors="coerce").fillna(0.0).clip(lower=0.0, upper=1.0)).fillna(0.0)
         temp_cell = pvlib.temperature.faiman(
             poa_global=poa,
             temp_air=temp_air,
             wind_speed=wind_speed_module,
-            u0=float(PV_TEMPERATURE_FAIMAN_U0),
-            u1=float(PV_TEMPERATURE_FAIMAN_U1),
+            u0=runtime.pv_temperature_faiman_u0,
+            u1=runtime.pv_temperature_faiman_u1,
         )
         dc_w = pvlib.pvsystem.pvwatts_dc(
-            poa, pdc0=pdc0_kw * 1000.0, gamma_pdc=PV_GAMMA_PDC, temp_cell=temp_cell
+            poa, pdc0=pdc0_kw * 1000.0, gamma_pdc=runtime.pv_gamma_pdc, temp_cell=temp_cell
         )
         dc_kw = ((dc_w / 1000.0) * dc_pr_multiplier).clip(lower=0)
         dc_kwh = (dc_kw * dt_h).fillna(0).clip(lower=0)
         return dc_kw.astype(float), dc_kwh.astype(float)
 
     east_dc_kw, east_dc_kwh = array_energy(
-        TILT_EAST_DEG, AZIMUTH_EAST_DEG, dc_kwp(ARRAY_EAST_PANELS)
+        runtime.tilt_east_deg, runtime.azimuth_east_deg, dc_kwp(runtime.array_east_panels)
     )
     south_dc_kw, south_dc_kwh = array_energy(
-        TILT_SOUTH_DEG, AZIMUTH_SOUTH_DEG, dc_kwp(ARRAY_SOUTH_PANELS)
+        runtime.tilt_south_deg, runtime.azimuth_south_deg, dc_kwp(runtime.array_south_panels)
     )
 
-    east_dc_kwh = (east_dc_kwh * PV_CALIBRATION_FACTOR_EAST).fillna(0).clip(lower=0)
-    south_dc_kwh = (south_dc_kwh * PV_CALIBRATION_FACTOR_SOUTH).fillna(0).clip(lower=0)
+    east_dc_kwh = (east_dc_kwh * runtime.pv_calibration_factor_east).fillna(0).clip(lower=0)
+    south_dc_kwh = (south_dc_kwh * runtime.pv_calibration_factor_south).fillna(0).clip(lower=0)
     east_dc_kw = (east_dc_kwh / dt_h.replace(0.0, float("nan"))).fillna(0).clip(lower=0)
     south_dc_kw = (south_dc_kwh / dt_h.replace(0.0, float("nan"))).fillna(0).clip(lower=0)
 
     total_dc_kw_unclipped = (east_dc_kw + south_dc_kw).fillna(0).clip(lower=0)
-    if INVERTER_AC_MODEL == "pvwatts":
+    if runtime.inverter_ac_model == "pvwatts":
         total_pdc0_w = (
-            dc_kwp(ARRAY_EAST_PANELS) + dc_kwp(ARRAY_SOUTH_PANELS)
+            dc_kwp(runtime.array_east_panels) + dc_kwp(runtime.array_south_panels)
         ) * 1000.0
         total_ac_kw_unclipped = pd.Series(
             pvlib.inverter.pvwatts(
@@ -2961,7 +2998,7 @@ def estimate_pv_with_pvlib(
         total_ac_kw_unclipped = (total_dc_kw_unclipped * ac_inv_eff_multiplier).fillna(0).clip(lower=0)
 
     total_ac_kwh_unclipped = (total_ac_kw_unclipped * dt_h).fillna(0.0).clip(lower=0.0)
-    total_ac_kw_clipped = total_ac_kw_unclipped.clip(lower=0.0, upper=INVERTER_AC_KW_LIMIT)
+    total_ac_kw_clipped = total_ac_kw_unclipped.clip(lower=0.0, upper=runtime.inverter_ac_kw_limit)
     total_ac_kwh_clipped = (total_ac_kw_clipped * dt_h).fillna(0.0).clip(lower=0.0)
 
     dc_eps = 1e-9
@@ -3010,6 +3047,7 @@ def build_pv_forecast(
     allow_synthetic_ghi_mask: "pd.Series | None" = None,
 ) -> "pd.DataFrame":
     require_pvlib()
+    runtime = _runtime_state_snapshot()
 
     (
         east_ac_kwh_clipped,
@@ -3032,7 +3070,7 @@ def build_pv_forecast(
     out["pv_total_kwh"] = total_ac_kwh_clipped.where(total_ac_kwh_clipped.isna() | (total_ac_kwh_clipped >= 0.0))
 
     out["pv_total_unclipped_kw"] = (out["pv_total_unclipped_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0)
-    out["pv_total_kw"] = (out["pv_total_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0, upper=INVERTER_AC_KW_LIMIT)
+    out["pv_total_kw"] = (out["pv_total_kwh"] / dt_h.replace(0.0, float("nan"))).clip(lower=0.0, upper=runtime.inverter_ac_kw_limit)
 
     # Legacy aliases kept for backward compatibility with existing UI/flow logic.
     out["pv_dc_available_kwh"] = out["pv_total_unclipped_kwh"]
@@ -3052,14 +3090,15 @@ def build_pv_forecast(
 
 
 def pv_temperature_metadata() -> dict[str, float | str]:
+    runtime = _runtime_state_snapshot()
     return {
         "pv_method": "pvlib",
         "temperature_model": PV_TEMPERATURE_MODEL,
         "temperature_wind_input_source": PV_TEMPERATURE_WIND_INPUT_SOURCE,
-        "effective_module_wind_height_m": float(PV_EFFECTIVE_MODULE_WIND_HEIGHT_M),
-        "forecast_wind_reference_height_m": float(PV_FORECAST_WIND_REFERENCE_HEIGHT_M),
-        "faiman_u0": float(PV_TEMPERATURE_FAIMAN_U0),
-        "faiman_u1": float(PV_TEMPERATURE_FAIMAN_U1),
+        "effective_module_wind_height_m": runtime.pv_effective_module_wind_height_m,
+        "forecast_wind_reference_height_m": runtime.pv_forecast_wind_reference_height_m,
+        "faiman_u0": runtime.pv_temperature_faiman_u0,
+        "faiman_u1": runtime.pv_temperature_faiman_u1,
     }
 
 
@@ -3120,15 +3159,16 @@ def ensure_pv_columns(df: "pd.DataFrame", *, prefer_split: bool = True, split_ra
 
 
 def validate_pv_outputs(out: "pd.DataFrame") -> None:
-    if not (0 < PERFORMANCE_RATIO <= 1.0):
+    runtime = _runtime_state_snapshot()
+    if not (0 < runtime.performance_ratio <= 1.0):
         raise ValueError("PERFORMANCE_RATIO must be within (0, 1].")
-    if not (0 < INVERTER_EFF <= 1.0):
+    if not (0 < runtime.inverter_eff <= 1.0):
         raise ValueError("INVERTER_EFF must be within (0, 1].")
-    if PV_LOSS_MODEL not in {"split", "combined"}:
+    if runtime.pv_loss_model not in {"split", "combined"}:
         raise ValueError("PV_LOSS_MODEL must be either 'split' or 'combined'.")
-    if not (0.7 <= PV_CALIBRATION_FACTOR_EAST <= 1.3):
+    if not (0.7 <= runtime.pv_calibration_factor_east <= 1.3):
         raise ValueError("PV_CALIBRATION_FACTOR_EAST must be within [0.7, 1.3].")
-    if not (0.7 <= PV_CALIBRATION_FACTOR_SOUTH <= 1.3):
+    if not (0.7 <= runtime.pv_calibration_factor_south <= 1.3):
         raise ValueError("PV_CALIBRATION_FACTOR_SOUTH must be within [0.7, 1.3].")
 
     eps = 1e-9
