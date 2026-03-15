@@ -42,6 +42,8 @@ def test_log_backend_error_event_logs_persist_failures(monkeypatch, caplog) -> N
 
     messages = [rec.message for rec in caplog.records]
     assert any("backend_api error_event source=backend" in msg for msg in messages)
+    assert any("operation=error_event_capture" in msg for msg in messages)
+    assert any("storage_action=insert_error_event" in msg for msg in messages)
     assert any("backend_api error_event_persist_failed" in msg for msg in messages)
 
 
@@ -98,3 +100,5 @@ def test_insert_forecast_run_logs_provider_payload_insert_failures(tmp_path: Pat
     assert run_count == 1
     assert provider_count == 0
     assert any("db_sqlite provider_payloads_persist_failed" in rec.message for rec in caplog.records)
+    assert any("operation=insert_forecast_run" in rec.message for rec in caplog.records)
+    assert any("storage_action=insert_provider_payloads" in rec.message for rec in caplog.records)

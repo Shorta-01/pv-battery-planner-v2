@@ -90,6 +90,24 @@ DEBUG = os.getenv("DEBUG", "").strip() in ("1", "true", "True", "yes", "YES")
 logger = logging.getLogger(__name__)
 
 
+def _log_context(**fields: object) -> str:
+    parts: list[str] = []
+    for key, value in fields.items():
+        if value is None:
+            continue
+        parts.append(f"{key}={value}")
+    return " ".join(parts)
+
+
+def _extract_run_id_from_error_extra(extra: dict | None) -> str | None:
+    if not isinstance(extra, dict):
+        return None
+    raw = extra.get("run_id")
+    if raw is None:
+        return None
+    return str(raw)
+
+
 def _utc_now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
 
@@ -2896,16 +2914,26 @@ def _validate_forecast_runtime_dependencies() -> None:
 
 def _log_backend_error_event(*, request: Request, exc: BaseException, error_type: str, severity: str, title: str, extra: dict | None = None) -> None:
     where = f"backend_api:{request.url.path}"
+    run_id = _extract_run_id_from_error_extra(extra)
+    operation = "error_event_capture"
+    context_text = _log_context(
+        operation=operation,
+        endpoint=request.url.path,
+        method=request.method,
+        run_id=run_id,
+        storage_action="insert_error_event",
+    )
     body = format_exception_body(title=title, where=where, exc=exc, extra=extra)
     dedupe_key = compute_dedupe_key(source="backend", error_type=error_type, where=where, title=title, body=body)
 
     log_method = logger.error if severity == "error" else logger.warning
     log_method(
-        "backend_api error_event source=backend severity=%s error_type=%s where=%s title=%s",
+        "backend_api error_event source=backend severity=%s error_type=%s where=%s title=%s %s",
         severity,
         error_type,
         where,
         title,
+        context_text,
         exc_info=exc if severity == "error" else False,
     )
 
@@ -2922,16 +2950,18 @@ def _log_backend_error_event(*, request: Request, exc: BaseException, error_type
             dedupe_key=dedupe_key,
         )
         logger.info(
-            "backend_api error_event_persisted error_id=%s error_type=%s where=%s",
+            "backend_api error_event_persisted error_id=%s error_type=%s where=%s %s",
             error_id,
             error_type,
             where,
+            context_text,
         )
     except Exception:
         logger.exception(
-            "backend_api error_event_persist_failed error_type=%s where=%s",
+            "backend_api error_event_persist_failed error_type=%s where=%s %s",
             error_type,
             where,
+            context_text,
         )
 
 
