@@ -3320,6 +3320,19 @@ def compute_soc_low_timing_aware(
     return soc_low
 
 
+def _clamp_cutoff_soc_with_note(
+    cutoff_soc: float,
+    runtime: PlannerRuntimeStateSnapshot,
+) -> tuple[float, str]:
+    old_cutoff_soc = cutoff_soc
+    cutoff_soc = min(max(cutoff_soc, runtime.min_soc), runtime.max_cutoff_soc)
+    cutoff_note = (
+        f"Cutoff capped to {runtime.max_cutoff_soc * 100.0:.1f}% (was {old_cutoff_soc*100:.1f}%)."
+        if abs(cutoff_soc - old_cutoff_soc) > 1e-9 else ""
+    )
+    return cutoff_soc, cutoff_note
+
+
 def run_forecast_pipeline(
     cfg: dict,
     target_date: dt.date,
@@ -3355,14 +3368,11 @@ def run_forecast_pipeline(
             sunrise=weather.sunrise,
             sunset=weather.sunset,
         )
+        runtime = _runtime_state_snapshot()
         cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high, tariff_cfg=tariff_cfg)
-        cutoff_soc = cutoff_soc_raw + (float(buffer_percent) / 100.0)
-
-        old_cutoff_soc = cutoff_soc
-        cutoff_soc = min(max(cutoff_soc, MIN_SOC), MAX_CUTOFF_SOC)
-        cutoff_note = (
-            f"Cutoff capped to {MAX_CUTOFF_SOC_PERCENT:.1f}% (was {old_cutoff_soc*100:.1f}%)."
-            if abs(cutoff_soc - old_cutoff_soc) > 1e-9 else ""
+        cutoff_soc, cutoff_note = _clamp_cutoff_soc_with_note(
+            cutoff_soc_raw + (float(buffer_percent) / 100.0),
+            runtime,
         )
 
         charge_date = target_date - dt.timedelta(days=1)
@@ -3435,8 +3445,12 @@ def run_detailed_plan(
         sunset=weather.sunset,
         pv_col=pv_col_for_planning,
     )
+    runtime = _runtime_state_snapshot()
     cutoff_soc_raw, cutoff_reason = choose_cutoff_soc(target_date, soc_low, soc_high, tariff_cfg=tariff_cfg)
-    cutoff_soc = min(max(cutoff_soc_raw + (float(buffer_percent) / 100.0), MIN_SOC), MAX_CUTOFF_SOC)
+    cutoff_soc, _ = _clamp_cutoff_soc_with_note(
+        cutoff_soc_raw + (float(buffer_percent) / 100.0),
+        runtime,
+    )
 
     charge_date = target_date - dt.timedelta(days=1)
     _, charge_kw, charge_note, achieved_soc_start = plan_charge_power(
@@ -3451,10 +3465,10 @@ def run_detailed_plan(
     available_charge_hours = float(len(get_charge_session_index_from_window(window_start, window_end)))
     required_grid_kwh = 0.0
     if available_charge_hours > 0 and cutoff_soc > (soc_at_22_percent / 100.0) + 1e-9 and tariff_has_meaningful_spread(tariff_cfg):
-        soc_at_22_kwh = (soc_at_22_percent / 100.0) * BATTERY_KWH
-        target_soc_kwh = cutoff_soc * BATTERY_KWH
+        soc_at_22_kwh = (soc_at_22_percent / 100.0) * runtime.battery_kwh
+        target_soc_kwh = cutoff_soc * runtime.battery_kwh
         required_batt_kwh = max(0.0, target_soc_kwh - soc_at_22_kwh)
-        required_grid_kwh = required_batt_kwh / BATTERY_AC_CHARGE_EFF
+        required_grid_kwh = required_batt_kwh / runtime.battery_ac_charge_eff
     recommended_allowed_ac_kw = (required_grid_kwh / available_charge_hours) if available_charge_hours > 0 else 0.0
     charge_effective_cap_kw, charge_limit_reason_raw = _compute_charge_limit_metadata(
         recommended_kw=recommended_allowed_ac_kw,
