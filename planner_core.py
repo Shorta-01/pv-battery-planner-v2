@@ -1006,6 +1006,8 @@ class PlannerRuntimeStateSnapshot:
     battery_max_soc: float
     battery_discharge_eff: float
     battery_ac_charge_eff: float
+    load_profile_24h: list[float]
+    enable_invariant_checks: bool
     offpeak_windows_by_dow: dict[int, list[tuple[str, str]]]
     effective_cfg: dict
 
@@ -1019,6 +1021,8 @@ def _runtime_state_snapshot() -> PlannerRuntimeStateSnapshot:
             battery_max_soc=float(BATTERY_MAX_SOC),
             battery_discharge_eff=float(BATTERY_DISCHARGE_EFF),
             battery_ac_charge_eff=float(BATTERY_AC_CHARGE_EFF),
+            load_profile_24h=[float(v) for v in LOAD_PROFILE],
+            enable_invariant_checks=bool(ENABLE_INVARIANT_CHECKS),
             offpeak_windows_by_dow=copy.deepcopy(OFFPEAK_WINDOWS_BY_DOW),
             effective_cfg=copy.deepcopy(EFFECTIVE_CFG),
         )
@@ -1198,6 +1202,14 @@ def _runtime_timezone() -> str:
 def _runtime_offpeak_windows_for_weekday(weekday: int) -> List[Tuple[str, str]]:
     runtime = _runtime_state_snapshot()
     return normalize_windows(runtime.offpeak_windows_by_dow.get(int(weekday), []))
+
+
+def _runtime_load_profile_24h() -> list[float]:
+    return _runtime_state_snapshot().load_profile_24h
+
+
+def _runtime_enable_invariant_checks() -> bool:
+    return _runtime_state_snapshot().enable_invariant_checks
 
 
 def get_offpeak_windows(for_date: dt.date) -> List[Tuple[str, str]]:
@@ -1478,7 +1490,7 @@ def get_charge_session_index_from_window(start_ts: pd.Timestamp, end_ts: pd.Time
     start_h = pd.Timestamp(start_ts).ceil("h")
     end_h = pd.Timestamp(end_ts).floor("h")
     if end_h <= start_h:
-        return pd.DatetimeIndex([], tz=TIMEZONE)
+        return pd.DatetimeIndex([], tz=_runtime_timezone())
     return pd.date_range(start_h, end_h, freq="h", inclusive="left")
 
 
@@ -1579,12 +1591,13 @@ def get_expensive_windows(for_date: dt.date, cfg: Optional[dict] = None) -> List
 # ============================================================
 
 def hourly_load_kwh(total_kwh: float) -> List[float]:
-    if len(LOAD_PROFILE) != 24:
+    load_profile = _runtime_load_profile_24h()
+    if len(load_profile) != 24:
         raise ValueError("LOAD_PROFILE must have 24 values.")
-    s = sum(LOAD_PROFILE)
+    s = sum(load_profile)
     if s <= 0:
         raise ValueError("LOAD_PROFILE sum must be > 0.")
-    prof = [p / s for p in LOAD_PROFILE]
+    prof = [p / s for p in load_profile]
     return [total_kwh * p for p in prof]
 
 
@@ -1622,19 +1635,19 @@ def build_cycle_hourly_load_series(
     total_consumption_kwh: float,
     tariff_cfg: Optional[dict] = None,
 ) -> "pd.Series":
-    cfg = tariff_cfg or EFFECTIVE_CFG["tariff"]
+    cfg = tariff_cfg or _runtime_tariff_cfg()
     windows = normalize_windows(get_offpeak_windows_for_date(target_date, cfg))
     all_day = windows == [("00:00", "24:00")]
     if all_day:
-        cycle_start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=TIMEZONE)
+        cycle_start = pd.Timestamp(dt.datetime.combine(target_date, dt.time(0, 0)), tz=_runtime_timezone())
     else:
         cycle_start, _ = compute_charging_window_for_target_date(target_date, cfg)
     next_cycle_start = cycle_start + dt.timedelta(hours=24)
 
-    cycle_idx = pd.date_range(cycle_start, next_cycle_start, freq="h", inclusive="left", tz=TIMEZONE)
+    cycle_idx = pd.date_range(cycle_start, next_cycle_start, freq="h", inclusive="left", tz=_runtime_timezone())
     cycle_loads = build_hourly_load_series(cycle_idx, total_consumption_kwh)
 
-    if ENABLE_INVARIANT_CHECKS:
+    if _runtime_enable_invariant_checks():
         cycle_total = float(cycle_loads.sum())
         if abs(cycle_total - float(total_consumption_kwh)) > 1e-6:
             raise ValueError(
@@ -1646,9 +1659,10 @@ def build_cycle_hourly_load_series(
 
 def load_consumption_profile_kwh_per_hour() -> list[float]:
     """Return a normalized 24h load profile for backward compatibility."""
-    if len(LOAD_PROFILE) != 24:
+    load_profile = _runtime_load_profile_24h()
+    if len(load_profile) != 24:
         raise ValueError("LOAD_PROFILE must have 24 values.")
-    profile = [float(v) for v in LOAD_PROFILE]
+    profile = [float(v) for v in load_profile]
     total = float(sum(profile))
     if total <= 0:
         raise ValueError("LOAD_PROFILE sum must be > 0.")
