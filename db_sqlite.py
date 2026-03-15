@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import logging
 import math
 import os
 import sqlite3
@@ -20,6 +21,7 @@ from error_logging import MAX_ERROR_BODY_CHARS, iso_utc_now, trim
 DEFAULT_TIMEZONE = "Europe/Brussels"
 CURRENT_CONFIG_SCHEMA_VERSION = 1
 MAX_PROVIDER_RESPONSE_CHARS = 250_000
+logger = logging.getLogger(__name__)
 
 _SQLITE_PROFILE_ENV_VAR = "PVBP_SQLITE_PROFILE"
 _SQLITE_DEFAULT_PROFILE = "laptop"
@@ -548,6 +550,10 @@ def _safe_json_dumps(payload: Any, *, max_chars: int | None = None) -> str | Non
         try:
             serialized = json.dumps(_replace_nan_with_none(payload), sort_keys=True, default=str, allow_nan=False)
         except Exception:
+            logger.exception(
+                "db_sqlite json_serialize_failed payload_type=%s",
+                type(payload).__name__,
+            )
             return None
     if max_chars is None or len(serialized) <= max_chars:
         return serialized
@@ -559,6 +565,7 @@ def _safe_json_dumps(payload: Any, *, max_chars: int | None = None) -> str | Non
     try:
         return json.dumps(fallback, sort_keys=True)
     except Exception:
+        logger.exception("db_sqlite json_truncation_fallback_serialize_failed")
         return None
 
 
@@ -819,13 +826,14 @@ def _normalize_ensemble_hourly(payload: dict) -> list[tuple[str, float | None, f
 
 def insert_forecast_run(db_path: str, payload: dict) -> None:
     if not isinstance(payload, dict):
-        return
+        raise ValueError("payload must be a dict")
 
     metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
     inputs_used = payload.get("inputs_used") if isinstance(payload.get("inputs_used"), dict) else {}
     if not inputs_used:
         soc_fallback = payload.get("soc_now_percent", payload.get("soc_at_22_percent"))
         inputs_used = {
+            **inputs_used,
             "soc_now_percent": soc_fallback,
             "soc_at_22_percent": soc_fallback,
             "yesterday_consumption_kwh": payload.get("yesterday_consumption_kwh"),
@@ -835,7 +843,7 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
     run_id = str(payload.get("run_id") or uuid.uuid4())
     target_date = str(payload.get("target_date") or "")
     if not target_date:
-        return
+        raise ValueError("target_date is required")
 
     run_at_utc = str(payload.get("run_at_utc") or _iso_utc_now())
     timezone = str(payload.get("timezone") or payload.get("system_snapshot", {}).get("timezone") or DEFAULT_TIMEZONE)
@@ -846,28 +854,30 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
     ensemble_rows = _normalize_ensemble_hourly(payload)
     provider_payload_rows = _normalize_provider_payload_rows(run_id, payload)
 
-    pv_forecast_kwh = _safe_float(metrics.get("pv_forecast_kwh"))
-    cons_forecast_kwh = _safe_float(metrics.get("cons_forecast_kwh"))
-    if pv_forecast_kwh is None:
-        pv_forecast_kwh = _safe_float(pd.Series([row.get("pv_kwh") for row in hourly_rows], dtype=float).sum(min_count=1))
-    if cons_forecast_kwh is None:
-        cons_forecast_kwh = float(sum((row.get("load_kwh") or 0.0) for row in hourly_rows))
-
     cutoff_soc = _safe_float(metrics.get("cutoff_soc"))
     if cutoff_soc is not None and cutoff_soc <= 1.0:
-        cutoff_soc = cutoff_soc * 100.0
+        cutoff_soc *= 100.0
+    elif cutoff_soc is None:
+        cutoff_soc = _safe_float(payload.get("cutoff_soc"))
+
+    pv_forecast_kwh = _safe_float(metrics.get("pv_forecast_kwh"))
+    if pv_forecast_kwh is None:
+        pv_forecast_kwh = _safe_float(payload.get("pv_forecast_kwh"))
+
+    cons_forecast_kwh = _safe_float(metrics.get("cons_forecast_kwh"))
+    if cons_forecast_kwh is None:
+        cons_forecast_kwh = _safe_float(payload.get("cons_forecast_kwh"))
 
     config_obj = payload.get("config") if isinstance(payload.get("config"), dict) else {}
     config_hash = payload.get("config_hash") or compute_config_hash(config_obj)
     config_json = payload.get("config_json")
-    if config_json is None:
-        config_json = json.dumps(config_obj, sort_keys=True)
+    if not isinstance(config_json, str):
+        config_json = json.dumps(_replace_nan_with_none(config_obj), sort_keys=True, allow_nan=False)
 
     warnings_json = json.dumps(_replace_nan_with_none(payload.get("warnings", [])), allow_nan=False)
-    inputs_used_json = json.dumps(_replace_nan_with_none(inputs_used), sort_keys=True, allow_nan=False)
-    weather_ensemble_json = json.dumps(_replace_nan_with_none(weather_ensemble), sort_keys=True, allow_nan=False)
+
     pv_week_ahead = payload.get("pv_week_ahead") if isinstance(payload.get("pv_week_ahead"), list) else []
-    pv_week_ahead_json = json.dumps(_replace_nan_with_none(pv_week_ahead), sort_keys=True, allow_nan=False)
+    pv_week_ahead_json = json.dumps(_replace_nan_with_none(pv_week_ahead), allow_nan=False)
     pv_quality = payload.get("pv_quality")
     models_used = payload.get("tomorrow_models_used") if isinstance(payload.get("tomorrow_models_used"), list) else []
     if not models_used and isinstance(weather_ensemble, dict):
@@ -908,8 +918,8 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
         "pv_forecast_kwh": pv_forecast_kwh,
         "cons_forecast_kwh": cons_forecast_kwh,
         "warnings_count": int(payload.get("warnings_count") or len(payload.get("warnings", []))),
-        "inputs_used_json": inputs_used_json,
-        "weather_ensemble_json": weather_ensemble_json,
+        "inputs_used_json": json.dumps(_replace_nan_with_none(inputs_used), sort_keys=True, allow_nan=False),
+        "weather_ensemble_json": json.dumps(_replace_nan_with_none(weather_ensemble), sort_keys=True, allow_nan=False),
         "pv_week_ahead_json": pv_week_ahead_json,
         "pv_p10_kwh": _safe_float((payload.get("pv_totals_kwh") or {}).get("p10")),
         "pv_p50_kwh": _safe_float((payload.get("pv_totals_kwh") or {}).get("p50")),
@@ -927,143 +937,157 @@ def insert_forecast_run(db_path: str, payload: dict) -> None:
         "created_at_utc": payload.get("created_at_utc") or run_at_utc,
     }
 
-    with _connect(db_path) as conn:
-        conn.execute("BEGIN")
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO forecast_runs (
-                run_id, target_date, run_at_utc, run_type, status, timezone,
-                charge_kw, cutoff_soc, pv_forecast_kwh, cons_forecast_kwh, warnings_count,
-                inputs_used_json, weather_ensemble_json, pv_week_ahead_json, pv_p10_kwh, pv_p50_kwh, pv_p90_kwh,
-                run_duration_ms, config_schema_version,
-                soc_at_22_used, soc_now_used, yesterday_kwh_used, planner_version,
-                config_hash, config_json, warnings_json, pv_quality, created_at_utc,
-                mode, requested_days, models_used_json, ensemble_method, weights_used_json,
-                config_snapshot_json, input_snapshot_json
-            ) VALUES (
-                :run_id, :target_date, :run_at_utc, :run_type, :status, :timezone,
-                :charge_kw, :cutoff_soc, :pv_forecast_kwh, :cons_forecast_kwh, :warnings_count,
-                :inputs_used_json, :weather_ensemble_json, :pv_week_ahead_json, :pv_p10_kwh, :pv_p50_kwh, :pv_p90_kwh,
-                :run_duration_ms, :config_schema_version,
-                :soc_at_22_used, :soc_now_used, :yesterday_kwh_used, :planner_version,
-                :config_hash, :config_json, :warnings_json, :pv_quality, :created_at_utc,
-                :mode, :requested_days, :models_used_json, :ensemble_method, :weights_used_json,
-                :config_snapshot_json, :input_snapshot_json
-            )
-            """,
-            row_data,
-        )
-        conn.execute("DELETE FROM forecast_hourly WHERE run_id = ?", (run_id,))
-        if hourly_rows:
-            conn.executemany(
+    try:
+        with _connect(db_path) as conn:
+            conn.execute("BEGIN")
+            conn.execute(
                 """
-                INSERT OR REPLACE INTO forecast_hourly (
-                    run_id, ts_local, pv_kwh, pv_total_unclipped_kwh, pv_east_kwh, pv_south_kwh, pv_clipped_kwh, load_kwh,
-                    grid_import_kwh, grid_export_kwh,
-                    batt_charge_kwh, batt_discharge_kwh, soc_pct
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO forecast_runs (
+                    run_id, target_date, run_at_utc, run_type, status, timezone,
+                    charge_kw, cutoff_soc, pv_forecast_kwh, cons_forecast_kwh, warnings_count,
+                    inputs_used_json, weather_ensemble_json, pv_week_ahead_json, pv_p10_kwh, pv_p50_kwh, pv_p90_kwh,
+                    run_duration_ms, config_schema_version,
+                    soc_at_22_used, soc_now_used, yesterday_kwh_used, planner_version,
+                    config_hash, config_json, warnings_json, pv_quality, created_at_utc,
+                    mode, requested_days, models_used_json, ensemble_method, weights_used_json,
+                    config_snapshot_json, input_snapshot_json
+                ) VALUES (
+                    :run_id, :target_date, :run_at_utc, :run_type, :status, :timezone,
+                    :charge_kw, :cutoff_soc, :pv_forecast_kwh, :cons_forecast_kwh, :warnings_count,
+                    :inputs_used_json, :weather_ensemble_json, :pv_week_ahead_json, :pv_p10_kwh, :pv_p50_kwh, :pv_p90_kwh,
+                    :run_duration_ms, :config_schema_version,
+                    :soc_at_22_used, :soc_now_used, :yesterday_kwh_used, :planner_version,
+                    :config_hash, :config_json, :warnings_json, :pv_quality, :created_at_utc,
+                    :mode, :requested_days, :models_used_json, :ensemble_method, :weights_used_json,
+                    :config_snapshot_json, :input_snapshot_json
+                )
                 """,
-                [
-                    (
-                        run_id,
-                        row["ts_local"],
-                        row["pv_kwh"],
-                        row["pv_total_unclipped_kwh"],
-                        row["pv_east_kwh"],
-                        row["pv_south_kwh"],
-                        row["pv_clipped_kwh"],
-                        row["load_kwh"],
-                        row["grid_import_kwh"],
-                        row["grid_export_kwh"],
-                        row["batt_charge_kwh"],
-                        row["batt_discharge_kwh"],
-                        row["soc_pct"],
-                    )
-                    for row in hourly_rows
-                ],
+                row_data,
             )
 
-        conn.execute("DELETE FROM weather_hourly_by_model WHERE run_id = ?", (run_id,))
-        if weather_rows:
-            conn.executemany(
-                """
-                INSERT OR REPLACE INTO weather_hourly_by_model (
-                    run_id, model_id, ts_local, ghi, dni, dhi, dni_source, dhi_source, temp_c, wind_ms, cloud_pct, weather_code
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        run_id,
-                        model_id,
-                        ts_local,
-                        ghi,
-                        dni,
-                        dhi,
-                        dni_source,
-                        dhi_source,
-                        temp_c,
-                        wind_ms,
-                        cloud_pct,
-                        weather_code,
-                    )
-                    for model_id, ts_local, ghi, dni, dhi, dni_source, dhi_source, temp_c, wind_ms, cloud_pct, weather_code in weather_rows
-                ],
-            )
-
-        conn.execute("DELETE FROM pv_hourly_by_model WHERE run_id = ?", (run_id,))
-        if pv_model_rows:
-            conn.executemany(
-                """
-                INSERT OR REPLACE INTO pv_hourly_by_model (
-                    run_id, model_id, ts_local, pv_east_kwh, pv_south_kwh, pv_total_kwh, pv_unclipped_kwh, pv_clipped_kwh, dc_kw, ac_kw
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        run_id,
-                        model_id,
-                        ts_local,
-                        pv_east_kwh,
-                        pv_south_kwh,
-                        pv_total_kwh,
-                        pv_unclipped_kwh,
-                        pv_clipped_kwh,
-                        dc_kw,
-                        ac_kw,
-                    )
-                    for model_id, ts_local, pv_east_kwh, pv_south_kwh, pv_total_kwh, pv_unclipped_kwh, pv_clipped_kwh, dc_kw, ac_kw in pv_model_rows
-                ],
-            )
-
-        conn.execute("DELETE FROM run_ensemble_hourly WHERE run_id = ?", (run_id,))
-        if ensemble_rows:
-            conn.executemany(
-                """
-                INSERT OR REPLACE INTO run_ensemble_hourly (
-                    run_id, ts_local, pv_kwh_p50, pv_kwh_p10, pv_kwh_p90, weather_code_model_id, weather_code
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (run_id, ts_local, pv_kwh_p50, pv_kwh_p10, pv_kwh_p90, weather_code_model_id, weather_code)
-                    for ts_local, pv_kwh_p50, pv_kwh_p10, pv_kwh_p90, weather_code_model_id, weather_code in ensemble_rows
-                ],
-            )
-
-        conn.execute("DELETE FROM provider_payloads WHERE run_id = ?", (run_id,))
-        if provider_payload_rows:
-            try:
+            conn.execute("DELETE FROM forecast_hourly WHERE run_id = ?", (run_id,))
+            if hourly_rows:
                 conn.executemany(
                     """
-                    INSERT OR REPLACE INTO provider_payloads (
-                        run_id, model_id, fetched_at_utc, endpoint, params_json,
-                        response_headers_json, response_json, http_status, latency_ms
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT OR REPLACE INTO forecast_hourly (
+                        run_id, ts_local, pv_kwh, pv_total_unclipped_kwh, pv_east_kwh, pv_south_kwh, pv_clipped_kwh, load_kwh,
+                        grid_import_kwh, grid_export_kwh,
+                        batt_charge_kwh, batt_discharge_kwh, soc_pct
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    provider_payload_rows,
+                    [
+                        (
+                            run_id,
+                            row["ts_local"],
+                            row["pv_kwh"],
+                            row["pv_total_unclipped_kwh"],
+                            row["pv_east_kwh"],
+                            row["pv_south_kwh"],
+                            row["pv_clipped_kwh"],
+                            row["load_kwh"],
+                            row["grid_import_kwh"],
+                            row["grid_export_kwh"],
+                            row["batt_charge_kwh"],
+                            row["batt_discharge_kwh"],
+                            row["soc_pct"],
+                        )
+                        for row in hourly_rows
+                    ],
                 )
-            except Exception:
-                pass
-        conn.commit()
+
+            conn.execute("DELETE FROM weather_hourly_by_model WHERE run_id = ?", (run_id,))
+            if weather_rows:
+                conn.executemany(
+                    """
+                    INSERT OR REPLACE INTO weather_hourly_by_model (
+                        run_id, model_id, ts_local, ghi, dni, dhi, dni_source, dhi_source, temp_c, wind_ms, cloud_pct, weather_code
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            run_id,
+                            model_id,
+                            ts_local,
+                            ghi,
+                            dni,
+                            dhi,
+                            dni_source,
+                            dhi_source,
+                            temp_c,
+                            wind_ms,
+                            cloud_pct,
+                            weather_code,
+                        )
+                        for model_id, ts_local, ghi, dni, dhi, dni_source, dhi_source, temp_c, wind_ms, cloud_pct, weather_code in weather_rows
+                    ],
+                )
+
+            conn.execute("DELETE FROM pv_hourly_by_model WHERE run_id = ?", (run_id,))
+            if pv_model_rows:
+                conn.executemany(
+                    """
+                    INSERT OR REPLACE INTO pv_hourly_by_model (
+                        run_id, model_id, ts_local, pv_east_kwh, pv_south_kwh, pv_total_kwh, pv_unclipped_kwh, pv_clipped_kwh, dc_kw, ac_kw
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            run_id,
+                            model_id,
+                            ts_local,
+                            pv_east_kwh,
+                            pv_south_kwh,
+                            pv_total_kwh,
+                            pv_unclipped_kwh,
+                            pv_clipped_kwh,
+                            dc_kw,
+                            ac_kw,
+                        )
+                        for model_id, ts_local, pv_east_kwh, pv_south_kwh, pv_total_kwh, pv_unclipped_kwh, pv_clipped_kwh, dc_kw, ac_kw in pv_model_rows
+                    ],
+                )
+
+            conn.execute("DELETE FROM run_ensemble_hourly WHERE run_id = ?", (run_id,))
+            if ensemble_rows:
+                conn.executemany(
+                    """
+                    INSERT OR REPLACE INTO run_ensemble_hourly (
+                        run_id, ts_local, pv_kwh_p50, pv_kwh_p10, pv_kwh_p90, weather_code_model_id, weather_code
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (run_id, ts_local, pv_kwh_p50, pv_kwh_p10, pv_kwh_p90, weather_code_model_id, weather_code)
+                        for ts_local, pv_kwh_p50, pv_kwh_p10, pv_kwh_p90, weather_code_model_id, weather_code in ensemble_rows
+                    ],
+                )
+
+            conn.execute("DELETE FROM provider_payloads WHERE run_id = ?", (run_id,))
+            if provider_payload_rows:
+                try:
+                    conn.executemany(
+                        """
+                        INSERT OR REPLACE INTO provider_payloads (
+                            run_id, model_id, fetched_at_utc, endpoint, params_json,
+                            response_headers_json, response_json, http_status, latency_ms
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        provider_payload_rows,
+                    )
+                except Exception:
+                    logger.exception(
+                        "db_sqlite provider_payloads_persist_failed run_id=%s rows=%d",
+                        run_id,
+                        len(provider_payload_rows),
+                    )
+            conn.commit()
+    except Exception:
+        logger.exception(
+            "db_sqlite insert_forecast_run_failed run_id=%s target_date=%s status=%s",
+            run_id,
+            target_date,
+            payload.get("status"),
+        )
+        raise
 
 
 def fetch_effective_daily_kwh(
@@ -1087,6 +1111,12 @@ def fetch_effective_daily_kwh(
                 (limit,),
             ).fetchall()
     except sqlite3.OperationalError:
+        logger.warning(
+            "db_sqlite effective_daily_kwh_query_failed db_path=%s lookback_runs=%d",
+            db_path,
+            limit,
+            exc_info=True,
+        )
         return None, {"n_samples": 0, "method": "none", "day_type": "mixed"}
 
     meta = {"n_samples": 0, "method": "none", "day_type": "mixed"}
@@ -1334,7 +1364,7 @@ def fetch_history_all_runs(db_path: str, limit_days: int | None = None) -> list[
     return [_summary_from_row(row) for row in rows]
 
 
-def _decode_json_payload(raw: Any, default: Any) -> Any:
+def _decode_json_payload(raw: Any, default: Any, *, field_name: str = "unknown") -> Any:
     if raw is None:
         return default
     if isinstance(raw, (dict, list)):
@@ -1343,15 +1373,16 @@ def _decode_json_payload(raw: Any, default: Any) -> Any:
         try:
             return json.loads(raw)
         except (TypeError, ValueError, json.JSONDecodeError):
+            logger.warning("db_sqlite decode_json_payload_failed field=%s", field_name, exc_info=True)
             return default
     return default
 
 
 def _full_run_shared_payload(row: sqlite3.Row) -> dict[str, Any]:
-    warnings = _decode_json_payload(row["warnings_json"], [])
-    inputs_used = _decode_json_payload(row["inputs_used_json"], {})
-    config_json = _decode_json_payload(row["config_json"], {})
-    weather_ensemble = _decode_json_payload(row["weather_ensemble_json"], {})
+    warnings = _decode_json_payload(row["warnings_json"], [], field_name="warnings_json")
+    inputs_used = _decode_json_payload(row["inputs_used_json"], {}, field_name="inputs_used_json")
+    config_json = _decode_json_payload(row["config_json"], {}, field_name="config_json")
+    weather_ensemble = _decode_json_payload(row["weather_ensemble_json"], {}, field_name="weather_ensemble_json")
     return {
         "run_id": row["run_id"],
         "target_date": row["target_date"],
@@ -1518,17 +1549,25 @@ def _build_full_run_payload(row: sqlite3.Row, hourly_rows: list[sqlite3.Row]) ->
 
 
 def fetch_full_run_by_id(db_path: str, run_id: str) -> dict | None:
-    with _connect(db_path) as conn:
-        row = _fetch_full_run_row(conn, run_id)
-        if row is None:
-            return None
-        hourly_rows = _fetch_full_run_hourly_rows(conn, row["run_id"])
-    return _build_full_run_payload(row, hourly_rows)
+    try:
+        with _connect(db_path) as conn:
+            row = _fetch_full_run_row(conn, run_id)
+            if row is None:
+                return None
+            hourly_rows = _fetch_full_run_hourly_rows(conn, row["run_id"])
+        return _build_full_run_payload(row, hourly_rows)
+    except Exception:
+        logger.exception("db_sqlite fetch_full_run_by_id_failed run_id=%s", run_id)
+        raise
 
 
 def fetch_latest_full_run(db_path: str) -> dict | None:
-    with _connect(db_path) as conn:
-        run_id = _fetch_latest_run_id(conn)
+    try:
+        with _connect(db_path) as conn:
+            run_id = _fetch_latest_run_id(conn)
+    except Exception:
+        logger.exception("db_sqlite fetch_latest_full_run_failed stage=lookup_latest_run_id")
+        raise
     if run_id is None:
         return None
     return fetch_full_run_by_id(db_path, run_id)
