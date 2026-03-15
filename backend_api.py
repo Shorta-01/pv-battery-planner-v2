@@ -108,6 +108,24 @@ def _bmw_backend_log_context(**fields: object) -> str:
     return _log_context(**defaulted)
 
 
+def _extract_ui_request_context(request: Request | None) -> dict[str, str | None]:
+    if request is None:
+        return {"ui_correlation_id": None, "ui_action": None}
+    correlation_id = str(request.headers.get("x-ui-correlation-id") or "").strip() or None
+    ui_action = str(request.headers.get("x-ui-action") or "").strip() or None
+    return {
+        "ui_correlation_id": correlation_id,
+        "ui_action": ui_action,
+    }
+
+
+def _ui_request_log_context(request: Request | None, **fields: object) -> str:
+    context: dict[str, object] = {}
+    context.update(_extract_ui_request_context(request))
+    context.update(fields)
+    return _log_context(**context)
+
+
 def _extract_run_id_from_error_extra(extra: dict | None) -> str | None:
     if not isinstance(extra, dict):
         return None
@@ -2952,16 +2970,24 @@ def _validate_forecast_runtime_dependencies() -> None:
 
 def _log_backend_error_event(*, request: Request, exc: BaseException, error_type: str, severity: str, title: str, extra: dict | None = None) -> None:
     where = f"backend_api:{request.url.path}"
-    run_id = _extract_run_id_from_error_extra(extra)
+    request_context = _extract_ui_request_context(request)
+    merged_extra = dict(extra or {})
+    for key, value in request_context.items():
+        if value is not None and key not in merged_extra:
+            merged_extra[key] = value
+
+    run_id = _extract_run_id_from_error_extra(merged_extra)
     operation = "error_event_capture"
     context_text = _log_context(
         operation=operation,
         endpoint=request.url.path,
         method=request.method,
         run_id=run_id,
+        ui_correlation_id=request_context.get("ui_correlation_id"),
+        ui_action=request_context.get("ui_action"),
         storage_action="insert_error_event",
     )
-    body = format_exception_body(title=title, where=where, exc=exc, extra=extra)
+    body = format_exception_body(title=title, where=where, exc=exc, extra=merged_extra)
     dedupe_key = compute_dedupe_key(source="backend", error_type=error_type, where=where, title=title, body=body)
 
     log_method = logger.error if severity == "error" else logger.warning
@@ -2984,7 +3010,7 @@ def _log_backend_error_event(*, request: Request, exc: BaseException, error_type
             where=where,
             title=title,
             body=body,
-            context=extra,
+            context=merged_extra,
             dedupe_key=dedupe_key,
         )
         logger.info(
@@ -3140,8 +3166,17 @@ def get_settings(authorization: str | None = Header(default=None)) -> dict:
 
 
 @app.put("/v1/settings")
-def put_settings(payload: SettingsPayload, authorization: str | None = Header(default=None)) -> dict:
+def put_settings(payload: SettingsPayload, authorization: str | None = Header(default=None), request: Request = None) -> dict:
     _require_token(authorization)
+    if request is not None:
+        logger.info(
+            "backend settings request %s",
+            _ui_request_log_context(
+                request,
+                operation="update_settings",
+                endpoint="PUT /v1/settings",
+            ),
+        )
     return state.update_settings(payload)
 
 
@@ -3164,14 +3199,32 @@ def get_last_inputs(authorization: str | None = Header(default=None)) -> dict:
 
 
 @app.put("/v1/inputs/last")
-def put_last_inputs(payload: InputsPayload, authorization: str | None = Header(default=None)) -> dict:
+def put_last_inputs(payload: InputsPayload, authorization: str | None = Header(default=None), request: Request = None) -> dict:
     _require_token(authorization)
+    if request is not None:
+        logger.info(
+            "backend inputs request %s",
+            _ui_request_log_context(
+                request,
+                operation="update_inputs",
+                endpoint="PUT /v1/inputs/last",
+            ),
+        )
     return state.update_inputs(payload)
 
 
 @app.post("/v1/run/now")
-def run_now(payload: RunNowPayload, authorization: str | None = Header(default=None)) -> dict:
+def run_now(payload: RunNowPayload, authorization: str | None = Header(default=None), request: Request = None) -> dict:
     _require_token(authorization)
+    if request is not None:
+        logger.info(
+            "backend run request %s",
+            _ui_request_log_context(
+                request,
+                operation="run_now",
+                endpoint="POST /v1/run/now",
+            ),
+        )
     return state.run_now(payload)
 
 
@@ -3266,8 +3319,9 @@ def get_ev_status(authorization: str | None = Header(default=None)) -> dict:
 
 
 @app.post("/v1/ev/manual_refresh")
-def ev_manual_refresh(force_reprobe: bool = False, authorization: str | None = Header(default=None)) -> dict:
+def ev_manual_refresh(force_reprobe: bool = False, authorization: str | None = Header(default=None), request: Request = None) -> dict:
     _require_token(authorization)
+    request_context = _extract_ui_request_context(request)
     logger.info(
         "backend BMW endpoint request %s",
         _bmw_backend_log_context(
@@ -3276,6 +3330,7 @@ def ev_manual_refresh(force_reprobe: bool = False, authorization: str | None = H
             phase="request",
             endpoint="POST /v1/ev/manual_refresh",
             force_reprobe=bool(force_reprobe),
+            **request_context,
         ),
     )
     return state.bmw_service.manual_refresh(force_reprobe=force_reprobe)
@@ -3380,7 +3435,7 @@ def get_error_by_id(error_id: str, authorization: str | None = Header(default=No
 
 
 @app.post("/v1/errors")
-def post_error(payload: ErrorEventPayload, authorization: str | None = Header(default=None)) -> dict:
+def post_error(payload: ErrorEventPayload, authorization: str | None = Header(default=None), request: Request = None) -> dict:
     _require_token(authorization)
     if payload.source not in {"frontend", "backend"}:
         raise HTTPException(status_code=400, detail="Invalid source")
@@ -3389,6 +3444,12 @@ def post_error(payload: ErrorEventPayload, authorization: str | None = Header(de
     if payload.error_type not in {"exception", "http_error", "network", "validation", "external_service", "ui_state", "unknown"}:
         raise HTTPException(status_code=400, detail="Invalid error_type")
 
+    request_context = _extract_ui_request_context(request)
+    payload_context = dict(payload.context or {})
+    for key, value in request_context.items():
+        if value is not None and key not in payload_context:
+            payload_context[key] = value
+
     dedupe_key = compute_dedupe_key(
         source=payload.source,
         error_type=payload.error_type,
@@ -3396,6 +3457,17 @@ def post_error(payload: ErrorEventPayload, authorization: str | None = Header(de
         title=payload.title,
         body=payload.body,
     )
+    if request is not None:
+        logger.info(
+            "backend error post request %s",
+            _ui_request_log_context(
+                request,
+                operation="post_error_event",
+                endpoint="POST /v1/errors",
+                source=payload.source,
+                error_type=payload.error_type,
+            ),
+        )
     error_id = insert_error_event(
         str(SQLITE_PATH),
         source=payload.source,
@@ -3404,7 +3476,7 @@ def post_error(payload: ErrorEventPayload, authorization: str | None = Header(de
         where=payload.where,
         title=payload.title,
         body=payload.body,
-        context=payload.context,
+        context=payload_context,
         dedupe_key=dedupe_key,
     )
     return {"error_id": error_id}
