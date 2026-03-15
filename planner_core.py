@@ -3489,6 +3489,11 @@ def compute_soc_high_headroom(
     Headroom doel: hoeveel PV-overschot verwacht je BINNEN daglichturen.
     Hoe meer overschot, hoe lager je bij start van hoog tarief wil zitten om injectie te vermijden.
     """
+    runtime = _runtime_state_snapshot()
+    battery_pv_charge_eff = runtime.battery_pv_charge_eff
+    battery_max_charge_kw = runtime.battery_max_charge_kw
+    battery_kwh = runtime.battery_kwh
+    min_soc = runtime.min_soc
     _ = for_date
     if pv_col not in df.columns:
         raise KeyError(f"compute_soc_high_headroom missing pv_col={pv_col!r} in df columns")
@@ -3511,22 +3516,23 @@ def compute_soc_high_headroom(
         surplus_ac_kwh = max(0.0, pv_ac_kwh - load_ac_kwh)
         surplus_sum_ac += surplus_ac_kwh
 
-        stored_candidate_kwh = surplus_ac_kwh * BATTERY_PV_CHARGE_EFF
-        max_store_kwh = float(BATTERY_MAX_CHARGE_KW) * float(dt_h.loc[ts])
+        stored_candidate_kwh = surplus_ac_kwh * battery_pv_charge_eff
+        max_store_kwh = float(battery_max_charge_kw) * float(dt_h.loc[ts])
         stored_kwh_sum += min(stored_candidate_kwh, max_store_kwh)
 
-    soc_high = 1.0 - (stored_kwh_sum / BATTERY_KWH)
-    soc_high = min(max(soc_high, MIN_SOC), 1.0)
+    soc_high = 1.0 - (stored_kwh_sum / battery_kwh)
+    soc_high = min(max(soc_high, min_soc), 1.0)
     return surplus_sum_ac, soc_high
 
 
 def choose_cutoff_soc(for_date: dt.date, soc_low: float, soc_high: float, tariff_cfg: Optional[dict] = None) -> Tuple[float, str]:
+    min_soc = _runtime_state_snapshot().min_soc
     if not tariff_has_meaningful_spread(tariff_cfg or DEFAULT_CONFIG["tariff"]):
-        return MIN_SOC, "No active arbitrage target: flat tariff / no meaningful spread; keep cutoff at MIN_SOC for PV headroom."
+        return min_soc, "No active arbitrage target: flat tariff / no meaningful spread; keep cutoff at MIN_SOC for PV headroom."
 
     expensive_windows = get_expensive_windows(for_date, tariff_cfg)
     if not expensive_windows:
-        return MIN_SOC, "No expensive hours (all off-peak): keep cutoff low for maximum headroom."
+        return min_soc, "No expensive hours (all off-peak): keep cutoff low for maximum headroom."
 
     if soc_low <= soc_high + 1e-9:
         return soc_low, "OK: bridge expensive hours and keep headroom to reduce export."
