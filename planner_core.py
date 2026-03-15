@@ -1159,8 +1159,17 @@ class PlannerRuntimeStateSnapshot:
     elevation_m_default: float
     min_soc: float
     battery_max_soc: float
+    min_soc_percent: float
+    battery_kwh: float
+    battery_max_charge_kw: float
+    battery_max_discharge_kw: float
+    battery_pv_charge_eff: float
     battery_discharge_eff: float
     battery_ac_charge_eff: float
+    inverter_ac_kw_limit: float
+    max_ac_charge_kw_hard_limit: float
+    array_south_panels: int
+    array_east_panels: int
     load_profile_24h: list[float]
     enable_invariant_checks: bool
     offpeak_windows_by_dow: dict[int, list[tuple[str, str]]]
@@ -1174,8 +1183,17 @@ def _runtime_state_snapshot() -> PlannerRuntimeStateSnapshot:
             elevation_m_default=float(ELEVATION_M),
             min_soc=float(MIN_SOC),
             battery_max_soc=float(BATTERY_MAX_SOC),
+            min_soc_percent=float(MIN_SOC_PERCENT),
+            battery_kwh=float(BATTERY_KWH),
+            battery_max_charge_kw=float(BATTERY_MAX_CHARGE_KW),
+            battery_max_discharge_kw=float(BATTERY_MAX_DISCHARGE_KW),
+            battery_pv_charge_eff=float(BATTERY_PV_CHARGE_EFF),
             battery_discharge_eff=float(BATTERY_DISCHARGE_EFF),
             battery_ac_charge_eff=float(BATTERY_AC_CHARGE_EFF),
+            inverter_ac_kw_limit=float(INVERTER_AC_KW_LIMIT),
+            max_ac_charge_kw_hard_limit=float(MAX_AC_CHARGE_KW_HARD_LIMIT),
+            array_south_panels=int(ARRAY_SOUTH_PANELS),
+            array_east_panels=int(ARRAY_EAST_PANELS),
             load_profile_24h=[float(v) for v in LOAD_PROFILE],
             enable_invariant_checks=bool(ENABLE_INVARIANT_CHECKS),
             offpeak_windows_by_dow=copy.deepcopy(OFFPEAK_WINDOWS_BY_DOW),
@@ -3525,6 +3543,9 @@ def plan_charge_power(
     user_cap_kw: Optional[float] = None,
     tariff_cfg: Optional[dict] = None,
 ) -> Tuple[float, float, str, float]:
+    runtime = _runtime_state_snapshot()
+    battery_kwh = runtime.battery_kwh
+    battery_ac_charge_eff = runtime.battery_ac_charge_eff
     cfg = tariff_cfg or _runtime_tariff_cfg()
     target_date = charge_date + dt.timedelta(days=1)
     window_start, window_end = compute_charging_window_for_target_date(target_date, cfg)
@@ -3542,10 +3563,10 @@ def plan_charge_power(
     if not tariff_has_meaningful_spread(cfg):
         return 0.0, 0.0, "No active arbitrage AC charging: flat tariff / no meaningful spread.", soc_start
 
-    soc_at_22_kwh = soc_start * BATTERY_KWH
-    target_soc_kwh = soc_cutoff * BATTERY_KWH
+    soc_at_22_kwh = soc_start * battery_kwh
+    target_soc_kwh = soc_cutoff * battery_kwh
     required_batt_kwh = max(0.0, target_soc_kwh - soc_at_22_kwh)
-    required_grid_kwh = required_batt_kwh / BATTERY_AC_CHARGE_EFF
+    required_grid_kwh = required_batt_kwh / battery_ac_charge_eff
     recommended_allowed_ac_kw = required_grid_kwh / available_charge_hours
     effective_cap_kw, _ = _compute_charge_limit_metadata(
         recommended_kw=recommended_allowed_ac_kw,
@@ -3555,8 +3576,8 @@ def plan_charge_power(
 
     if recommended_allowed_ac_kw > allowed_ac_kw + 1e-9:
         achievable_grid_kwh = allowed_ac_kw * available_charge_hours
-        achievable_batt_kwh = achievable_grid_kwh * BATTERY_AC_CHARGE_EFF
-        achievable_soc = min(1.0, soc_start + achievable_batt_kwh / BATTERY_KWH)
+        achievable_batt_kwh = achievable_grid_kwh * battery_ac_charge_eff
+        achievable_soc = min(1.0, soc_start + achievable_batt_kwh / battery_kwh)
         note = (
             f"Warning: Needed ≈ {recommended_allowed_ac_kw:.2f} kW over {available_charge_hours:.1f}h, "
             f"but cap is {allowed_ac_kw:.2f} kW. "
@@ -3568,11 +3589,12 @@ def plan_charge_power(
 
 
 def _compute_charge_limit_metadata(recommended_kw: float, user_cap_kw: Optional[float]) -> Tuple[float, str]:
-    user_cap = MAX_AC_CHARGE_KW_HARD_LIMIT if user_cap_kw is None else max(float(user_cap_kw), 0.0)
+    runtime = _runtime_state_snapshot()
+    user_cap = runtime.max_ac_charge_kw_hard_limit if user_cap_kw is None else max(float(user_cap_kw), 0.0)
     caps = {
         "user": float(user_cap),
-        "inverter": float(INVERTER_AC_KW_LIMIT),
-        "battery": float(BATTERY_MAX_CHARGE_KW),
+        "inverter": runtime.inverter_ac_kw_limit,
+        "battery": runtime.battery_max_charge_kw,
     }
     effective_cap_kw = float(min(caps.values()))
     if float(recommended_kw) <= effective_cap_kw + 1e-9:
@@ -3593,6 +3615,19 @@ def simulate_expensive_hours_detailed(
     tariff_cfg: Optional[dict] = None,
     pv_col: str = "pv_total_kwh",
 ) -> Tuple["pd.DataFrame", float, float, float, bool]:
+    runtime = _runtime_state_snapshot()
+    min_soc = runtime.min_soc
+    min_soc_percent = runtime.min_soc_percent
+    battery_max_soc = runtime.battery_max_soc
+    battery_kwh = runtime.battery_kwh
+    battery_max_charge_kw = runtime.battery_max_charge_kw
+    battery_max_discharge_kw = runtime.battery_max_discharge_kw
+    battery_pv_charge_eff = runtime.battery_pv_charge_eff
+    battery_discharge_eff = runtime.battery_discharge_eff
+    inverter_ac_kw_limit = runtime.inverter_ac_kw_limit
+    array_east_panels = runtime.array_east_panels
+    array_south_panels = runtime.array_south_panels
+    enable_invariant_checks = runtime.enable_invariant_checks
     if pv_col not in df.columns:
         raise KeyError(f"simulate_expensive_hours_detailed missing pv_col='{pv_col}' in df columns")
 
@@ -3604,9 +3639,9 @@ def simulate_expensive_hours_detailed(
     loads = build_hourly_load_series(df.index, total_consumption_kwh)
     dt_h = timestep_hours(df.index)
 
-    energy = max(min(start_soc, 1.0), 0.0) * BATTERY_KWH
-    min_energy = MIN_SOC * BATTERY_KWH
-    max_energy = BATTERY_MAX_SOC * BATTERY_KWH
+    energy = max(min(start_soc, 1.0), 0.0) * battery_kwh
+    min_energy = min_soc * battery_kwh
+    max_energy = battery_max_soc * battery_kwh
 
     rows = []
     grid_import_total = 0.0
@@ -3650,7 +3685,7 @@ def simulate_expensive_hours_detailed(
         pv_unclipped = max(pv_unclipped, pv_ac_limited)
         load = float(loads.loc[ts])
 
-        soc_start_pct = (energy / BATTERY_KWH * 100.0) if BATTERY_KWH > 0 else 0.0
+        soc_start_pct = (energy / battery_kwh * 100.0) if battery_kwh > 0 else 0.0
 
         pv_to_load = min(pv_ac_limited, load)
         remaining_load = max(0.0, load - pv_to_load)
@@ -3666,15 +3701,15 @@ def simulate_expensive_hours_detailed(
         pv_for_storage = pv_after_load + overflow
         if pv_for_storage > 0:
             room = max(0.0, max_energy - energy)
-            charge_power_limited = BATTERY_MAX_CHARGE_KW * step_h
-            pv_limited_store = pv_for_storage * BATTERY_PV_CHARGE_EFF
+            charge_power_limited = battery_max_charge_kw * step_h
+            pv_limited_store = pv_for_storage * battery_pv_charge_eff
             store = min(room, pv_limited_store, charge_power_limited)
             energy += store
             batt_charge_kwh = store
-            pv_used_for_batt = store / BATTERY_PV_CHARGE_EFF if BATTERY_PV_CHARGE_EFF > 0 else 0.0
+            pv_used_for_batt = store / battery_pv_charge_eff if battery_pv_charge_eff > 0 else 0.0
             pv_after_batt = max(0.0, pv_for_storage - pv_used_for_batt)
 
-            export_limit = max(0.0, (INVERTER_AC_KW_LIMIT * step_h) - pv_to_load)
+            export_limit = max(0.0, (inverter_ac_kw_limit * step_h) - pv_to_load)
             effective_export_limit = export_limit if allow_injection else 0.0
             grid_export = min(pv_after_batt, effective_export_limit)
             if not allow_injection:
@@ -3684,30 +3719,30 @@ def simulate_expensive_hours_detailed(
 
         if remaining_load > 0:
             available = max(0.0, energy - min_energy)
-            discharge_power_limited = BATTERY_MAX_DISCHARGE_KW * step_h
-            needed_from_batt = remaining_load / BATTERY_DISCHARGE_EFF if BATTERY_DISCHARGE_EFF > 0 else remaining_load
+            discharge_power_limited = battery_max_discharge_kw * step_h
+            needed_from_batt = remaining_load / battery_discharge_eff if battery_discharge_eff > 0 else remaining_load
             discharge = min(available, needed_from_batt, discharge_power_limited)
 
             energy -= discharge
             batt_discharge_kwh = discharge
 
-            delivered = discharge * BATTERY_DISCHARGE_EFF
+            delivered = discharge * battery_discharge_eff
             grid_import = max(0.0, remaining_load - delivered)
             grid_import_total += grid_import
 
-            max_deliverable = BATTERY_MAX_DISCHARGE_KW * step_h * BATTERY_DISCHARGE_EFF
+            max_deliverable = battery_max_discharge_kw * step_h * battery_discharge_eff
             if remaining_load - max_deliverable > 1e-9:
                 print(
                     f"Warning: {ts.strftime('%Y-%m-%d %H:%M %Z')} expensive-hour deficit ({remaining_load:.2f} kWh) "
-                    f"exceeds battery discharge power limit ({BATTERY_MAX_DISCHARGE_KW * step_h:.2f} kWh pre-eff)."
+                    f"exceeds battery discharge power limit ({battery_max_discharge_kw * step_h:.2f} kWh pre-eff)."
                 )
-                if soc_start_pct > (MIN_SOC_PERCENT + 5.0) and grid_import > 1e-9:
+                if soc_start_pct > (min_soc_percent + 5.0) and grid_import > 1e-9:
                     import_with_high_soc_due_to_power_limit = True
 
             if energy <= min_energy + 1e-9 and grid_import > 0:
                 hit_min = True
 
-        soc_end_pct = (energy / BATTERY_KWH * 100.0) if BATTERY_KWH > 0 else soc_start_pct
+        soc_end_pct = (energy / battery_kwh * 100.0) if battery_kwh > 0 else soc_start_pct
 
         rows.append({
             "time": ts,
@@ -3754,12 +3789,12 @@ def simulate_expensive_hours_detailed(
         detail_df["pv_east_kwh"] = pd.to_numeric(df.reindex(detail_df.index)["pv_east_kwh"], errors="coerce").fillna(0.0)
         detail_df["pv_south_kwh"] = pd.to_numeric(df.reindex(detail_df.index)["pv_south_kwh"], errors="coerce").fillna(0.0)
     else:
-        split_total = max(ARRAY_EAST_PANELS + ARRAY_SOUTH_PANELS, 1)
-        east_ratio = ARRAY_EAST_PANELS / split_total
-        south_ratio = ARRAY_SOUTH_PANELS / split_total
+        split_total = max(array_east_panels + array_south_panels, 1)
+        east_ratio = array_east_panels / split_total
+        south_ratio = array_south_panels / split_total
         detail_df["pv_east_kwh"] = detail_df["pv_total_kwh"] * east_ratio
         detail_df["pv_south_kwh"] = detail_df["pv_total_kwh"] * south_ratio
-    if ENABLE_INVARIANT_CHECKS:
+    if enable_invariant_checks:
         validate_flow_invariants(detail_df, "expensive_hours")
     detail_df.attrs["allow_injection_to_grid"] = allow_injection
     detail_df.attrs["export_blocked_by_policy"] = bool(not allow_injection)
@@ -3769,7 +3804,7 @@ def simulate_expensive_hours_detailed(
             "Warning: expensive-hour imports occurred while SOC was high due to battery power limits "
             "(discharge kW cap), not available energy."
         )
-    end_soc = (energy / BATTERY_KWH) if BATTERY_KWH > 0 else start_soc
+    end_soc = (energy / battery_kwh) if battery_kwh > 0 else start_soc
     return detail_df, grid_import_total, grid_export_total, end_soc, hit_min
 
 
