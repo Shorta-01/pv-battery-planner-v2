@@ -913,11 +913,40 @@ def _build_effective_config_for_bootstrap(user_cfg: dict) -> dict:
     return build_effective_config(user_cfg)
 
 
+_RUNTIME_STATE_INITIALIZED = False
+_RUNTIME_STATE_INIT_REASON = ""
+
+
+def _initialize_runtime_state(
+    *,
+    user_cfg: dict | None = None,
+    config_path: Path | None = None,
+    init_reason: str = "",
+) -> dict:
+    """Initialize module runtime globals from config; safe to call repeatedly."""
+    global USER_CFG, _RUNTIME_STATE_INITIALIZED, _RUNTIME_STATE_INIT_REASON
+
+    resolved_user_cfg = user_cfg
+    if resolved_user_cfg is None:
+        resolved_path = config_path if config_path is not None else CONFIG_PATH
+        resolved_user_cfg = _load_user_config_for_bootstrap(resolved_path)
+
+    with _CONFIG_STATE_LOCK:
+        USER_CFG = resolved_user_cfg
+        effective_cfg = _build_effective_config_for_bootstrap(USER_CFG)
+        apply_config(effective_cfg)
+        _RUNTIME_STATE_INITIALIZED = True
+        _RUNTIME_STATE_INIT_REASON = str(init_reason or "")
+    return effective_cfg
+
+
+def _runtime_state_initialized() -> bool:
+    with _CONFIG_STATE_LOCK:
+        return bool(_RUNTIME_STATE_INITIALIZED)
+
+
 def _bootstrap_import_time_config(config_path: Path) -> None:
-    global USER_CFG
-    USER_CFG = _load_user_config_for_bootstrap(config_path)
-    effective_cfg = _build_effective_config_for_bootstrap(USER_CFG)
-    apply_config(effective_cfg)
+    _initialize_runtime_state(config_path=config_path, init_reason="import-time-bootstrap")
 
 
 USER_CFG = {}
