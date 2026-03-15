@@ -99,6 +99,15 @@ def _log_context(**fields: object) -> str:
     return " ".join(parts)
 
 
+def _bmw_backend_log_context(**fields: object) -> str:
+    defaulted: dict[str, object] = {
+        "integration": "bmw",
+        "backend_component": "backend_api",
+    }
+    defaulted.update(fields)
+    return _log_context(**defaulted)
+
+
 def _extract_run_id_from_error_extra(extra: dict | None) -> str | None:
     if not isinstance(extra, dict):
         return None
@@ -1282,12 +1291,41 @@ class BackendState:
 
         planning_state["refresh_attempted"] = True
         planning_state["refresh_reason"] = refresh_reason
+        logger.info(
+            "backend BMW planning refresh start %s",
+            _bmw_backend_log_context(
+                operation="run_forecast",
+                bmw_operation="manual_refresh",
+                phase="start",
+                endpoint="internal:_get_planning_ready_ev_state",
+            ),
+        )
         try:
             refresh_result = self.bmw_service.manual_refresh(force_reprobe=False)
         except Exception as exc:
+            logger.warning(
+                "backend BMW planning refresh exception %s error=%s",
+                _bmw_backend_log_context(
+                    operation="run_forecast",
+                    bmw_operation="manual_refresh",
+                    phase="exception",
+                    endpoint="internal:_get_planning_ready_ev_state",
+                ),
+                exc,
+            )
             refresh_result = {"ok": False, "reason": "poll_failed", "error": str(exc)}
         refresh_ok = bool(refresh_result.get("ok")) if isinstance(refresh_result, dict) else False
         planning_state["refresh_succeeded"] = refresh_ok
+        logger.info(
+            "backend BMW planning refresh complete %s",
+            _bmw_backend_log_context(
+                operation="run_forecast",
+                bmw_operation="manual_refresh",
+                phase="complete",
+                endpoint="internal:_get_planning_ready_ev_state",
+                refresh_ok=refresh_ok,
+            ),
+        )
 
         try:
             refreshed_vehicles = self.bmw_service.vehicles()
@@ -3230,12 +3268,31 @@ def get_ev_status(authorization: str | None = Header(default=None)) -> dict:
 @app.post("/v1/ev/manual_refresh")
 def ev_manual_refresh(force_reprobe: bool = False, authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
+    logger.info(
+        "backend BMW endpoint request %s",
+        _bmw_backend_log_context(
+            operation="ev_manual_refresh",
+            bmw_operation="manual_refresh",
+            phase="request",
+            endpoint="POST /v1/ev/manual_refresh",
+            force_reprobe=bool(force_reprobe),
+        ),
+    )
     return state.bmw_service.manual_refresh(force_reprobe=force_reprobe)
 
 
 @app.post("/v1/ev/bmw/device_flow/start")
 def ev_bmw_device_flow_start(authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
+    logger.info(
+        "backend BMW endpoint request %s",
+        _bmw_backend_log_context(
+            operation="ev_device_flow_start",
+            bmw_operation="device_flow",
+            phase="request",
+            endpoint="POST /v1/ev/bmw/device_flow/start",
+        ),
+    )
     return state.bmw_service.start_device_flow()
 
 
@@ -3246,6 +3303,16 @@ class BmwDeviceTokenPayload(BaseModel):
 @app.post("/v1/ev/bmw/device_flow/poll")
 def ev_bmw_device_flow_poll(payload: BmwDeviceTokenPayload, authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
+    logger.info(
+        "backend BMW endpoint request %s",
+        _bmw_backend_log_context(
+            operation="ev_device_flow_poll",
+            bmw_operation="device_flow",
+            phase="request",
+            endpoint="POST /v1/ev/bmw/device_flow/poll",
+            has_device_code=bool(str(payload.device_code or "").strip()),
+        ),
+    )
     return state.bmw_service.poll_device_token(payload.device_code)
 
 

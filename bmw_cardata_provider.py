@@ -9,6 +9,7 @@ import requests
 
 from bmw_auth import BmwAuthClient
 from bmw_cardata_contract import CreateContainerRequest
+from bmw_logging import bmw_log_context
 from bmw_mapping import (
     CRITICAL_EV_DESCRIPTOR_FIELDS,
     apply_planner_derivations,
@@ -133,7 +134,8 @@ class BmwCarDataProvider:
         body_excerpt = self._safe_error_excerpt(resp)
         self._mark_last_rest_result(endpoint, resp.status_code, body_excerpt)
         logger.error(
-            "BMW provider REST error endpoint=%s status=%s body_excerpt=%s",
+            "BMW provider REST error %s endpoint=%s status=%s body_excerpt=%s",
+            bmw_log_context(operation="bmw_refresh_once", bmw_operation="provider_request", phase="http_error"),
             endpoint,
             resp.status_code,
             body_excerpt,
@@ -170,6 +172,18 @@ class BmwCarDataProvider:
         except Exception as exc:
             safe_error = str(exc)[:300]
             self._mark_last_rest_result(endpoint, None, safe_error)
+            logger.warning(
+                "BMW provider request failed %s endpoint=%s error_excerpt=%s",
+                bmw_log_context(
+                    operation="bmw_refresh_once",
+                    bmw_operation="provider_request",
+                    phase=stage,
+                    method=method.upper(),
+                    optional=optional,
+                ),
+                endpoint,
+                safe_error,
+            )
             aggregate_payload[f"{method.upper()} {path}"] = {"_error": {"status": None, "excerpt": safe_error}}
             aggregate_payload["sequence"].append(
                 {"stage": stage, "method": method.upper(), "endpoint": path, "ok": False, "status": None, "error_excerpt": safe_error, "optional": optional}
@@ -183,6 +197,18 @@ class BmwCarDataProvider:
         if resp.status_code >= 400:
             safe_error = self._safe_error_excerpt(resp)
             self._mark_last_rest_result(endpoint, resp.status_code, safe_error)
+            logger.warning(
+                "BMW provider request non-2xx %s endpoint=%s status=%s optional=%s",
+                bmw_log_context(
+                    operation="bmw_refresh_once",
+                    bmw_operation="provider_request",
+                    phase=stage,
+                    method=method.upper(),
+                ),
+                endpoint,
+                resp.status_code,
+                optional,
+            )
             aggregate_payload[f"{method.upper()} {path}"] = {"_error": {"status": resp.status_code, "excerpt": safe_error}}
             aggregate_payload["sequence"].append(
                 {
@@ -592,6 +618,10 @@ class BmwCarDataProvider:
         return final_container_id, final_diag
 
     def refresh_once(self, *, force_reprobe: bool = False) -> dict[str, Any]:
+        logger.info(
+            "BMW provider refresh start %s",
+            bmw_log_context(operation="bmw_refresh_once", bmw_operation="provider_refresh", phase="start", force_reprobe=bool(force_reprobe)),
+        )
         if not bool(self.config.get("bmw_enabled", False)):
             self.status.provider_status = "disabled"
             return {"ok": False, "reason": "disabled"}
@@ -660,6 +690,10 @@ class BmwCarDataProvider:
                 self.status.vehicle_data_mode = "none"
                 self.storage.append_raw_event(
                     RawEventRecord(provider="bmw_cardata", received_at=utcnow(), payload=aggregate_payload, parse_ok=False, parse_error=msg)
+                )
+                logger.warning(
+                    "BMW provider refresh no vehicles %s",
+                    bmw_log_context(operation="bmw_refresh_once", bmw_operation="provider_refresh", phase="discover", reason="no_vehicles"),
                 )
                 return {
                     "ok": False,
@@ -850,7 +884,7 @@ class BmwCarDataProvider:
                 fallback_reason=None,
             )
 
-            return {
+            result = {
                 "ok": bool(self.vehicles),
                 "vehicles": len(self.vehicles),
                 "endpoints": list(self.status.refresh_sequence_endpoints),
@@ -868,11 +902,27 @@ class BmwCarDataProvider:
                 "force_reprobe_diagnostics": dict(self.status.force_reprobe_diagnostics),
                 "bmw_ev_diagnostics": dict(self.status.bmw_ev_diagnostics),
             }
+            logger.info(
+                "BMW provider refresh complete %s",
+                bmw_log_context(
+                    operation="bmw_refresh_once",
+                    bmw_operation="provider_refresh",
+                    phase="complete",
+                    ok=bool(result.get("ok")),
+                    vehicles=len(self.vehicles),
+                    active_vehicle_id=self.status.active_vehicle_id,
+                ),
+            )
+            return result
         except Exception as exc:
             self.status.last_error = str(exc)
             self.status.provider_status = "degraded"
             self.status.capture_files_written = list(capture_paths)
-            logger.warning("BMW provider poll failed: %s", exc)
+            logger.warning(
+                "BMW provider refresh failed %s error=%s",
+                bmw_log_context(operation="bmw_refresh_once", bmw_operation="provider_refresh", phase="exception"),
+                exc,
+            )
             return {
                 "ok": False,
                 "reason": "poll_failed",

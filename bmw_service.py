@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import inspect
 from typing import Any
+import logging
 
 from bmw_auth import BmwAuthClient
 from bmw_cardata_provider import BmwCarDataProvider
+from bmw_logging import bmw_log_context
 from bmw_storage import BmwStorage
+
+
+logger = logging.getLogger(__name__)
 
 
 def _mask_secret(value: str) -> str:
@@ -40,11 +45,25 @@ class BmwService:
         )
 
     def _rebuild_runtime(self, reason: str) -> None:
+        logger.info(
+            "BMW service runtime rebuild start %s",
+            bmw_log_context(operation="bmw_runtime_rebuild", bmw_operation="service_runtime", phase="start", reason=reason),
+        )
         self.storage = self._build_storage(self.config)
         self.auth = self._build_auth(self.config)
         self.provider = BmwCarDataProvider(config=self.config, storage=self.storage, auth=self.auth)
         self.runtime_generation += 1
         self.last_runtime_rebuild_reason = reason
+        logger.info(
+            "BMW service runtime rebuild complete %s",
+            bmw_log_context(
+                operation="bmw_runtime_rebuild",
+                bmw_operation="service_runtime",
+                phase="complete",
+                reason=reason,
+                runtime_generation=self.runtime_generation,
+            ),
+        )
 
     def update_config(self, config: dict[str, Any]) -> None:
         runtime_cfg = dict(config or {})
@@ -79,14 +98,31 @@ class BmwService:
 
     def manual_refresh(self, *, force_reprobe: bool = False) -> dict[str, Any]:
         assert self.provider is not None
+        logger.info(
+            "BMW service manual refresh start %s",
+            bmw_log_context(operation="ev_manual_refresh", bmw_operation="manual_refresh", phase="start", force_reprobe=bool(force_reprobe)),
+        )
         return self.provider.manual_refresh(force_reprobe=force_reprobe)
 
     def start_device_flow(self) -> dict[str, Any]:
         assert self.auth is not None
+        logger.info(
+            "BMW service device flow start %s",
+            bmw_log_context(operation="ev_device_flow_start", bmw_operation="device_flow", phase="start"),
+        )
         return self.auth.start_device_flow()
 
     def poll_device_token(self, device_code: str) -> dict[str, Any]:
         assert self.auth is not None
+        logger.info(
+            "BMW service device flow poll %s",
+            bmw_log_context(
+                operation="ev_device_flow_poll",
+                bmw_operation="device_flow",
+                phase="poll_token",
+                has_device_code=bool(str(device_code or "").strip()),
+            ),
+        )
         token = self.auth.poll_device_token(device_code)
         return {
             "ok": bool(token.access_token),
