@@ -521,8 +521,17 @@ UI_ACTION_HEADER = "X-UI-Action"
 
 
 class UIActions:
+    APP_BOOTSTRAP = "app_bootstrap"
+    HEALTH_CHECK = "health_check"
+    SETTINGS_FETCH = "settings_fetch"
+    WEATHER_MODELS_FETCH = "weather_models_fetch"
     SAVE_SETTINGS = "save_settings"
     SETTINGS_FACTORY_RESET = "settings_factory_reset"
+    RESULTS_HISTORY_FETCH = "results_history_fetch"
+    RESULTS_RUN_FETCH = "results_run_fetch"
+    SCORE_DAY_FETCH = "score_day_fetch"
+    EVSE_STATUS = "evse_status"
+    EV_STATUS = "ev_status"
     RUN_FORECAST = "run_forecast"
     RUN_FORECAST_INPUTS = "run_forecast_inputs"
     BMW_DEVICE_FLOW_START = "bmw_device_flow_start"
@@ -532,6 +541,9 @@ class UIActions:
     EV_VEHICLES = "ev_vehicles"
     EVSE_RESUME = "evse_resume"
     EVSE_STOP = "evse_stop"
+    ERRORS_LIST = "errors_list"
+    ERROR_DETAIL = "error_detail"
+    ERROR_MARK_FIXED = "error_mark_fixed"
     FRONTEND_ERROR_EVENT = "frontend_error_event"
     UI_ERROR_FLUSH = "ui_error_flush"
 
@@ -2212,7 +2224,11 @@ def api_delete(path: str, *, params: dict | None = None) -> dict:
 
 
 def _on_toggle_fixed(error_id: str, key: str) -> None:
-    api_post(f"/v1/errors/{error_id}/fixed", {"fixed": bool(st.session_state.get(key, False))})
+    api_post(
+        f"/v1/errors/{error_id}/fixed",
+        {"fixed": bool(st.session_state.get(key, False))},
+        action=UIActions.ERROR_MARK_FIXED,
+    )
 
 
 def append_ui_error_buffer(payload: dict) -> None:
@@ -2263,6 +2279,8 @@ def log_frontend_error(
     context: dict | None = None,
 ) -> None:
     payload_context = dict(context or {})
+    if "ui_action" not in payload_context and isinstance(payload_context.get("action"), str):
+        payload_context["ui_action"] = str(payload_context.get("action"))
     if "ui_correlation_id" not in payload_context and st.session_state.get("_active_ui_correlation_id"):
         payload_context["ui_correlation_id"] = st.session_state.get("_active_ui_correlation_id")
     if "ui_action" not in payload_context and st.session_state.get("_active_ui_action"):
@@ -2299,7 +2317,7 @@ def log_frontend_error(
 @st.cache_data(ttl=1)
 def get_evse_status() -> dict:
     try:
-        return api_get("/v1/evse/status")
+        return api_get("/v1/evse/status", action=UIActions.EVSE_STATUS)
     except Exception:
         return {"connected": False, "is_plugged": False, "is_charging": False, "status": "unknown", "error": "unreachable"}
 
@@ -2357,7 +2375,10 @@ def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.
     ]
     try:
         show_all_text = "true" if show_all_runs else "false"
-        items = api_get(f"/v1/results/history?days={max(1, int(days))}&show_all_runs={show_all_text}").get("items", [])
+        items = api_get(
+            f"/v1/results/history?days={max(1, int(days))}&show_all_runs={show_all_text}",
+            action=UIActions.RESULTS_HISTORY_FETCH,
+        ).get("items", [])
     except Exception:
         return pd.DataFrame(columns=history_columns)
 
@@ -2541,7 +2562,7 @@ def _get_run_detail(run_id: str) -> dict:
     if run_id in cache:
         return cache[run_id]
     try:
-        payload = api_get(f"/v1/results/run/{run_id}")
+        payload = api_get(f"/v1/results/run/{run_id}", action=UIActions.RESULTS_RUN_FETCH)
     except Exception:
         payload = {}
     cache[run_id] = payload
@@ -2676,7 +2697,7 @@ def _render_run_inspector(filtered_df: pd.DataFrame) -> None:
     run_id = str(row.get("run_id") or "").strip()
     if run_id:
         try:
-            detail = api_get(f"/v1/results/run/{run_id}")
+            detail = api_get(f"/v1/results/run/{run_id}", action=UIActions.RESULTS_RUN_FETCH)
         except Exception:
             detail = {}
 
@@ -3599,11 +3620,12 @@ st.set_page_config(page_title="PV Battery Planner", layout="wide")
 inject_tooltip_css()
 st.title("PV Battery Planner")
 
+bootstrap_correlation_id = _set_active_ui_request_context(UIActions.APP_BOOTSTRAP)
 try:
     flush_ui_error_buffer()
-    health_payload = api_get("/v1/health")
-    backend_settings = api_get("/v1/settings")
-    weather_models_catalog = api_get("/v1/weather/models").get("items", [])
+    health_payload = api_get("/v1/health", correlation_id=bootstrap_correlation_id, action=UIActions.HEALTH_CHECK)
+    backend_settings = api_get("/v1/settings", correlation_id=bootstrap_correlation_id, action=UIActions.SETTINGS_FETCH)
+    weather_models_catalog = api_get("/v1/weather/models", correlation_id=bootstrap_correlation_id, action=UIActions.WEATHER_MODELS_FETCH).get("items", [])
     flush_ui_error_buffer()
     valid_model_ids = {m.get("id") for m in weather_models_catalog if isinstance(m.get("id"), str)}
 except Exception as exc:
@@ -3613,7 +3635,7 @@ except Exception as exc:
         where="app.py:startup",
         title="Frontend error: backend unreachable",
         exc=exc,
-        context={"endpoint": "/v1/health"},
+        context={"action": UIActions.APP_BOOTSTRAP, "endpoint": "/v1/health", "source": "startup"},
     )
     st.error(
         f"Backend unavailable at {API_BASE_URL}. Start backend with: "
@@ -3621,6 +3643,8 @@ except Exception as exc:
         f"Details: {exc}"
     )
     st.stop()
+finally:
+    _clear_active_ui_request_context()
 
 if "last_soc" not in st.session_state:
     st.session_state.last_soc = 45.0
@@ -4029,8 +4053,8 @@ with left:
         provider_status = {}
         vehicles_payload = {}
         try:
-            provider_status = api_get("/v1/ev/provider_status")
-            vehicles_payload = api_get("/v1/ev/vehicles")
+            provider_status = api_get("/v1/ev/provider_status", action=UIActions.EV_PROVIDER_STATUS)
+            vehicles_payload = api_get("/v1/ev/vehicles", action=UIActions.EV_VEHICLES)
         except Exception:
             provider_status = {}
             vehicles_payload = {}
@@ -4509,7 +4533,7 @@ with left:
         fetch_error = ""
         ev_status: dict = {}
         try:
-            ev_status = api_get("/v1/ev/status")
+            ev_status = api_get("/v1/ev/status", action=UIActions.EV_STATUS)
         except Exception as exc:
             fetch_error = str(exc)
             ev_status = {}
@@ -4825,7 +4849,7 @@ with left:
 
     unresolved_count = 0
     try:
-        unresolved = api_get("/v1/errors?limit=0&include_fixed=false").get("items", [])
+        unresolved = api_get("/v1/errors?limit=0&include_fixed=false", action=UIActions.ERRORS_LIST).get("items", [])
         unresolved_count = len(unresolved)
     except Exception:
         unresolved_count = 0
@@ -4834,7 +4858,7 @@ with left:
     with st.expander(error_logging_label, expanded=False):
         error_items: list[dict] = []
         try:
-            error_items = api_get("/v1/errors?limit=0&include_fixed=true").get("items", [])
+            error_items = api_get("/v1/errors?limit=0&include_fixed=true", action=UIActions.ERRORS_LIST).get("items", [])
         except Exception:
             st.info("Error logging is currently unreachable.")
             error_items = []
@@ -4923,7 +4947,7 @@ with left:
                         fixed_target = not fixed_val
                         fixed_label = "↩ Mark open" if fixed_val else "\u2705 Mark resolved"
                         if st.button(fixed_label, key=f"err_fixed_btn_{error_id}", width="stretch"):
-                            api_post(f"/v1/errors/{error_id}/fixed", {"fixed": fixed_target})
+                            api_post(f"/v1/errors/{error_id}/fixed", {"fixed": fixed_target}, action=UIActions.ERROR_MARK_FIXED)
                             st.session_state["err_delete_arm"] = None
                             st.rerun()
 
@@ -4948,7 +4972,7 @@ with left:
 
                     if st.session_state.get(detail_open_key):
                         try:
-                            detail = api_get(f"/v1/errors/{error_id}")
+                            detail = api_get(f"/v1/errors/{error_id}", action=UIActions.ERROR_DETAIL)
                             detail_title = str(detail.get("title") or title_txt or "")
                             detail_time = str(detail.get("created_at_utc") or ts_raw or "")
                             detail_time_compact = detail_time.replace("T", " ").replace("Z", " UTC")
@@ -5312,7 +5336,7 @@ if run_clicked or st.session_state.get("last_run_result"):
                 score_date = str(result.get("target_date") or tomorrow.isoformat())
                 with st.expander("Advanced: backtest score", expanded=False):
                     try:
-                        score_payload = api_get(f"/v1/score/day?date={score_date}&source=manual_csv")
+                        score_payload = api_get(f"/v1/score/day?date={score_date}&source=manual_csv", action=UIActions.SCORE_DAY_FETCH)
                         st.caption(f"Date: {score_payload.get('score_date', score_date)} · Source: {score_payload.get('source', 'manual_csv')}")
                         m1, m2, m3 = st.columns(3)
                         m1.metric("PV MAE (kWh)", f"{float(score_payload.get('pv_mae_kwh') or 0.0):.3f}")
