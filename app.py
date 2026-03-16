@@ -483,6 +483,27 @@ def validate_sidebar_readiness(
     return issues
 
 
+def summarize_user_blockers(readiness_issues: dict[str, list[str]], *, max_items: int = 2) -> list[str]:
+    """Return a compact, plain-English blocker summary for User mode."""
+    priority = ["Inputs", "Location", "Tariffs", "PV", "Battery", "Weather", "CarData"]
+    plain_by_section = {
+        "Inputs": "Enter a realistic Yesterday use value between 2 and 60 kWh.",
+        "Location": "Check your location lookup so latitude, longitude, and timezone are valid.",
+        "Tariffs": "Review your off-peak hours (From/To) and fix invalid times.",
+        "PV": "Complete PV setup (panel count, panel power, and inverter AC limit).",
+        "Battery": "Review battery values (capacity, SOC limits, and charge power).",
+        "Weather": "Select at least one weather model for Custom forecast mode.",
+        "CarData": "CarData setup needs attention before EV status is fully ready.",
+    }
+    messages: list[str] = []
+    for section in priority:
+        if readiness_issues.get(section):
+            messages.append(plain_by_section.get(section, str(readiness_issues[section][0])))
+        if len(messages) >= max_items:
+            break
+    return messages
+
+
 def save_settings_payload(new_cfg: dict, *, rerun: bool = True) -> bool:
     correlation_id = _set_active_ui_request_context(UIActions.SAVE_SETTINGS)
     try:
@@ -3692,7 +3713,7 @@ if "ui_mode" not in st.session_state:
 )
 with tab_inputs:
     st.header("Inputs")
-    st.caption("Set up tomorrow's forecast")
+    st.caption("Quick setup for tomorrow")
     effective_cfg = backend_settings.get("config", core.DEFAULT_CONFIG)
     loc_cfg = effective_cfg["location"]
     apply_pending_location_state()
@@ -3720,11 +3741,11 @@ with tab_inputs:
     if "loc_lookup_validated" not in st.session_state:
         st.session_state["loc_lookup_validated"] = False
     with st.container(border=True):
-        st.markdown("##### Run inputs")
+        st.markdown("##### Quick inputs")
         inputs_soc_col, inputs_kwh_col = st.columns([2, 3], vertical_alignment="bottom")
         with inputs_soc_col:
             soc_percent = st.number_input(
-                    "SOC now (%)",
+                    "Battery now (%)",
                     min_value=0.0,
                     max_value=100.0,
                     value=float(st.session_state.last_soc),
@@ -3734,7 +3755,7 @@ with tab_inputs:
                 )
         with inputs_kwh_col:
             yesterday_kwh = st.number_input(
-                    "Yesterday use (kWh)",
+                    "Yesterday total (kWh)",
                     min_value=0.1,
                     value=float(st.session_state.last_kwh),
                     step=0.1,
@@ -4372,7 +4393,7 @@ with tab_inputs:
 
     def render_weather_models_panel() -> tuple[str, list[str], bool]:
         st.markdown("#### Weather")
-        st.caption("Choose how weather inputs are built.")
+        st.caption("Pick how tomorrow's weather is built.")
         with st.container(border=True):
                 ui_mode_value = str(st.session_state.get("forecast_mode_select", "")).strip()
                 if ui_mode_value and ui_mode_value not in {"Auto", "Custom"}:
@@ -4449,7 +4470,7 @@ with tab_inputs:
 
 
     def render_car_charger_panel() -> None:
-        st.markdown("##### Charger controls")
+        st.markdown("##### Charger")
         with st.container(border=True):
                 evse = get_evse_status()
 
@@ -4725,7 +4746,7 @@ with tab_inputs:
 
     with tab_car:
         st.header("Car & Charger")
-        st.caption("Quick EV status first, controls second.")
+        st.caption("EV status first, charger actions second.")
         render_ev_car_status_panel(st.container())
         st.markdown("<div style='height:0.65rem;'></div>", unsafe_allow_html=True)
         render_car_charger_panel()
@@ -4769,13 +4790,13 @@ with tab_inputs:
 
     readiness_order = ["Run", "Location", "Tariffs", "PV", "Battery", "Weather", "CarData"]
     readiness_map = {
-        "Run": ("ready" if run_allowed else "blocking", "Run is enabled only when required checks pass."),
-        "Location": ("ready" if not readiness_issues["Location"] else "blocking", readiness_issues["Location"][0] if readiness_issues["Location"] else "Location is configured."),
-        "Tariffs": ("ready" if not readiness_issues["Tariffs"] else "blocking", readiness_issues["Tariffs"][0] if readiness_issues["Tariffs"] else "Tariffs are configured."),
-        "PV": ("ready" if not readiness_issues["PV"] else "blocking", readiness_issues["PV"][0] if readiness_issues["PV"] else "PV settings are configured."),
-        "Battery": ("ready" if not readiness_issues["Battery"] else "blocking", readiness_issues["Battery"][0] if readiness_issues["Battery"] else "Battery settings are configured."),
-        "Weather": ("ready" if not readiness_issues["Weather"] else "warning", readiness_issues["Weather"][0] if readiness_issues["Weather"] else "Weather models are configured."),
-        "CarData": ("ready" if not readiness_issues["CarData"] else "warning", readiness_issues["CarData"][0] if readiness_issues["CarData"] else "CarData is configured."),
+        "Run": ("ready" if run_allowed else "blocking", "Run forecast is enabled only after required checks pass."),
+        "Location": ("ready" if not readiness_issues["Location"] else "blocking", readiness_issues["Location"][0] if readiness_issues["Location"] else "Location is ready."),
+        "Tariffs": ("ready" if not readiness_issues["Tariffs"] else "blocking", readiness_issues["Tariffs"][0] if readiness_issues["Tariffs"] else "Tariffs are ready."),
+        "PV": ("ready" if not readiness_issues["PV"] else "blocking", readiness_issues["PV"][0] if readiness_issues["PV"] else "PV setup is ready."),
+        "Battery": ("ready" if not readiness_issues["Battery"] else "blocking", readiness_issues["Battery"][0] if readiness_issues["Battery"] else "Battery setup is ready."),
+        "Weather": ("ready" if not readiness_issues["Weather"] else "warning", readiness_issues["Weather"][0] if readiness_issues["Weather"] else "Weather setup is ready."),
+        "CarData": ("ready" if not readiness_issues["CarData"] else "warning", readiness_issues["CarData"][0] if readiness_issues["CarData"] else "CarData setup is ready."),
     }
     palette = {
         "ready": ("#16a34a", "#052e16"),
@@ -4792,20 +4813,33 @@ with tab_inputs:
             f"border:1px solid {fg};background:{bg};color:{fg};'>{_esc(label)}</span>"
         )
     with st.container(border=True):
-        st.markdown("##### Readiness")
+        st.markdown("##### Planner readiness")
         st.markdown("".join(["<div style='display:flex;gap:0.35rem;flex-wrap:wrap;margin:0.2rem 0 0.55rem;'>", *strip, "</div>"]), unsafe_allow_html=True)
 
-        st.markdown("##### Mode")
+        st.markdown("##### View mode")
         ui_mode = render_global_ui_mode_selector()
         blocking_items = [msg for msgs in readiness_issues.values() for msg in msgs][:4]
         if blocking_items and ui_mode in {"Expert", "Debug"}:
             st.caption("Important checks")
             for msg in blocking_items:
                 ui_warning(msg)
+        elif blocking_items and ui_mode == "User":
+            user_blockers = summarize_user_blockers(readiness_issues, max_items=2)
+            if user_blockers:
+                st.caption("What to fix before you can run")
+                for msg in user_blockers:
+                    st.markdown(
+                        "<div style='margin-top:0.16rem;padding:0.34rem 0.52rem;border-radius:10px;"
+                        "border:1px solid rgba(245,158,11,0.45);background:rgba(245,158,11,0.11);"
+                        "font-size:0.78rem;line-height:1.35;'>"
+                        f"{_esc(msg)}"
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
 
     ensemble_method = "weighted"
     with st.container(border=True):
-        st.markdown("##### Actions")
+        st.markdown("##### Main actions")
         top_action_reset, top_action_save, top_action_run = st.columns([1.25, 1.1, 1.0], vertical_alignment="center")
         with top_action_reset:
             reset_clicked = st.button(
@@ -4813,6 +4847,7 @@ with tab_inputs:
                 type="secondary",
                 key="btn_reset_defaults",
                 width="stretch",
+                help="Restore default settings while keeping your Off-peak hours windows.",
             )
         with top_action_save:
             save_clicked = st.button(
@@ -4821,6 +4856,7 @@ with tab_inputs:
                 disabled=(not settings_valid) or (not settings_dirty),
                 key="btn_save_settings_top",
                 width="stretch",
+                help="Store your current settings so future runs use them.",
             )
         with top_action_run:
             run_clicked = st.button(
@@ -4829,6 +4865,7 @@ with tab_inputs:
                 disabled=(not run_allowed),
                 key="btn_run_forecast",
                 width="stretch",
+                help="Start the planner for tomorrow using current inputs and saved settings.",
             )
 
     save_badge_visibility = "visible" if save_label_active else "hidden"
@@ -5224,7 +5261,7 @@ if True:
 
         with tab_results:
             st.header("Results")
-            st.caption("Tomorrow at a glance")
+            st.caption("Clear plan for tomorrow")
             if not has_renderable_result:
                 st.info("Run forecast to see results.")
             if has_renderable_result:
