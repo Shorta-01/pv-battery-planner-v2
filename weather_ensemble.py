@@ -690,6 +690,9 @@ _CIRCUIT_BREAKER_STATE: dict[str, dict[str, float]] = {}
 _CIRCUIT_BREAKER_LOCK = RLock()
 _CIRCUIT_BREAKER_LOADED = False
 _WRITE_JSON_LOCK = Lock()
+_PROVIDER_CACHE_CLEANUP_LOCK = Lock()
+_PROVIDER_CACHE_CLEANUP_INTERVAL_SECONDS = 300
+_PROVIDER_CACHE_LAST_CLEANUP_TS = 0.0
 
 IRRADIANCE_HOURLY_MAX_WM2 = 1400.0
 IRRADIANCE_HOURLY_EXTREME_WM2 = 2500.0
@@ -1009,6 +1012,20 @@ def _write_json_file(path: Path, payload: Any) -> None:
         raise
 
 
+def _write_json_file_if_changed(path: Path, payload: Any) -> bool:
+    """Write JSON atomically only when serialized payload changes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(payload, sort_keys=True, indent=2, default=_json_default)
+    try:
+        if path.exists() and path.read_text(encoding="utf-8") == data:
+            return False
+    except OSError:
+        # Fall back to writing; write path has retry/fsync protections.
+        pass
+    _write_json_file(path, payload)
+    return True
+
+
 def _load_circuit_breaker_state() -> None:
     global _CIRCUIT_BREAKER_LOADED
     with _CIRCUIT_BREAKER_LOCK:
@@ -1038,7 +1055,7 @@ def _persist_circuit_breaker_state() -> None:
             }
             for model_id, state in _CIRCUIT_BREAKER_STATE.items()
         }
-        _write_json_file(PROVIDER_CIRCUIT_STATE_PATH, payload)
+        _write_json_file_if_changed(PROVIDER_CIRCUIT_STATE_PATH, payload)
 
 
 def _is_circuit_open(model_id: str) -> tuple[bool, int]:
@@ -1108,10 +1125,17 @@ def _provider_cache_path(model_id: str, target_date: dt.date, run_hour: int, loc
 
 
 def _cleanup_provider_cache(now: dt.datetime | None = None) -> None:
+    now_utc = (now or _utc_now()).astimezone(dt.timezone.utc)
+    now_ts = now_utc.timestamp()
+    with _PROVIDER_CACHE_CLEANUP_LOCK:
+        global _PROVIDER_CACHE_LAST_CLEANUP_TS
+        if (now_ts - _PROVIDER_CACHE_LAST_CLEANUP_TS) < float(_PROVIDER_CACHE_CLEANUP_INTERVAL_SECONDS):
+            return
+        _PROVIDER_CACHE_LAST_CLEANUP_TS = now_ts
+
     base = PROVIDER_CACHE_DIR
     if not base.exists():
         return
-    now_utc = (now or _utc_now()).astimezone(dt.timezone.utc)
     cutoff = now_utc - dt.timedelta(days=PROVIDER_CACHE_RETENTION_DAYS)
     for path in base.glob("*.json"):
         if path == PROVIDER_CIRCUIT_STATE_PATH:
@@ -1141,7 +1165,7 @@ def _store_provider_cache(
         "cached_at_utc": _to_utc_iso(),
         "weather_payload": data,
     }
-    _write_json_file(_provider_cache_path(model_id, target_date, run_hour, location_bucket), payload)
+    _write_json_file_if_changed(_provider_cache_path(model_id, target_date, run_hour, location_bucket), payload)
 
 
 def _load_provider_cache(
