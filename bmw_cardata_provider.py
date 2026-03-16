@@ -158,6 +158,7 @@ class BmwCarDataProvider:
         capture_endpoint_path: str | None = None,
         json_body: dict[str, Any] | None = None,
         raw_body: str | None = None,
+        capture_dedup_scope: str | None = None,
     ) -> Any:
         endpoint = f"{base}{path}"
         self.status.refresh_sequence_endpoints.append(f"{method.upper()} {path}")
@@ -228,7 +229,16 @@ class BmwCarDataProvider:
         node = resp.json()
         aggregate_payload[f"{method.upper()} {path}"] = node
         aggregate_payload["sequence"].append({"stage": stage, "method": method.upper(), "endpoint": path, "ok": True, "optional": optional})
-        capture_paths.append(str(self.storage.store_raw_capture(capture_endpoint_path or path, node, status_code=resp.status_code)))
+        capture_paths.append(
+            str(
+                self.storage.store_raw_capture(
+                    capture_endpoint_path or path,
+                    node,
+                    status_code=resp.status_code,
+                    dedup_scope=capture_dedup_scope,
+                )
+            )
+        )
         return node
 
     def _phase1_candidate_descriptors(self) -> list[str]:
@@ -376,6 +386,7 @@ class BmwCarDataProvider:
         technical_descriptors: list[str],
         mode: str,
         capture_endpoint_path: str,
+        capture_dedup_scope: str | None = None,
     ) -> tuple[str | None, dict[str, Any], Any]:
         create_request_model = self._phase1_container_create_request(technical_descriptors)
         payload = create_request_model.to_json_body()
@@ -400,6 +411,7 @@ class BmwCarDataProvider:
             optional=True,
             capture_endpoint_path=capture_endpoint_path,
             raw_body=serialized_body,
+            capture_dedup_scope=capture_dedup_scope,
         )
         error_node = aggregate_payload.get(f"POST {endpoint_path}") if isinstance(aggregate_payload.get(f"POST {endpoint_path}"), dict) else {}
         status = (error_node.get("_error") or {}).get("status")
@@ -436,7 +448,16 @@ class BmwCarDataProvider:
             "response_excerpt": response_excerpt,
             "response_payload": response,
         }
-        capture_paths.append(str(self.storage.store_raw_capture(f"/customers/containers_create_attempt_{mode}", capture_payload, status_code=status)))
+        capture_paths.append(
+            str(
+                self.storage.store_raw_capture(
+                    f"/customers/containers_create_attempt_{mode}",
+                    capture_payload,
+                    status_code=status,
+                    dedup_scope=capture_dedup_scope,
+                )
+            )
+        )
 
         container_id = None
         if isinstance(response, dict):
@@ -473,6 +494,7 @@ class BmwCarDataProvider:
         aggregate_payload: dict[str, Any],
         capture_paths: list[str],
         candidates: list[str],
+        capture_dedup_scope: str | None = None,
     ) -> tuple[list[str], dict[str, Any], list[dict[str, Any]]]:
         accepted: list[str] = []
         rejected: dict[str, Any] = {}
@@ -486,6 +508,7 @@ class BmwCarDataProvider:
                 technical_descriptors=[descriptor],
                 mode="probe",
                 capture_endpoint_path="/customers/containers_probe_create",
+                capture_dedup_scope=capture_dedup_scope,
             )
             status = create_diag.get("create_request", {}).get("status")
             result = {
@@ -515,6 +538,7 @@ class BmwCarDataProvider:
         aggregate_payload: dict[str, Any],
         capture_paths: list[str],
         force_reprobe: bool = False,
+        capture_dedup_scope: str | None = None,
     ) -> tuple[str | None, dict[str, Any] | None]:
         self.status.container_auto_create_attempted = True
 
@@ -541,6 +565,7 @@ class BmwCarDataProvider:
                 aggregate_payload=aggregate_payload,
                 capture_paths=capture_paths,
                 candidates=[next_probe_descriptor],
+                capture_dedup_scope=capture_dedup_scope,
             )
             if accepted_next:
                 persisted_accepted = self._build_technical_descriptors(persisted_accepted + accepted_next)
@@ -567,6 +592,7 @@ class BmwCarDataProvider:
             technical_descriptors=initial_descriptors,
             mode="production_initial",
             capture_endpoint_path="/customers/containers_create",
+            capture_dedup_scope=capture_dedup_scope,
         )
 
         if container_id:
@@ -588,6 +614,7 @@ class BmwCarDataProvider:
             aggregate_payload=aggregate_payload,
             capture_paths=capture_paths,
             candidates=candidate_descriptors,
+            capture_dedup_scope=capture_dedup_scope,
         )
         self._persist_descriptor_validation_state(
             accepted_descriptors=accepted,
@@ -611,6 +638,7 @@ class BmwCarDataProvider:
             technical_descriptors=accepted,
             mode="production_final",
             capture_endpoint_path="/customers/containers_create_final",
+            capture_dedup_scope=capture_dedup_scope,
         )
         final_diag["bootstrap_probe"] = diag.get("bootstrap_probe")
         if final_container_id:
@@ -640,6 +668,7 @@ class BmwCarDataProvider:
 
         aggregate_payload: dict[str, Any] = {"sequence": []}
         capture_paths: list[str] = []
+        capture_dedup_scope = f"refresh_once:{id(capture_paths)}"
         base = self.rest_base_url()
         self.status.refresh_sequence_endpoints = []
         self.status.capture_files_written = []
@@ -677,6 +706,7 @@ class BmwCarDataProvider:
                 capture_paths=capture_paths,
                 stage=discovery_op.stage,
                 optional=False,
+                capture_dedup_scope=capture_dedup_scope,
             )
             discovered_ids, mapping_diagnostics = self._discover_vehicle_ids(mappings_payload)
             self.status.discovered_vehicle_ids = list(discovered_ids)
@@ -723,6 +753,7 @@ class BmwCarDataProvider:
                 capture_paths=capture_paths,
                 stage="vehicle",
                 optional=False,
+                capture_dedup_scope=capture_dedup_scope,
             )
 
             containers_payload = self._request_json(
@@ -734,6 +765,7 @@ class BmwCarDataProvider:
                 capture_paths=capture_paths,
                 stage="discover",
                 optional=True,
+                capture_dedup_scope=capture_dedup_scope,
             )
             container_ids, container_diags = self._discover_containers(containers_payload)
 
@@ -771,6 +803,7 @@ class BmwCarDataProvider:
                     aggregate_payload=aggregate_payload,
                     capture_paths=capture_paths,
                     force_reprobe=force_reprobe or bool(missing_before),
+                    capture_dedup_scope=capture_dedup_scope,
                 )
                 if created_diag:
                     container_diags = [
@@ -813,6 +846,7 @@ class BmwCarDataProvider:
                     stage="vehicle",
                     optional=True,
                     capture_endpoint_path=f"/customers/vehicles/{target_vehicle_id}/telematicData",
+                    capture_dedup_scope=capture_dedup_scope,
                 )
 
             for op in self.rest_operations():
@@ -828,6 +862,7 @@ class BmwCarDataProvider:
                         capture_paths=capture_paths,
                         stage=op.stage,
                         optional=True,
+                        capture_dedup_scope=capture_dedup_scope,
                     )
                 except Exception:
                     pass
@@ -942,6 +977,8 @@ class BmwCarDataProvider:
                 "force_reprobe_diagnostics": dict(self.status.force_reprobe_diagnostics),
                 "bmw_ev_diagnostics": dict(self.status.bmw_ev_diagnostics),
             }
+        finally:
+            self.storage.clear_capture_dedup_scope(capture_dedup_scope)
 
     def _discover_vehicle_ids(self, discovery_payload: Any) -> tuple[list[str], list[dict[str, Any]]]:
         raw_rows: list[dict[str, Any]] = []

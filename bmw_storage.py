@@ -16,6 +16,7 @@ class BmwStorage:
         self.container_state_path = self.state_path.parent / "bmw_container_state.json"
         self.descriptor_validation_state_path = self.state_path.parent / "bmw_descriptor_validation.json"
         self._lock = RLock()
+        self._capture_dedup_index: dict[tuple[str, str, int | None, str], Path] = {}
         self.raw_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -75,9 +76,16 @@ class BmwStorage:
 
 
 
-    def store_raw_capture(self, endpoint_path: str, payload: dict[str, Any], *, status_code: int | None = None) -> Path:
+    def store_raw_capture(
+        self,
+        endpoint_path: str,
+        payload: dict[str, Any],
+        *,
+        status_code: int | None = None,
+        dedup_scope: str | None = None,
+    ) -> Path:
         safe_endpoint = endpoint_path.strip().strip("/").replace("/", "_") or "root"
-        ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         out_name = f"bmw_capture_{safe_endpoint}_{ts}.json"
         out_path = self.raw_path.parent / out_name
         wrapped = {
@@ -87,8 +95,20 @@ class BmwStorage:
             "payload": payload,
         }
         with self._lock:
+            if dedup_scope:
+                payload_key = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+                dedup_key = (dedup_scope, endpoint_path, status_code, payload_key)
+                existing_path = self._capture_dedup_index.get(dedup_key)
+                if existing_path and existing_path.exists():
+                    return existing_path
             out_path.write_text(json.dumps(wrapped, ensure_ascii=False, indent=2), encoding="utf-8")
+            if dedup_scope:
+                self._capture_dedup_index[dedup_key] = out_path
         return out_path
+
+    def clear_capture_dedup_scope(self, scope: str) -> None:
+        with self._lock:
+            self._capture_dedup_index = {k: v for k, v in self._capture_dedup_index.items() if k[0] != scope}
 
     def list_raw_captures(self, limit: int = 20) -> list[str]:
         capture_dir = self.raw_path.parent
