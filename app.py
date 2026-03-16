@@ -976,7 +976,7 @@ def render_weather_models(
     if (not selected_models) and (not disabled):
         st.error("Select at least one weather model.")
 
-    debug_ui = APP_DEBUG and st.session_state.get("history_mode", "Simple") == "Debug"
+    debug_ui = APP_DEBUG and get_ui_mode() == "Debug"
     if debug_ui:
         dbg = st.session_state.get("last_weather_ensemble_debug") or {}
         with st.expander("Advanced: last run model debug", expanded=False):
@@ -1655,7 +1655,7 @@ def _build_cycle_savings_html(
     cycle_window = _format_cycle_window_label(sv.get("horizon_start_iso"), sv.get("horizon_end_iso"))
 
     if show_savings_diagnostics is None:
-        history_debug_mode = st.session_state.get("history_mode", "Simple") == "Debug"
+        history_debug_mode = get_ui_mode() == "Debug"
         show_savings_diagnostics = bool(APP_DEBUG or history_debug_mode)
 
     diag_grid_only_cycle = _safe_float((pv_quality_dict or {}).get("grid_only_cost_eur_cycle"), None)
@@ -3117,15 +3117,10 @@ def _render_history_log_block() -> None:
         mode_col, c1, c2 = st.columns([1.3, 1.2, 1.2])
 
         with mode_col:
-            st.radio(
-                "Mode",
-                options=["Simple", "Debug"],
-                key="history_mode",
-                horizontal=True,
-                help="Simple keeps History easy to scan. Debug reveals deeper run diagnostics.",
-            )
+            ui_mode = get_ui_mode()
+            st.caption(f"Mode: {ui_mode}")
 
-        history_debug_mode = st.session_state.get("history_mode", "Simple") == "Debug"
+        history_debug_mode = get_ui_mode() == "Debug"
         if history_debug_mode:
             with c1:
                 st.toggle(
@@ -3286,7 +3281,7 @@ def _render_history_log_block() -> None:
                 f"{_target_date_for_filename(start_date_for_filename)}"
                 f"-{_target_date_for_filename(end_date_for_filename)}"
             )
-            mode_part = _safe_filename_part(st.session_state.get("history_mode", "Simple"), "simple")
+            mode_part = _safe_filename_part(( "Debug" if get_ui_mode() == "Debug" else "Simple"), "simple")
             csv_bytes = display_df.to_csv(index=False).encode("utf-8")
             st.download_button(
                 "Export CSV",
@@ -3616,6 +3611,45 @@ def add_tariff_and_sun_markers(fig: go.Figure, tomorrow_date: dt.date, sunrise: 
     fig.add_annotation(x=sunset, y=1.0, yref="paper", text="Sunset", showarrow=False, yshift=8, font=dict(color="#f4a261"))
 
 
+def get_ui_mode() -> str:
+    mode = str(st.session_state.get("ui_mode", "User"))
+    if mode not in {"User", "Expert", "Debug"}:
+        mode = "User"
+    st.session_state["ui_mode"] = mode
+    st.session_state["history_mode"] = "Debug" if mode == "Debug" else "Simple"
+    return mode
+
+
+def render_global_ui_mode_selector() -> str:
+    st.markdown("##### UI mode")
+    options = ["User", "Expert", "Debug"]
+    current = get_ui_mode()
+    if hasattr(st, "segmented_control"):
+        selected = st.segmented_control(
+            "UI mode",
+            options=options,
+            selection_mode="single",
+            default=current,
+            key="ui_mode_selector",
+            label_visibility="collapsed",
+            help="User keeps the UI calm. Expert reveals more details. Debug shows technical diagnostics.",
+        )
+    else:
+        idx = options.index(current)
+        selected = st.radio(
+            "UI mode",
+            options=options,
+            index=idx,
+            horizontal=True,
+            key="ui_mode_selector",
+            label_visibility="collapsed",
+            help="User keeps the UI calm. Expert reveals more details. Debug shows technical diagnostics.",
+        )
+    if selected in options:
+        st.session_state["ui_mode"] = selected
+    return get_ui_mode()
+
+
 st.set_page_config(page_title="PV Battery Planner", layout="wide")
 inject_tooltip_css()
 st.title("PV Battery Planner")
@@ -3650,9 +3684,21 @@ if "last_soc" not in st.session_state:
     st.session_state.last_soc = 45.0
 if "last_kwh" not in st.session_state:
     st.session_state.last_kwh = 18.0
+if "ui_mode" not in st.session_state:
+    st.session_state["ui_mode"] = "User"
 
-left, right = st.columns([1, 2])
+(tab_inputs, tab_results, tab_car, tab_settings, tab_history, tab_errors) = st.tabs(
+    ["Inputs", "Results", "Car & Charger", "Settings", "History", "Errors"]
+)
+left = tab_inputs
+right = tab_results
+
+with tab_results:
+    st.header("Results")
+
 with left:
+    st.header("Inputs")
+    st.caption("Prepare tomorrow’s plan")
     effective_cfg = backend_settings.get("config", core.DEFAULT_CONFIG)
     loc_cfg = effective_cfg["location"]
     apply_pending_location_state()
@@ -3703,8 +3749,11 @@ with left:
             if yesterday_kwh < 2.0 or yesterday_kwh > 60.0:
                 st.error("Run forecast is blocked: Yesterday total consumption must be between 2.0 and 60.0 kWh. Enter a typical day such as 12.0 kWh if yesterday was unusual.")
 
-    weather_models_box = st.empty()
-    car_charger_box = st.empty()
+    with tab_settings:
+        st.header("Settings")
+        weather_models_box = st.empty()
+    with tab_car:
+        car_charger_box = st.empty()
 
     with st.expander("Settings", expanded=False):
         has_lookup_details = bool(st.session_state.get("loc_lookup_validated")) and isinstance(st.session_state.get("loc_latitude"), (float, int)) and isinstance(
@@ -4684,7 +4733,11 @@ with left:
 
     forecast_mode, selected_models, sat_nowcast_for_run = render_weather_models_panel()
 
+    with tab_car:
+        st.header("Car & Charger")
     render_car_charger_panel()
+    with tab_car:
+        render_ev_car_status_panel(st.container())
 
     cardata_readiness = summarize_cardata_readiness(
         ev_enabled=bool(st.session_state.get("cfg_ev_enabled", False)),
@@ -4723,20 +4776,38 @@ with left:
     if not save_label_active:
         st.session_state["_settings_saved_inline"] = False
 
-    summary_parts = []
-    for key in ["Inputs", "Location", "Tariffs", "PV", "Battery", "Weather", "CarData"]:
-        if readiness_issues[key]:
-            summary_parts.append(f"\u26A0 {key}: {readiness_issues[key][0]}")
-        else:
-            summary_parts.append(f"\u2705 {key}")
-    summary_text = " | ".join(summary_parts)
-    st.markdown(
-        (
-            '<div style="font-size:0.78rem; line-height:1.25; white-space:nowrap; overflow:hidden; '
-            f'text-overflow:ellipsis;" title="{html.escape(summary_text)}">{html.escape(summary_text)}</div>'
-        ),
-        unsafe_allow_html=True,
-    )
+    readiness_order = ["Run", "Location", "Tariffs", "PV", "Battery", "Weather", "CarData"]
+    readiness_map = {
+        "Run": ("ready" if run_allowed else "blocking", "Run is enabled only when required checks pass."),
+        "Location": ("ready" if not readiness_issues["Location"] else "blocking", readiness_issues["Location"][0] if readiness_issues["Location"] else "Location is configured."),
+        "Tariffs": ("ready" if not readiness_issues["Tariffs"] else "blocking", readiness_issues["Tariffs"][0] if readiness_issues["Tariffs"] else "Tariffs are configured."),
+        "PV": ("ready" if not readiness_issues["PV"] else "blocking", readiness_issues["PV"][0] if readiness_issues["PV"] else "PV settings are configured."),
+        "Battery": ("ready" if not readiness_issues["Battery"] else "blocking", readiness_issues["Battery"][0] if readiness_issues["Battery"] else "Battery settings are configured."),
+        "Weather": ("ready" if not readiness_issues["Weather"] else "warning", readiness_issues["Weather"][0] if readiness_issues["Weather"] else "Weather models are configured."),
+        "CarData": ("ready" if not readiness_issues["CarData"] else "warning", readiness_issues["CarData"][0] if readiness_issues["CarData"] else "CarData is configured."),
+    }
+    palette = {
+        "ready": ("#16a34a", "#052e16"),
+        "warning": ("#f59e0b", "#451a03"),
+        "blocking": ("#dc2626", "#450a0a"),
+        "unknown": ("#6b7280", "#1f2937"),
+    }
+    strip = []
+    for label in readiness_order:
+        state, tip = readiness_map.get(label, ("unknown", "Not checked"))
+        fg, bg = palette.get(state, palette["unknown"])
+        strip.append(
+            f"<span title='{_esc(tip)}' style='font-size:0.72rem;padding:0.18rem 0.48rem;border-radius:999px;"
+            f"border:1px solid {fg};background:{bg};color:{fg};'>{_esc(label)}</span>"
+        )
+    st.markdown("".join(["<div style='display:flex;gap:0.35rem;flex-wrap:wrap;margin:0.2rem 0 0.4rem;'>", *strip, "</div>"]), unsafe_allow_html=True)
+
+    ui_mode = render_global_ui_mode_selector()
+    blocking_items = [msg for msgs in readiness_issues.values() for msg in msgs][:4]
+    if blocking_items and ui_mode in {"Expert", "Debug"}:
+        st.caption("Important checks")
+        for msg in blocking_items:
+            ui_warning(msg)
 
     ensemble_method = "weighted"
     top_action_reset, top_action_save, top_action_run = st.columns([1.25, 1.1, 1.0], vertical_alignment="center")
@@ -4847,21 +4918,23 @@ with left:
                 st.session_state["confirm_reset_repo_defaults_open"] = False
                 st.rerun()
 
-    unresolved_count = 0
-    try:
-        unresolved = api_get("/v1/errors?limit=0&include_fixed=false", action=UIActions.ERRORS_LIST).get("items", [])
-        unresolved_count = len(unresolved)
-    except Exception:
+    with tab_errors:
+        st.header("Errors")
         unresolved_count = 0
-
-    error_logging_label = f"Error logging 🔴{unresolved_count}" if unresolved_count > 0 else "Error logging"
-    with st.expander(error_logging_label, expanded=False):
-        error_items: list[dict] = []
         try:
-            error_items = api_get("/v1/errors?limit=0&include_fixed=true", action=UIActions.ERRORS_LIST).get("items", [])
+            unresolved = api_get("/v1/errors?limit=0&include_fixed=false", action=UIActions.ERRORS_LIST).get("items", [])
+            unresolved_count = len(unresolved)
         except Exception:
-            st.info("Error logging is currently unreachable.")
-            error_items = []
+            unresolved_count = 0
+
+        error_logging_label = f"Error logging 🔴{unresolved_count}" if unresolved_count > 0 else "Error logging"
+        with st.expander(error_logging_label, expanded=True):
+            error_items: list[dict] = []
+            try:
+                error_items = api_get("/v1/errors?limit=0&include_fixed=true", action=UIActions.ERRORS_LIST).get("items", [])
+            except Exception:
+                st.info("Error logging is currently unreachable.")
+                error_items = []
 
         if error_items:
             st.session_state.setdefault("err_delete_arm", None)
@@ -5000,6 +5073,10 @@ with left:
         else:
             save_settings_payload(current_settings_payload)
 
+
+    with tab_history:
+        st.header("History")
+        render_history_fragment()
 if run_clicked or st.session_state.get("last_run_result"):
     run_correlation_id: str | None = None
     try:
@@ -5089,7 +5166,7 @@ if run_clicked or st.session_state.get("last_run_result"):
         if not isinstance(result, dict) or not expected_keys.issubset(result.keys()) or status not in {"ok", "degraded"}:
             with right:
                 st.caption("Run forecast to see results.")
-            render_history_fragment()
+
         else:
             tomorrow = dt.date.fromisoformat(result["target_date"])
             weather_df = df_from_split(result["weather"])
@@ -5153,6 +5230,7 @@ if run_clicked or st.session_state.get("last_run_result"):
             )
 
         with right:
+            st.header("Results")
             top_left, top_right = st.columns([4, 3], gap="large")
             with top_left:
                 allow_injection_metric = bool(metrics.get("allow_injection_to_grid", True))
@@ -5179,7 +5257,6 @@ if run_clicked or st.session_state.get("last_run_result"):
                         or ((result.get("weather_ensemble") or {}).get("selected_models") if isinstance(result.get("weather_ensemble"), dict) else None)
                     ),
                 )
-                render_ev_car_status_panel(st.container())
             with top_right:
                 render_pv_quality_widget(
                     top_right,
@@ -5219,20 +5296,21 @@ if run_clicked or st.session_state.get("last_run_result"):
             if normalized_pv.attrs.get("synthetic_pv_split_used", False):
                 st.caption("East/South split estimated by panel ratio (fallback visualization). Total PV remains unchanged.")
 
-            chart_left, chart_right = st.columns(2, gap="large")
-            with chart_left:
-                tooltip_heading("Surplus vs Deficit (hourly)", CHART_TOOLTIPS["Surplus vs Deficit (hourly)"])
-                surplus_fig = make_chart_surplus(pv)
-                add_tariff_and_sun_markers(surplus_fig, tomorrow, sunrise, sunset)
-                st.plotly_chart(surplus_fig, width="stretch")
+            if get_ui_mode() in {"Expert", "Debug"}:
+                chart_left, chart_right = st.columns(2, gap="large")
+                with chart_left:
+                    tooltip_heading("Surplus vs Deficit (hourly)", CHART_TOOLTIPS["Surplus vs Deficit (hourly)"])
+                    surplus_fig = make_chart_surplus(pv)
+                    add_tariff_and_sun_markers(surplus_fig, tomorrow, sunrise, sunset)
+                    st.plotly_chart(surplus_fig, width="stretch")
 
-            with chart_right:
-                tooltip_heading("Grid import/export + curtailment", CHART_TOOLTIPS["Grid import/export + curtailment"])
-                grid_fig = make_chart_grid(flows_df)
-                add_tariff_and_sun_markers(grid_fig, tomorrow, sunrise, sunset)
-                st.plotly_chart(grid_fig, width="stretch")
+                with chart_right:
+                    tooltip_heading("Grid import/export + curtailment", CHART_TOOLTIPS["Grid import/export + curtailment"])
+                    grid_fig = make_chart_grid(flows_df)
+                    add_tariff_and_sun_markers(grid_fig, tomorrow, sunrise, sunset)
+                    st.plotly_chart(grid_fig, width="stretch")
 
-            run_inspector_debug_mode = st.session_state.get("history_mode", "Simple") == "Debug"
+            run_inspector_debug_mode = get_ui_mode() == "Debug"
             if run_inspector_debug_mode:
                 tooltip_heading("Weather inputs used", TABLE_TOOLTIPS["Weather inputs used"])
                 with st.expander("Weather inputs used", expanded=False):
@@ -5410,7 +5488,7 @@ if run_clicked or st.session_state.get("last_run_result"):
                     p1, p2 = st.columns(2)
                     p1.download_button("Download CSV", data=planning_csv, file_name=f"{planning_name}.csv", mime="text/csv", key="planning_csv_download")
                     p2.download_button("Download JSON", data=planning_json, file_name=f"{planning_name}.json", mime="application/json", key="planning_json_download")
-            render_history_fragment()
+
 
             for warning in result.get("warnings", []):
                 ui_warning(f"Nightly context warning: {warning}")

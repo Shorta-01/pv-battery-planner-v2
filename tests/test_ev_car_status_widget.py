@@ -47,21 +47,20 @@ def test_app_widget_uses_unified_ev_status_endpoint() -> None:
     end = app_text.index("forecast_mode, selected_models", start)
     fn_block = app_text[start:end]
 
-    assert "api_get(\"/v1/ev/status\")" in fn_block
+    assert "api_get(\"/v1/ev/status\"" in fn_block
     assert "api_get(\"/v1/ev/vehicles\")" not in fn_block
     assert "api_get(\"/v1/ev/provider_status\")" not in fn_block
     for required in ["soc_pct", "is_plugged", "is_charging", "charge_power_kw", "expected_full_charge_ts", "range_km", "deadline_state", "freshness_label"]:
         assert required in fn_block
 
 
-def test_results_layout_places_car_status_with_fusionsolar_card() -> None:
+def test_car_status_is_rendered_in_car_and_charger_tab() -> None:
     app_text = Path("app.py").read_text(encoding="utf-8")
-    with_top_left = app_text.index("with top_left:")
-    render_summary = app_text.index("render_offpeak_plan_summary(", with_top_left)
-    render_car_status = app_text.index("render_ev_car_status_panel(st.container())", with_top_left)
-    render_pv_week = app_text.index("render_pv_week_ahead_widget(pv_week_ahead_display)", with_top_left)
+    tab_block_start = app_text.index("with tab_car:")
+    render_car_status = app_text.index("render_ev_car_status_panel(st.container())", tab_block_start)
 
-    assert render_summary < render_car_status < render_pv_week
+    assert "st.header(\"Car & Charger\")" in app_text[tab_block_start:render_car_status]
+    assert "render_offpeak_plan_summary(" not in app_text[tab_block_start:render_car_status]
 
 
 def test_app_widget_uses_unified_status_labels_and_debug() -> None:
