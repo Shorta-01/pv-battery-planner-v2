@@ -699,6 +699,35 @@ def test_refresh_graceful_vehicle_endpoint_403_and_404(monkeypatch, tmp_path):
     assert provider.status.last_rest_error_excerpt in {None, "forbidden by API"}
 
 
+
+def test_storage_state_writes_are_skipped_when_payload_is_unchanged(monkeypatch, tmp_path):
+    storage = BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json"))
+    writes: list[Path] = []
+    original_write_text = Path.write_text
+
+    def tracked_write(self, data, encoding=None, errors=None, newline=None):
+        writes.append(self)
+        return original_write_text(self, data, encoding=encoding, errors=errors, newline=newline)
+
+    monkeypatch.setattr(Path, "write_text", tracked_write)
+
+    vehicle_state = NormalizedVehicleState(vehicle_id="VIN1", last_update_ts=dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc))
+    storage.save_vehicle_states({"VIN1": vehicle_state})
+    storage.save_vehicle_states({"VIN1": vehicle_state})
+
+    container_payload = {"active_container_id": "CONT1", "containers": [{"container_id": "CONT1", "state": "ACTIVE"}]}
+    storage.save_container_state(container_payload)
+    storage.save_container_state(container_payload)
+
+    descriptor_payload = {"accepted_descriptors": ["d1"], "rejected_descriptors": {}, "probe_results": []}
+    storage.save_descriptor_validation_state(descriptor_payload)
+    storage.save_descriptor_validation_state(descriptor_payload)
+
+    assert writes.count(storage.state_path) == 1
+    assert writes.count(storage.container_state_path) == 1
+    assert writes.count(storage.descriptor_validation_state_path) == 1
+
+
 def test_storage_capture_naming_and_listing(tmp_path):
     storage = BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json"))
     capture_path = storage.store_raw_capture("/customers/vehicles/mappings", {"vehicleMappings": []}, status_code=200)

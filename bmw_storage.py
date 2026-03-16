@@ -27,7 +27,7 @@ class BmwStorage:
     def save_vehicle_states(self, states: dict[str, NormalizedVehicleState]) -> None:
         with self._lock:
             payload = {vid: st.to_dict() for vid, st in states.items()}
-            self.state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._write_json_if_changed(self.state_path, payload)
 
     def load_vehicle_states(self) -> dict[str, NormalizedVehicleState]:
         with self._lock:
@@ -47,7 +47,7 @@ class BmwStorage:
 
     def save_container_state(self, payload: dict[str, Any]) -> None:
         with self._lock:
-            self.container_state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._write_json_if_changed(self.container_state_path, payload)
 
     def load_container_state(self) -> dict[str, Any]:
         with self._lock:
@@ -61,7 +61,7 @@ class BmwStorage:
 
     def save_descriptor_validation_state(self, payload: dict[str, Any]) -> None:
         with self._lock:
-            self.descriptor_validation_state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._write_json_if_changed(self.descriptor_validation_state_path, payload)
 
     def load_descriptor_validation_state(self) -> dict[str, Any]:
         with self._lock:
@@ -94,8 +94,27 @@ class BmwStorage:
         capture_dir = self.raw_path.parent
         if not capture_dir.exists():
             return []
-        items = sorted(capture_dir.glob("bmw_capture_*.json"), key=lambda x: x.stat().st_mtime, reverse=True)
+        items = sorted(
+            (
+                path
+                for path in capture_dir.iterdir()
+                if path.is_file() and path.name.startswith("bmw_capture_") and path.suffix == ".json"
+            ),
+            key=lambda path: path.name,
+            reverse=True,
+        )
         return [str(path) for path in items[: max(1, limit)]]
+
+    def _write_json_if_changed(self, out_path: Path, payload: dict[str, Any]) -> bool:
+        serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+        if out_path.exists():
+            try:
+                if out_path.read_text(encoding="utf-8") == serialized:
+                    return False
+            except OSError:
+                pass
+        out_path.write_text(serialized, encoding="utf-8")
+        return True
 
     def load_recent_raw_events(self, limit: int = 50) -> list[dict[str, Any]]:
         with self._lock:
