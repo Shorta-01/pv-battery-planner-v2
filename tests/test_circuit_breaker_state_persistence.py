@@ -1,4 +1,6 @@
+import datetime as dt
 import json
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -89,3 +91,53 @@ def test_persistence_failure_is_logged_and_non_fatal_for_success_mark(
 
     assert any("[weather_ensemble][circuit_breaker] failed to persist success state" in rec.message for rec in caplog.records)
     assert we._CIRCUIT_BREAKER_STATE["ecmwf_ifs"]["consecutive_failures"] == 0
+
+
+def test_write_json_file_if_changed_skips_identical_payload(tmp_path: Path) -> None:
+    target = tmp_path / "state.json"
+    payload = {"a": 1, "b": {"x": 2}}
+
+    first_write = we._write_json_file_if_changed(target, payload)
+    first_mtime = target.stat().st_mtime_ns
+
+    second_write = we._write_json_file_if_changed(target, payload)
+    second_mtime = target.stat().st_mtime_ns
+
+    assert first_write is True
+    assert second_write is False
+    assert second_mtime == first_mtime
+
+
+def test_cleanup_provider_cache_throttles_repeated_scans(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_dir = tmp_path / "provider_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    old_file = cache_dir / "old_entry.json"
+    old_file.write_text("{}", encoding="utf-8")
+
+    now = dt.datetime(2026, 1, 10, tzinfo=dt.timezone.utc)
+    stale_ts = (now - dt.timedelta(days=we.PROVIDER_CACHE_RETENTION_DAYS + 1)).timestamp()
+    os.utime(old_file, (stale_ts, stale_ts))
+
+    monkeypatch.setattr(we, "PROVIDER_CACHE_DIR", cache_dir)
+    monkeypatch.setattr(we, "PROVIDER_CIRCUIT_STATE_PATH", cache_dir / "circuit_breaker_state.json")
+    monkeypatch.setattr(we, "_PROVIDER_CACHE_LAST_CLEANUP_TS", 0.0)
+
+    first_now = dt.datetime(2026, 1, 10, tzinfo=dt.timezone.utc)
+    second_now = first_now + dt.timedelta(seconds=30)
+
+    we._cleanup_provider_cache(now=first_now)
+    assert not old_file.exists()
+
+    fresh_file = cache_dir / "fresh_entry.json"
+    fresh_file.write_text("{}", encoding="utf-8")
+    os.utime(fresh_file, (stale_ts, stale_ts))
+
+    we._cleanup_provider_cache(now=second_now)
+    assert fresh_file.exists()
+
+    third_now = first_now + dt.timedelta(seconds=we._PROVIDER_CACHE_CLEANUP_INTERVAL_SECONDS + 1)
+    we._cleanup_provider_cache(now=third_now)
+    assert not fresh_file.exists()
