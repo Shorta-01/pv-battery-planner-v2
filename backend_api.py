@@ -898,11 +898,11 @@ class BackendState:
             payload_sizes[endpoint_key] = int(size_bytes)
 
     def _persist_latest_result_json(self) -> None:
-        self._write_json(LATEST_RESULT_PATH, self.latest_result)
+        self._write_json_if_changed(LATEST_RESULT_PATH, self.latest_result)
 
     def _persist_history_json(self) -> None:
         self.history = self.history[-MAX_HISTORY:]
-        self._write_json(HISTORY_PATH, self.history)
+        self._write_json_if_changed(HISTORY_PATH, self.history)
 
     def _migrate_json_history_to_sqlite(self) -> None:
         payloads: list[dict] = []
@@ -1004,6 +1004,13 @@ class BackendState:
 
         os.replace(tmp_path, path)
 
+    def _write_json_if_changed(self, path: Path, payload: dict | list) -> bool:
+        existing = self._read_json(path, default=None)
+        if existing == payload:
+            return False
+        self._write_json(path, payload)
+        return True
+
     def _load_settings(self) -> dict:
         if SETTINGS_PATH.exists():
             loaded = self._read_json(SETTINGS_PATH, {})
@@ -1054,10 +1061,10 @@ class BackendState:
         }
 
     def _save_settings(self) -> None:
-        self._write_json(SETTINGS_PATH, self.settings)
+        self._write_json_if_changed(SETTINGS_PATH, self.settings)
 
     def _save_inputs(self) -> None:
-        self._write_json(INPUTS_PATH, self.last_inputs)
+        self._write_json_if_changed(INPUTS_PATH, self.last_inputs)
 
     def _sanitize_last_inputs(self) -> None:
         changed = False
