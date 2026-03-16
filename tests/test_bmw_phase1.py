@@ -736,6 +736,69 @@ def test_storage_capture_naming_and_listing(tmp_path):
     assert str(capture_path) in listed
 
 
+def test_storage_capture_dedups_within_scope(tmp_path):
+    storage = BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json"))
+    payload = {"vehicleMappings": [{"vin": "VIN1"}]}
+
+    first = storage.store_raw_capture("/customers/vehicles/mappings", payload, status_code=200, dedup_scope="op1")
+    second = storage.store_raw_capture("/customers/vehicles/mappings", payload, status_code=200, dedup_scope="op1")
+
+    assert first == second
+    assert len(storage.list_raw_captures(limit=20)) == 1
+
+    storage.clear_capture_dedup_scope("op1")
+    third = storage.store_raw_capture("/customers/vehicles/mappings", payload, status_code=200, dedup_scope="op1")
+    assert third != first
+
+
+def test_request_json_capture_dedup_preserves_capture_paths_entries(monkeypatch, tmp_path):
+    class _Auth:
+        def load_token(self):
+            return BmwTokenData(access_token="access-1", obtained_at=dt.datetime.now(dt.timezone.utc))
+
+        def refresh_if_possible(self, tok):
+            return tok
+
+    def fake_get(url, headers=None, timeout=None):
+        return _DummyResponse(payload={"vehicleMappings": [{"vin": "VIN1"}]})
+
+    monkeypatch.setattr("bmw_cardata_provider.requests.get", fake_get)
+
+    storage = BmwStorage(str(tmp_path / "raw.jsonl"), str(tmp_path / "state.json"))
+    provider = BmwCarDataProvider(config={"bmw_enabled": True}, storage=storage, auth=_Auth())
+
+    aggregate_payload = {"sequence": []}
+    capture_paths: list[str] = []
+    scope = "unit-scope"
+
+    provider._request_json(
+        method="GET",
+        base=provider.rest_base_url(),
+        path="/customers/vehicles/mappings",
+        headers=provider.rest_headers("access-1"),
+        aggregate_payload=aggregate_payload,
+        capture_paths=capture_paths,
+        stage="discover",
+        optional=False,
+        capture_dedup_scope=scope,
+    )
+    provider._request_json(
+        method="GET",
+        base=provider.rest_base_url(),
+        path="/customers/vehicles/mappings",
+        headers=provider.rest_headers("access-1"),
+        aggregate_payload=aggregate_payload,
+        capture_paths=capture_paths,
+        stage="discover",
+        optional=False,
+        capture_dedup_scope=scope,
+    )
+
+    assert len(capture_paths) == 2
+    assert capture_paths[0] == capture_paths[1]
+    assert len(storage.list_raw_captures(limit=20)) == 1
+
+
 def test_primary_mapping_is_selected_when_available(monkeypatch, tmp_path):
     class _Auth:
         def load_token(self):
