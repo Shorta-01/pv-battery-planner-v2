@@ -3751,11 +3751,13 @@ with left:
 
     with tab_settings:
         st.header("Settings")
+        settings_box = st.empty()
         weather_models_box = st.empty()
     with tab_car:
         car_charger_box = st.empty()
 
-    with st.expander("Settings", expanded=False):
+    with settings_box.container():
+        st.markdown("#### General")
         has_lookup_details = bool(st.session_state.get("loc_lookup_validated")) and isinstance(st.session_state.get("loc_latitude"), (float, int)) and isinstance(
             st.session_state.get("loc_longitude"), (float, int)
         ) and bool(str(st.session_state.get("loc_timezone", "")).strip())
@@ -3825,7 +3827,7 @@ with left:
         cfg_allow_injection_to_grid = bool(tariff_cfg.get("allow_injection_to_grid", core.DEFAULT_CONFIG["tariff"].get("allow_injection_to_grid", True)))
         cfg_max_grid_import_kw = float(tariff_cfg.get("max_grid_import_kw", core.DEFAULT_CONFIG["tariff"].get("max_grid_import_kw", 0.0)))
 
-        st.markdown("#### Energy prices")
+        st.markdown("#### Tariffs")
         c1, c2, c3 = st.columns(3)
         with c1:
             cfg_peak_price_input = st.number_input(
@@ -4381,6 +4383,7 @@ with left:
 
     def render_weather_models_panel() -> tuple[str, list[str], bool]:
         with weather_models_box.container():
+            st.markdown("#### Weather")
             with st.expander("Weather models", expanded=True):
                 ui_mode_value = str(st.session_state.get("forecast_mode_select", "")).strip()
                 if ui_mode_value and ui_mode_value not in {"Auto", "Custom"}:
