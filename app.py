@@ -3690,13 +3690,10 @@ if "ui_mode" not in st.session_state:
 (tab_inputs, tab_results, tab_car, tab_settings, tab_history, tab_errors) = st.tabs(
     ["Inputs", "Results", "Car & Charger", "Settings", "History", "Errors"]
 )
-left = tab_inputs
-right = tab_results
-
 with tab_results:
     st.header("Results")
 
-with left:
+with tab_inputs:
     st.header("Inputs")
     st.caption("Prepare tomorrow’s plan")
     effective_cfg = backend_settings.get("config", core.DEFAULT_CONFIG)
@@ -3725,10 +3722,9 @@ with left:
         st.session_state["loc_country"] = str(loc_structured.get("country", ""))
     if "loc_lookup_validated" not in st.session_state:
         st.session_state["loc_lookup_validated"] = False
-    with st.expander("Inputs", expanded=True):
-        inputs_soc_col, inputs_kwh_col = st.columns([2, 3], vertical_alignment="bottom")
-        with inputs_soc_col:
-            soc_percent = st.number_input(
+    inputs_soc_col, inputs_kwh_col = st.columns([2, 3], vertical_alignment="bottom")
+    with inputs_soc_col:
+        soc_percent = st.number_input(
                 "SOC now (%)",
                 min_value=0.0,
                 max_value=100.0,
@@ -3737,8 +3733,8 @@ with left:
                 format="%.0f",
                 help=get_help("soc_percent"),
             )
-        with inputs_kwh_col:
-            yesterday_kwh = st.number_input(
+    with inputs_kwh_col:
+        yesterday_kwh = st.number_input(
                 "Yesterday total consumption (kWh)",
                 min_value=0.1,
                 value=float(st.session_state.last_kwh),
@@ -3746,17 +3742,11 @@ with left:
                 format="%.1f",
                 help=get_help("yesterday_kwh"),
             )
-            if yesterday_kwh < 2.0 or yesterday_kwh > 60.0:
-                st.error("Run forecast is blocked: Yesterday total consumption must be between 2.0 and 60.0 kWh. Enter a typical day such as 12.0 kWh if yesterday was unusual.")
+        if yesterday_kwh < 2.0 or yesterday_kwh > 60.0:
+            st.error("Run forecast is blocked: Yesterday total consumption must be between 2.0 and 60.0 kWh. Enter a typical day such as 12.0 kWh if yesterday was unusual.")
 
     with tab_settings:
         st.header("Settings")
-        settings_box = st.empty()
-        weather_models_box = st.empty()
-    with tab_car:
-        car_charger_box = st.empty()
-
-    with settings_box.container():
         st.markdown("#### General")
         has_lookup_details = bool(st.session_state.get("loc_lookup_validated")) and isinstance(st.session_state.get("loc_latitude"), (float, int)) and isinstance(
             st.session_state.get("loc_longitude"), (float, int)
@@ -4382,7 +4372,7 @@ with left:
     mode_label_default = "Custom" if current_mode == "expert" else "Auto"
 
     def render_weather_models_panel() -> tuple[str, list[str], bool]:
-        with weather_models_box.container():
+        with tab_settings:
             st.markdown("#### Weather")
             with st.expander("Weather models", expanded=True):
                 ui_mode_value = str(st.session_state.get("forecast_mode_select", "")).strip()
@@ -4460,8 +4450,7 @@ with left:
 
 
     def render_car_charger_panel() -> None:
-        # Renders in the placeholder created above (between Weather models and Settings)
-        with car_charger_box.container():
+        with tab_car:
             # Default collapsed to reduce UI noise (locked UX)
             with st.expander("Car charger", expanded=False):
                 evse = get_evse_status()
@@ -5167,7 +5156,7 @@ if run_clicked or st.session_state.get("last_run_result"):
         status = str(result.get("status") or "").strip().lower()
         expected_keys = {"weather", "pv", "detail", "flows", "soc", "sunrise", "sunset", "target_date"}
         if not isinstance(result, dict) or not expected_keys.issubset(result.keys()) or status not in {"ok", "degraded"}:
-            with right:
+            with tab_results:
                 st.caption("Run forecast to see results.")
 
         else:
@@ -5232,7 +5221,7 @@ if run_clicked or st.session_state.get("last_run_result"):
                 else {}
             )
 
-        with right:
+        with tab_results:
             st.header("Results")
             top_left, top_right = st.columns([4, 3], gap="large")
             with top_left:
