@@ -3692,7 +3692,7 @@ if "ui_mode" not in st.session_state:
 )
 with tab_inputs:
     st.header("Inputs")
-    st.caption("Prepare tomorrow’s plan")
+    st.caption("Set up tomorrow's forecast")
     effective_cfg = backend_settings.get("config", core.DEFAULT_CONFIG)
     loc_cfg = effective_cfg["location"]
     apply_pending_location_state()
@@ -3719,28 +3719,30 @@ with tab_inputs:
         st.session_state["loc_country"] = str(loc_structured.get("country", ""))
     if "loc_lookup_validated" not in st.session_state:
         st.session_state["loc_lookup_validated"] = False
-    inputs_soc_col, inputs_kwh_col = st.columns([2, 3], vertical_alignment="bottom")
-    with inputs_soc_col:
-        soc_percent = st.number_input(
-                "SOC now (%)",
-                min_value=0.0,
-                max_value=100.0,
-                value=float(st.session_state.last_soc),
-                step=1.0,
-                format="%.0f",
-                help=get_help("soc_percent"),
-            )
-    with inputs_kwh_col:
-        yesterday_kwh = st.number_input(
-                "Yesterday total consumption (kWh)",
-                min_value=0.1,
-                value=float(st.session_state.last_kwh),
-                step=0.1,
-                format="%.1f",
-                help=get_help("yesterday_kwh"),
-            )
-        if yesterday_kwh < 2.0 or yesterday_kwh > 60.0:
-            st.error("Run forecast is blocked: Yesterday total consumption must be between 2.0 and 60.0 kWh. Enter a typical day such as 12.0 kWh if yesterday was unusual.")
+    with st.container(border=True):
+        st.markdown("##### Run inputs")
+        inputs_soc_col, inputs_kwh_col = st.columns([2, 3], vertical_alignment="bottom")
+        with inputs_soc_col:
+            soc_percent = st.number_input(
+                    "SOC now (%)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=float(st.session_state.last_soc),
+                    step=1.0,
+                    format="%.0f",
+                    help=get_help("soc_percent"),
+                )
+        with inputs_kwh_col:
+            yesterday_kwh = st.number_input(
+                    "Yesterday use (kWh)",
+                    min_value=0.1,
+                    value=float(st.session_state.last_kwh),
+                    step=0.1,
+                    format="%.1f",
+                    help=get_help("yesterday_kwh"),
+                )
+            if yesterday_kwh < 2.0 or yesterday_kwh > 60.0:
+                st.error("Run forecast is blocked: Yesterday total consumption must be between 2.0 and 60.0 kWh. Enter a typical day such as 12.0 kWh if yesterday was unusual.")
 
     with tab_settings:
         st.header("Settings")
@@ -4370,7 +4372,8 @@ with tab_inputs:
 
     def render_weather_models_panel() -> tuple[str, list[str], bool]:
         st.markdown("#### Weather")
-        with st.expander("Weather models", expanded=True):
+        st.caption("Choose how weather inputs are built.")
+        with st.container(border=True):
                 ui_mode_value = str(st.session_state.get("forecast_mode_select", "")).strip()
                 if ui_mode_value and ui_mode_value not in {"Auto", "Custom"}:
                     normalized_mode = str(ui_mode_value).strip().lower()
@@ -4446,8 +4449,8 @@ with tab_inputs:
 
 
     def render_car_charger_panel() -> None:
-        # Default collapsed to reduce UI noise (locked UX)
-        with st.expander("Car charger", expanded=False):
+        st.markdown("##### Charger controls")
+        with st.container(border=True):
                 evse = get_evse_status()
 
                 enabled = bool(evse.get("enabled", False))
@@ -4722,8 +4725,10 @@ with tab_inputs:
 
     with tab_car:
         st.header("Car & Charger")
-        render_car_charger_panel()
+        st.caption("Quick EV status first, controls second.")
         render_ev_car_status_panel(st.container())
+        st.markdown("<div style='height:0.65rem;'></div>", unsafe_allow_html=True)
+        render_car_charger_panel()
 
     cardata_readiness = summarize_cardata_readiness(
         ev_enabled=bool(st.session_state.get("cfg_ev_enabled", False)),
@@ -4786,43 +4791,45 @@ with tab_inputs:
             f"<span title='{_esc(tip)}' style='font-size:0.72rem;padding:0.18rem 0.48rem;border-radius:999px;"
             f"border:1px solid {fg};background:{bg};color:{fg};'>{_esc(label)}</span>"
         )
-    st.markdown("##### Readiness")
-    st.markdown("".join(["<div style='display:flex;gap:0.35rem;flex-wrap:wrap;margin:0.2rem 0 0.55rem;'>", *strip, "</div>"]), unsafe_allow_html=True)
+    with st.container(border=True):
+        st.markdown("##### Readiness")
+        st.markdown("".join(["<div style='display:flex;gap:0.35rem;flex-wrap:wrap;margin:0.2rem 0 0.55rem;'>", *strip, "</div>"]), unsafe_allow_html=True)
 
-    st.markdown("##### Experience")
-    ui_mode = render_global_ui_mode_selector()
-    blocking_items = [msg for msgs in readiness_issues.values() for msg in msgs][:4]
-    if blocking_items and ui_mode in {"Expert", "Debug"}:
-        st.caption("Important checks")
-        for msg in blocking_items:
-            ui_warning(msg)
+        st.markdown("##### Mode")
+        ui_mode = render_global_ui_mode_selector()
+        blocking_items = [msg for msgs in readiness_issues.values() for msg in msgs][:4]
+        if blocking_items and ui_mode in {"Expert", "Debug"}:
+            st.caption("Important checks")
+            for msg in blocking_items:
+                ui_warning(msg)
 
     ensemble_method = "weighted"
-    st.markdown("##### Actions")
-    top_action_reset, top_action_save, top_action_run = st.columns([1.25, 1.1, 1.0], vertical_alignment="center")
-    with top_action_reset:
-        reset_clicked = st.button(
-            "Factory settings",
-            type="secondary",
-            key="btn_reset_defaults",
-            width="stretch",
-        )
-    with top_action_save:
-        save_clicked = st.button(
-            "Save settings",
-            type="secondary",
-            disabled=(not settings_valid) or (not settings_dirty),
-            key="btn_save_settings_top",
-            width="stretch",
-        )
-    with top_action_run:
-        run_clicked = st.button(
-            "Run forecast",
-            type="primary",
-            disabled=(not run_allowed),
-            key="btn_run_forecast",
-            width="stretch",
-        )
+    with st.container(border=True):
+        st.markdown("##### Actions")
+        top_action_reset, top_action_save, top_action_run = st.columns([1.25, 1.1, 1.0], vertical_alignment="center")
+        with top_action_reset:
+            reset_clicked = st.button(
+                "Factory settings",
+                type="secondary",
+                key="btn_reset_defaults",
+                width="stretch",
+            )
+        with top_action_save:
+            save_clicked = st.button(
+                "Save settings",
+                type="secondary",
+                disabled=(not settings_valid) or (not settings_dirty),
+                key="btn_save_settings_top",
+                width="stretch",
+            )
+        with top_action_run:
+            run_clicked = st.button(
+                "Run forecast",
+                type="primary",
+                disabled=(not run_allowed),
+                key="btn_run_forecast",
+                width="stretch",
+            )
 
     save_badge_visibility = "visible" if save_label_active else "hidden"
     save_badge_opacity = "1" if save_label_active else "0"
@@ -5217,55 +5224,53 @@ if True:
 
         with tab_results:
             st.header("Results")
-            st.caption("Tomorrow forecast and planning outputs")
+            st.caption("Tomorrow at a glance")
             if not has_renderable_result:
                 st.info("Run forecast to see results.")
             if has_renderable_result:
-                top_left, top_right = st.columns([4, 3], gap="large")
-                with top_left:
-                    allow_injection_metric = bool(metrics.get("allow_injection_to_grid", True))
-                    if not allow_injection_metric:
-                        ui_warning("Grid injection is disabled by settings. Excess PV will be curtailed when battery storage is not available.")
-                    render_offpeak_plan_summary(
-                        st.container(),
-                        metrics=metrics,
-                        data_source=result.get("data_source", {}),
-                        user_cap_kw=float(user_max_ac_kw),
-                        inverter_ac_kw_limit=get_inverter_ac_kw_limit(effective_cfg),
-                        battery_max_charge_kw=float(effective_cfg["battery"]["battery_max_charge_kw"]),
-                        hard_limit_kw=float(effective_cfg["battery"].get("max_ac_charge_kw_hard_limit", core.MAX_AC_CHARGE_KW_HARD_LIMIT)),
-                        min_soc_pct=float(effective_cfg["battery"].get("min_soc_percent", 0.0)),
-                        max_cutoff_soc_pct=float(effective_cfg["battery"].get("max_cutoff_soc_percent", 100.0)),
-                        est_grid_import_expensive_kwh=grid_import,
-                        detail_df=detail_df,
-                        soc_series=soc_series,
-                        pv_quality_dict=pv_quality,
-                        weather_ensemble=(result.get("weather_ensemble") if isinstance(result.get("weather_ensemble"), dict) else None),
-                        forecast_status=str(result.get("status") or ""),
-                        attempted_models=(
-                            result.get("tomorrow_models_used")
-                            or ((result.get("weather_ensemble") or {}).get("selected_models") if isinstance(result.get("weather_ensemble"), dict) else None)
-                        ),
-                    )
-                with top_right:
-                    render_pv_quality_widget(
-                        top_right,
-                        pv,
-                        pv_quality,
-                        tomorrow,
-                        pv_tomorrow_low_kwh=pv_low,
-                        pv_tomorrow_high_kwh=pv_high,
-                        tomorrow_weather_code=tomorrow_weather_code,
-                        tomorrow_source_label=tomorrow_source_label,
-                        tomorrow_source_days=tomorrow_source_days,
-                        forecast_total_load_kwh=load_total_value,
-                        est_injection_kwh=injection_total,
-                        effective_cfg=effective_cfg,
-                        planning_metrics=metrics,
-                    )
-
-                pv_week_ahead_display = (pv_week_ahead or [])[:6]
-                render_pv_week_ahead_widget(pv_week_ahead_display)
+                with st.container(border=True):
+                    top_left, top_right = st.columns([4, 3], gap="large")
+                    with top_left:
+                        allow_injection_metric = bool(metrics.get("allow_injection_to_grid", True))
+                        if not allow_injection_metric:
+                            ui_warning("Grid injection is disabled by settings. Excess PV will be curtailed when battery storage is not available.")
+                        render_offpeak_plan_summary(
+                            st.container(),
+                            metrics=metrics,
+                            data_source=result.get("data_source", {}),
+                            user_cap_kw=float(user_max_ac_kw),
+                            inverter_ac_kw_limit=get_inverter_ac_kw_limit(effective_cfg),
+                            battery_max_charge_kw=float(effective_cfg["battery"]["battery_max_charge_kw"]),
+                            hard_limit_kw=float(effective_cfg["battery"].get("max_ac_charge_kw_hard_limit", core.MAX_AC_CHARGE_KW_HARD_LIMIT)),
+                            min_soc_pct=float(effective_cfg["battery"].get("min_soc_percent", 0.0)),
+                            max_cutoff_soc_pct=float(effective_cfg["battery"].get("max_cutoff_soc_percent", 100.0)),
+                            est_grid_import_expensive_kwh=grid_import,
+                            detail_df=detail_df,
+                            soc_series=soc_series,
+                            pv_quality_dict=pv_quality,
+                            weather_ensemble=(result.get("weather_ensemble") if isinstance(result.get("weather_ensemble"), dict) else None),
+                            forecast_status=str(result.get("status") or ""),
+                            attempted_models=(
+                                result.get("tomorrow_models_used")
+                                or ((result.get("weather_ensemble") or {}).get("selected_models") if isinstance(result.get("weather_ensemble"), dict) else None)
+                            ),
+                        )
+                    with top_right:
+                        render_pv_quality_widget(
+                            top_right,
+                            pv,
+                            pv_quality,
+                            tomorrow,
+                            pv_tomorrow_low_kwh=pv_low,
+                            pv_tomorrow_high_kwh=pv_high,
+                            tomorrow_weather_code=tomorrow_weather_code,
+                            tomorrow_source_label=tomorrow_source_label,
+                            tomorrow_source_days=tomorrow_source_days,
+                            forecast_total_load_kwh=load_total_value,
+                            est_injection_kwh=injection_total,
+                            effective_cfg=effective_cfg,
+                            planning_metrics=metrics,
+                        )
 
                 if charge_target_reachable is False and charge_warning_text:
                     ui_warning(charge_warning_text)
@@ -5285,6 +5290,9 @@ if True:
                 st.plotly_chart(pv_load_fig, width="stretch")
                 if normalized_pv.attrs.get("synthetic_pv_split_used", False):
                     st.caption("East/South split estimated by panel ratio (fallback visualization). Total PV remains unchanged.")
+
+                pv_week_ahead_display = (pv_week_ahead or [])[:6]
+                render_pv_week_ahead_widget(pv_week_ahead_display)
 
                 if get_ui_mode() in {"Expert", "Debug"}:
                     chart_left, chart_right = st.columns(2, gap="large")
