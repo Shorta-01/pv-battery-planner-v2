@@ -1611,7 +1611,19 @@ class BackendState:
             "weather_by_model": {},
         }
 
-    def _persist_error_run_payload(self, *, error_payload: dict, diagnostics: _RunDiagnostics, diag_error: dict[str, object]) -> dict:
+    def _persist_error_run_payload(
+        self,
+        *,
+        error_payload: dict,
+        diagnostics: _RunDiagnostics,
+        diag_error: dict[str, object],
+        latest_result_payload: dict | None = None,
+        history_summary_overrides: dict | None = None,
+    ) -> dict:
+        latest_payload = latest_result_payload if isinstance(latest_result_payload, dict) else error_payload
+        history_summary = _to_history_summary(error_payload)
+        if isinstance(history_summary_overrides, dict):
+            history_summary.update(history_summary_overrides)
         with diagnostics.stage("db_write"):
             try:
                 insert_forecast_run(str(SQLITE_PATH), error_payload)
@@ -1622,11 +1634,11 @@ class BackendState:
                 )
                 raise
             self.latest_diagnostics = diag_error
-            self.latest_result = error_payload
-        self.history.append(_to_history_summary(error_payload))
+            self.latest_result = latest_payload
+        self.history.append(history_summary)
         self.history = self.history[-MAX_HISTORY:]
         self._save_results()
-        return error_payload
+        return latest_payload
 
     def _persist_success_run_payload(
         self,
@@ -1636,7 +1648,13 @@ class BackendState:
         diag_success: dict[str, object],
         target_date: dt.date,
         status: str,
+        latest_result_payload: dict | None = None,
+        history_summary_overrides: dict | None = None,
     ) -> dict:
+        latest_payload = latest_result_payload if isinstance(latest_result_payload, dict) else payload
+        history_summary = _to_history_summary(payload)
+        if isinstance(history_summary_overrides, dict):
+            history_summary.update(history_summary_overrides)
         with diagnostics.stage("db_write"):
             try:
                 insert_forecast_run(str(SQLITE_PATH), payload)
@@ -1648,8 +1666,8 @@ class BackendState:
                 )
                 raise
             self.latest_diagnostics = diag_success
-            self.latest_result = payload
-        self.history.append(_to_history_summary(payload))
+            self.latest_result = latest_payload
+        self.history.append(history_summary)
         self.history = self.history[-MAX_HISTORY:]
         self.settings["last_successful_for_target_date"] = target_date.isoformat()
         self._save_results()
@@ -1658,8 +1676,11 @@ class BackendState:
         final_diag = diagnostics.finalize(success=True, status=status)
         payload["run_diagnostics"] = final_diag
         payload["run_duration_ms"] = int(float(final_diag.get("total_run_ms", 0.0)))
+        if latest_payload is not payload:
+            latest_payload["run_diagnostics"] = final_diag
+            latest_payload["run_duration_ms"] = int(float(final_diag.get("total_run_ms", 0.0)))
         self.latest_diagnostics = final_diag
-        return payload
+        return latest_payload
 
     def _build_run_metrics_payload(
         self,
@@ -2386,6 +2407,9 @@ class BackendState:
         pv_uncertainty: bool,
         fast_mode: bool = False,
         use_satellite_nowcast_0_6h_override: bool | None = None,
+        result_run_type: str = "manual",
+        input_warnings: list[str] | None = None,
+        history_summary_overrides: dict | None = None,
     ) -> dict:
         diagnostics = _RunDiagnostics()
         with diagnostics.stage("config_normalization"):
@@ -2500,7 +2524,19 @@ class BackendState:
                 yesterday_kwh=float(yesterday_kwh),
                 weights_used=getattr(exc, "weights_used", None),
             )
-            return self._persist_error_run_payload(error_payload=error_payload, diagnostics=diagnostics, diag_error=diag_error)
+            latest_error_payload = dict(error_payload)
+            latest_error_payload["run_type"] = result_run_type
+            if input_warnings:
+                existing = latest_error_payload.get("warnings") if isinstance(latest_error_payload.get("warnings"), list) else []
+                latest_error_payload["warnings"] = [*existing, *input_warnings]
+                latest_error_payload["input_warnings"] = input_warnings
+            return self._persist_error_run_payload(
+                error_payload=error_payload,
+                diagnostics=diagnostics,
+                diag_error=diag_error,
+                latest_result_payload=latest_error_payload,
+                history_summary_overrides=history_summary_overrides,
+            )
 
         warnings: list[str] = [ev_warning] if isinstance(ev_warning, str) and ev_warning.strip() else []
         try:
@@ -2804,12 +2840,21 @@ class BackendState:
                 fast_mode=fast_mode,
                 store_provider_payloads=store_provider_payloads,
             )
+        latest_payload = dict(payload)
+        latest_payload["run_type"] = result_run_type
+        if input_warnings:
+            existing = latest_payload.get("warnings") if isinstance(latest_payload.get("warnings"), list) else []
+            latest_payload["warnings"] = [*existing, *input_warnings]
+            latest_payload["input_warnings"] = input_warnings
+
         payload = self._persist_success_run_payload(
             payload=payload,
             diagnostics=diagnostics,
             diag_success=diag_success,
             target_date=target_date,
             status=status,
+            latest_result_payload=latest_payload,
+            history_summary_overrides=history_summary_overrides,
         )
         del detail_df, flows_df, pv, weather
         gc.collect()
@@ -2861,9 +2906,11 @@ class BackendState:
                 payload.pv_uncertainty,
                 payload.fast_mode,
                 use_satellite_nowcast_0_6h_override=payload.use_satellite_nowcast_0_6h,
+                result_run_type="manual",
+                input_warnings=warnings,
             )
             result["run_type"] = "manual"
-            if warnings:
+            if warnings and "input_warnings" not in result:
                 existing = result.get("warnings") if isinstance(result.get("warnings"), list) else []
                 result["warnings"] = [*existing, *warnings]
                 result["input_warnings"] = warnings
@@ -2874,9 +2921,6 @@ class BackendState:
                 stage_timings = self.latest_diagnostics.get("stage_timings_ms", {}) if isinstance(self.latest_diagnostics, dict) else {}
                 slowest = max(stage_timings.items(), key=lambda kv: kv[1]) if isinstance(stage_timings, dict) and stage_timings else None
                 logger.info("run diagnostics run_id=%s total_ms=%.1f slowest_stage=%s payload_bytes=%d status=%s", result.get("run_id"), float(result.get("run_duration_ms", 0.0)), (slowest[0] if slowest else None), int(payload_size), result.get("status"))
-            if self.history:
-                self.history[-1]["run_type"] = "manual"
-            self._save_results()
             return run_response
         finally:
             self._lock.release()
@@ -2938,12 +2982,16 @@ class BackendState:
                 "auto",
                 "weighted",
                 False,
+                result_run_type="nightly",
+                input_warnings=warnings,
+                history_summary_overrides={"warnings": warnings, "run_type": "nightly"},
             )
-            existing = result.get("warnings") if isinstance(result.get("warnings"), list) else []
-            result["warnings"] = [*existing, *warnings]
-            if warnings:
-                result["input_warnings"] = warnings
             result["run_type"] = "nightly"
+            if "input_warnings" not in result:
+                existing = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+                result["warnings"] = [*existing, *warnings]
+                if warnings:
+                    result["input_warnings"] = warnings
             self.latest_result = result
             run_response = {"ran": True, "result": result}
             payload_size = self.record_endpoint_payload_size("/v1/run/now", run_response)
@@ -2951,10 +2999,6 @@ class BackendState:
                 stage_timings = self.latest_diagnostics.get("stage_timings_ms", {}) if isinstance(self.latest_diagnostics, dict) else {}
                 slowest = max(stage_timings.items(), key=lambda kv: kv[1]) if isinstance(stage_timings, dict) and stage_timings else None
                 logger.info("run diagnostics run_id=%s total_ms=%.1f slowest_stage=%s payload_bytes=%d status=%s", result.get("run_id"), float(result.get("run_duration_ms", 0.0)), (slowest[0] if slowest else None), int(payload_size), result.get("status"))
-            if self.history:
-                self.history[-1]["warnings"] = warnings
-                self.history[-1]["run_type"] = "nightly"
-            self._save_results()
             return {"ran": True, "reason": "ran", "target_date": target_date.isoformat(), "warnings": warnings, "result": result}
         finally:
             self._lock.release()
