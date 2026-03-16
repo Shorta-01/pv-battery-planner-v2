@@ -56,12 +56,11 @@ def test_app_widget_uses_unified_ev_status_endpoint() -> None:
 
 def test_car_status_is_rendered_in_car_and_charger_tab() -> None:
     app_text = Path("app.py").read_text(encoding="utf-8")
-    tab_block_start = app_text.index("with tab_car:")
+    tab_block_start = app_text.index('if active_top_tab == "Car & Charger":')
     render_car_status = app_text.index("render_ev_car_status_panel(st.container())", tab_block_start)
 
     assert "st.header(\"Car & Charger\")" in app_text[tab_block_start:render_car_status]
     assert "render_offpeak_plan_summary(" not in app_text[tab_block_start:render_car_status]
-
 
 def test_app_widget_uses_unified_status_labels_and_debug() -> None:
     app_text = Path("app.py").read_text(encoding="utf-8")
