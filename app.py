@@ -3765,992 +3765,993 @@ with tab_inputs:
             if yesterday_kwh < 2.0 or yesterday_kwh > 60.0:
                 st.error("Run forecast is blocked: Yesterday total consumption must be between 2.0 and 60.0 kWh. Enter a typical day such as 12.0 kWh if yesterday was unusual.")
 
-    with tab_settings:
-        st.header("Settings")
-        st.markdown("#### General")
-        has_lookup_details = bool(st.session_state.get("loc_lookup_validated")) and isinstance(st.session_state.get("loc_latitude"), (float, int)) and isinstance(
-            st.session_state.get("loc_longitude"), (float, int)
-        ) and bool(str(st.session_state.get("loc_timezone", "")).strip())
-        location_status_icon_symbol = "✓" if has_lookup_details else "✕"
-        location_status_icon_bg = "#15803d" if has_lookup_details else "#b91c1c"
-        location_status_tooltip = (
-            "Geolocation resolved: latitude, longitude, and timezone found."
-            if has_lookup_details
-            else "Geolocation not resolved yet. Use Lookup to resolve latitude, longitude, and timezone."
+with tab_settings:
+    st.header("Settings")
+    st.markdown("#### General")
+    has_lookup_details = bool(st.session_state.get("loc_lookup_validated")) and isinstance(st.session_state.get("loc_latitude"), (float, int)) and isinstance(
+        st.session_state.get("loc_longitude"), (float, int)
+    ) and bool(str(st.session_state.get("loc_timezone", "")).strip())
+    location_status_icon_symbol = "✓" if has_lookup_details else "✕"
+    location_status_icon_bg = "#15803d" if has_lookup_details else "#b91c1c"
+    location_status_tooltip = (
+        "Geolocation resolved: latitude, longitude, and timezone found."
+        if has_lookup_details
+        else "Geolocation not resolved yet. Use Lookup to resolve latitude, longitude, and timezone."
+    )
+    st.markdown(
+        (
+            "#### Location "
+            f"<span title=\"{location_status_tooltip}\" "
+            "style='display:inline-flex;align-items:center;justify-content:center;width:0.95rem;height:0.95rem;"
+            f"margin-left:0.35rem;border-radius:0.18rem;background:{location_status_icon_bg};"
+            "color:#fff;font-size:0.68rem;font-weight:700;vertical-align:baseline;line-height:1'>"
+            f"{location_status_icon_symbol}</span>"
+        ),
+        unsafe_allow_html=True,
+    )
+    addr_col, btn_col = st.columns([7.0, 2.0], vertical_alignment="bottom")
+    with addr_col:
+        st.text_input(
+            "Address",
+            key="loc_address_query_display",
+            placeholder="Search address…",
+            label_visibility="collapsed",
+            disabled=True,
+            help=get_help("address_query"),
         )
-        st.markdown(
-            (
-                "#### Location "
-                f"<span title=\"{location_status_tooltip}\" "
-                "style='display:inline-flex;align-items:center;justify-content:center;width:0.95rem;height:0.95rem;"
-                f"margin-left:0.35rem;border-radius:0.18rem;background:{location_status_icon_bg};"
-                "color:#fff;font-size:0.68rem;font-weight:700;vertical-align:baseline;line-height:1'>"
-                f"{location_status_icon_symbol}</span>"
-            ),
-            unsafe_allow_html=True,
+    with btn_col:
+        if st.button("Lookup", type="primary", key="btn_open_lookup", width="stretch"):
+            open_lookup(loc_cfg)
+            st.rerun()
+
+    if st.session_state.get("loc_lookup_open"):
+        lookup_location_dialog()
+
+    lat_display = "" if st.session_state.get("loc_latitude") is None else f"{float(st.session_state['loc_latitude']):.5f}"
+    lon_display = "" if st.session_state.get("loc_longitude") is None else f"{float(st.session_state['loc_longitude']):.5f}"
+    loc_col1, loc_col2, loc_col3 = st.columns([1, 1, 2], vertical_alignment="bottom")
+    with loc_col1:
+        cfg_latitude = st.text_input(
+            "Latitude",
+            value=lat_display,
+            key="loc_latitude_display",
+            disabled=True,
+            help=get_help("latitude"),
         )
-        addr_col, btn_col = st.columns([7.0, 2.0], vertical_alignment="bottom")
-        with addr_col:
-            st.text_input(
-                "Address",
-                key="loc_address_query_display",
-                placeholder="Search address…",
-                label_visibility="collapsed",
-                disabled=True,
-                help=get_help("address_query"),
-            )
-        with btn_col:
-            if st.button("Lookup", type="primary", key="btn_open_lookup", width="stretch"):
-                open_lookup(loc_cfg)
-                st.rerun()
-
-        if st.session_state.get("loc_lookup_open"):
-            lookup_location_dialog()
-
-        lat_display = "" if st.session_state.get("loc_latitude") is None else f"{float(st.session_state['loc_latitude']):.5f}"
-        lon_display = "" if st.session_state.get("loc_longitude") is None else f"{float(st.session_state['loc_longitude']):.5f}"
-        loc_col1, loc_col2, loc_col3 = st.columns([1, 1, 2], vertical_alignment="bottom")
-        with loc_col1:
-            cfg_latitude = st.text_input(
-                "Latitude",
-                value=lat_display,
-                key="loc_latitude_display",
-                disabled=True,
-                help=get_help("latitude"),
-            )
-        with loc_col2:
-            cfg_longitude = st.text_input(
-                "Longitude",
-                value=lon_display,
-                key="loc_longitude_display",
-                disabled=True,
-                help=get_help("longitude"),
-            )
-        with loc_col3:
-            cfg_timezone = st.text_input("Timezone", key="loc_timezone", disabled=True, help=get_help("timezone"))
-
-        day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-        tariff_cfg = effective_cfg.get("tariff", core.DEFAULT_CONFIG["tariff"])
-        cfg_peak_price = float(tariff_cfg.get("peak_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["peak_grid_price_eur_per_kwh"]))
-        cfg_offpeak_price = float(tariff_cfg.get("offpeak_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["offpeak_grid_price_eur_per_kwh"]))
-        cfg_injection_price = float(tariff_cfg.get("injection_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["injection_grid_price_eur_per_kwh"]))
-        cfg_allow_injection_to_grid = bool(tariff_cfg.get("allow_injection_to_grid", core.DEFAULT_CONFIG["tariff"].get("allow_injection_to_grid", True)))
-        cfg_max_grid_import_kw = float(tariff_cfg.get("max_grid_import_kw", core.DEFAULT_CONFIG["tariff"].get("max_grid_import_kw", 0.0)))
-
-        st.markdown("#### Tariffs")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            cfg_peak_price_input = st.number_input(
-                "Peak grid price",
-                min_value=0.0,
-                step=0.001,
-                format="%.4f",
-                value=cfg_peak_price,
-                key="tariff_peak_price",
-                help=get_help("peak_price"),
-            )
-        with c2:
-            cfg_offpeak_price_input = st.number_input(
-                "Off-peak grid price",
-                min_value=0.0,
-                step=0.001,
-                format="%.4f",
-                value=cfg_offpeak_price,
-                key="tariff_offpeak_price",
-                help=get_help("offpeak_price"),
-            )
-        with c3:
-            cfg_injection_price_input = st.number_input(
-                "Export (injection) price",
-                min_value=-1.0,
-                step=0.001,
-                format="%.4f",
-                value=cfg_injection_price,
-                key="tariff_injection_price",
-                help="All-in export price (€/kWh). Enter your full export (injection) price. Use a negative value if export costs money.",
-            )
-
-        cfg_allow_injection_to_grid = st.checkbox(
-            "Allow grid injection (PV export)",
-            value=cfg_allow_injection_to_grid,
-            key="tariff_allow_injection_to_grid",
-            help="If off, the planner will not export energy to the grid. Extra PV will be stored in the battery when possible, otherwise curtailed.",
+    with loc_col2:
+        cfg_longitude = st.text_input(
+            "Longitude",
+            value=lon_display,
+            key="loc_longitude_display",
+            disabled=True,
+            help=get_help("longitude"),
         )
-        st.caption(f"Injection policy: {'Allowed' if cfg_allow_injection_to_grid else 'Disabled'}")
+    with loc_col3:
+        cfg_timezone = st.text_input("Timezone", key="loc_timezone", disabled=True, help=get_help("timezone"))
 
-        cfg_max_grid_import_kw = st.number_input(
-            "Max grid import (kW)",
+    day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    tariff_cfg = effective_cfg.get("tariff", core.DEFAULT_CONFIG["tariff"])
+    cfg_peak_price = float(tariff_cfg.get("peak_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["peak_grid_price_eur_per_kwh"]))
+    cfg_offpeak_price = float(tariff_cfg.get("offpeak_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["offpeak_grid_price_eur_per_kwh"]))
+    cfg_injection_price = float(tariff_cfg.get("injection_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["injection_grid_price_eur_per_kwh"]))
+    cfg_allow_injection_to_grid = bool(tariff_cfg.get("allow_injection_to_grid", core.DEFAULT_CONFIG["tariff"].get("allow_injection_to_grid", True)))
+    cfg_max_grid_import_kw = float(tariff_cfg.get("max_grid_import_kw", core.DEFAULT_CONFIG["tariff"].get("max_grid_import_kw", 0.0)))
+
+    st.markdown("#### Tariffs")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        cfg_peak_price_input = st.number_input(
+            "Peak grid price",
             min_value=0.0,
-            step=0.1,
-            format="%.2f",
-            value=cfg_max_grid_import_kw,
-            key="tariff_max_grid_import_kw",
-            help="Limits the total power drawn from the grid. If 0, the planner uses purely economic behavior. If set, the planner will reduce battery grid charging to stay under the cap when possible.",
+            step=0.001,
+            format="%.4f",
+            value=cfg_peak_price,
+            key="tariff_peak_price",
+            help=get_help("peak_price"),
+        )
+    with c2:
+        cfg_offpeak_price_input = st.number_input(
+            "Off-peak grid price",
+            min_value=0.0,
+            step=0.001,
+            format="%.4f",
+            value=cfg_offpeak_price,
+            key="tariff_offpeak_price",
+            help=get_help("offpeak_price"),
+        )
+    with c3:
+        cfg_injection_price_input = st.number_input(
+            "Export (injection) price",
+            min_value=-1.0,
+            step=0.001,
+            format="%.4f",
+            value=cfg_injection_price,
+            key="tariff_injection_price",
+            help="All-in export price (€/kWh). Enter your full export (injection) price. Use a negative value if export costs money.",
         )
 
-        st.markdown("#### Off-peak hours")
-        tariff_source = tariff_cfg.get("offpeak_windows_by_dow", core.DEFAULT_CONFIG["tariff"]["offpeak_windows_by_dow"])
-        tariff_by_day = core.parse_offpeak_windows_by_dow(tariff_source)
-        default_tariff_by_day = core.parse_offpeak_windows_by_dow(core.DEFAULT_CONFIG["tariff"]["offpeak_windows_by_dow"])
+    cfg_allow_injection_to_grid = st.checkbox(
+        "Allow grid injection (PV export)",
+        value=cfg_allow_injection_to_grid,
+        key="tariff_allow_injection_to_grid",
+        help="If off, the planner will not export energy to the grid. Extra PV will be stored in the battery when possible, otherwise curtailed.",
+    )
+    st.caption(f"Injection policy: {'Allowed' if cfg_allow_injection_to_grid else 'Disabled'}")
 
-        header_cols = st.columns([1.0, 1.2, 1.6], vertical_alignment="bottom")
-        header_cols[0].markdown("**Day**")
-        header_cols[1].markdown("**From**")
-        header_cols[2].markdown("**To**")
+    cfg_max_grid_import_kw = st.number_input(
+        "Max grid import (kW)",
+        min_value=0.0,
+        step=0.1,
+        format="%.2f",
+        value=cfg_max_grid_import_kw,
+        key="tariff_max_grid_import_kw",
+        help="Limits the total power drawn from the grid. If 0, the planner uses purely economic behavior. If set, the planner will reduce battery grid charging to stay under the cap when possible.",
+    )
 
-        tariff_inputs: list[tuple[str, str]] = []
-        for day_idx, day_name in enumerate(day_names):
-            day_windows = tariff_by_day.get(day_idx) or default_tariff_by_day.get(day_idx, [("00:00", "24:00")])
-            day_from, day_to = day_windows[0]
-            cols = st.columns([1.0, 1.2, 1.6], vertical_alignment="center")
-            cols[0].markdown(f"{day_name[:3]}")
-            from_value = cols[1].text_input(
-                f"From {day_name}",
-                value=day_from,
-                key=f"tariff_from_{day_idx}",
+    st.markdown("#### Off-peak hours")
+    tariff_source = tariff_cfg.get("offpeak_windows_by_dow", core.DEFAULT_CONFIG["tariff"]["offpeak_windows_by_dow"])
+    tariff_by_day = core.parse_offpeak_windows_by_dow(tariff_source)
+    default_tariff_by_day = core.parse_offpeak_windows_by_dow(core.DEFAULT_CONFIG["tariff"]["offpeak_windows_by_dow"])
+
+    header_cols = st.columns([1.0, 1.2, 1.6], vertical_alignment="bottom")
+    header_cols[0].markdown("**Day**")
+    header_cols[1].markdown("**From**")
+    header_cols[2].markdown("**To**")
+
+    tariff_inputs: list[tuple[str, str]] = []
+    for day_idx, day_name in enumerate(day_names):
+        day_windows = tariff_by_day.get(day_idx) or default_tariff_by_day.get(day_idx, [("00:00", "24:00")])
+        day_from, day_to = day_windows[0]
+        cols = st.columns([1.0, 1.2, 1.6], vertical_alignment="center")
+        cols[0].markdown(f"{day_name[:3]}")
+        from_value = cols[1].text_input(
+            f"From {day_name}",
+            value=day_from,
+            key=f"tariff_from_{day_idx}",
+            label_visibility="collapsed",
+        ).strip()
+        with cols[2]:
+            to_inner = st.columns([4.0, 0.6], vertical_alignment="center")
+            to_value = to_inner[0].text_input(
+                f"To {day_name}",
+                value=day_to,
+                key=f"tariff_to_{day_idx}",
                 label_visibility="collapsed",
             ).strip()
-            with cols[2]:
-                to_inner = st.columns([4.0, 0.6], vertical_alignment="center")
-                to_value = to_inner[0].text_input(
-                    f"To {day_name}",
-                    value=day_to,
-                    key=f"tariff_to_{day_idx}",
-                    label_visibility="collapsed",
-                ).strip()
-            tariff_inputs.append((from_value, to_value))
-            try:
-                start_min = parse_hhmm(from_value, allow_24_end=False)
-                end_min = parse_hhmm(to_value, allow_24_end=True)
-                compute_offpeak_segments(start_min, end_min)
-                to_inner[1].markdown("&nbsp;", unsafe_allow_html=True)
-            except ValueError as exc:
-                message = html.escape(f"{day_name}: {exc}", quote=True)
-                to_inner[1].markdown(
-                    f'<span title="{message}" style="cursor: help; color: #ff6b6b;">\u274C</span>',
-                    unsafe_allow_html=True,
-                )
-
-        st.markdown("#### PV")
-        cfg_pv = effective_cfg["pv"]
-
-        row1_col1, row1_col2, row1_col3 = st.columns(3)
-        with row1_col1:
-            cfg_panel_wp = st.number_input("Panel power (Wp)", min_value=1, value=int(cfg_pv["panel_wp"]), step=1, help=get_help("panel_wp"))
-        with row1_col2:
-            cfg_performance_ratio = st.number_input(
-                "Performance ratio",
-                min_value=0.50,
-                max_value=1.00,
-                step=0.01,
-                value=float(cfg_pv["performance_ratio"]),
-                help=INPUT_TOOLTIPS["performance_ratio"],
-                key="pv_pr",
-            )
-        with row1_col3:
-            cfg_inverter_ac_kw_limit = st.number_input("Inverter AC limit (kW)", min_value=0.1, value=float(cfg_pv["inverter_ac_kw_limit"]), step=0.1, help=get_help("inverter_ac_kw_limit"))
-
-        row2_col1, row2_col2, row2_col3, row2_col4 = st.columns(4)
-        with row2_col1:
-            cfg_array_east_panels = st.number_input("East panels", min_value=0, value=int(cfg_pv["array_east_panels"]), step=1, help=get_help("array_panels"))
-        with row2_col2:
-            cfg_tilt_east_deg = st.number_input(
-                "Tilt East (deg)",
-                min_value=0.0,
-                max_value=90.0,
-                value=float(cfg_pv["tilt_east_deg"]),
-                step=1.0,
-                format="%.0f",
-            )
-        with row2_col3:
-            cfg_azimuth_east_deg = st.number_input(
-                "Azimuth East (deg)",
-                min_value=0.0,
-                max_value=360.0,
-                value=float(cfg_pv["azimuth_east_deg"]),
-                step=1.0,
-                format="%.0f",
-            )
-        with row2_col4:
-            cfg_pv_calibration_factor_east = st.number_input(
-                "Cal factor East",
-                min_value=0.70,
-                max_value=1.30,
-                value=float(cfg_pv.get("pv_calibration_factor_east", 1.0)),
-                step=0.01,
-                format="%.2f",
-                help=INPUT_TOOLTIPS["pv_calibration_factor_east"],
-                key="pv_cal_east",
-            )
-
-        row3_col1, row3_col2, row3_col3, row3_col4 = st.columns(4)
-        with row3_col1:
-            cfg_array_south_panels = st.number_input("South panels", min_value=0, value=int(cfg_pv["array_south_panels"]), step=1, help=get_help("array_panels"))
-        with row3_col2:
-            cfg_tilt_south_deg = st.number_input(
-                "Tilt South (deg)",
-                min_value=0.0,
-                max_value=90.0,
-                value=float(cfg_pv["tilt_south_deg"]),
-                step=1.0,
-                format="%.0f",
-            )
-        with row3_col3:
-            cfg_azimuth_south_deg = st.number_input(
-                "Azimuth South (deg)",
-                min_value=0.0,
-                max_value=360.0,
-                value=float(cfg_pv["azimuth_south_deg"]),
-                step=1.0,
-                format="%.0f",
-            )
-        with row3_col4:
-            cfg_pv_calibration_factor_south = st.number_input(
-                "Cal factor South",
-                min_value=0.70,
-                max_value=1.30,
-                value=float(cfg_pv.get("pv_calibration_factor_south", 1.0)),
-                step=0.01,
-                format="%.2f",
-                help=INPUT_TOOLTIPS["pv_calibration_factor_south"],
-                key="pv_cal_south",
-            )
-
-        if int(cfg_array_east_panels) + int(cfg_array_south_panels) <= 0:
-            st.error("Set at least one PV array panel count above 0.")
-
-        st.markdown("#### Battery")
-        bat_col_left, bat_col_right = st.columns(2, gap="large", vertical_alignment="bottom")
-        with bat_col_left:
-            cfg_battery_kwh = st.number_input("Capacity (kWh)", min_value=0.0, value=float(effective_cfg["battery"]["battery_kwh"]), step=0.1, help=get_help("battery_kwh"))
-            cfg_min_soc_percent = st.number_input("Min SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["min_soc_percent"]), step=0.5, help=get_help("min_soc"))
-            cfg_max_cutoff_soc_percent = st.number_input("Cutoff SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["max_cutoff_soc_percent"]), step=0.5, help=get_help("cutoff_soc"))
-
-        with bat_col_right:
-            cfg_max_grid_charge_power_kw = st.number_input(
-                "Grid cap (kW)",
-                min_value=0.0,
-                value=float(backend_settings.get("max_ac_charge_power_kw_default", 5.0)),
-                step=0.1,
-                help=get_help("max_ac_user_cap"),
-            )
-            st.number_input(
-                "Battery cap (kW)",
-                min_value=0.0,
-                value=float(effective_cfg["battery"].get("battery_max_charge_kw", core.BATTERY_MAX_CHARGE_KW)),
-                step=0.1,
-                disabled=True,
-                help=get_help("battery_max_charge_kw"),
-                key="battery_max_charge_hw_display",
-            )
-        user_max_ac_kw = float(cfg_max_grid_charge_power_kw)
-
-        cfg_battery_max_charge_kw = float(effective_cfg["battery"].get("battery_max_charge_kw", core.BATTERY_MAX_CHARGE_KW))
-        cfg_battery_max_discharge_kw = float(effective_cfg["battery"].get("battery_max_discharge_kw", core.BATTERY_MAX_DISCHARGE_KW))
-        cfg_max_ac_charge_kw_hard_limit = float(effective_cfg["battery"].get("max_ac_charge_kw_hard_limit", core.MAX_AC_CHARGE_KW_HARD_LIMIT))
-
-        buffer_percent = 0.0
-
-
-        st.markdown("#### Car Charger")
-        cfg_cc_enabled = st.checkbox(
-            "Enable car charger control (OCPP)",
-            value=bool((effective_cfg.get("car_charger", {}) or {}).get("enabled", False)),
-            help="The OCPP server runs inside the backend. Use the same IP and port as the backend, with path /ocpp.",
-        )
-
-        cc_col3, cc_col4 = st.columns(2, vertical_alignment="bottom")
-        with cc_col3:
-            cfg_cc_user = st.text_input("OCPP username", value=str((effective_cfg.get("car_charger", {}) or {}).get("basic_user", "")))
-        with cc_col4:
-            cfg_cc_pass = st.text_input(
-                "OCPP password",
-                value=str((effective_cfg.get("car_charger", {}) or {}).get("basic_pass", "")),
-                type="password",
-            )
-
-        fs_tip = (
-            "Domain Name = your laptop LAN IP\n"
-            "Port = backend port (default 8787)\n"
-            "Path = /ocpp\n"
-            "If username+password are empty, OCPP runs with NO AUTH (LAN mode)\n"
-            "If you set credentials here, set the same credentials in FusionSolar"
-        )
-        fs_label_col, fs_icon_col = st.columns([20, 1], vertical_alignment="center")
-        with fs_label_col:
-            st.caption("FusionSolar setup")
-        with fs_icon_col:
-            st.markdown(f"<span title='{_esc(fs_tip)}'>ℹ</span>", unsafe_allow_html=True)
-
-        if cfg_cc_enabled and (cfg_cc_user.strip() == "") and (cfg_cc_pass == ""):
-            ui_warning("OCPP authentication is disabled (username/password empty). This is OK on a private LAN only.")
-
-        if cfg_cc_enabled and ((cfg_cc_user.strip() == "") ^ (cfg_cc_pass == "")):
-            st.error("OCPP credentials are misconfigured. Set BOTH username and password, or leave BOTH empty.")
-
-        st.markdown("#### EV Vehicle Data")
-        ev_cfg = (effective_cfg.get("ev_vehicle_data", {}) or {}) if isinstance(effective_cfg, dict) else {}
-        cfg_ev_enabled = st.checkbox("EV integration enabled", value=bool(ev_cfg.get("enabled", False)))
-        cfg_bmw_client_id = st.text_input("BMW client id", value=str(ev_cfg.get("bmw_client_id", "")), type="password")
-        petrol_col1, petrol_col2 = st.columns(2, gap="large")
-        with petrol_col1:
-            cfg_petrol_price_eur_per_l = st.text_input(
-                "Petrol price (€/L)",
-                value=str(ev_cfg.get("petrol_price_eur_per_l", "")),
-                help="Optional economics input used for EV-vs-petrol comparison. Not live vehicle telemetry.",
-            )
-        with petrol_col2:
-            cfg_petrol_consumption_l_per_100km = st.text_input(
-                "Petrol consumption (L/100 km)",
-                value=str(ev_cfg.get("petrol_consumption_l_per_100km", "")),
-                help="Optional economics input used for EV-vs-petrol comparison. Not live vehicle telemetry.",
-            )
-        cfg_ev_charge_deadline_time = st.text_input(
-            "EV charge deadline (HH:MM)",
-            value=str(ev_cfg.get("ev_charge_deadline_time", "")),
-            help="Manual policy target: EV must be fully charged by this time.",
-        )
-
-        provider_status = {}
-        vehicles_payload = {}
+        tariff_inputs.append((from_value, to_value))
         try:
-            provider_status = api_get("/v1/ev/provider_status", action=UIActions.EV_PROVIDER_STATUS)
-            vehicles_payload = api_get("/v1/ev/vehicles", action=UIActions.EV_VEHICLES)
-        except Exception:
-            provider_status = {}
-            vehicles_payload = {}
-
-        vehicle_map = vehicles_payload.get("vehicles", {}) if isinstance(vehicles_payload, dict) else {}
-        vehicle_list = list(vehicle_map.values()) if isinstance(vehicle_map, dict) else []
-        first_vehicle = next(iter(vehicle_map.values()), {}) if isinstance(vehicle_map, dict) else {}
-        selected_vehicle_id = str(ev_cfg.get("bmw_active_vehicle_id") or "")
-        setup_state_key = "_ev_cardata_setup"
-        setup_state = st.session_state.get(setup_state_key, {})
-        if not isinstance(setup_state, dict):
-            setup_state = {}
-        has_client_id = bool(str(cfg_bmw_client_id).strip())
-        has_device_flow_session = bool(setup_state.get("device_code"))
-
-        setup_summary = summarize_ev_setup_state(
-            provider_status,
-            ev_enabled=bool(cfg_ev_enabled),
-            has_client_id=has_client_id,
-            vehicle_count=len(vehicle_list),
-            has_device_flow_session=has_device_flow_session,
-        )
-        setup_title = str(setup_summary.get("title") or "BMW not connected")
-        setup_detail = str(setup_summary.get("detail") or "")
-        setup_level = str(setup_summary.get("level") or "info")
-        if setup_level == "success":
-            st.success(f"{setup_title}. {setup_detail}".strip())
-        elif setup_level == "warning":
-            ui_warning(f"{setup_title}. {setup_detail}".strip())
-        else:
-            st.info(f"{setup_title}. {setup_detail}".strip())
-
-        setup_col, check_col = st.columns(2)
-        with setup_col:
-            if st.button(
-                "Setup CarData connection",
-                key="btn_ev_setup_cardata_connection",
-                type="primary",
-                help="Use this to set up, reconnect, or re-link your BMW CarData connection.",
-                disabled=bool(cfg_ev_enabled) and not has_client_id,
-            ):
-                if not has_client_id:
-                    st.error("BMW client ID required. Enter your BMW client id first.")
-                else:
-                    correlation_id = _set_active_ui_request_context(UIActions.BMW_DEVICE_FLOW_START)
-                    try:
-                        start_payload = api_post(
-                            "/v1/ev/bmw/device_flow/start",
-                            {},
-                            correlation_id=correlation_id,
-                            action=UIActions.BMW_DEVICE_FLOW_START,
-                        )
-                        st.session_state[setup_state_key] = {
-                            "device_code": str(start_payload.get("device_code") or ""),
-                            "user_code": str(start_payload.get("user_code") or ""),
-                            "verification_uri": str(start_payload.get("verification_uri") or ""),
-                        }
-                        st.success("BMW authorization required. Open the BMW page and enter this code.")
-                    except Exception as exc:
-                        st.error(f"Could not start BMW setup: {exc}")
-                    finally:
-                        _clear_active_ui_request_context()
-
-        setup_state = st.session_state.get(setup_state_key, {}) if isinstance(st.session_state.get(setup_state_key), dict) else {}
-        device_code = str(setup_state.get("device_code") or "").strip()
-        user_code = str(setup_state.get("user_code") or "").strip()
-        verification_uri = str(setup_state.get("verification_uri") or "").strip()
-
-        if device_code:
-            if verification_uri:
-                st.write(f"Open this BMW page: {verification_uri}")
-            if user_code:
-                st.code(user_code)
-            st.caption("Waiting for BMW authorization")
-            with check_col:
-                if st.button("Check connection", key="btn_ev_check_connection", type="secondary"):
-                    correlation_id = _set_active_ui_request_context(UIActions.BMW_DEVICE_FLOW_POLL)
-                    try:
-                        poll_payload = api_post(
-                            "/v1/ev/bmw/device_flow/poll",
-                            {"device_code": device_code},
-                            correlation_id=correlation_id,
-                            action=UIActions.BMW_DEVICE_FLOW_POLL,
-                        )
-                        if bool(poll_payload.get("ok", False)):
-                            api_post(
-                                "/v1/ev/manual_refresh?force_reprobe=true",
-                                {},
-                                correlation_id=correlation_id,
-                                action=UIActions.BMW_MANUAL_REFRESH,
-                            )
-                            provider_status = api_get("/v1/ev/provider_status", correlation_id=correlation_id, action=UIActions.EV_PROVIDER_STATUS)
-                            vehicles_payload = api_get("/v1/ev/vehicles", correlation_id=correlation_id, action=UIActions.EV_VEHICLES)
-                            vehicle_map = vehicles_payload.get("vehicles", {}) if isinstance(vehicles_payload, dict) else {}
-                            vehicle_list = list(vehicle_map.values()) if isinstance(vehicle_map, dict) else []
-                            st.session_state[setup_state_key] = {}
-                            st.success("BMW connected")
-                        else:
-                            st.info("Waiting for BMW authorization")
-                    except Exception as exc:
-                        st.error(f"Connection check failed: {exc}")
-                    finally:
-                        _clear_active_ui_request_context()
-
-        first_vehicle = next(iter(vehicle_map.values()), {}) if isinstance(vehicle_map, dict) else {}
-        linked_label = "Vehicle linked" if first_vehicle else "No vehicle"
-        linked_tip = "This BMW vehicle is used for EV SOC and status." if first_vehicle else "No BMW vehicle is currently linked for EV status."
-        freshness_seconds = first_vehicle.get("freshness_seconds") if first_vehicle else None
-        freshness_label = format_ev_freshness(freshness_seconds, unknown_label="Waiting for BMW data")
-        provider_state = summarize_ev_provider_state(
-            provider_status,
-            has_vehicle=bool(first_vehicle),
-            soc_available=bool(first_vehicle and pd.notna(_safe_float(first_vehicle.get("soc_pct"), float("nan")))),
-            vehicle_freshness_seconds=freshness_seconds,
-        )
-        connected_state = "Connected" if "Connected" in (provider_state.get("chips") or []) else "Auth required"
-        connected_tip = (
-            "BMW authorization is active and vehicle data can be retrieved."
-            if connected_state == "Connected"
-            else "BMW authorization is required before vehicle data can be retrieved."
-        )
-        data_fresh_state = "Stale" if "Stale" in (provider_state.get("chips") or []) else "Fresh"
-        data_fresh_tip = (
-            "Latest BMW vehicle data is older than expected and may not reflect the live car state."
-            if data_fresh_state == "Stale"
-            else "BMW vehicle data was updated recently."
-        )
-        status_chip_specs = [
-            ("🔐", connected_state, connected_tip),
-            ("📡", data_fresh_state, data_fresh_tip),
-            ("🚗", linked_label, linked_tip),
-            ("⏱", f"Updated {freshness_label}", "Time since the latest vehicle data update received from BMW."),
-        ]
-        status_chips_html = "".join(
-            "<span title='" + _esc_attr(tip) + "' style='display:inline-flex;align-items:center;gap:0.28rem;padding:0.20rem 0.45rem;"
-            "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:999px;"
-            "font-size:0.72rem;font-weight:650;'>"
-            + _esc_attr(icon)
-            + " "
-            + _esc_attr(label)
-            + "</span>"
-            for icon, label, tip in status_chip_specs
-        )
-        st.markdown(
-            "<div style='display:flex;gap:0.35rem;flex-wrap:wrap;margin:0.1rem 0 0.35rem 0;'>"
-            + status_chips_html
-            + "</div>",
-            unsafe_allow_html=True,
-        )
-
-        vehicle_options = []
-        for vehicle in vehicle_list:
-            vehicle_id = str(vehicle.get("vehicle_id") or "").strip()
-            if not vehicle_id:
-                continue
-            label = str(vehicle.get("display_name") or vehicle_id)
-            vehicle_options.append((label, vehicle_id))
-
-        if len(vehicle_options) == 1 and selected_vehicle_id != vehicle_options[0][1]:
-            selected_vehicle_id = vehicle_options[0][1]
-            st.success("1 vehicle linked. Set as active vehicle automatically.")
-
-        if len(vehicle_options) > 1:
-            option_ids = [v[1] for v in vehicle_options]
-            default_idx = option_ids.index(selected_vehicle_id) if selected_vehicle_id in option_ids else 0
-            selected_label = st.selectbox("Active BMW vehicle", options=[v[0] for v in vehicle_options], index=default_idx)
-            for label, vehicle_id in vehicle_options:
-                if label == selected_label:
-                    selected_vehicle_id = vehicle_id
-                    break
-            st.info("Multiple vehicles found, choose one")
-        elif cfg_ev_enabled and has_client_id and len(vehicle_options) == 0:
-            ui_warning("No BMW vehicles found")
-
-        if st.button("Refresh BMW data", key="btn_ev_manual_refresh_settings", type="secondary", help="Fetch latest BMW vehicle data now"):
-            correlation_id = _set_active_ui_request_context(UIActions.BMW_MANUAL_REFRESH)
-            try:
-                api_post(
-                    "/v1/ev/manual_refresh",
-                    {},
-                    correlation_id=correlation_id,
-                    action=UIActions.BMW_MANUAL_REFRESH,
-                )
-                st.success("EV refresh triggered.")
-            except Exception as exc:
-                st.error(f"EV refresh failed: {exc}")
-            finally:
-                _clear_active_ui_request_context()
-
-        if APP_DEBUG:
-            st.caption(f"Provider status: {provider_status.get('provider_status', 'unknown')}")
-            st.caption(f"Data status: {provider_status.get('data_status', 'unknown')}")
-            if first_vehicle:
-                st.caption(f"Linked vehicle: {first_vehicle.get('display_name') or '-'} · {first_vehicle.get('vehicle_id')}")
-                st.caption(f"Last vehicle update: {first_vehicle.get('last_update_ts')} · Freshness: {first_vehicle.get('freshness_seconds')}")
-            st.caption(f"Stream connected: {'yes' if provider_status.get('stream_connected') else 'no'}")
-
-
-        cfg_load_profile = [float(v) for v in effective_cfg["load_profile"]["load_profile_24h"]]
-
-        if st.session_state.get("_geo_success"):
-            st.success(st.session_state["_geo_success"])
-        if st.session_state.get("_geo_error"):
-            st.error(st.session_state["_geo_error"])
-        st.session_state["_cfg_ui_snapshot"] = {
-            "day_names": day_names,
-            "tariff_inputs": tariff_inputs,
-            "tariff_by_day": tariff_by_day,
-            "cfg_latitude": cfg_latitude,
-            "cfg_longitude": cfg_longitude,
-            "cfg_peak_price_input": cfg_peak_price_input,
-            "cfg_offpeak_price_input": cfg_offpeak_price_input,
-            "cfg_injection_price_input": cfg_injection_price_input,
-            "cfg_allow_injection_to_grid": cfg_allow_injection_to_grid,
-            "cfg_max_grid_import_kw": cfg_max_grid_import_kw,
-            "cfg_panel_wp": cfg_panel_wp,
-            "cfg_array_south_panels": cfg_array_south_panels,
-            "cfg_array_east_panels": cfg_array_east_panels,
-            "cfg_tilt_east_deg": cfg_tilt_east_deg,
-            "cfg_tilt_south_deg": cfg_tilt_south_deg,
-            "cfg_azimuth_east_deg": cfg_azimuth_east_deg,
-            "cfg_azimuth_south_deg": cfg_azimuth_south_deg,
-            "cfg_performance_ratio": cfg_performance_ratio,
-            "cfg_pv_calibration_factor_east": cfg_pv_calibration_factor_east,
-            "cfg_pv_calibration_factor_south": cfg_pv_calibration_factor_south,
-            "cfg_inverter_ac_kw_limit": cfg_inverter_ac_kw_limit,
-            "cfg_battery_kwh": cfg_battery_kwh,
-            "cfg_min_soc_percent": cfg_min_soc_percent,
-            "cfg_max_cutoff_soc_percent": cfg_max_cutoff_soc_percent,
-            "cfg_battery_max_charge_kw": cfg_battery_max_charge_kw,
-            "cfg_battery_max_discharge_kw": cfg_battery_max_discharge_kw,
-            "cfg_max_ac_charge_kw_hard_limit": cfg_max_ac_charge_kw_hard_limit,
-            "cfg_cc_enabled": bool(cfg_cc_enabled),
-            "cfg_cc_user": str(cfg_cc_user),
-            "cfg_cc_pass": str(cfg_cc_pass),
-            "cfg_ev_enabled": bool(cfg_ev_enabled),
-            "cfg_bmw_client_id": str(cfg_bmw_client_id),
-            "cfg_bmw_active_vehicle_id": str(selected_vehicle_id),
-            "cfg_petrol_price_eur_per_l": str(cfg_petrol_price_eur_per_l),
-            "cfg_petrol_consumption_l_per_100km": str(cfg_petrol_consumption_l_per_100km),
-            "cfg_ev_charge_deadline_time": str(cfg_ev_charge_deadline_time),
-            "cfg_load_profile": cfg_load_profile,
-            "saved_sat": bool((effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}).get("use_satellite_nowcast_0_6h", False)),
-            "cfg_max_grid_charge_power_kw": float(user_max_ac_kw),
-        }
-        current_settings_payload, settings_error = build_settings_payload(effective_cfg, valid_model_ids)
-        saved_settings_payload = normalize_effective_cfg_to_payload(effective_cfg, valid_model_ids)
-        settings_valid = settings_error is None and current_settings_payload is not None
-        if settings_valid:
-            current_payload_hash = json.dumps(current_settings_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-            saved_payload_hash = json.dumps(saved_settings_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-            settings_dirty = current_payload_hash != saved_payload_hash
-        else:
-            settings_dirty = True
-
-    wm_latitude = float(st.session_state.get("loc_latitude", core.LATITUDE))
-    wm_longitude = float(st.session_state.get("loc_longitude", core.LONGITUDE))
-    wm_timezone = str(st.session_state.get("loc_timezone", core.TIMEZONE))
-
-    model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
-    available_ids = set(model_options.keys())
-
-    saved = effective_cfg.get("weather_models_selected")
-    if isinstance(saved, list):
-        saved_set = {str(x) for x in saved if isinstance(x, str)}
-    else:
-        saved_set = set()
-
-    initial_selected = (saved_set & available_ids) if saved_set else set()
-    if not initial_selected:
-        initial_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
-
-    current_mode = str(effective_cfg.get("forecast_mode", "auto")).strip().lower()
-    mode_label_default = "Custom" if current_mode == "expert" else "Auto"
-
-    def render_weather_models_panel() -> tuple[str, list[str], bool]:
-        st.markdown("#### Weather")
-        st.caption("Pick how tomorrow's weather is built.")
-        with st.container(border=True):
-                ui_mode_value = str(st.session_state.get("forecast_mode_select", "")).strip()
-                if ui_mode_value and ui_mode_value not in {"Auto", "Custom"}:
-                    normalized_mode = str(ui_mode_value).strip().lower()
-                    st.session_state["forecast_mode_select"] = "Custom" if normalized_mode == "expert" else "Auto"
-
-                forecast_mode_label_col, forecast_mode_select_col = st.columns([1.6, 2.4], vertical_alignment="center")
-                with forecast_mode_label_col:
-                    st.markdown("**Forecast mode**")
-                with forecast_mode_select_col:
-                    forecast_mode_label = st.selectbox(
-                        "Forecast mode",
-                        options=["Auto", "Custom"],
-                        index=0 if mode_label_default != "Custom" else 1,
-                        key="forecast_mode_select",
-                        label_visibility="collapsed",
-                        help=get_help("forecast_mode"),
-                    )
-                forecast_mode = FORECAST_MODE_OPTIONS.get(forecast_mode_label, "auto")
-                weather_cfg = effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}
-                saved_sat = bool(weather_cfg.get("use_satellite_nowcast_0_6h", False))
-
-                auto_selected = set(auto_select_models_for_location(wm_latitude, wm_longitude, requested_days=1)) & available_ids
-                if not auto_selected:
-                    auto_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
-
-                if forecast_mode == "auto":
-                    _ = render_weather_models(
-                        weather_models_catalog,
-                        auto_selected,
-                        widget_key_prefix="wm_auto",
-                        disabled=True,
-                        auto_selected_models=auto_selected,
-                        show_auto_chips=True,
-                        show_checkboxes=False,
-                        show_capability_badges=True,
-                    )
-                    selected_models = []
-                    sat_nowcast_for_run = should_use_satellite_nowcast_auto(
-                        latitude=wm_latitude,
-                        longitude=wm_longitude,
-                        timezone_name=wm_timezone,
-                        requested_days=1,
-                    )
-                    sat_cols = st.columns([2.6, 1.4], vertical_alignment="center")
-                    with sat_cols[0]:
-                        st.markdown("Satellite nowcast (0–6h)")
-                    with sat_cols[1]:
-                        nowcast_label = "Auto ON" if sat_nowcast_for_run else "Auto OFF"
-                        nowcast_tip = (
-                            "Auto turns this ON only when it can improve the next few daylight hours. "
-                            "It affects only the next 0–6 hours, not the full day."
-                        )
-                        st.markdown(f"<span title='{_esc(nowcast_tip)}'><b>{_esc(nowcast_label)}</b></span>", unsafe_allow_html=True)
-                else:
-                    selected_models = render_weather_models(
-                        weather_models_catalog,
-                        initial_selected,
-                        widget_key_prefix="wm",
-                        show_auto_chips=False,
-                        show_checkboxes=True,
-                        show_capability_badges=True,
-                    )
-                    sat_nowcast_ui = st.checkbox(
-                        "Use satellite nowcast for the next 0–6 hours",
-                        value=saved_sat,
-                        key="use_sat_nowcast_expert",
-                        help=get_help("sat_nowcast"),
-                    )
-                    sat_nowcast_for_run = bool(sat_nowcast_ui)
-
-
-        return forecast_mode, selected_models, sat_nowcast_for_run
-
-
-    def render_car_charger_panel() -> None:
-        st.markdown("##### Charger")
-        with st.container(border=True):
-                evse = get_evse_status()
-
-                enabled = bool(evse.get("enabled", False))
-                connected = bool(evse.get("connected", False))
-                plugged = bool(evse.get("is_plugged", False))
-                charging = bool(evse.get("is_charging", False))
-
-                status = str(evse.get("status") or "unknown")
-
-                # --- Modern status headline (single line) ---
-                ocpp_badge = "Connected \u2705" if connected else "Disconnected \u274C"
-                state_label = status if status else "unknown"
-                plugged_label = "Yes" if plugged else "No"
-                charging_label = "Yes" if charging else "No"
-
-                if connected:
-                    st.markdown(
-                        f"**OCPP:** {ocpp_badge} · **State:** {state_label} · **Plugged:** {plugged_label} · **Charging:** {charging_label}"
-                    )
-                else:
-                    disconnected_tip = _esc_attr(
-                        "OCPP is not connected. Enable OCPP in FusionSolar installer mode and point it to this PC "
-                        "(LAN IP + backend port) using path /ocpp to use charger controls."
-                    )
-                    st.markdown(
-                        f"""
-                        <div style='display:inline-flex;align-items:center;gap:0.30rem;line-height:1.2;'>
-                          <span><strong>OCPP:</strong> {html.escape(ocpp_badge)} · <strong>State:</strong> {html.escape(state_label)}</span>
-                          <span class='pvbp-tip' tabindex='0' style='display:inline-flex;align-items:center;line-height:1;font-size:0.90rem;'>ℹ
-                            <span class='pvbp-tiptext'>{disconnected_tip}</span>
-                          </span>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-
-                # --- Controls (ONLY here, not top bar) ---
-                # Control only when feature enabled + connected + plugged
-                can_control = bool(enabled and connected and plugged)
-
-                btn_cols = st.columns(4, vertical_alignment="center")
-
-                btn_cols[0].button(
-                    "Start",
-                    type="secondary",
-                    disabled=True,
-                    key="btn_cc_start",
-                    width="stretch",
-                )
-
-                btn_cols[1].button(
-                    "Pause",
-                    type="secondary",
-                    disabled=True,
-                    key="btn_cc_pause",
-                    width="stretch",
-                )
-
-                resume_clicked = btn_cols[2].button(
-                    "Resume",
-                    type="primary",
-                    disabled=(not can_control) or charging,
-                    key="btn_cc_resume",
-                    width="stretch",
-                )
-                if resume_clicked:
-                    try:
-                        api_post("/v1/evse/resume", {}, action=UIActions.EVSE_RESUME)
-                        st.cache_data.clear()
-                        st.success("Resume command sent.")
-                    except Exception as exc:
-                        log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:car_charger_resume", title="Frontend error: car charger resume", exc=exc, context={"action": UIActions.EVSE_RESUME, "endpoint": "/v1/evse/resume"})
-                        st.error(f"Resume failed: {exc}")
-
-                stop_clicked = btn_cols[3].button(
-                    "Stop",
-                    type="secondary",
-                    disabled=(not can_control) or (not charging),
-                    key="btn_cc_stop",
-                    width="stretch",
-                )
-                if stop_clicked:
-                    try:
-                        api_post("/v1/evse/stop", {}, action=UIActions.EVSE_STOP)
-                        st.cache_data.clear()
-                        st.success("Stop command sent.")
-                    except Exception as exc:
-                        log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:car_charger_stop", title="Frontend error: car charger stop", exc=exc, context={"action": UIActions.EVSE_STOP, "endpoint": "/v1/evse/stop"})
-                        st.error(f"Stop failed: {exc}")
-
-    def render_ev_car_status_panel(container=None) -> None:
-        card = container if container is not None else st.container()
-
-        def _render_fallback_card(message: str, chips: list[str] | None = None, helper: str = "") -> None:
-            chips_html = ""
-            if chips:
-                chips_html = "".join(
-                    "<span style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
-                    "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
-                    "border-radius:999px;font-size:0.72rem;font-weight:650;'>"
-                    f"{_esc_attr(chip)}</span>"
-                    for chip in chips[:2]
-                )
-            helper_html = f"<div style='margin-top:0.36rem;font-size:0.74rem;opacity:0.72;'>{_esc_attr(helper)}</div>" if helper else ""
-            card.markdown(
-                (
-                    "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.78rem 0.82rem;"
-                    "background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));min-width:245px;'>"
-                    "<div style='display:flex;align-items:center;justify-content:space-between;gap:0.42rem;'>"
-                    "<div style='font-size:0.90rem;font-weight:760;letter-spacing:0.03em;opacity:0.95;'>CAR STATUS</div>"
-                    f"<div style='display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;'>{chips_html}</div>"
-                    "</div>"
-                    f"<div style='margin-top:0.45rem;font-size:0.90rem;opacity:0.88;'>{_esc_attr(message)}</div>"
-                    f"{helper_html}</div>"
-                ),
+            start_min = parse_hhmm(from_value, allow_24_end=False)
+            end_min = parse_hhmm(to_value, allow_24_end=True)
+            compute_offpeak_segments(start_min, end_min)
+            to_inner[1].markdown("&nbsp;", unsafe_allow_html=True)
+        except ValueError as exc:
+            message = html.escape(f"{day_name}: {exc}", quote=True)
+            to_inner[1].markdown(
+                f'<span title="{message}" style="cursor: help; color: #ff6b6b;">\u274C</span>',
                 unsafe_allow_html=True,
             )
 
-        fetch_error = ""
-        ev_status: dict = {}
-        try:
-            ev_status = api_get("/v1/ev/status", action=UIActions.EV_STATUS)
-        except Exception as exc:
-            fetch_error = str(exc)
-            ev_status = {}
+    st.markdown("#### PV")
+    cfg_pv = effective_cfg["pv"]
 
-        ev_cfg = (effective_cfg or {}).get("ev_vehicle_data", {}) or {}
-        if not bool(ev_cfg.get("enabled", ev_cfg.get("bmw_enabled", False))):
-            _render_fallback_card("EV integration is disabled.", chips=["BMW disabled"], helper="Enable BMW in settings to show car status.")
-            return
-        if not ev_status:
-            _render_fallback_card("EV status temporarily unavailable.", chips=["Waiting for EV data"], helper=fetch_error or "Unable to refresh EV status right now.")
-            return
-
-        soc_pct = _safe_float(ev_status.get("soc_pct"), float("nan"))
-        soc_pct = max(0.0, min(100.0, soc_pct)) if pd.notna(soc_pct) else None
-        is_plugged = ev_status.get("is_plugged")
-        is_charging = ev_status.get("is_charging")
-        freshness_label = str(ev_status.get("freshness_label") or "BMW freshness unknown")
-
-        if is_charging is True:
-            status_chip_text = "Charging"
-        elif is_plugged is True:
-            status_chip_text = "Plugged"
-        elif is_plugged is False:
-            status_chip_text = "Unplugged"
-        else:
-            status_chip_text = "Unknown"
-        freshness_chip = (
-            "<span style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
-            "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
-            f"border-radius:999px;font-size:0.72rem;font-weight:650;'>⏱ {_esc_attr(freshness_label)}</span>"
+    row1_col1, row1_col2, row1_col3 = st.columns(3)
+    with row1_col1:
+        cfg_panel_wp = st.number_input("Panel power (Wp)", min_value=1, value=int(cfg_pv["panel_wp"]), step=1, help=get_help("panel_wp"))
+    with row1_col2:
+        cfg_performance_ratio = st.number_input(
+            "Performance ratio",
+            min_value=0.50,
+            max_value=1.00,
+            step=0.01,
+            value=float(cfg_pv["performance_ratio"]),
+            help=INPUT_TOOLTIPS["performance_ratio"],
+            key="pv_pr",
         )
-        status_chip = (
-            "<span style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
-            "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
-            f"border-radius:999px;font-size:0.72rem;font-weight:650;'>🚗 {_esc_attr(status_chip_text)}</span>"
+    with row1_col3:
+        cfg_inverter_ac_kw_limit = st.number_input("Inverter AC limit (kW)", min_value=0.1, value=float(cfg_pv["inverter_ac_kw_limit"]), step=0.1, help=get_help("inverter_ac_kw_limit"))
+
+    row2_col1, row2_col2, row2_col3, row2_col4 = st.columns(4)
+    with row2_col1:
+        cfg_array_east_panels = st.number_input("East panels", min_value=0, value=int(cfg_pv["array_east_panels"]), step=1, help=get_help("array_panels"))
+    with row2_col2:
+        cfg_tilt_east_deg = st.number_input(
+            "Tilt East (deg)",
+            min_value=0.0,
+            max_value=90.0,
+            value=float(cfg_pv["tilt_east_deg"]),
+            step=1.0,
+            format="%.0f",
+        )
+    with row2_col3:
+        cfg_azimuth_east_deg = st.number_input(
+            "Azimuth East (deg)",
+            min_value=0.0,
+            max_value=360.0,
+            value=float(cfg_pv["azimuth_east_deg"]),
+            step=1.0,
+            format="%.0f",
+        )
+    with row2_col4:
+        cfg_pv_calibration_factor_east = st.number_input(
+            "Cal factor East",
+            min_value=0.70,
+            max_value=1.30,
+            value=float(cfg_pv.get("pv_calibration_factor_east", 1.0)),
+            step=0.01,
+            format="%.2f",
+            help=INPUT_TOOLTIPS["pv_calibration_factor_east"],
+            key="pv_cal_east",
         )
 
-        range_state = ((ev_status.get("field_states") or {}).get("range_km"))
-        if range_state == "bmw_missing":
-            range_label = "BMW did not provide range"
-        elif range_state == "setup_incomplete":
-            range_label = "Range not available from current BMW setup"
-        else:
-            range_label = format_ev_km(ev_status.get("range_km"), unknown_label="Unavailable")
+    row3_col1, row3_col2, row3_col3, row3_col4 = st.columns(4)
+    with row3_col1:
+        cfg_array_south_panels = st.number_input("South panels", min_value=0, value=int(cfg_pv["array_south_panels"]), step=1, help=get_help("array_panels"))
+    with row3_col2:
+        cfg_tilt_south_deg = st.number_input(
+            "Tilt South (deg)",
+            min_value=0.0,
+            max_value=90.0,
+            value=float(cfg_pv["tilt_south_deg"]),
+            step=1.0,
+            format="%.0f",
+        )
+    with row3_col3:
+        cfg_azimuth_south_deg = st.number_input(
+            "Azimuth South (deg)",
+            min_value=0.0,
+            max_value=360.0,
+            value=float(cfg_pv["azimuth_south_deg"]),
+            step=1.0,
+            format="%.0f",
+        )
+    with row3_col4:
+        cfg_pv_calibration_factor_south = st.number_input(
+            "Cal factor South",
+            min_value=0.70,
+            max_value=1.30,
+            value=float(cfg_pv.get("pv_calibration_factor_south", 1.0)),
+            step=0.01,
+            format="%.2f",
+            help=INPUT_TOOLTIPS["pv_calibration_factor_south"],
+            key="pv_cal_south",
+        )
 
-        deadline_state = ev_status.get("deadline_state")
-        deadline_label = str(ev_status.get("deadline_time") or "").strip() if deadline_state == "configured" else "Not set"
+    if int(cfg_array_east_panels) + int(cfg_array_south_panels) <= 0:
+        st.error("Set at least one PV array panel count above 0.")
 
-        power_state = ((ev_status.get("field_states") or {}).get("charge_power_kw"))
-        if power_state == "not_charging":
-            charge_power_label = "Not charging"
-        elif power_state == "waiting_for_bmw_power":
-            charge_power_label = "BMW did not provide charge power"
-        elif power_state == "setup_incomplete":
-            charge_power_label = "Charge power not available from current BMW setup"
-        elif power_state == "waiting_for_bmw_status":
-            charge_power_label = "Waiting for BMW status"
-        else:
-            charge_power_label = format_ev_kw(ev_status.get("charge_power_kw"), unknown_label="Unavailable")
+    st.markdown("#### Battery")
+    bat_col_left, bat_col_right = st.columns(2, gap="large", vertical_alignment="bottom")
+    with bat_col_left:
+        cfg_battery_kwh = st.number_input("Capacity (kWh)", min_value=0.0, value=float(effective_cfg["battery"]["battery_kwh"]), step=0.1, help=get_help("battery_kwh"))
+        cfg_min_soc_percent = st.number_input("Min SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["min_soc_percent"]), step=0.5, help=get_help("min_soc"))
+        cfg_max_cutoff_soc_percent = st.number_input("Cutoff SOC (%)", min_value=0.0, max_value=100.0, value=float(effective_cfg["battery"]["max_cutoff_soc_percent"]), step=0.5, help=get_help("cutoff_soc"))
 
-        full_state = ((ev_status.get("field_states") or {}).get("expected_full_charge_ts"))
-        if full_state == "ready":
-            expected_full_label = format_ev_datetime(ev_status.get("expected_full_charge_ts"), unknown_label="Unavailable")
-        elif full_state == "waiting_for_bmw_eta":
-            expected_full_label = "Waiting for BMW data"
-        elif full_state == "waiting_for_power_limit":
-            expected_full_label = "Waiting for BMW power limit"
-        elif full_state == "waiting_for_soc":
-            expected_full_label = "Waiting for BMW SOC"
-        elif full_state == "not_charging":
-            expected_full_label = "Not charging"
-        elif full_state == "not_plugged":
-            expected_full_label = "Not plugged"
-        elif full_state == "waiting_for_bmw_status":
-            expected_full_label = "Waiting for BMW data"
-        elif full_state == "setup_incomplete":
-            expected_full_label = "Not available from current BMW setup"
-        else:
-            expected_full_label = "Unavailable"
+    with bat_col_right:
+        cfg_max_grid_charge_power_kw = st.number_input(
+            "Grid cap (kW)",
+            min_value=0.0,
+            value=float(backend_settings.get("max_ac_charge_power_kw_default", 5.0)),
+            step=0.1,
+            help=get_help("max_ac_user_cap"),
+        )
+        st.number_input(
+            "Battery cap (kW)",
+            min_value=0.0,
+            value=float(effective_cfg["battery"].get("battery_max_charge_kw", core.BATTERY_MAX_CHARGE_KW)),
+            step=0.1,
+            disabled=True,
+            help=get_help("battery_max_charge_kw"),
+            key="battery_max_charge_hw_display",
+        )
+    user_max_ac_kw = float(cfg_max_grid_charge_power_kw)
 
-        if soc_pct is None:
-            headline = "Battery status unavailable"
-        else:
-            status_text = "charging now" if is_charging is True else "plugged in, waiting" if is_plugged is True else "not plugged in" if is_plugged is False else "waiting for BMW status"
-            range_km = _safe_float(ev_status.get("range_km"), float("nan"))
-            if pd.notna(range_km):
-                headline = f"{soc_pct:.0f}% / {range_km:.0f} km · {status_text}"
+    cfg_battery_max_charge_kw = float(effective_cfg["battery"].get("battery_max_charge_kw", core.BATTERY_MAX_CHARGE_KW))
+    cfg_battery_max_discharge_kw = float(effective_cfg["battery"].get("battery_max_discharge_kw", core.BATTERY_MAX_DISCHARGE_KW))
+    cfg_max_ac_charge_kw_hard_limit = float(effective_cfg["battery"].get("max_ac_charge_kw_hard_limit", core.MAX_AC_CHARGE_KW_HARD_LIMIT))
+
+    buffer_percent = 0.0
+
+
+    st.markdown("#### Car Charger")
+    cfg_cc_enabled = st.checkbox(
+        "Enable car charger control (OCPP)",
+        value=bool((effective_cfg.get("car_charger", {}) or {}).get("enabled", False)),
+        help="The OCPP server runs inside the backend. Use the same IP and port as the backend, with path /ocpp.",
+    )
+
+    cc_col3, cc_col4 = st.columns(2, vertical_alignment="bottom")
+    with cc_col3:
+        cfg_cc_user = st.text_input("OCPP username", value=str((effective_cfg.get("car_charger", {}) or {}).get("basic_user", "")))
+    with cc_col4:
+        cfg_cc_pass = st.text_input(
+            "OCPP password",
+            value=str((effective_cfg.get("car_charger", {}) or {}).get("basic_pass", "")),
+            type="password",
+        )
+
+    fs_tip = (
+        "Domain Name = your laptop LAN IP\n"
+        "Port = backend port (default 8787)\n"
+        "Path = /ocpp\n"
+        "If username+password are empty, OCPP runs with NO AUTH (LAN mode)\n"
+        "If you set credentials here, set the same credentials in FusionSolar"
+    )
+    fs_label_col, fs_icon_col = st.columns([20, 1], vertical_alignment="center")
+    with fs_label_col:
+        st.caption("FusionSolar setup")
+    with fs_icon_col:
+        st.markdown(f"<span title='{_esc(fs_tip)}'>ℹ</span>", unsafe_allow_html=True)
+
+    if cfg_cc_enabled and (cfg_cc_user.strip() == "") and (cfg_cc_pass == ""):
+        ui_warning("OCPP authentication is disabled (username/password empty). This is OK on a private LAN only.")
+
+    if cfg_cc_enabled and ((cfg_cc_user.strip() == "") ^ (cfg_cc_pass == "")):
+        st.error("OCPP credentials are misconfigured. Set BOTH username and password, or leave BOTH empty.")
+
+    st.markdown("#### EV Vehicle Data")
+    ev_cfg = (effective_cfg.get("ev_vehicle_data", {}) or {}) if isinstance(effective_cfg, dict) else {}
+    cfg_ev_enabled = st.checkbox("EV integration enabled", value=bool(ev_cfg.get("enabled", False)))
+    cfg_bmw_client_id = st.text_input("BMW client id", value=str(ev_cfg.get("bmw_client_id", "")), type="password")
+    petrol_col1, petrol_col2 = st.columns(2, gap="large")
+    with petrol_col1:
+        cfg_petrol_price_eur_per_l = st.text_input(
+            "Petrol price (€/L)",
+            value=str(ev_cfg.get("petrol_price_eur_per_l", "")),
+            help="Optional economics input used for EV-vs-petrol comparison. Not live vehicle telemetry.",
+        )
+    with petrol_col2:
+        cfg_petrol_consumption_l_per_100km = st.text_input(
+            "Petrol consumption (L/100 km)",
+            value=str(ev_cfg.get("petrol_consumption_l_per_100km", "")),
+            help="Optional economics input used for EV-vs-petrol comparison. Not live vehicle telemetry.",
+        )
+    cfg_ev_charge_deadline_time = st.text_input(
+        "EV charge deadline (HH:MM)",
+        value=str(ev_cfg.get("ev_charge_deadline_time", "")),
+        help="Manual policy target: EV must be fully charged by this time.",
+    )
+
+    provider_status = {}
+    vehicles_payload = {}
+    try:
+        provider_status = api_get("/v1/ev/provider_status", action=UIActions.EV_PROVIDER_STATUS)
+        vehicles_payload = api_get("/v1/ev/vehicles", action=UIActions.EV_VEHICLES)
+    except Exception:
+        provider_status = {}
+        vehicles_payload = {}
+
+    vehicle_map = vehicles_payload.get("vehicles", {}) if isinstance(vehicles_payload, dict) else {}
+    vehicle_list = list(vehicle_map.values()) if isinstance(vehicle_map, dict) else []
+    first_vehicle = next(iter(vehicle_map.values()), {}) if isinstance(vehicle_map, dict) else {}
+    selected_vehicle_id = str(ev_cfg.get("bmw_active_vehicle_id") or "")
+    setup_state_key = "_ev_cardata_setup"
+    setup_state = st.session_state.get(setup_state_key, {})
+    if not isinstance(setup_state, dict):
+        setup_state = {}
+    has_client_id = bool(str(cfg_bmw_client_id).strip())
+    has_device_flow_session = bool(setup_state.get("device_code"))
+
+    setup_summary = summarize_ev_setup_state(
+        provider_status,
+        ev_enabled=bool(cfg_ev_enabled),
+        has_client_id=has_client_id,
+        vehicle_count=len(vehicle_list),
+        has_device_flow_session=has_device_flow_session,
+    )
+    setup_title = str(setup_summary.get("title") or "BMW not connected")
+    setup_detail = str(setup_summary.get("detail") or "")
+    setup_level = str(setup_summary.get("level") or "info")
+    if setup_level == "success":
+        st.success(f"{setup_title}. {setup_detail}".strip())
+    elif setup_level == "warning":
+        ui_warning(f"{setup_title}. {setup_detail}".strip())
+    else:
+        st.info(f"{setup_title}. {setup_detail}".strip())
+
+    setup_col, check_col = st.columns(2)
+    with setup_col:
+        if st.button(
+            "Setup CarData connection",
+            key="btn_ev_setup_cardata_connection",
+            type="primary",
+            help="Use this to set up, reconnect, or re-link your BMW CarData connection.",
+            disabled=bool(cfg_ev_enabled) and not has_client_id,
+        ):
+            if not has_client_id:
+                st.error("BMW client ID required. Enter your BMW client id first.")
             else:
-                headline = f"{soc_pct:.0f}% battery · {status_text}"
+                correlation_id = _set_active_ui_request_context(UIActions.BMW_DEVICE_FLOW_START)
+                try:
+                    start_payload = api_post(
+                        "/v1/ev/bmw/device_flow/start",
+                        {},
+                        correlation_id=correlation_id,
+                        action=UIActions.BMW_DEVICE_FLOW_START,
+                    )
+                    st.session_state[setup_state_key] = {
+                        "device_code": str(start_payload.get("device_code") or ""),
+                        "user_code": str(start_payload.get("user_code") or ""),
+                        "verification_uri": str(start_payload.get("verification_uri") or ""),
+                    }
+                    st.success("BMW authorization required. Open the BMW page and enter this code.")
+                except Exception as exc:
+                    st.error(f"Could not start BMW setup: {exc}")
+                finally:
+                    _clear_active_ui_request_context()
 
-        metric_items = [
-            ("Plugged in", format_ev_bool(is_plugged, true_label="Yes", false_label="No", unknown_label="Unknown")),
-            ("Charging now", "Charging status not available from current BMW setup" if ((ev_status.get("field_states") or {}).get("charging_setup") != "ready" and is_charging is None) else format_ev_bool(is_charging, true_label="Yes", false_label="No", unknown_label="BMW did not provide charging status")),
-            ("Charge power", charge_power_label),
-            ("Full charge at", expected_full_label),
-            ("Deadline", deadline_label),
-            ("Range", range_label),
-        ]
-        metric_html = "".join(
-            "<div style='border:1px solid rgba(255,255,255,0.10);border-radius:10px;padding:0.42rem 0.48rem;background:rgba(255,255,255,0.03);'>"
-            f"<div style='font-size:0.66rem;opacity:0.72;text-transform:uppercase;letter-spacing:0.05em;'>{_esc_attr(k)}</div>"
-            f"<div style='margin-top:0.12rem;font-size:0.85rem;font-weight:700;'>{_esc_attr(val)}</div>"
-            "</div>"
-            for k, val in metric_items
-        )
+    setup_state = st.session_state.get(setup_state_key, {}) if isinstance(st.session_state.get(setup_state_key), dict) else {}
+    device_code = str(setup_state.get("device_code") or "").strip()
+    user_code = str(setup_state.get("user_code") or "").strip()
+    verification_uri = str(setup_state.get("verification_uri") or "").strip()
 
-        helper_parts = []
-        helper_parts.append(f"Last BMW update freshness: {freshness_label}")
-        power_source = str(ev_status.get("charge_power_source") or "unavailable")
-        if power_source == "bmw":
-            helper_parts.append("Power from BMW telematics")
-        for warning in (ev_status.get("warnings") or []):
-            helper_parts.append(str(warning))
+    if device_code:
+        if verification_uri:
+            st.write(f"Open this BMW page: {verification_uri}")
+        if user_code:
+            st.code(user_code)
+        st.caption("Waiting for BMW authorization")
+        with check_col:
+            if st.button("Check connection", key="btn_ev_check_connection", type="secondary"):
+                correlation_id = _set_active_ui_request_context(UIActions.BMW_DEVICE_FLOW_POLL)
+                try:
+                    poll_payload = api_post(
+                        "/v1/ev/bmw/device_flow/poll",
+                        {"device_code": device_code},
+                        correlation_id=correlation_id,
+                        action=UIActions.BMW_DEVICE_FLOW_POLL,
+                    )
+                    if bool(poll_payload.get("ok", False)):
+                        api_post(
+                            "/v1/ev/manual_refresh?force_reprobe=true",
+                            {},
+                            correlation_id=correlation_id,
+                            action=UIActions.BMW_MANUAL_REFRESH,
+                        )
+                        provider_status = api_get("/v1/ev/provider_status", correlation_id=correlation_id, action=UIActions.EV_PROVIDER_STATUS)
+                        vehicles_payload = api_get("/v1/ev/vehicles", correlation_id=correlation_id, action=UIActions.EV_VEHICLES)
+                        vehicle_map = vehicles_payload.get("vehicles", {}) if isinstance(vehicles_payload, dict) else {}
+                        vehicle_list = list(vehicle_map.values()) if isinstance(vehicle_map, dict) else []
+                        st.session_state[setup_state_key] = {}
+                        st.success("BMW connected")
+                    else:
+                        st.info("Waiting for BMW authorization")
+                except Exception as exc:
+                    st.error(f"Connection check failed: {exc}")
+                finally:
+                    _clear_active_ui_request_context()
 
-        soc_width = soc_pct if soc_pct is not None else 0.0
+    first_vehicle = next(iter(vehicle_map.values()), {}) if isinstance(vehicle_map, dict) else {}
+    linked_label = "Vehicle linked" if first_vehicle else "No vehicle"
+    linked_tip = "This BMW vehicle is used for EV SOC and status." if first_vehicle else "No BMW vehicle is currently linked for EV status."
+    freshness_seconds = first_vehicle.get("freshness_seconds") if first_vehicle else None
+    freshness_label = format_ev_freshness(freshness_seconds, unknown_label="Waiting for BMW data")
+    provider_state = summarize_ev_provider_state(
+        provider_status,
+        has_vehicle=bool(first_vehicle),
+        soc_available=bool(first_vehicle and pd.notna(_safe_float(first_vehicle.get("soc_pct"), float("nan")))),
+        vehicle_freshness_seconds=freshness_seconds,
+    )
+    connected_state = "Connected" if "Connected" in (provider_state.get("chips") or []) else "Auth required"
+    connected_tip = (
+        "BMW authorization is active and vehicle data can be retrieved."
+        if connected_state == "Connected"
+        else "BMW authorization is required before vehicle data can be retrieved."
+    )
+    data_fresh_state = "Stale" if "Stale" in (provider_state.get("chips") or []) else "Fresh"
+    data_fresh_tip = (
+        "Latest BMW vehicle data is older than expected and may not reflect the live car state."
+        if data_fresh_state == "Stale"
+        else "BMW vehicle data was updated recently."
+    )
+    status_chip_specs = [
+        ("🔐", connected_state, connected_tip),
+        ("📡", data_fresh_state, data_fresh_tip),
+        ("🚗", linked_label, linked_tip),
+        ("⏱", f"Updated {freshness_label}", "Time since the latest vehicle data update received from BMW."),
+    ]
+    status_chips_html = "".join(
+        "<span title='" + _esc_attr(tip) + "' style='display:inline-flex;align-items:center;gap:0.28rem;padding:0.20rem 0.45rem;"
+        "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:999px;"
+        "font-size:0.72rem;font-weight:650;'>"
+        + _esc_attr(icon)
+        + " "
+        + _esc_attr(label)
+        + "</span>"
+        for icon, label, tip in status_chip_specs
+    )
+    st.markdown(
+        "<div style='display:flex;gap:0.35rem;flex-wrap:wrap;margin:0.1rem 0 0.35rem 0;'>"
+        + status_chips_html
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    vehicle_options = []
+    for vehicle in vehicle_list:
+        vehicle_id = str(vehicle.get("vehicle_id") or "").strip()
+        if not vehicle_id:
+            continue
+        label = str(vehicle.get("display_name") or vehicle_id)
+        vehicle_options.append((label, vehicle_id))
+
+    if len(vehicle_options) == 1 and selected_vehicle_id != vehicle_options[0][1]:
+        selected_vehicle_id = vehicle_options[0][1]
+        st.success("1 vehicle linked. Set as active vehicle automatically.")
+
+    if len(vehicle_options) > 1:
+        option_ids = [v[1] for v in vehicle_options]
+        default_idx = option_ids.index(selected_vehicle_id) if selected_vehicle_id in option_ids else 0
+        selected_label = st.selectbox("Active BMW vehicle", options=[v[0] for v in vehicle_options], index=default_idx)
+        for label, vehicle_id in vehicle_options:
+            if label == selected_label:
+                selected_vehicle_id = vehicle_id
+                break
+        st.info("Multiple vehicles found, choose one")
+    elif cfg_ev_enabled and has_client_id and len(vehicle_options) == 0:
+        ui_warning("No BMW vehicles found")
+
+    if st.button("Refresh BMW data", key="btn_ev_manual_refresh_settings", type="secondary", help="Fetch latest BMW vehicle data now"):
+        correlation_id = _set_active_ui_request_context(UIActions.BMW_MANUAL_REFRESH)
+        try:
+            api_post(
+                "/v1/ev/manual_refresh",
+                {},
+                correlation_id=correlation_id,
+                action=UIActions.BMW_MANUAL_REFRESH,
+            )
+            st.success("EV refresh triggered.")
+        except Exception as exc:
+            st.error(f"EV refresh failed: {exc}")
+        finally:
+            _clear_active_ui_request_context()
+
+    if APP_DEBUG:
+        st.caption(f"Provider status: {provider_status.get('provider_status', 'unknown')}")
+        st.caption(f"Data status: {provider_status.get('data_status', 'unknown')}")
+        if first_vehicle:
+            st.caption(f"Linked vehicle: {first_vehicle.get('display_name') or '-'} · {first_vehicle.get('vehicle_id')}")
+            st.caption(f"Last vehicle update: {first_vehicle.get('last_update_ts')} · Freshness: {first_vehicle.get('freshness_seconds')}")
+        st.caption(f"Stream connected: {'yes' if provider_status.get('stream_connected') else 'no'}")
+
+
+    cfg_load_profile = [float(v) for v in effective_cfg["load_profile"]["load_profile_24h"]]
+
+    if st.session_state.get("_geo_success"):
+        st.success(st.session_state["_geo_success"])
+    if st.session_state.get("_geo_error"):
+        st.error(st.session_state["_geo_error"])
+    st.session_state["_cfg_ui_snapshot"] = {
+        "day_names": day_names,
+        "tariff_inputs": tariff_inputs,
+        "tariff_by_day": tariff_by_day,
+        "cfg_latitude": cfg_latitude,
+        "cfg_longitude": cfg_longitude,
+        "cfg_peak_price_input": cfg_peak_price_input,
+        "cfg_offpeak_price_input": cfg_offpeak_price_input,
+        "cfg_injection_price_input": cfg_injection_price_input,
+        "cfg_allow_injection_to_grid": cfg_allow_injection_to_grid,
+        "cfg_max_grid_import_kw": cfg_max_grid_import_kw,
+        "cfg_panel_wp": cfg_panel_wp,
+        "cfg_array_south_panels": cfg_array_south_panels,
+        "cfg_array_east_panels": cfg_array_east_panels,
+        "cfg_tilt_east_deg": cfg_tilt_east_deg,
+        "cfg_tilt_south_deg": cfg_tilt_south_deg,
+        "cfg_azimuth_east_deg": cfg_azimuth_east_deg,
+        "cfg_azimuth_south_deg": cfg_azimuth_south_deg,
+        "cfg_performance_ratio": cfg_performance_ratio,
+        "cfg_pv_calibration_factor_east": cfg_pv_calibration_factor_east,
+        "cfg_pv_calibration_factor_south": cfg_pv_calibration_factor_south,
+        "cfg_inverter_ac_kw_limit": cfg_inverter_ac_kw_limit,
+        "cfg_battery_kwh": cfg_battery_kwh,
+        "cfg_min_soc_percent": cfg_min_soc_percent,
+        "cfg_max_cutoff_soc_percent": cfg_max_cutoff_soc_percent,
+        "cfg_battery_max_charge_kw": cfg_battery_max_charge_kw,
+        "cfg_battery_max_discharge_kw": cfg_battery_max_discharge_kw,
+        "cfg_max_ac_charge_kw_hard_limit": cfg_max_ac_charge_kw_hard_limit,
+        "cfg_cc_enabled": bool(cfg_cc_enabled),
+        "cfg_cc_user": str(cfg_cc_user),
+        "cfg_cc_pass": str(cfg_cc_pass),
+        "cfg_ev_enabled": bool(cfg_ev_enabled),
+        "cfg_bmw_client_id": str(cfg_bmw_client_id),
+        "cfg_bmw_active_vehicle_id": str(selected_vehicle_id),
+        "cfg_petrol_price_eur_per_l": str(cfg_petrol_price_eur_per_l),
+        "cfg_petrol_consumption_l_per_100km": str(cfg_petrol_consumption_l_per_100km),
+        "cfg_ev_charge_deadline_time": str(cfg_ev_charge_deadline_time),
+        "cfg_load_profile": cfg_load_profile,
+        "saved_sat": bool((effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}).get("use_satellite_nowcast_0_6h", False)),
+        "cfg_max_grid_charge_power_kw": float(user_max_ac_kw),
+    }
+    current_settings_payload, settings_error = build_settings_payload(effective_cfg, valid_model_ids)
+    saved_settings_payload = normalize_effective_cfg_to_payload(effective_cfg, valid_model_ids)
+    settings_valid = settings_error is None and current_settings_payload is not None
+    if settings_valid:
+        current_payload_hash = json.dumps(current_settings_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        saved_payload_hash = json.dumps(saved_settings_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        settings_dirty = current_payload_hash != saved_payload_hash
+    else:
+        settings_dirty = True
+
+wm_latitude = float(st.session_state.get("loc_latitude", core.LATITUDE))
+wm_longitude = float(st.session_state.get("loc_longitude", core.LONGITUDE))
+wm_timezone = str(st.session_state.get("loc_timezone", core.TIMEZONE))
+
+model_options = {m.get("id"): m for m in weather_models_catalog if isinstance(m.get("id"), str)}
+available_ids = set(model_options.keys())
+
+saved = effective_cfg.get("weather_models_selected")
+if isinstance(saved, list):
+    saved_set = {str(x) for x in saved if isinstance(x, str)}
+else:
+    saved_set = set()
+
+initial_selected = (saved_set & available_ids) if saved_set else set()
+if not initial_selected:
+    initial_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
+
+current_mode = str(effective_cfg.get("forecast_mode", "auto")).strip().lower()
+mode_label_default = "Custom" if current_mode == "expert" else "Auto"
+
+def render_weather_models_panel() -> tuple[str, list[str], bool]:
+    st.markdown("#### Weather")
+    st.caption("Pick how tomorrow's weather is built.")
+    with st.container(border=True):
+            ui_mode_value = str(st.session_state.get("forecast_mode_select", "")).strip()
+            if ui_mode_value and ui_mode_value not in {"Auto", "Custom"}:
+                normalized_mode = str(ui_mode_value).strip().lower()
+                st.session_state["forecast_mode_select"] = "Custom" if normalized_mode == "expert" else "Auto"
+
+            forecast_mode_label_col, forecast_mode_select_col = st.columns([1.6, 2.4], vertical_alignment="center")
+            with forecast_mode_label_col:
+                st.markdown("**Forecast mode**")
+            with forecast_mode_select_col:
+                forecast_mode_label = st.selectbox(
+                    "Forecast mode",
+                    options=["Auto", "Custom"],
+                    index=0 if mode_label_default != "Custom" else 1,
+                    key="forecast_mode_select",
+                    label_visibility="collapsed",
+                    help=get_help("forecast_mode"),
+                )
+            forecast_mode = FORECAST_MODE_OPTIONS.get(forecast_mode_label, "auto")
+            weather_cfg = effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}
+            saved_sat = bool(weather_cfg.get("use_satellite_nowcast_0_6h", False))
+
+            auto_selected = set(auto_select_models_for_location(wm_latitude, wm_longitude, requested_days=1)) & available_ids
+            if not auto_selected:
+                auto_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
+
+            if forecast_mode == "auto":
+                _ = render_weather_models(
+                    weather_models_catalog,
+                    auto_selected,
+                    widget_key_prefix="wm_auto",
+                    disabled=True,
+                    auto_selected_models=auto_selected,
+                    show_auto_chips=True,
+                    show_checkboxes=False,
+                    show_capability_badges=True,
+                )
+                selected_models = []
+                sat_nowcast_for_run = should_use_satellite_nowcast_auto(
+                    latitude=wm_latitude,
+                    longitude=wm_longitude,
+                    timezone_name=wm_timezone,
+                    requested_days=1,
+                )
+                sat_cols = st.columns([2.6, 1.4], vertical_alignment="center")
+                with sat_cols[0]:
+                    st.markdown("Satellite nowcast (0–6h)")
+                with sat_cols[1]:
+                    nowcast_label = "Auto ON" if sat_nowcast_for_run else "Auto OFF"
+                    nowcast_tip = (
+                        "Auto turns this ON only when it can improve the next few daylight hours. "
+                        "It affects only the next 0–6 hours, not the full day."
+                    )
+                    st.markdown(f"<span title='{_esc(nowcast_tip)}'><b>{_esc(nowcast_label)}</b></span>", unsafe_allow_html=True)
+            else:
+                selected_models = render_weather_models(
+                    weather_models_catalog,
+                    initial_selected,
+                    widget_key_prefix="wm",
+                    show_auto_chips=False,
+                    show_checkboxes=True,
+                    show_capability_badges=True,
+                )
+                sat_nowcast_ui = st.checkbox(
+                    "Use satellite nowcast for the next 0–6 hours",
+                    value=saved_sat,
+                    key="use_sat_nowcast_expert",
+                    help=get_help("sat_nowcast"),
+                )
+                sat_nowcast_for_run = bool(sat_nowcast_ui)
+
+
+    return forecast_mode, selected_models, sat_nowcast_for_run
+
+
+def render_car_charger_panel() -> None:
+    st.markdown("##### Charger")
+    with st.container(border=True):
+            evse = get_evse_status()
+
+            enabled = bool(evse.get("enabled", False))
+            connected = bool(evse.get("connected", False))
+            plugged = bool(evse.get("is_plugged", False))
+            charging = bool(evse.get("is_charging", False))
+
+            status = str(evse.get("status") or "unknown")
+
+            # --- Modern status headline (single line) ---
+            ocpp_badge = "Connected \u2705" if connected else "Disconnected \u274C"
+            state_label = status if status else "unknown"
+            plugged_label = "Yes" if plugged else "No"
+            charging_label = "Yes" if charging else "No"
+
+            if connected:
+                st.markdown(
+                    f"**OCPP:** {ocpp_badge} · **State:** {state_label} · **Plugged:** {plugged_label} · **Charging:** {charging_label}"
+                )
+            else:
+                disconnected_tip = _esc_attr(
+                    "OCPP is not connected. Enable OCPP in FusionSolar installer mode and point it to this PC "
+                    "(LAN IP + backend port) using path /ocpp to use charger controls."
+                )
+                st.markdown(
+                    f"""
+                    <div style='display:inline-flex;align-items:center;gap:0.30rem;line-height:1.2;'>
+                      <span><strong>OCPP:</strong> {html.escape(ocpp_badge)} · <strong>State:</strong> {html.escape(state_label)}</span>
+                      <span class='pvbp-tip' tabindex='0' style='display:inline-flex;align-items:center;line-height:1;font-size:0.90rem;'>ℹ
+                        <span class='pvbp-tiptext'>{disconnected_tip}</span>
+                      </span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            # --- Controls (ONLY here, not top bar) ---
+            # Control only when feature enabled + connected + plugged
+            can_control = bool(enabled and connected and plugged)
+
+            btn_cols = st.columns(4, vertical_alignment="center")
+
+            btn_cols[0].button(
+                "Start",
+                type="secondary",
+                disabled=True,
+                key="btn_cc_start",
+                width="stretch",
+            )
+
+            btn_cols[1].button(
+                "Pause",
+                type="secondary",
+                disabled=True,
+                key="btn_cc_pause",
+                width="stretch",
+            )
+
+            resume_clicked = btn_cols[2].button(
+                "Resume",
+                type="primary",
+                disabled=(not can_control) or charging,
+                key="btn_cc_resume",
+                width="stretch",
+            )
+            if resume_clicked:
+                try:
+                    api_post("/v1/evse/resume", {}, action=UIActions.EVSE_RESUME)
+                    st.cache_data.clear()
+                    st.success("Resume command sent.")
+                except Exception as exc:
+                    log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:car_charger_resume", title="Frontend error: car charger resume", exc=exc, context={"action": UIActions.EVSE_RESUME, "endpoint": "/v1/evse/resume"})
+                    st.error(f"Resume failed: {exc}")
+
+            stop_clicked = btn_cols[3].button(
+                "Stop",
+                type="secondary",
+                disabled=(not can_control) or (not charging),
+                key="btn_cc_stop",
+                width="stretch",
+            )
+            if stop_clicked:
+                try:
+                    api_post("/v1/evse/stop", {}, action=UIActions.EVSE_STOP)
+                    st.cache_data.clear()
+                    st.success("Stop command sent.")
+                except Exception as exc:
+                    log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:car_charger_stop", title="Frontend error: car charger stop", exc=exc, context={"action": UIActions.EVSE_STOP, "endpoint": "/v1/evse/stop"})
+                    st.error(f"Stop failed: {exc}")
+
+def render_ev_car_status_panel(container=None) -> None:
+    card = container if container is not None else st.container()
+
+    def _render_fallback_card(message: str, chips: list[str] | None = None, helper: str = "") -> None:
+        chips_html = ""
+        if chips:
+            chips_html = "".join(
+                "<span style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
+                "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
+                "border-radius:999px;font-size:0.72rem;font-weight:650;'>"
+                f"{_esc_attr(chip)}</span>"
+                for chip in chips[:2]
+            )
+        helper_html = f"<div style='margin-top:0.36rem;font-size:0.74rem;opacity:0.72;'>{_esc_attr(helper)}</div>" if helper else ""
         card.markdown(
             (
                 "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.78rem 0.82rem;"
                 "background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));min-width:245px;'>"
                 "<div style='display:flex;align-items:center;justify-content:space-between;gap:0.42rem;'>"
                 "<div style='font-size:0.90rem;font-weight:760;letter-spacing:0.03em;opacity:0.95;'>CAR STATUS</div>"
-                "<div style='display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;'>"
-                f"{freshness_chip}{status_chip}"
-                "</div></div>"
-                f"<div style='margin-top:0.40rem;font-size:0.96rem;font-weight:700;'>{_esc_attr(headline)}</div>"
-                "<div style='margin-top:0.45rem;height:8px;border-radius:999px;overflow:hidden;background:rgba(255,255,255,0.12);'>"
-                f"<div style='height:100%;width:{soc_width:.1f}%;background:linear-gradient(90deg,#d62828 0%,#f4a261 45%,#52b788 70%,#2a9d8f 100%);'></div>"
+                f"<div style='display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;'>{chips_html}</div>"
                 "</div>"
-                f"<div style='margin-top:0.30rem;font-size:0.70rem;opacity:0.82;'>State of charge: {f'{soc_pct:.0f}%' if soc_pct is not None else 'Waiting for BMW SOC'}</div>"
-                "<div style='margin-top:0.55rem;display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.40rem;'>"
-                f"{metric_html}"
-                "</div>"
-                "<div style='margin-top:0.48rem;font-size:0.69rem;opacity:0.76;line-height:1.35;'>"
-                + " · ".join(_esc_attr(part) for part in helper_parts if part)
-                + "</div></div>"
+                f"<div style='margin-top:0.45rem;font-size:0.90rem;opacity:0.88;'>{_esc_attr(message)}</div>"
+                f"{helper_html}</div>"
             ),
             unsafe_allow_html=True,
         )
 
-        if APP_DEBUG:
-            with card.expander("EV diagnostics", expanded=False):
-                st.json({
-                    "ev_status": ev_status,
-                    "bmw_ev_diagnostics": ev_status.get("bmw_ev_diagnostics"),
-                    "field_states": ev_status.get("field_states"),
-                }, expanded=False)
+    fetch_error = ""
+    ev_status: dict = {}
+    try:
+        ev_status = api_get("/v1/ev/status", action=UIActions.EV_STATUS)
+    except Exception as exc:
+        fetch_error = str(exc)
+        ev_status = {}
+
+    ev_cfg = (effective_cfg or {}).get("ev_vehicle_data", {}) or {}
+    if not bool(ev_cfg.get("enabled", ev_cfg.get("bmw_enabled", False))):
+        _render_fallback_card("EV integration is disabled.", chips=["BMW disabled"], helper="Enable BMW in settings to show car status.")
+        return
+    if not ev_status:
+        _render_fallback_card("EV status temporarily unavailable.", chips=["Waiting for EV data"], helper=fetch_error or "Unable to refresh EV status right now.")
+        return
+
+    soc_pct = _safe_float(ev_status.get("soc_pct"), float("nan"))
+    soc_pct = max(0.0, min(100.0, soc_pct)) if pd.notna(soc_pct) else None
+    is_plugged = ev_status.get("is_plugged")
+    is_charging = ev_status.get("is_charging")
+    freshness_label = str(ev_status.get("freshness_label") or "BMW freshness unknown")
+
+    if is_charging is True:
+        status_chip_text = "Charging"
+    elif is_plugged is True:
+        status_chip_text = "Plugged"
+    elif is_plugged is False:
+        status_chip_text = "Unplugged"
+    else:
+        status_chip_text = "Unknown"
+    freshness_chip = (
+        "<span style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
+        "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
+        f"border-radius:999px;font-size:0.72rem;font-weight:650;'>⏱ {_esc_attr(freshness_label)}</span>"
+    )
+    status_chip = (
+        "<span style='display:inline-flex;align-items:center;gap:0.24rem;padding:0.16rem 0.40rem;"
+        "background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);"
+        f"border-radius:999px;font-size:0.72rem;font-weight:650;'>🚗 {_esc_attr(status_chip_text)}</span>"
+    )
+
+    range_state = ((ev_status.get("field_states") or {}).get("range_km"))
+    if range_state == "bmw_missing":
+        range_label = "BMW did not provide range"
+    elif range_state == "setup_incomplete":
+        range_label = "Range not available from current BMW setup"
+    else:
+        range_label = format_ev_km(ev_status.get("range_km"), unknown_label="Unavailable")
+
+    deadline_state = ev_status.get("deadline_state")
+    deadline_label = str(ev_status.get("deadline_time") or "").strip() if deadline_state == "configured" else "Not set"
+
+    power_state = ((ev_status.get("field_states") or {}).get("charge_power_kw"))
+    if power_state == "not_charging":
+        charge_power_label = "Not charging"
+    elif power_state == "waiting_for_bmw_power":
+        charge_power_label = "BMW did not provide charge power"
+    elif power_state == "setup_incomplete":
+        charge_power_label = "Charge power not available from current BMW setup"
+    elif power_state == "waiting_for_bmw_status":
+        charge_power_label = "Waiting for BMW status"
+    else:
+        charge_power_label = format_ev_kw(ev_status.get("charge_power_kw"), unknown_label="Unavailable")
+
+    full_state = ((ev_status.get("field_states") or {}).get("expected_full_charge_ts"))
+    if full_state == "ready":
+        expected_full_label = format_ev_datetime(ev_status.get("expected_full_charge_ts"), unknown_label="Unavailable")
+    elif full_state == "waiting_for_bmw_eta":
+        expected_full_label = "Waiting for BMW data"
+    elif full_state == "waiting_for_power_limit":
+        expected_full_label = "Waiting for BMW power limit"
+    elif full_state == "waiting_for_soc":
+        expected_full_label = "Waiting for BMW SOC"
+    elif full_state == "not_charging":
+        expected_full_label = "Not charging"
+    elif full_state == "not_plugged":
+        expected_full_label = "Not plugged"
+    elif full_state == "waiting_for_bmw_status":
+        expected_full_label = "Waiting for BMW data"
+    elif full_state == "setup_incomplete":
+        expected_full_label = "Not available from current BMW setup"
+    else:
+        expected_full_label = "Unavailable"
+
+    if soc_pct is None:
+        headline = "Battery status unavailable"
+    else:
+        status_text = "charging now" if is_charging is True else "plugged in, waiting" if is_plugged is True else "not plugged in" if is_plugged is False else "waiting for BMW status"
+        range_km = _safe_float(ev_status.get("range_km"), float("nan"))
+        if pd.notna(range_km):
+            headline = f"{soc_pct:.0f}% / {range_km:.0f} km · {status_text}"
+        else:
+            headline = f"{soc_pct:.0f}% battery · {status_text}"
+
+    metric_items = [
+        ("Plugged in", format_ev_bool(is_plugged, true_label="Yes", false_label="No", unknown_label="Unknown")),
+        ("Charging now", "Charging status not available from current BMW setup" if ((ev_status.get("field_states") or {}).get("charging_setup") != "ready" and is_charging is None) else format_ev_bool(is_charging, true_label="Yes", false_label="No", unknown_label="BMW did not provide charging status")),
+        ("Charge power", charge_power_label),
+        ("Full charge at", expected_full_label),
+        ("Deadline", deadline_label),
+        ("Range", range_label),
+    ]
+    metric_html = "".join(
+        "<div style='border:1px solid rgba(255,255,255,0.10);border-radius:10px;padding:0.42rem 0.48rem;background:rgba(255,255,255,0.03);'>"
+        f"<div style='font-size:0.66rem;opacity:0.72;text-transform:uppercase;letter-spacing:0.05em;'>{_esc_attr(k)}</div>"
+        f"<div style='margin-top:0.12rem;font-size:0.85rem;font-weight:700;'>{_esc_attr(val)}</div>"
+        "</div>"
+        for k, val in metric_items
+    )
+
+    helper_parts = []
+    helper_parts.append(f"Last BMW update freshness: {freshness_label}")
+    power_source = str(ev_status.get("charge_power_source") or "unavailable")
+    if power_source == "bmw":
+        helper_parts.append("Power from BMW telematics")
+    for warning in (ev_status.get("warnings") or []):
+        helper_parts.append(str(warning))
+
+    soc_width = soc_pct if soc_pct is not None else 0.0
+    card.markdown(
+        (
+            "<div style='border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:0.78rem 0.82rem;"
+            "background:linear-gradient(140deg, rgba(43,48,58,0.9), rgba(20,24,31,0.85));min-width:245px;'>"
+            "<div style='display:flex;align-items:center;justify-content:space-between;gap:0.42rem;'>"
+            "<div style='font-size:0.90rem;font-weight:760;letter-spacing:0.03em;opacity:0.95;'>CAR STATUS</div>"
+            "<div style='display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;'>"
+            f"{freshness_chip}{status_chip}"
+            "</div></div>"
+            f"<div style='margin-top:0.40rem;font-size:0.96rem;font-weight:700;'>{_esc_attr(headline)}</div>"
+            "<div style='margin-top:0.45rem;height:8px;border-radius:999px;overflow:hidden;background:rgba(255,255,255,0.12);'>"
+            f"<div style='height:100%;width:{soc_width:.1f}%;background:linear-gradient(90deg,#d62828 0%,#f4a261 45%,#52b788 70%,#2a9d8f 100%);'></div>"
+            "</div>"
+            f"<div style='margin-top:0.30rem;font-size:0.70rem;opacity:0.82;'>State of charge: {f'{soc_pct:.0f}%' if soc_pct is not None else 'Waiting for BMW SOC'}</div>"
+            "<div style='margin-top:0.55rem;display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.40rem;'>"
+            f"{metric_html}"
+            "</div>"
+            "<div style='margin-top:0.48rem;font-size:0.69rem;opacity:0.76;line-height:1.35;'>"
+            + " · ".join(_esc_attr(part) for part in helper_parts if part)
+            + "</div></div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+    if APP_DEBUG:
+        with card.expander("EV diagnostics", expanded=False):
+            st.json({
+                "ev_status": ev_status,
+                "bmw_ev_diagnostics": ev_status.get("bmw_ev_diagnostics"),
+                "field_states": ev_status.get("field_states"),
+            }, expanded=False)
 
 
-    forecast_mode, selected_models, sat_nowcast_for_run = render_weather_models_panel()
+forecast_mode, selected_models, sat_nowcast_for_run = render_weather_models_panel()
 
-    with tab_car:
-        st.header("Car & Charger")
-        st.caption("EV status first, charger actions second.")
-        render_ev_car_status_panel(st.container())
-        st.markdown("<div style='height:0.65rem;'></div>", unsafe_allow_html=True)
-        render_car_charger_panel()
+with tab_car:
+    st.header("Car & Charger")
+    st.caption("EV status first, charger actions second.")
+    render_ev_car_status_panel(st.container())
+    st.markdown("<div style='height:0.65rem;'></div>", unsafe_allow_html=True)
+    render_car_charger_panel()
 
+with tab_inputs:
     cardata_readiness = summarize_cardata_readiness(
         ev_enabled=bool(st.session_state.get("cfg_ev_enabled", False)),
         has_client_id=bool(str(st.session_state.get("cfg_bmw_client_id", "")).strip()),
@@ -4951,155 +4952,156 @@ with tab_inputs:
                 st.session_state["confirm_reset_repo_defaults_open"] = False
                 st.rerun()
 
-    with tab_errors:
-        st.header("Errors")
+with tab_errors:
+    st.header("Errors")
+    unresolved_count = 0
+    try:
+        unresolved = api_get("/v1/errors?limit=0&include_fixed=false", action=UIActions.ERRORS_LIST).get("items", [])
+        unresolved_count = len(unresolved)
+    except Exception:
         unresolved_count = 0
+
+    error_logging_label = f"Error logging 🔴{unresolved_count}" if unresolved_count > 0 else "Error logging"
+    with st.expander(error_logging_label, expanded=True):
+        error_items: list[dict] = []
         try:
-            unresolved = api_get("/v1/errors?limit=0&include_fixed=false", action=UIActions.ERRORS_LIST).get("items", [])
-            unresolved_count = len(unresolved)
+            error_items = api_get("/v1/errors?limit=0&include_fixed=true", action=UIActions.ERRORS_LIST).get("items", [])
         except Exception:
-            unresolved_count = 0
+            st.info("Error logging is currently unreachable.")
+            error_items = []
 
-        error_logging_label = f"Error logging 🔴{unresolved_count}" if unresolved_count > 0 else "Error logging"
-        with st.expander(error_logging_label, expanded=True):
-            error_items: list[dict] = []
-            try:
-                error_items = api_get("/v1/errors?limit=0&include_fixed=true", action=UIActions.ERRORS_LIST).get("items", [])
-            except Exception:
-                st.info("Error logging is currently unreachable.")
-                error_items = []
+    if error_items:
+        st.session_state.setdefault("err_delete_arm", None)
 
-        if error_items:
-            st.session_state.setdefault("err_delete_arm", None)
+        def _error_sort_key(item: dict) -> tuple[str, str]:
+            return (str(item.get("created_at_utc") or ""), str(item.get("error_id") or ""))
 
-            def _error_sort_key(item: dict) -> tuple[str, str]:
-                return (str(item.get("created_at_utc") or ""), str(item.get("error_id") or ""))
+        sorted_items = sorted(error_items, key=_error_sort_key, reverse=True)
 
-            sorted_items = sorted(error_items, key=_error_sort_key, reverse=True)
+        header_refresh_col, header_filter_col, header_count_col = st.columns([1.2, 2.1, 1.2], vertical_alignment="center")
+        with header_refresh_col:
+            refresh_errors = st.button("Refresh errors", key="refresh_errors_btn", width="stretch")
+        with header_filter_col:
+            filter_label = st.radio(
+                "Show",
+                options=["Open", "Resolved", "All"],
+                horizontal=True,
+                key="error_filter_mode",
+                index=0,
+                label_visibility="collapsed",
+            )
+        if refresh_errors:
+            st.session_state["err_delete_arm"] = None
 
-            header_refresh_col, header_filter_col, header_count_col = st.columns([1.2, 2.1, 1.2], vertical_alignment="center")
-            with header_refresh_col:
-                refresh_errors = st.button("Refresh errors", key="refresh_errors_btn", width="stretch")
-            with header_filter_col:
-                filter_label = st.radio(
-                    "Show",
-                    options=["Open", "Resolved", "All"],
-                    horizontal=True,
-                    key="error_filter_mode",
-                    index=0,
-                    label_visibility="collapsed",
-                )
-            if refresh_errors:
-                st.session_state["err_delete_arm"] = None
+        if filter_label == "Open":
+            filtered_items = [item for item in sorted_items if not bool(item.get("fixed", 0))]
+        elif filter_label == "Resolved":
+            filtered_items = [item for item in sorted_items if bool(item.get("fixed", 0))]
+        else:
+            filtered_items = sorted_items
 
+        open_count = sum(1 for item in sorted_items if not bool(item.get("fixed", 0)))
+        resolved_count = sum(1 for item in sorted_items if bool(item.get("fixed", 0)))
+        with header_count_col:
             if filter_label == "Open":
-                filtered_items = [item for item in sorted_items if not bool(item.get("fixed", 0))]
+                st.caption(f"{open_count} open")
             elif filter_label == "Resolved":
-                filtered_items = [item for item in sorted_items if bool(item.get("fixed", 0))]
+                st.caption(f"{resolved_count} resolved")
             else:
-                filtered_items = sorted_items
+                st.caption(f"{len(sorted_items)} total")
 
-            open_count = sum(1 for item in sorted_items if not bool(item.get("fixed", 0)))
-            resolved_count = sum(1 for item in sorted_items if bool(item.get("fixed", 0)))
-            with header_count_col:
-                if filter_label == "Open":
-                    st.caption(f"{open_count} open")
-                elif filter_label == "Resolved":
-                    st.caption(f"{resolved_count} resolved")
+        if not filtered_items:
+            if filter_label == "Open":
+                st.info("No open errors.")
+            elif filter_label == "Resolved":
+                st.info("No resolved errors.")
+            else:
+                st.info("No errors found.")
+
+        for item in filtered_items:
+            error_id = str(item.get("error_id", ""))
+            ts_raw = str(item.get("created_at_utc", ""))
+            ts_compact = ts_raw.replace("T", " ").replace("Z", " UTC")
+            source_txt = str(item.get("source", ""))
+            where_txt = str(item.get("where", ""))
+            title_txt = str(item.get("title", ""))
+            fixed_val = bool(item.get("fixed", 0))
+            detail_open_key = f"err_detail_open_{error_id}"
+            st.session_state.setdefault(detail_open_key, False)
+
+            with st.container(border=True):
+                title_col, badge_col = st.columns([7.4, 2.6], vertical_alignment="center")
+                title_col.markdown(f"**{title_txt or 'Untitled error'}**")
+                if fixed_val:
+                    badge_col.caption("Resolved \u2705")
                 else:
-                    st.caption(f"{len(sorted_items)} total")
+                    badge_col.write("")
 
-            if not filtered_items:
-                if filter_label == "Open":
-                    st.info("No open errors.")
-                elif filter_label == "Resolved":
-                    st.info("No resolved errors.")
-                else:
-                    st.info("No errors found.")
+                meta_line = f"{ts_compact or '—'} · {source_txt or '—'} · {where_txt or '—'}"
+                st.caption(meta_line)
 
-            for item in filtered_items:
-                error_id = str(item.get("error_id", ""))
-                ts_raw = str(item.get("created_at_utc", ""))
-                ts_compact = ts_raw.replace("T", " ").replace("Z", " UTC")
-                source_txt = str(item.get("source", ""))
-                where_txt = str(item.get("where", ""))
-                title_txt = str(item.get("title", ""))
-                fixed_val = bool(item.get("fixed", 0))
-                detail_open_key = f"err_detail_open_{error_id}"
-                st.session_state.setdefault(detail_open_key, False)
+                action_view, action_fixed, action_delete = st.columns([1.25, 1.25, 1.0], gap="small")
+                with action_view:
+                    if st.button(
+                        "🔎 View details",
+                        key=f"err_detail_toggle_{error_id}",
+                        width="stretch",
+                    ):
+                        st.session_state[detail_open_key] = not st.session_state.get(detail_open_key, False)
+                        st.rerun()
 
-                with st.container(border=True):
-                    title_col, badge_col = st.columns([7.4, 2.6], vertical_alignment="center")
-                    title_col.markdown(f"**{title_txt or 'Untitled error'}**")
-                    if fixed_val:
-                        badge_col.caption("Resolved \u2705")
+                with action_fixed:
+                    fixed_target = not fixed_val
+                    fixed_label = "↩ Mark open" if fixed_val else "\u2705 Mark resolved"
+                    if st.button(fixed_label, key=f"err_fixed_btn_{error_id}", width="stretch"):
+                        api_post(f"/v1/errors/{error_id}/fixed", {"fixed": fixed_target}, action=UIActions.ERROR_MARK_FIXED)
+                        st.session_state["err_delete_arm"] = None
+                        st.rerun()
+
+                armed_id = st.session_state.get("err_delete_arm")
+                with action_delete:
+                    if armed_id != error_id:
+                        if st.button("\u274C Dismiss", key=f"err_del_arm_{error_id}", width="stretch"):
+                            st.session_state["err_delete_arm"] = error_id
+                            st.rerun()
                     else:
-                        badge_col.write("")
-
-                    meta_line = f"{ts_compact or '—'} · {source_txt or '—'} · {where_txt or '—'}"
-                    st.caption(meta_line)
-
-                    action_view, action_fixed, action_delete = st.columns([1.25, 1.25, 1.0], gap="small")
-                    with action_view:
-                        if st.button(
-                            "🔎 View details",
-                            key=f"err_detail_toggle_{error_id}",
-                            width="stretch",
-                        ):
-                            st.session_state[detail_open_key] = not st.session_state.get(detail_open_key, False)
-                            st.rerun()
-
-                    with action_fixed:
-                        fixed_target = not fixed_val
-                        fixed_label = "↩ Mark open" if fixed_val else "\u2705 Mark resolved"
-                        if st.button(fixed_label, key=f"err_fixed_btn_{error_id}", width="stretch"):
-                            api_post(f"/v1/errors/{error_id}/fixed", {"fixed": fixed_target}, action=UIActions.ERROR_MARK_FIXED)
-                            st.session_state["err_delete_arm"] = None
-                            st.rerun()
-
-                    armed_id = st.session_state.get("err_delete_arm")
-                    with action_delete:
-                        if armed_id != error_id:
-                            if st.button("\u274C Dismiss", key=f"err_del_arm_{error_id}", width="stretch"):
-                                st.session_state["err_delete_arm"] = error_id
+                        confirm_col, cancel_col = st.columns(2, gap="small")
+                        with confirm_col:
+                            if st.button("Confirm", key=f"err_del_confirm_{error_id}", type="primary", width="stretch"):
+                                api_delete(f"/v1/errors/{error_id}")
+                                st.session_state["err_delete_arm"] = None
+                                st.session_state[detail_open_key] = False
                                 st.rerun()
-                        else:
-                            confirm_col, cancel_col = st.columns(2, gap="small")
-                            with confirm_col:
-                                if st.button("Confirm", key=f"err_del_confirm_{error_id}", type="primary", width="stretch"):
-                                    api_delete(f"/v1/errors/{error_id}")
-                                    st.session_state["err_delete_arm"] = None
-                                    st.session_state[detail_open_key] = False
-                                    st.rerun()
-                            with cancel_col:
-                                if st.button("Cancel", key=f"err_del_cancel_{error_id}", width="stretch"):
-                                    st.session_state["err_delete_arm"] = None
-                                    st.rerun()
+                        with cancel_col:
+                            if st.button("Cancel", key=f"err_del_cancel_{error_id}", width="stretch"):
+                                st.session_state["err_delete_arm"] = None
+                                st.rerun()
 
-                    if st.session_state.get(detail_open_key):
-                        try:
-                            detail = api_get(f"/v1/errors/{error_id}", action=UIActions.ERROR_DETAIL)
-                            detail_title = str(detail.get("title") or title_txt or "")
-                            detail_time = str(detail.get("created_at_utc") or ts_raw or "")
-                            detail_time_compact = detail_time.replace("T", " ").replace("Z", " UTC")
-                            detail_source = str(detail.get("source") or source_txt or "")
-                            detail_where = str(detail.get("where") or where_txt or "")
-                            detail_body = str(detail.get("body") or "")
-                            detail_trace = str(detail.get("traceback") or detail.get("technical_details") or "")
-                            context_json = detail.get("context_json")
+                if st.session_state.get(detail_open_key):
+                    try:
+                        detail = api_get(f"/v1/errors/{error_id}", action=UIActions.ERROR_DETAIL)
+                        detail_title = str(detail.get("title") or title_txt or "")
+                        detail_time = str(detail.get("created_at_utc") or ts_raw or "")
+                        detail_time_compact = detail_time.replace("T", " ").replace("Z", " UTC")
+                        detail_source = str(detail.get("source") or source_txt or "")
+                        detail_where = str(detail.get("where") or where_txt or "")
+                        detail_body = str(detail.get("body") or "")
+                        detail_trace = str(detail.get("traceback") or detail.get("technical_details") or "")
+                        context_json = detail.get("context_json")
 
-                            st.caption(
-                                f"Title: {detail_title or '—'} · Time: {detail_time_compact or '—'} · "
-                                f"Source: {detail_source or '—'} · Where: {detail_where or '—'}"
-                            )
-                            st.code(detail_body, language="text")
-                            if detail_trace:
-                                st.code(detail_trace, language="text")
-                            if context_json not in (None, "", {}):
-                                with st.expander("Context"):
-                                    st.code(str(context_json), language="json")
-                        except Exception as exc:
-                            st.caption(f"Could not load details: {exc}")
+                        st.caption(
+                            f"Title: {detail_title or '—'} · Time: {detail_time_compact or '—'} · "
+                            f"Source: {detail_source or '—'} · Where: {detail_where or '—'}"
+                        )
+                        st.code(detail_body, language="text")
+                        if detail_trace:
+                            st.code(detail_trace, language="text")
+                        if context_json not in (None, "", {}):
+                            with st.expander("Context"):
+                                st.code(str(context_json), language="json")
+                    except Exception as exc:
+                        st.caption(f"Could not load details: {exc}")
+with tab_inputs:
     if save_clicked:
         if not settings_valid:
             st.error(settings_error or "Could not save settings.")
@@ -5107,9 +5109,9 @@ with tab_inputs:
             save_settings_payload(current_settings_payload)
 
 
-    with tab_history:
-        st.header("History")
-        render_history_fragment()
+with tab_history:
+    st.header("History")
+    render_history_fragment()
 if True:
     run_correlation_id: str | None = None
     try:
