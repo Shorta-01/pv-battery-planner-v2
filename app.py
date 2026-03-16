@@ -2343,6 +2343,15 @@ def get_evse_status() -> dict:
         return {"connected": False, "is_plugged": False, "is_charging": False, "status": "unknown", "error": "unreachable"}
 
 
+@st.cache_data(ttl=20, show_spinner=False)
+def get_errors_list(include_fixed: bool) -> list[dict]:
+    try:
+        endpoint = f"/v1/errors?limit=0&include_fixed={'true' if include_fixed else 'false'}"
+        return api_get(endpoint, action=UIActions.ERRORS_LIST).get("items", [])
+    except Exception:
+        return []
+
+
 def df_from_split(payload: dict) -> pd.DataFrame:
     return pd.read_json(StringIO(json.dumps(payload)), orient="split")
 
@@ -2366,6 +2375,7 @@ def _parse_json_dict_maybe(payload: object) -> dict:
     return {}
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.DataFrame:
     history_columns = [
         "run_id",
@@ -3708,10 +3718,124 @@ if "last_kwh" not in st.session_state:
 if "ui_mode" not in st.session_state:
     st.session_state["ui_mode"] = "User"
 
-(tab_inputs, tab_results, tab_car, tab_settings, tab_history, tab_errors) = st.tabs(
-    ["Inputs", "Results", "Car & Charger", "Settings", "History", "Errors"]
-)
-with tab_inputs:
+effective_cfg = backend_settings.get("config", core.DEFAULT_CONFIG)
+loc_cfg = effective_cfg["location"]
+apply_pending_location_state()
+apply_location_lookup_result(effective_cfg)
+loc_structured = loc_cfg.get("address_structured", {}) if isinstance(loc_cfg.get("address_structured"), dict) else {}
+if "loc_address_query_display" not in st.session_state:
+    st.session_state["loc_address_query_display"] = str(loc_cfg.get("address_query", ""))
+if "loc_latitude" not in st.session_state:
+    st.session_state["loc_latitude"] = _safe_float(loc_cfg.get("latitude"), core.LATITUDE)
+if "loc_longitude" not in st.session_state:
+    st.session_state["loc_longitude"] = _safe_float(loc_cfg.get("longitude"), core.LONGITUDE)
+if "loc_timezone" not in st.session_state:
+    st.session_state["loc_timezone"] = str(loc_cfg.get("timezone", core.TIMEZONE))
+if "loc_street" not in st.session_state:
+    st.session_state["loc_street"] = str(loc_structured.get("street", ""))
+if "loc_house_number" not in st.session_state:
+    st.session_state["loc_house_number"] = str(loc_structured.get("house_number", ""))
+if "loc_postal_code" not in st.session_state:
+    st.session_state["loc_postal_code"] = str(loc_structured.get("postal_code", ""))
+if "loc_city" not in st.session_state:
+    st.session_state["loc_city"] = str(loc_structured.get("city", ""))
+if "loc_country" not in st.session_state:
+    st.session_state["loc_country"] = str(loc_structured.get("country", ""))
+if "loc_lookup_validated" not in st.session_state:
+    st.session_state["loc_lookup_validated"] = False
+
+soc_percent = float(st.session_state.get("last_soc", 45.0))
+yesterday_kwh = float(st.session_state.get("last_kwh", 18.0))
+run_clicked = False
+save_clicked = False
+settings_valid = True
+settings_dirty = False
+settings_error = None
+current_settings_payload = {}
+buffer_percent = 0.0
+ensemble_method = "weighted"
+user_max_ac_kw = float((effective_cfg.get("battery", {}) or {}).get("max_grid_charge_power_kw", core.MAX_GRID_CHARGE_POWER_KW))
+
+TOP_LEVEL_TABS = ["Inputs", "Results", "Car & Charger", "Settings", "History", "Errors"]
+TAB_HELP_DISABLED = {
+    "Results": "Run forecast first",
+    "History": "No saved runs yet",
+}
+
+
+def _has_renderable_result() -> bool:
+    current_result = st.session_state.get("last_run_result")
+    status_raw = str((current_result or {}).get("status") or "").strip().lower()
+    expected = {"weather", "pv", "detail", "flows", "soc", "sunrise", "sunset", "target_date"}
+    return isinstance(current_result, dict) and expected.issubset(current_result.keys()) and status_raw in {"ok", "degraded"}
+
+
+def _history_has_rows() -> bool:
+    history_df = run_history_from_backend(show_all_runs=False, days=365)
+    return isinstance(history_df, pd.DataFrame) and not history_df.empty
+
+
+def compute_top_nav_availability() -> dict[str, bool]:
+    return {
+        "Inputs": True,
+        "Results": _has_renderable_result(),
+        "Car & Charger": True,
+        "Settings": True,
+        "History": _history_has_rows(),
+        "Errors": True,
+    }
+
+
+def render_top_nav(active_tab: str, availability: dict[str, bool]) -> str:
+    st.markdown("#### Navigation")
+    cols = st.columns(len(TOP_LEVEL_TABS))
+    selected = active_tab
+    for idx, tab_name in enumerate(TOP_LEVEL_TABS):
+        enabled = bool(availability.get(tab_name, False))
+        help_text = None if enabled else TAB_HELP_DISABLED.get(tab_name)
+        with cols[idx]:
+            if st.button(
+                tab_name,
+                key=f"top_nav_{tab_name}",
+                type="primary" if tab_name == active_tab else "secondary",
+                use_container_width=True,
+                disabled=not enabled,
+                help=help_text,
+            ) and enabled:
+                selected = tab_name
+    return selected
+
+
+if "active_top_tab" not in st.session_state:
+    st.session_state["active_top_tab"] = "Inputs"
+if "previous_top_tab" not in st.session_state:
+    st.session_state["previous_top_tab"] = st.session_state["active_top_tab"]
+if "last_car_entry_refresh_ts" not in st.session_state:
+    st.session_state["last_car_entry_refresh_ts"] = 0.0
+
+nav_availability = compute_top_nav_availability()
+if not nav_availability.get(st.session_state["active_top_tab"], False):
+    st.session_state["active_top_tab"] = "Inputs"
+
+st.session_state["active_top_tab"] = render_top_nav(st.session_state["active_top_tab"], nav_availability)
+active_top_tab = str(st.session_state.get("active_top_tab", "Inputs"))
+previous_top_tab = str(st.session_state.get("previous_top_tab", active_top_tab))
+tab_changed = active_top_tab != previous_top_tab
+
+if active_top_tab == "Car & Charger" and (tab_changed or previous_top_tab != "Car & Charger"):
+    cooldown_seconds = 45.0
+    now_ts = time.time()
+    ev_enabled_now = bool(((backend_settings.get("config") or {}).get("ev_vehicle_data") or {}).get("enabled", False))
+    if ev_enabled_now and (now_ts - float(st.session_state.get("last_car_entry_refresh_ts", 0.0) or 0.0) >= cooldown_seconds):
+        try:
+            api_post("/v1/ev/manual_refresh", {}, action=UIActions.BMW_MANUAL_REFRESH)
+        except Exception:
+            pass
+        st.session_state["last_car_entry_refresh_ts"] = now_ts
+
+st.session_state["previous_top_tab"] = active_top_tab
+
+if active_top_tab == "Inputs":
     st.header("Inputs")
     st.caption("Quick setup for tomorrow")
     effective_cfg = backend_settings.get("config", core.DEFAULT_CONFIG)
@@ -3765,7 +3889,7 @@ with tab_inputs:
             if yesterday_kwh < 2.0 or yesterday_kwh > 60.0:
                 st.error("Run forecast is blocked: Yesterday total consumption must be between 2.0 and 60.0 kWh. Enter a typical day such as 12.0 kWh if yesterday was unusual.")
 
-with tab_settings:
+if active_top_tab == "Settings":
     st.header("Settings")
     st.markdown("#### General")
     has_lookup_details = bool(st.session_state.get("loc_lookup_validated")) and isinstance(st.session_state.get("loc_latitude"), (float, int)) and isinstance(
@@ -4744,14 +4868,14 @@ def render_ev_car_status_panel(container=None) -> None:
 
 forecast_mode, selected_models, sat_nowcast_for_run = render_weather_models_panel()
 
-with tab_car:
+if active_top_tab == "Car & Charger":
     st.header("Car & Charger")
     st.caption("EV status first, charger actions second.")
     render_ev_car_status_panel(st.container())
     st.markdown("<div style='height:0.65rem;'></div>", unsafe_allow_html=True)
     render_car_charger_panel()
 
-with tab_inputs:
+if active_top_tab == "Inputs":
     cardata_readiness = summarize_cardata_readiness(
         ev_enabled=bool(st.session_state.get("cfg_ev_enabled", False)),
         has_client_id=bool(str(st.session_state.get("cfg_bmw_client_id", "")).strip()),
@@ -4952,11 +5076,11 @@ with tab_inputs:
                 st.session_state["confirm_reset_repo_defaults_open"] = False
                 st.rerun()
 
-with tab_errors:
+if active_top_tab == "Errors":
     st.header("Errors")
     unresolved_count = 0
     try:
-        unresolved = api_get("/v1/errors?limit=0&include_fixed=false", action=UIActions.ERRORS_LIST).get("items", [])
+        unresolved = get_errors_list(include_fixed=False)
         unresolved_count = len(unresolved)
     except Exception:
         unresolved_count = 0
@@ -4965,7 +5089,7 @@ with tab_errors:
     with st.expander(error_logging_label, expanded=True):
         error_items: list[dict] = []
         try:
-            error_items = api_get("/v1/errors?limit=0&include_fixed=true", action=UIActions.ERRORS_LIST).get("items", [])
+            error_items = get_errors_list(include_fixed=True)
         except Exception:
             st.info("Error logging is currently unreachable.")
             error_items = []
@@ -5055,6 +5179,7 @@ with tab_errors:
                     fixed_label = "↩ Mark open" if fixed_val else "\u2705 Mark resolved"
                     if st.button(fixed_label, key=f"err_fixed_btn_{error_id}", width="stretch"):
                         api_post(f"/v1/errors/{error_id}/fixed", {"fixed": fixed_target}, action=UIActions.ERROR_MARK_FIXED)
+                        get_errors_list.clear()
                         st.session_state["err_delete_arm"] = None
                         st.rerun()
 
@@ -5069,6 +5194,7 @@ with tab_errors:
                         with confirm_col:
                             if st.button("Confirm", key=f"err_del_confirm_{error_id}", type="primary", width="stretch"):
                                 api_delete(f"/v1/errors/{error_id}")
+                                get_errors_list.clear()
                                 st.session_state["err_delete_arm"] = None
                                 st.session_state[detail_open_key] = False
                                 st.rerun()
@@ -5101,7 +5227,7 @@ with tab_errors:
                                 st.code(str(context_json), language="json")
                     except Exception as exc:
                         st.caption(f"Could not load details: {exc}")
-with tab_inputs:
+if active_top_tab == "Inputs":
     if save_clicked:
         if not settings_valid:
             st.error(settings_error or "Could not save settings.")
@@ -5109,7 +5235,7 @@ with tab_inputs:
             save_settings_payload(current_settings_payload)
 
 
-with tab_history:
+if active_top_tab == "History":
     st.header("History")
     render_history_fragment()
 if True:
@@ -5194,6 +5320,7 @@ if True:
             )
             st.session_state["last_forecast_mode"] = forecast_mode
             st.session_state["last_weather_ensemble_models_used"] = list(models_used)
+            run_history_from_backend.clear()
             st.session_state["last_run_result"] = result
             st.session_state["last_run_result_at"] = dt.datetime.now(dt.UTC).isoformat()
         status = str(result.get("status") or "").strip().lower()
@@ -5261,7 +5388,7 @@ if True:
                 else {}
             )
 
-        with tab_results:
+        if active_top_tab == "Results":
             st.header("Results")
             st.caption("Clear plan for tomorrow")
             if not has_renderable_result:
