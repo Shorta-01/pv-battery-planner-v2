@@ -3166,21 +3166,41 @@ state = BackendState()
 evse_mgr = ocpp_evse.OcppEvseManager()
 
 
-@app.websocket("/ocpp")
-async def ocpp_ws(websocket: WebSocket):
-    enabled = False
-    user = ""
-    pw = ""
+def _car_charger_runtime_settings(*, warning_label: str) -> tuple[bool, str, str]:
+    def _extract(payload: object) -> tuple[bool, str, str] | None:
+        if not isinstance(payload, dict):
+            return None
+        cfg = payload.get("config", {})
+        if not isinstance(cfg, dict):
+            return None
+        cc = cfg.get("car_charger", {})
+        if not isinstance(cc, dict):
+            return None
+        return (
+            bool(cc.get("enabled", False)),
+            str(cc.get("basic_user", "") or ""),
+            str(cc.get("basic_pass", "") or ""),
+        )
+
+    settings_from_memory = _extract(getattr(state, "settings", None))
+    if settings_from_memory is not None:
+        return settings_from_memory
+
     try:
         if SETTINGS_PATH.exists():
             payload = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-            cfg = payload.get("config", {}) if isinstance(payload, dict) else {}
-            cc = cfg.get("car_charger", {}) if isinstance(cfg, dict) else {}
-            enabled = bool(cc.get("enabled", False))
-            user = str(cc.get("basic_user", "") or "")
-            pw = str(cc.get("basic_pass", "") or "")
+            settings_from_disk = _extract(payload)
+            if settings_from_disk is not None:
+                return settings_from_disk
     except Exception:
-        logger.warning("backend_api ocpp_ws_settings_read_failed path=%s", SETTINGS_PATH, exc_info=True)
+        logger.warning("backend_api %s path=%s", warning_label, SETTINGS_PATH, exc_info=True)
+
+    return False, "", ""
+
+
+@app.websocket("/ocpp")
+async def ocpp_ws(websocket: WebSocket):
+    enabled, user, pw = _car_charger_runtime_settings(warning_label="ocpp_ws_settings_read_failed")
 
     await evse_mgr.handle_websocket(websocket, enabled=enabled, basic_user=user, basic_pass=pw)
 
@@ -3441,15 +3461,7 @@ def ev_bmw_device_flow_debug(authorization: str | None = Header(default=None)) -
 @app.get("/v1/evse/status")
 def evse_status(authorization: str | None = Header(default=None)) -> dict:
     _require_token(authorization)
-    enabled = False
-    try:
-        if SETTINGS_PATH.exists():
-            payload = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-            cfg = payload.get("config", {}) if isinstance(payload, dict) else {}
-            cc = cfg.get("car_charger", {}) if isinstance(cfg, dict) else {}
-            enabled = bool(cc.get("enabled", False))
-    except Exception:
-        logger.warning("backend_api evse_status_settings_read_failed path=%s", SETTINGS_PATH, exc_info=True)
+    enabled, _user, _pw = _car_charger_runtime_settings(warning_label="evse_status_settings_read_failed")
     out = evse_mgr.status_dict()
     out["enabled"] = enabled
     out["ws_path"] = "/ocpp"
