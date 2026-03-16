@@ -408,3 +408,75 @@ def test_validate_config_rejects_invalid_advanced_pv_options() -> None:
     cfg["pv"]["inverter_ac_model"] = "unknown"
     with pytest.raises(ValueError, match="pv.inverter_ac_model"):
         core.validate_config(cfg)
+
+
+def test_compatibility_globals_mirror_runtime_state_after_apply_config() -> None:
+    cfg = copy.deepcopy(core.DEFAULT_CONFIG)
+    cfg["location"]["timezone"] = "UTC"
+    cfg["pv"]["panel_wp"] = 410
+    cfg["battery"]["battery_kwh"] = 16.5
+
+    core.apply_config(cfg)
+    runtime = core._runtime_state_snapshot()
+
+    assert core.TIMEZONE == runtime.timezone
+    assert core.PANEL_WP == runtime.panel_wp
+    assert core.BATTERY_KWH == runtime.battery_kwh
+    assert core.MAX_CUTOFF_SOC == runtime.max_cutoff_soc
+
+
+def test_nested_applied_config_restores_runtime_state_without_leak() -> None:
+    outer_cfg = copy.deepcopy(core.DEFAULT_CONFIG)
+    outer_cfg["location"]["timezone"] = "UTC"
+    outer_cfg["battery"]["battery_kwh"] = 10.0
+
+    inner_cfg = copy.deepcopy(core.DEFAULT_CONFIG)
+    inner_cfg["location"]["timezone"] = "Europe/Brussels"
+    inner_cfg["battery"]["battery_kwh"] = 20.0
+
+    base = core.get_effective_config()
+    try:
+        core.apply_config(outer_cfg)
+        runtime_outer = core._runtime_state_snapshot()
+        assert runtime_outer.timezone == "UTC"
+        assert runtime_outer.battery_kwh == pytest.approx(10.0)
+
+        with core.applied_config(inner_cfg):
+            runtime_inner = core._runtime_state_snapshot()
+            assert runtime_inner.timezone == "Europe/Brussels"
+            assert runtime_inner.battery_kwh == pytest.approx(20.0)
+
+        runtime_restored = core._runtime_state_snapshot()
+        assert runtime_restored.timezone == runtime_outer.timezone
+        assert runtime_restored.battery_kwh == runtime_outer.battery_kwh
+    finally:
+        core.apply_config(base)
+
+
+def test_no_frozen_default_regression_timezone_and_wind_height() -> None:
+    base = core.get_effective_config()
+    try:
+        cfg_utc = copy.deepcopy(core.DEFAULT_CONFIG)
+        cfg_utc["location"]["timezone"] = "UTC"
+        core.apply_config(cfg_utc)
+
+        ts_utc = core._to_local_ts(dt.datetime(2026, 1, 1, 12, 0))
+        assert str(ts_utc.tz) in {"UTC", "UTC+00:00"}
+
+        cfg_brussels = copy.deepcopy(core.DEFAULT_CONFIG)
+        cfg_brussels["location"]["timezone"] = "Europe/Brussels"
+        core.apply_config(cfg_brussels)
+
+        ts_brussels = core._to_local_ts(dt.datetime(2026, 1, 1, 12, 0))
+        assert "Brussels" in str(ts_brussels.tz)
+
+        s = pd.Series([10.0])
+        default_scaled = core.wind_speed_module_height_from_10m(s)
+        explicit_scaled = core.wind_speed_module_height_from_10m(
+            s,
+            module_height_m=core._runtime_state_snapshot().pv_effective_module_wind_height_m,
+            reference_height_m=core._runtime_state_snapshot().pv_forecast_wind_reference_height_m,
+        )
+        assert default_scaled.iloc[0] == pytest.approx(explicit_scaled.iloc[0])
+    finally:
+        core.apply_config(base)

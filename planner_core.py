@@ -526,10 +526,64 @@ def validate_config(cfg: dict) -> None:
         _validate_time_hhmm(str(deadline), allow_2400_end=False)
 
 
+@dataclass(frozen=True)
+class PlannerRuntimeStateSnapshot:
+    use_geocoding: bool
+    address_query: str
+    latitude: float
+    longitude: float
+    panel_wp: int
+    timezone: str
+    elevation_m_default: float
+    min_soc: float
+    max_cutoff_soc: float
+    battery_max_soc: float
+    min_soc_percent: float
+    max_cutoff_soc_percent: float
+    battery_max_soc_percent: float
+    battery_kwh: float
+    battery_max_charge_kw: float
+    battery_max_discharge_kw: float
+    battery_pv_charge_eff: float
+    battery_discharge_eff: float
+    battery_ac_charge_eff: float
+    inverter_ac_kw_limit: float
+    inverter_ac_model: str
+    max_ac_charge_kw_hard_limit: float
+    array_south_panels: int
+    array_east_panels: int
+    tilt_east_deg: float
+    tilt_south_deg: float
+    azimuth_east_deg: float
+    azimuth_south_deg: float
+    performance_ratio: float
+    inverter_eff: float
+    pv_loss_model: str
+    pv_albedo: float | None
+    pv_iam_model: str
+    pv_iam_ashrae_b: float
+    pv_calibration_factor: float
+    pv_calibration_factor_east: float
+    pv_calibration_factor_south: float
+    pv_gamma_pdc: float
+    pv_temperature_faiman_u0: float
+    pv_temperature_faiman_u1: float
+    pv_effective_module_wind_height_m: float
+    pv_forecast_wind_reference_height_m: float
+    load_profile_24h: list[float]
+    peak_grid_price_eur_per_kwh: float
+    offpeak_grid_price_eur_per_kwh: float
+    injection_grid_price_eur_per_kwh: float
+    enable_invariant_checks: bool
+    offpeak_windows_by_dow: dict[int, list[tuple[str, str]]]
+    effective_cfg: dict
+
+
 def _apply_config_impl(cfg: dict, enforce_pv_defaults: bool) -> None:
     applied = _derive_applied_runtime_values(cfg, enforce_pv_defaults)
     _writeback_applied_pv_config(cfg["pv"], applied)
-    _apply_derived_runtime_globals(applied, cfg)
+    runtime_state = _build_runtime_state(applied, cfg)
+    _install_runtime_state(runtime_state)
 
 
 @dataclass(frozen=True)
@@ -670,7 +724,7 @@ def _writeback_applied_pv_config(pv_cfg: dict, applied: _AppliedRuntimeValues) -
     pv_cfg["inverter_ac_model"] = applied.inverter_ac_model
 
 
-def _apply_derived_runtime_globals(applied: _AppliedRuntimeValues, cfg: dict) -> None:
+def _apply_derived_runtime_globals(runtime: "PlannerRuntimeStateSnapshot") -> None:
     global USE_GEOCODING, ADDRESS_QUERY, LATITUDE, LONGITUDE, TIMEZONE
     global PANEL_WP, ARRAY_SOUTH_PANELS, ARRAY_EAST_PANELS
     global TILT_EAST_DEG, TILT_SOUTH_DEG, AZIMUTH_EAST_DEG, AZIMUTH_SOUTH_DEG
@@ -682,49 +736,110 @@ def _apply_derived_runtime_globals(applied: _AppliedRuntimeValues, cfg: dict) ->
     global PEAK_GRID_PRICE_EUR_PER_KWH, OFFPEAK_GRID_PRICE_EUR_PER_KWH, INJECTION_GRID_PRICE_EUR_PER_KWH
     global ENABLE_INVARIANT_CHECKS
 
-    USE_GEOCODING = applied.use_geocoding
-    ADDRESS_QUERY = applied.address_query
-    LATITUDE = applied.latitude
-    LONGITUDE = applied.longitude
-    TIMEZONE = applied.timezone
+    USE_GEOCODING = runtime.use_geocoding
+    ADDRESS_QUERY = runtime.address_query
+    LATITUDE = runtime.latitude
+    LONGITUDE = runtime.longitude
+    TIMEZONE = runtime.timezone
 
-    PANEL_WP = applied.panel_wp
-    ARRAY_SOUTH_PANELS = applied.array_south_panels
-    ARRAY_EAST_PANELS = applied.array_east_panels
-    TILT_EAST_DEG = applied.tilt_east_deg
-    TILT_SOUTH_DEG = applied.tilt_south_deg
-    AZIMUTH_EAST_DEG = applied.azimuth_east_deg
-    AZIMUTH_SOUTH_DEG = applied.azimuth_south_deg
-    PERFORMANCE_RATIO = applied.performance_ratio
-    INVERTER_EFF = applied.inverter_eff
-    PV_LOSS_MODEL = applied.pv_loss_model
-    PV_IAM_MODEL = applied.pv_iam_model
-    PV_IAM_ASHRAE_B = applied.pv_iam_ashrae_b
-    PV_ALBEDO = applied.pv_albedo
-    INVERTER_AC_MODEL = applied.inverter_ac_model
-    PV_CALIBRATION_FACTOR = applied.pv_calibration_factor
-    PV_CALIBRATION_FACTOR_EAST = applied.pv_calibration_factor_east
-    PV_CALIBRATION_FACTOR_SOUTH = applied.pv_calibration_factor_south
-    INVERTER_AC_KW_LIMIT = applied.inverter_ac_kw_limit
+    PANEL_WP = runtime.panel_wp
+    ARRAY_SOUTH_PANELS = runtime.array_south_panels
+    ARRAY_EAST_PANELS = runtime.array_east_panels
+    TILT_EAST_DEG = runtime.tilt_east_deg
+    TILT_SOUTH_DEG = runtime.tilt_south_deg
+    AZIMUTH_EAST_DEG = runtime.azimuth_east_deg
+    AZIMUTH_SOUTH_DEG = runtime.azimuth_south_deg
+    PERFORMANCE_RATIO = runtime.performance_ratio
+    INVERTER_EFF = runtime.inverter_eff
+    PV_LOSS_MODEL = runtime.pv_loss_model
+    PV_IAM_MODEL = runtime.pv_iam_model
+    PV_IAM_ASHRAE_B = runtime.pv_iam_ashrae_b
+    PV_ALBEDO = runtime.pv_albedo
+    INVERTER_AC_MODEL = runtime.inverter_ac_model
+    PV_CALIBRATION_FACTOR = runtime.pv_calibration_factor
+    PV_CALIBRATION_FACTOR_EAST = runtime.pv_calibration_factor_east
+    PV_CALIBRATION_FACTOR_SOUTH = runtime.pv_calibration_factor_south
+    INVERTER_AC_KW_LIMIT = runtime.inverter_ac_kw_limit
 
-    BATTERY_KWH = applied.battery_kwh
-    MIN_SOC_PERCENT = applied.min_soc_percent
-    MAX_CUTOFF_SOC_PERCENT = applied.max_cutoff_soc_percent
-    BATTERY_MAX_SOC_PERCENT = applied.battery_max_soc_percent
-    BATTERY_MAX_CHARGE_KW = applied.battery_max_charge_kw
-    BATTERY_MAX_DISCHARGE_KW = applied.battery_max_discharge_kw
-    MAX_AC_CHARGE_KW_HARD_LIMIT = applied.max_ac_charge_kw_hard_limit
+    BATTERY_KWH = runtime.battery_kwh
+    MIN_SOC_PERCENT = runtime.min_soc_percent
+    MAX_CUTOFF_SOC_PERCENT = runtime.max_cutoff_soc_percent
+    BATTERY_MAX_SOC_PERCENT = runtime.battery_max_soc_percent
+    BATTERY_MAX_CHARGE_KW = runtime.battery_max_charge_kw
+    BATTERY_MAX_DISCHARGE_KW = runtime.battery_max_discharge_kw
+    MAX_AC_CHARGE_KW_HARD_LIMIT = runtime.max_ac_charge_kw_hard_limit
 
-    LOAD_PROFILE = applied.load_profile
-    PEAK_GRID_PRICE_EUR_PER_KWH = applied.peak_grid_price_eur_per_kwh
-    OFFPEAK_GRID_PRICE_EUR_PER_KWH = applied.offpeak_grid_price_eur_per_kwh
-    INJECTION_GRID_PRICE_EUR_PER_KWH = applied.injection_grid_price_eur_per_kwh
-    OFFPEAK_WINDOWS_BY_DOW = applied.offpeak_windows_by_dow
-    ENABLE_INVARIANT_CHECKS = applied.enable_invariant_checks
-    MIN_SOC = MIN_SOC_PERCENT / 100.0
-    MAX_CUTOFF_SOC = MAX_CUTOFF_SOC_PERCENT / 100.0
-    BATTERY_MAX_SOC = BATTERY_MAX_SOC_PERCENT / 100.0
-    EFFECTIVE_CFG = copy.deepcopy(cfg)
+    LOAD_PROFILE = list(runtime.load_profile_24h)
+    PEAK_GRID_PRICE_EUR_PER_KWH = runtime.peak_grid_price_eur_per_kwh
+    OFFPEAK_GRID_PRICE_EUR_PER_KWH = runtime.offpeak_grid_price_eur_per_kwh
+    INJECTION_GRID_PRICE_EUR_PER_KWH = runtime.injection_grid_price_eur_per_kwh
+    OFFPEAK_WINDOWS_BY_DOW = copy.deepcopy(runtime.offpeak_windows_by_dow)
+    ENABLE_INVARIANT_CHECKS = runtime.enable_invariant_checks
+    MIN_SOC = runtime.min_soc
+    MAX_CUTOFF_SOC = runtime.max_cutoff_soc
+    BATTERY_MAX_SOC = runtime.battery_max_soc
+    EFFECTIVE_CFG = copy.deepcopy(runtime.effective_cfg)
+
+
+def _build_runtime_state(applied: _AppliedRuntimeValues, cfg: dict) -> "PlannerRuntimeStateSnapshot":
+    return PlannerRuntimeStateSnapshot(
+        use_geocoding=applied.use_geocoding,
+        address_query=applied.address_query,
+        latitude=applied.latitude,
+        longitude=applied.longitude,
+        panel_wp=applied.panel_wp,
+        timezone=applied.timezone,
+        elevation_m_default=float(cfg["location"]["elevation_m"]),
+        min_soc=float(applied.min_soc_percent) / 100.0,
+        max_cutoff_soc=float(applied.max_cutoff_soc_percent) / 100.0,
+        battery_max_soc=float(applied.battery_max_soc_percent) / 100.0,
+        min_soc_percent=applied.min_soc_percent,
+        max_cutoff_soc_percent=applied.max_cutoff_soc_percent,
+        battery_max_soc_percent=applied.battery_max_soc_percent,
+        battery_kwh=applied.battery_kwh,
+        battery_max_charge_kw=applied.battery_max_charge_kw,
+        battery_max_discharge_kw=applied.battery_max_discharge_kw,
+        battery_pv_charge_eff=float(BATTERY_PV_CHARGE_EFF),
+        battery_discharge_eff=float(BATTERY_DISCHARGE_EFF),
+        battery_ac_charge_eff=float(BATTERY_AC_CHARGE_EFF),
+        inverter_ac_kw_limit=applied.inverter_ac_kw_limit,
+        inverter_ac_model=applied.inverter_ac_model,
+        max_ac_charge_kw_hard_limit=applied.max_ac_charge_kw_hard_limit,
+        array_south_panels=applied.array_south_panels,
+        array_east_panels=applied.array_east_panels,
+        tilt_east_deg=applied.tilt_east_deg,
+        tilt_south_deg=applied.tilt_south_deg,
+        azimuth_east_deg=applied.azimuth_east_deg,
+        azimuth_south_deg=applied.azimuth_south_deg,
+        performance_ratio=applied.performance_ratio,
+        inverter_eff=applied.inverter_eff,
+        pv_loss_model=applied.pv_loss_model,
+        pv_albedo=applied.pv_albedo,
+        pv_iam_model=applied.pv_iam_model,
+        pv_iam_ashrae_b=applied.pv_iam_ashrae_b,
+        pv_calibration_factor=applied.pv_calibration_factor,
+        pv_calibration_factor_east=applied.pv_calibration_factor_east,
+        pv_calibration_factor_south=applied.pv_calibration_factor_south,
+        pv_gamma_pdc=float(PV_GAMMA_PDC),
+        pv_temperature_faiman_u0=float(PV_TEMPERATURE_FAIMAN_U0),
+        pv_temperature_faiman_u1=float(PV_TEMPERATURE_FAIMAN_U1),
+        pv_effective_module_wind_height_m=float(PV_EFFECTIVE_MODULE_WIND_HEIGHT_M),
+        pv_forecast_wind_reference_height_m=float(PV_FORECAST_WIND_REFERENCE_HEIGHT_M),
+        load_profile_24h=list(applied.load_profile),
+        peak_grid_price_eur_per_kwh=applied.peak_grid_price_eur_per_kwh,
+        offpeak_grid_price_eur_per_kwh=applied.offpeak_grid_price_eur_per_kwh,
+        injection_grid_price_eur_per_kwh=applied.injection_grid_price_eur_per_kwh,
+        enable_invariant_checks=applied.enable_invariant_checks,
+        offpeak_windows_by_dow=copy.deepcopy(applied.offpeak_windows_by_dow),
+        effective_cfg=copy.deepcopy(cfg),
+    )
+
+
+def _install_runtime_state(runtime_state: "PlannerRuntimeStateSnapshot") -> None:
+    global _RUNTIME_STATE
+    with _CONFIG_STATE_LOCK:
+        _RUNTIME_STATE = runtime_state
+        _apply_derived_runtime_globals(runtime_state)
 
 
 def apply_config(cfg: dict) -> None:
@@ -1090,13 +1205,14 @@ def effective_elevation_m(elevation_m: float | None, *, fallback_m: float = PVLI
 def wind_speed_module_height_from_10m(
     wind_speed_10m_ms: "pd.Series",
     *,
-    module_height_m: float = PV_EFFECTIVE_MODULE_WIND_HEIGHT_M,
-    reference_height_m: float = PV_FORECAST_WIND_REFERENCE_HEIGHT_M,
+    module_height_m: float | None = None,
+    reference_height_m: float | None = None,
 ) -> "pd.Series":
     """Scale 10 m forecast wind to effective module/roof height using a log profile."""
     ws10 = pd.to_numeric(wind_speed_10m_ms, errors="coerce").fillna(1.0).clip(lower=0.0)
-    h_ref = max(float(reference_height_m), 0.5)
-    h_mod = max(float(module_height_m), 0.5)
+    runtime = _runtime_state_snapshot()
+    h_ref = max(float(reference_height_m if reference_height_m is not None else runtime.pv_forecast_wind_reference_height_m), 0.5)
+    h_mod = max(float(module_height_m if module_height_m is not None else runtime.pv_effective_module_wind_height_m), 0.5)
     # Neutral log-profile with roughness length representative of suburban rooftops.
     z0 = 0.3
     scale = math.log(h_mod / z0) / math.log(h_ref / z0)
@@ -1153,90 +1269,12 @@ class PlannerOutput:
     charge_note: str
 
 
-@dataclass(frozen=True)
-class PlannerRuntimeStateSnapshot:
-    timezone: str
-    elevation_m_default: float
-    min_soc: float
-    max_cutoff_soc: float
-    battery_max_soc: float
-    min_soc_percent: float
-    battery_kwh: float
-    battery_max_charge_kw: float
-    battery_max_discharge_kw: float
-    battery_pv_charge_eff: float
-    battery_discharge_eff: float
-    battery_ac_charge_eff: float
-    inverter_ac_kw_limit: float
-    inverter_ac_model: str
-    max_ac_charge_kw_hard_limit: float
-    array_south_panels: int
-    array_east_panels: int
-    tilt_east_deg: float
-    tilt_south_deg: float
-    azimuth_east_deg: float
-    azimuth_south_deg: float
-    performance_ratio: float
-    inverter_eff: float
-    pv_loss_model: str
-    pv_albedo: float | None
-    pv_iam_model: str
-    pv_iam_ashrae_b: float
-    pv_calibration_factor_east: float
-    pv_calibration_factor_south: float
-    pv_gamma_pdc: float
-    pv_temperature_faiman_u0: float
-    pv_temperature_faiman_u1: float
-    pv_effective_module_wind_height_m: float
-    pv_forecast_wind_reference_height_m: float
-    load_profile_24h: list[float]
-    enable_invariant_checks: bool
-    offpeak_windows_by_dow: dict[int, list[tuple[str, str]]]
-    effective_cfg: dict
+_RUNTIME_STATE = _build_runtime_state(_derive_applied_runtime_values(EFFECTIVE_CFG, False), EFFECTIVE_CFG)
 
 
 def _runtime_state_snapshot() -> PlannerRuntimeStateSnapshot:
     with _CONFIG_STATE_LOCK:
-        return PlannerRuntimeStateSnapshot(
-            timezone=str(TIMEZONE),
-            elevation_m_default=float(ELEVATION_M),
-            min_soc=float(MIN_SOC),
-            max_cutoff_soc=float(MAX_CUTOFF_SOC),
-            battery_max_soc=float(BATTERY_MAX_SOC),
-            min_soc_percent=float(MIN_SOC_PERCENT),
-            battery_kwh=float(BATTERY_KWH),
-            battery_max_charge_kw=float(BATTERY_MAX_CHARGE_KW),
-            battery_max_discharge_kw=float(BATTERY_MAX_DISCHARGE_KW),
-            battery_pv_charge_eff=float(BATTERY_PV_CHARGE_EFF),
-            battery_discharge_eff=float(BATTERY_DISCHARGE_EFF),
-            battery_ac_charge_eff=float(BATTERY_AC_CHARGE_EFF),
-            inverter_ac_kw_limit=float(INVERTER_AC_KW_LIMIT),
-            inverter_ac_model=str(INVERTER_AC_MODEL),
-            max_ac_charge_kw_hard_limit=float(MAX_AC_CHARGE_KW_HARD_LIMIT),
-            array_south_panels=int(ARRAY_SOUTH_PANELS),
-            array_east_panels=int(ARRAY_EAST_PANELS),
-            tilt_east_deg=float(TILT_EAST_DEG),
-            tilt_south_deg=float(TILT_SOUTH_DEG),
-            azimuth_east_deg=float(AZIMUTH_EAST_DEG),
-            azimuth_south_deg=float(AZIMUTH_SOUTH_DEG),
-            performance_ratio=float(PERFORMANCE_RATIO),
-            inverter_eff=float(INVERTER_EFF),
-            pv_loss_model=str(PV_LOSS_MODEL),
-            pv_albedo=(None if PV_ALBEDO is None else float(PV_ALBEDO)),
-            pv_iam_model=str(PV_IAM_MODEL),
-            pv_iam_ashrae_b=float(PV_IAM_ASHRAE_B),
-            pv_calibration_factor_east=float(PV_CALIBRATION_FACTOR_EAST),
-            pv_calibration_factor_south=float(PV_CALIBRATION_FACTOR_SOUTH),
-            pv_gamma_pdc=float(PV_GAMMA_PDC),
-            pv_temperature_faiman_u0=float(PV_TEMPERATURE_FAIMAN_U0),
-            pv_temperature_faiman_u1=float(PV_TEMPERATURE_FAIMAN_U1),
-            pv_effective_module_wind_height_m=float(PV_EFFECTIVE_MODULE_WIND_HEIGHT_M),
-            pv_forecast_wind_reference_height_m=float(PV_FORECAST_WIND_REFERENCE_HEIGHT_M),
-            load_profile_24h=[float(v) for v in LOAD_PROFILE],
-            enable_invariant_checks=bool(ENABLE_INVARIANT_CHECKS),
-            offpeak_windows_by_dow=copy.deepcopy(OFFPEAK_WINDOWS_BY_DOW),
-            effective_cfg=copy.deepcopy(EFFECTIVE_CFG),
-        )
+        return copy.deepcopy(_RUNTIME_STATE)
 
 
 @dataclass
@@ -1669,15 +1707,18 @@ def _tod_weight_for_hour(hour: int) -> float:
     return 1.0
 
 
-def _to_local_ts(x: object, tz_name: str = TIMEZONE) -> pd.Timestamp:
+def _to_local_ts(x: object, tz_name: str | None = None) -> pd.Timestamp:
     """
     Convert x (datetime or Timestamp) into a pandas Timestamp in the app timezone,
     using ZoneInfo to avoid tzinfo-type mismatches (zoneinfo vs dateutil).
     """
-    tzinfo = ZoneInfo(tz_name)
+    tzinfo = ZoneInfo(str(tz_name or _runtime_timezone()))
     ts = pd.Timestamp(x)
     if ts.tz is None:
-        return ts.tz_localize(tzinfo, ambiguous="infer", nonexistent="shift_forward")
+        try:
+            return ts.tz_localize(tzinfo, ambiguous="infer", nonexistent="shift_forward")
+        except ValueError:
+            return ts.tz_localize(tzinfo, ambiguous=False, nonexistent="shift_forward")
     return ts.tz_convert(tzinfo)
 
 
@@ -2296,23 +2337,24 @@ def compute_euro_savings_no_battery_vs_plan(
 
 
 def quick_sanity_checks() -> None:
+    runtime = _runtime_state_snapshot()
     try:
-        assert ARRAY_EAST_PANELS >= 0 and ARRAY_SOUTH_PANELS >= 0
-        assert (ARRAY_EAST_PANELS + ARRAY_SOUTH_PANELS) > 0
-        assert 0 < PERFORMANCE_RATIO <= 1
-        assert 0 < INVERTER_EFF <= 1
-        assert PV_LOSS_MODEL in {"split", "combined"}
-        assert 0.7 <= PV_CALIBRATION_FACTOR_EAST <= 1.3
-        assert 0.7 <= PV_CALIBRATION_FACTOR_SOUTH <= 1.3
+        assert runtime.array_east_panels >= 0 and runtime.array_south_panels >= 0
+        assert (runtime.array_east_panels + runtime.array_south_panels) > 0
+        assert 0 < runtime.performance_ratio <= 1
+        assert 0 < runtime.inverter_eff <= 1
+        assert runtime.pv_loss_model in {"split", "combined"}
+        assert 0.7 <= runtime.pv_calibration_factor_east <= 1.3
+        assert 0.7 <= runtime.pv_calibration_factor_south <= 1.3
         assert 0 < BATTERY_AC_CHARGE_EFF <= 1
         assert 0 < BATTERY_PV_CHARGE_EFF <= 1
         assert 0 < BATTERY_DISCHARGE_EFF <= 1
-        assert BATTERY_MAX_CHARGE_KW > 0
-        assert BATTERY_MAX_DISCHARGE_KW > 0
-        assert 0 <= MIN_SOC < 1
-        assert MIN_SOC <= MAX_CUTOFF_SOC <= BATTERY_MAX_SOC <= 1
-        assert len(LOAD_PROFILE) == 24
-        assert sum(LOAD_PROFILE) > 0
+        assert runtime.battery_max_charge_kw > 0
+        assert runtime.battery_max_discharge_kw > 0
+        assert 0 <= runtime.min_soc < 1
+        assert runtime.min_soc <= runtime.max_cutoff_soc <= runtime.battery_max_soc <= 1
+        assert len(runtime.load_profile_24h) == 24
+        assert sum(runtime.load_profile_24h) > 0
     except AssertionError as exc:
         raise SystemExit(
             "Sanity check failed: verify panel counts, efficiencies, SOC limits and LOAD_PROFILE config."
@@ -2411,11 +2453,12 @@ def resolve_location_from_structured_address(
     except Exception as exc:
         raise RuntimeError(f"Could not resolve '{address_query}'. {exc}") from exc
 
-    timezone_use = str(timezone or TIMEZONE)
+    runtime = _runtime_state_snapshot()
+    timezone_use = str(timezone or runtime.timezone)
     try:
         ZoneInfo(timezone_use)
     except Exception:
-        timezone_use = TIMEZONE
+        timezone_use = runtime.timezone
 
     return {
         "address_query": address_query,
@@ -2610,12 +2653,12 @@ def _fetch_weather_payload(loc: Location, target_date: dt.date, tz_use: str) -> 
 
 
 def fetch_weather_for_date(loc: Location, target_date: dt.date, tz: str | None = None) -> ForecastResult:
-    tz_use = tz or TIMEZONE
+    tz_use = tz or _runtime_timezone()
     return _fetch_weather_payload(loc, target_date, tz_use)
 
 
 def fetch_tomorrow_weather(loc: Location, tz: str | None = None) -> ForecastResult:
-    tz_use = tz or TIMEZONE
+    tz_use = tz or _runtime_timezone()
     today_local = dt.datetime.now(ZoneInfo(tz_use)).date()
     tomorrow = today_local + dt.timedelta(days=1)
     return fetch_weather_for_date(loc, tomorrow, tz=tz_use)
@@ -4246,7 +4289,7 @@ def run_planner(inputs: PlannerInputs) -> PlannerOutput:
         soc_at_22_percent=float(inputs.soc_at_22) * 100.0,
         yesterday_kwh=float(inputs.yesterday_consumption_kwh),
         buffer_percent=float(inputs.forecast_buffer_soc) * 100.0,
-        user_max_ac_kw=float(cfg["battery"].get("max_ac_charge_kw_hard_limit", MAX_AC_CHARGE_KW_HARD_LIMIT)),
+        user_max_ac_kw=float(cfg["battery"].get("max_ac_charge_kw_hard_limit", _runtime_state_snapshot().max_ac_charge_kw_hard_limit)),
     )
 
 # ============================================================
@@ -4354,15 +4397,16 @@ def main() -> int:
         soc_at_22_percent=soc_at_22_percent,
         yesterday_kwh=yesterday_consumption_kwh,
         buffer_percent=0.0,
-        user_max_ac_kw=float(cfg["battery"].get("max_ac_charge_kw_hard_limit", MAX_AC_CHARGE_KW_HARD_LIMIT)),
+        user_max_ac_kw=float(cfg["battery"].get("max_ac_charge_kw_hard_limit", _runtime_state_snapshot().max_ac_charge_kw_hard_limit)),
     )
 
     print(f"Location: {out.location.latitude:.5f}, {out.location.longitude:.5f}")
     print("Inputs:")
     print(f"- SOC at 22:00 (%): {soc_at_22_percent:.1f}")
     print(f"- Yesterday consumption (kWh): {yesterday_consumption_kwh:.2f}")
-    print(f"- Inverter AC limit (kW): {INVERTER_AC_KW_LIMIT:.2f}")
-    print(f"- Battery max charge/discharge (kW): {BATTERY_MAX_CHARGE_KW:.2f}/{BATTERY_MAX_DISCHARGE_KW:.2f}")
+    runtime = _runtime_state_snapshot()
+    print(f"- Inverter AC limit (kW): {runtime.inverter_ac_kw_limit:.2f}")
+    print(f"- Battery max charge/discharge (kW): {runtime.battery_max_charge_kw:.2f}/{runtime.battery_max_discharge_kw:.2f}")
     print(
         f"Sunrise/Sunset: {out.weather.sunrise.strftime('%Y-%m-%d %H:%M %Z')} / "
         f"{out.weather.sunset.strftime('%Y-%m-%d %H:%M %Z')}"
