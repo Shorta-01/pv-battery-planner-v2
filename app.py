@@ -484,8 +484,7 @@ def validate_sidebar_readiness(
 
 
 def save_settings_payload(new_cfg: dict, *, rerun: bool = True) -> bool:
-    correlation_id = _new_ui_correlation_id(action="save_settings")
-    st.session_state["_active_ui_correlation_id"] = correlation_id
+    correlation_id = _set_active_ui_request_context(UIActions.SAVE_SETTINGS)
     try:
         updated = api_put(
             "/v1/settings",
@@ -496,7 +495,7 @@ def save_settings_payload(new_cfg: dict, *, rerun: bool = True) -> bool:
                 "max_ac_charge_power_kw_default": float(st.session_state.get("cfg_max_grid_charge_power_kw", backend_settings.get("max_ac_charge_power_kw_default", 5.0))),
             },
             correlation_id=correlation_id,
-            action="save_settings",
+            action=UIActions.SAVE_SETTINGS,
         )
         st.cache_data.clear()
         st.session_state["_pending_location_state"] = updated["config"]["location"]
@@ -504,11 +503,11 @@ def save_settings_payload(new_cfg: dict, *, rerun: bool = True) -> bool:
         if rerun:
             st.rerun()
     except Exception as exc:
-        log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:save_settings", title="Frontend error: save settings", exc=exc)
+        log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:save_settings", title="Frontend error: save settings", exc=exc, context={"action": UIActions.SAVE_SETTINGS, "endpoint": "/v1/settings"})
         st.error(f"Could not save settings: {exc}")
         return False
     finally:
-        st.session_state.pop("_active_ui_correlation_id", None)
+        _clear_active_ui_request_context()
     return True
 
 LOCAL_STATE_DIR = Path("local_state")
@@ -519,6 +518,35 @@ SHOW_WARNINGS_UI = False
 UI_ERROR_BUFFER_PATH = LOCAL_STATE_DIR / "ui_error_buffer.jsonl"
 UI_CORRELATION_ID_HEADER = "X-UI-Correlation-Id"
 UI_ACTION_HEADER = "X-UI-Action"
+
+
+class UIActions:
+    SAVE_SETTINGS = "save_settings"
+    SETTINGS_FACTORY_RESET = "settings_factory_reset"
+    RUN_FORECAST = "run_forecast"
+    RUN_FORECAST_INPUTS = "run_forecast_inputs"
+    BMW_DEVICE_FLOW_START = "bmw_device_flow_start"
+    BMW_DEVICE_FLOW_POLL = "bmw_device_flow_poll"
+    BMW_MANUAL_REFRESH = "bmw_manual_refresh"
+    EV_PROVIDER_STATUS = "ev_provider_status"
+    EV_VEHICLES = "ev_vehicles"
+    EVSE_RESUME = "evse_resume"
+    EVSE_STOP = "evse_stop"
+    FRONTEND_ERROR_EVENT = "frontend_error_event"
+    UI_ERROR_FLUSH = "ui_error_flush"
+
+
+def _set_active_ui_request_context(action: str, correlation_id: str | None = None) -> str:
+    active_correlation_id = str(correlation_id or _new_ui_correlation_id(action=action))
+    st.session_state["_active_ui_correlation_id"] = active_correlation_id
+    st.session_state["_active_ui_action"] = str(action)
+    return active_correlation_id
+
+
+def _clear_active_ui_request_context() -> None:
+    st.session_state.pop("_active_ui_correlation_id", None)
+    st.session_state.pop("_active_ui_action", None)
+
 
 st.session_state.setdefault("history_all_runs", False)
 st.session_state.setdefault("history_show_run_at", False)
@@ -2211,7 +2239,7 @@ def flush_ui_error_buffer() -> None:
             context = payload.get("context") if isinstance(payload, dict) else {}
             context = context if isinstance(context, dict) else {}
             corr = context.get("ui_correlation_id")
-            api_post("/v1/errors", payload, correlation_id=str(corr) if corr else None, action="ui_error_flush")
+            api_post("/v1/errors", payload, correlation_id=str(corr) if corr else None, action=UIActions.UI_ERROR_FLUSH)
         except Exception:
             keep.append(line)
 
@@ -2237,6 +2265,10 @@ def log_frontend_error(
     payload_context = dict(context or {})
     if "ui_correlation_id" not in payload_context and st.session_state.get("_active_ui_correlation_id"):
         payload_context["ui_correlation_id"] = st.session_state.get("_active_ui_correlation_id")
+    if "ui_action" not in payload_context and st.session_state.get("_active_ui_action"):
+        payload_context["ui_action"] = st.session_state.get("_active_ui_action")
+    if "where" not in payload_context:
+        payload_context["where"] = where
 
     payload_body = body or ""
     if exc is not None:
@@ -2258,7 +2290,7 @@ def log_frontend_error(
             "/v1/errors",
             payload,
             correlation_id=str(payload_context.get("ui_correlation_id") or "") or None,
-            action="frontend_error_event",
+            action=UIActions.FRONTEND_ERROR_EVENT,
         )
     except Exception:
         append_ui_error_buffer(payload)
@@ -4043,14 +4075,13 @@ with left:
                 if not has_client_id:
                     st.error("BMW client ID required. Enter your BMW client id first.")
                 else:
-                    correlation_id = _new_ui_correlation_id(action="bmw_device_flow_start")
-                    st.session_state["_active_ui_correlation_id"] = correlation_id
+                    correlation_id = _set_active_ui_request_context(UIActions.BMW_DEVICE_FLOW_START)
                     try:
                         start_payload = api_post(
                             "/v1/ev/bmw/device_flow/start",
                             {},
                             correlation_id=correlation_id,
-                            action="bmw_device_flow_start",
+                            action=UIActions.BMW_DEVICE_FLOW_START,
                         )
                         st.session_state[setup_state_key] = {
                             "device_code": str(start_payload.get("device_code") or ""),
@@ -4061,7 +4092,7 @@ with left:
                     except Exception as exc:
                         st.error(f"Could not start BMW setup: {exc}")
                     finally:
-                        st.session_state.pop("_active_ui_correlation_id", None)
+                        _clear_active_ui_request_context()
 
         setup_state = st.session_state.get(setup_state_key, {}) if isinstance(st.session_state.get(setup_state_key), dict) else {}
         device_code = str(setup_state.get("device_code") or "").strip()
@@ -4076,24 +4107,23 @@ with left:
             st.caption("Waiting for BMW authorization")
             with check_col:
                 if st.button("Check connection", key="btn_ev_check_connection", type="secondary"):
-                    correlation_id = _new_ui_correlation_id(action="bmw_device_flow_poll")
-                    st.session_state["_active_ui_correlation_id"] = correlation_id
+                    correlation_id = _set_active_ui_request_context(UIActions.BMW_DEVICE_FLOW_POLL)
                     try:
                         poll_payload = api_post(
                             "/v1/ev/bmw/device_flow/poll",
                             {"device_code": device_code},
                             correlation_id=correlation_id,
-                            action="bmw_device_flow_poll",
+                            action=UIActions.BMW_DEVICE_FLOW_POLL,
                         )
                         if bool(poll_payload.get("ok", False)):
                             api_post(
                                 "/v1/ev/manual_refresh?force_reprobe=true",
                                 {},
                                 correlation_id=correlation_id,
-                                action="bmw_manual_refresh",
+                                action=UIActions.BMW_MANUAL_REFRESH,
                             )
-                            provider_status = api_get("/v1/ev/provider_status", correlation_id=correlation_id, action="ev_provider_status")
-                            vehicles_payload = api_get("/v1/ev/vehicles", correlation_id=correlation_id, action="ev_vehicles")
+                            provider_status = api_get("/v1/ev/provider_status", correlation_id=correlation_id, action=UIActions.EV_PROVIDER_STATUS)
+                            vehicles_payload = api_get("/v1/ev/vehicles", correlation_id=correlation_id, action=UIActions.EV_VEHICLES)
                             vehicle_map = vehicles_payload.get("vehicles", {}) if isinstance(vehicles_payload, dict) else {}
                             vehicle_list = list(vehicle_map.values()) if isinstance(vehicle_map, dict) else []
                             st.session_state[setup_state_key] = {}
@@ -4103,7 +4133,7 @@ with left:
                     except Exception as exc:
                         st.error(f"Connection check failed: {exc}")
                     finally:
-                        st.session_state.pop("_active_ui_correlation_id", None)
+                        _clear_active_ui_request_context()
 
         first_vehicle = next(iter(vehicle_map.values()), {}) if isinstance(vehicle_map, dict) else {}
         linked_label = "Vehicle linked" if first_vehicle else "No vehicle"
@@ -4176,20 +4206,19 @@ with left:
             ui_warning("No BMW vehicles found")
 
         if st.button("Refresh BMW data", key="btn_ev_manual_refresh_settings", type="secondary", help="Fetch latest BMW vehicle data now"):
-            correlation_id = _new_ui_correlation_id(action="bmw_manual_refresh")
-            st.session_state["_active_ui_correlation_id"] = correlation_id
+            correlation_id = _set_active_ui_request_context(UIActions.BMW_MANUAL_REFRESH)
             try:
                 api_post(
                     "/v1/ev/manual_refresh",
                     {},
                     correlation_id=correlation_id,
-                    action="bmw_manual_refresh",
+                    action=UIActions.BMW_MANUAL_REFRESH,
                 )
                 st.success("EV refresh triggered.")
             except Exception as exc:
                 st.error(f"EV refresh failed: {exc}")
             finally:
-                st.session_state.pop("_active_ui_correlation_id", None)
+                _clear_active_ui_request_context()
 
         if APP_DEBUG:
             st.caption(f"Provider status: {provider_status.get('provider_status', 'unknown')}")
@@ -4426,11 +4455,11 @@ with left:
                 )
                 if resume_clicked:
                     try:
-                        api_post("/v1/evse/resume", {})
+                        api_post("/v1/evse/resume", {}, action=UIActions.EVSE_RESUME)
                         st.cache_data.clear()
                         st.success("Resume command sent.")
                     except Exception as exc:
-                        log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:car_charger_resume", title="Frontend error: car charger resume", exc=exc)
+                        log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:car_charger_resume", title="Frontend error: car charger resume", exc=exc, context={"action": UIActions.EVSE_RESUME, "endpoint": "/v1/evse/resume"})
                         st.error(f"Resume failed: {exc}")
 
                 stop_clicked = btn_cols[3].button(
@@ -4442,11 +4471,11 @@ with left:
                 )
                 if stop_clicked:
                     try:
-                        api_post("/v1/evse/stop", {})
+                        api_post("/v1/evse/stop", {}, action=UIActions.EVSE_STOP)
                         st.cache_data.clear()
                         st.success("Stop command sent.")
                     except Exception as exc:
-                        log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:car_charger_stop", title="Frontend error: car charger stop", exc=exc)
+                        log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:car_charger_stop", title="Frontend error: car charger stop", exc=exc, context={"action": UIActions.EVSE_STOP, "endpoint": "/v1/evse/stop"})
                         st.error(f"Stop failed: {exc}")
 
     def render_ev_car_status_panel(container=None) -> None:
@@ -4760,7 +4789,8 @@ with left:
 
             if confirm_reset:
                 try:
-                    updated = api_post("/v1/settings/factory_settings", {})
+                    correlation_id = _set_active_ui_request_context(UIActions.SETTINGS_FACTORY_RESET)
+                    updated = api_post("/v1/settings/factory_settings", {}, correlation_id=correlation_id, action=UIActions.SETTINGS_FACTORY_RESET)
                     st.cache_data.clear()
                     st.session_state["_pending_location_state"] = updated["config"]["location"]
                     st.session_state["_settings_flash"] = "Factory settings applied."
@@ -4785,8 +4815,10 @@ with left:
                         st.session_state.pop(f"wm_{mid}", None)
                     st.rerun()
                 except Exception as exc:
-                    log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:reset_settings", title="Frontend error: reset settings", exc=exc)
+                    log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:reset_settings", title="Frontend error: reset settings", exc=exc, context={"action": UIActions.SETTINGS_FACTORY_RESET, "endpoint": "/v1/settings/factory_settings"})
                     st.error(f"Could not reset settings: {exc}")
+                finally:
+                    _clear_active_ui_request_context()
             if cancel_reset:
                 st.session_state["confirm_reset_repo_defaults_open"] = False
                 st.rerun()
@@ -4950,8 +4982,7 @@ if run_clicked or st.session_state.get("last_run_result"):
         result = st.session_state.get("last_run_result") or {}
         hard_stop = False
         if run_clicked:
-            run_correlation_id = _new_ui_correlation_id(action="run_forecast")
-            st.session_state["_active_ui_correlation_id"] = run_correlation_id
+            run_correlation_id = _set_active_ui_request_context(UIActions.RUN_FORECAST)
             if settings_dirty:
                 if not settings_valid:
                     st.error(settings_error or "Could not save settings.")
@@ -4969,7 +5000,7 @@ if run_clicked or st.session_state.get("last_run_result"):
                         "yesterday_consumption_kwh": float(yesterday_kwh),
                     },
                     correlation_id=run_correlation_id,
-                    action="run_forecast_inputs",
+                    action=UIActions.RUN_FORECAST_INPUTS,
                 )
                 run_response = api_post(
                     "/v1/run/now",
@@ -4985,7 +5016,7 @@ if run_clicked or st.session_state.get("last_run_result"):
                         "pv_uncertainty": True,
                     },
                     correlation_id=run_correlation_id,
-                    action="run_forecast",
+                    action=UIActions.RUN_FORECAST,
                 )
                 flush_ui_error_buffer()
                 result = (run_response or {}).get("result") or {}
@@ -5362,24 +5393,24 @@ if run_clicked or st.session_state.get("last_run_result"):
     except ImportError as exc:
         st.error(f"Missing dependency: {exc}. Install with: python -m pip install -r requirements.txt")
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
-        log_frontend_error(severity="error", error_type="network", where="app.py:run_forecast", title="Frontend error: backend unreachable", exc=exc, context={"endpoint": "/v1/run/now"})
+        log_frontend_error(severity="error", error_type="network", where="app.py:run_forecast", title="Frontend error: backend unreachable", exc=exc, context={"action": UIActions.RUN_FORECAST, "endpoint": "/v1/run/now"})
         st.error("Backend unreachable. Is backend running?")
     except RuntimeError as exc:
-        log_frontend_error(severity="error", error_type="http_error", where="app.py:run_forecast", title="Frontend error: HTTP failure", exc=exc)
+        log_frontend_error(severity="error", error_type="http_error", where="app.py:run_forecast", title="Frontend error: HTTP failure", exc=exc, context={"action": UIActions.RUN_FORECAST, "endpoint": "/v1/run/now"})
         st.error(str(exc))
     except requests.RequestException as exc:
-        log_frontend_error(severity="error", error_type="http_error", where="app.py:run_forecast", title="Frontend error: HTTP failure", exc=exc)
+        log_frontend_error(severity="error", error_type="http_error", where="app.py:run_forecast", title="Frontend error: HTTP failure", exc=exc, context={"action": UIActions.RUN_FORECAST, "endpoint": "/v1/run/now"})
         st.error(f"Backend API call failed: {exc}")
     except core.ExternalServiceError as exc:
-        log_frontend_error(severity="error", error_type="external_service", where="app.py:run_forecast", title="Frontend error: external service", exc=exc)
+        log_frontend_error(severity="error", error_type="external_service", where="app.py:run_forecast", title="Frontend error: external service", exc=exc, context={"action": UIActions.RUN_FORECAST, "endpoint": "/v1/run/now"})
         st.error(f"Weather fetch failed: {exc.category}")
         st.info(exc.hint)
     except Exception as exc:
-        log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:run_forecast", title="Frontend error: run forecast", exc=exc)
+        log_frontend_error(severity="error", error_type=classify_exception(exc), where="app.py:run_forecast", title="Frontend error: run forecast", exc=exc, context={"action": UIActions.RUN_FORECAST, "endpoint": "/v1/run/now"})
         st.error(f"Could not fetch weather or compute forecast. Please retry in a minute. Details: {exc}")
         if APP_DEBUG:
             with st.expander("Debug traceback", expanded=False):
                 st.code(traceback.format_exc())
     finally:
         if run_correlation_id is not None:
-            st.session_state.pop("_active_ui_correlation_id", None)
+            _clear_active_ui_request_context()
