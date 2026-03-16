@@ -29,6 +29,7 @@ import planner_core as core
 import ocpp_evse
 import scoring
 from bmw_service import BmwService
+from bmw_logging import bmw_request_context
 from ev_status import build_unified_ev_status
 
 from error_logging import compute_dedupe_key, format_exception_body
@@ -3333,12 +3334,14 @@ def ev_manual_refresh(force_reprobe: bool = False, authorization: str | None = H
             **request_context,
         ),
     )
-    return state.bmw_service.manual_refresh(force_reprobe=force_reprobe)
+    with bmw_request_context(**request_context):
+        return state.bmw_service.manual_refresh(force_reprobe=force_reprobe)
 
 
 @app.post("/v1/ev/bmw/device_flow/start")
-def ev_bmw_device_flow_start(authorization: str | None = Header(default=None)) -> dict:
+def ev_bmw_device_flow_start(authorization: str | None = Header(default=None), request: Request = None) -> dict:
     _require_token(authorization)
+    request_context = _extract_ui_request_context(request)
     logger.info(
         "backend BMW endpoint request %s",
         _bmw_backend_log_context(
@@ -3346,9 +3349,11 @@ def ev_bmw_device_flow_start(authorization: str | None = Header(default=None)) -
             bmw_operation="device_flow",
             phase="request",
             endpoint="POST /v1/ev/bmw/device_flow/start",
+            **request_context,
         ),
     )
-    return state.bmw_service.start_device_flow()
+    with bmw_request_context(**request_context):
+        return state.bmw_service.start_device_flow()
 
 
 class BmwDeviceTokenPayload(BaseModel):
@@ -3356,8 +3361,9 @@ class BmwDeviceTokenPayload(BaseModel):
 
 
 @app.post("/v1/ev/bmw/device_flow/poll")
-def ev_bmw_device_flow_poll(payload: BmwDeviceTokenPayload, authorization: str | None = Header(default=None)) -> dict:
+def ev_bmw_device_flow_poll(payload: BmwDeviceTokenPayload, authorization: str | None = Header(default=None), request: Request = None) -> dict:
     _require_token(authorization)
+    request_context = _extract_ui_request_context(request)
     logger.info(
         "backend BMW endpoint request %s",
         _bmw_backend_log_context(
@@ -3366,9 +3372,11 @@ def ev_bmw_device_flow_poll(payload: BmwDeviceTokenPayload, authorization: str |
             phase="request",
             endpoint="POST /v1/ev/bmw/device_flow/poll",
             has_device_code=bool(str(payload.device_code or "").strip()),
+            **request_context,
         ),
     )
-    return state.bmw_service.poll_device_token(payload.device_code)
+    with bmw_request_context(**request_context):
+        return state.bmw_service.poll_device_token(payload.device_code)
 
 
 @app.get("/v1/ev/bmw/device_flow/debug")

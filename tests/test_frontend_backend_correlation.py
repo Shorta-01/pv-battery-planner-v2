@@ -1,4 +1,5 @@
 import backend_api
+import bmw_logging
 
 
 def _request_with_headers(path: str, headers: dict[str, str]):
@@ -102,3 +103,98 @@ def test_post_error_merges_header_correlation_without_overwriting_payload_contex
     assert captured["context"]["ui_correlation_id"] == "ui-payload"
     assert captured["context"]["ui_action"] == "frontend_error_event"
     assert captured["context"]["existing"] == "yes"
+
+
+
+def test_bmw_device_flow_start_propagates_ui_correlation_context(monkeypatch):
+    captured = {}
+
+    class _FakeBmwService:
+        def start_device_flow(self):
+            captured.update(bmw_logging.get_bmw_request_context())
+            return {"ok": True}
+
+    monkeypatch.setattr(backend_api.state, "bmw_service", _FakeBmwService())
+
+    request = _request_with_headers(
+        "/v1/ev/bmw/device_flow/start",
+        {
+            "X-UI-Correlation-Id": "ui-bmw-start-1",
+            "X-UI-Action": "bmw_device_flow_start",
+        },
+    )
+
+    out = backend_api.ev_bmw_device_flow_start(
+        authorization=f"Bearer {backend_api.state.api_token}",
+        request=request,
+    )
+
+    assert out == {"ok": True}
+    assert captured == {
+        "ui_correlation_id": "ui-bmw-start-1",
+        "ui_action": "bmw_device_flow_start",
+    }
+
+
+def test_bmw_device_flow_poll_propagates_ui_correlation_context(monkeypatch):
+    captured = {}
+
+    class _FakeBmwService:
+        def poll_device_token(self, _device_code):
+            captured.update(bmw_logging.get_bmw_request_context())
+            return {"ok": True, "token_status": "valid", "expires_at": None}
+
+    monkeypatch.setattr(backend_api.state, "bmw_service", _FakeBmwService())
+
+    request = _request_with_headers(
+        "/v1/ev/bmw/device_flow/poll",
+        {
+            "X-UI-Correlation-Id": "ui-bmw-poll-1",
+            "X-UI-Action": "bmw_device_flow_poll",
+        },
+    )
+
+    out = backend_api.ev_bmw_device_flow_poll(
+        payload=backend_api.BmwDeviceTokenPayload(device_code="dev-code"),
+        authorization=f"Bearer {backend_api.state.api_token}",
+        request=request,
+    )
+
+    assert out == {"ok": True, "token_status": "valid", "expires_at": None}
+    assert captured == {
+        "ui_correlation_id": "ui-bmw-poll-1",
+        "ui_action": "bmw_device_flow_poll",
+    }
+
+
+
+def test_bmw_manual_refresh_propagates_ui_correlation_context(monkeypatch):
+    captured = {}
+
+    class _FakeBmwService:
+        def manual_refresh(self, *, force_reprobe=False):
+            _ = force_reprobe
+            captured.update(bmw_logging.get_bmw_request_context())
+            return {"ok": True, "refreshed": True}
+
+    monkeypatch.setattr(backend_api.state, "bmw_service", _FakeBmwService())
+
+    request = _request_with_headers(
+        "/v1/ev/manual_refresh",
+        {
+            "X-UI-Correlation-Id": "ui-bmw-refresh-1",
+            "X-UI-Action": "bmw_manual_refresh",
+        },
+    )
+
+    out = backend_api.ev_manual_refresh(
+        force_reprobe=False,
+        authorization=f"Bearer {backend_api.state.api_token}",
+        request=request,
+    )
+
+    assert out == {"ok": True, "refreshed": True}
+    assert captured == {
+        "ui_correlation_id": "ui-bmw-refresh-1",
+        "ui_action": "bmw_manual_refresh",
+    }
