@@ -5487,6 +5487,9 @@ if True:
             run_history_from_backend.clear()
             st.session_state["last_run_result"] = result
             st.session_state["last_run_result_at"] = dt.datetime.now(dt.UTC).isoformat()
+            if _has_renderable_result():
+                st.session_state["active_top_tab"] = "Results"
+                st.rerun()
         status = str(result.get("status") or "").strip().lower()
         expected_keys = {"weather", "pv", "detail", "flows", "soc", "sunrise", "sunset", "target_date"}
         has_renderable_result = isinstance(result, dict) and expected_keys.issubset(result.keys()) and status in {"ok", "degraded"}
