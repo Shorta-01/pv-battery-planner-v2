@@ -412,6 +412,79 @@ def build_settings_payload(effective_cfg: dict, valid_model_ids: set[str]) -> tu
     return new_cfg, None
 
 
+def resolve_cfg_ui_snapshot(
+    effective_cfg: dict,
+    *,
+    user_max_ac_kw: float,
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    tariff_cfg = (effective_cfg.get("tariff", {}) if isinstance(effective_cfg, dict) else {}) or {}
+    pv_cfg = (effective_cfg.get("pv", {}) if isinstance(effective_cfg, dict) else {}) or {}
+    battery_cfg = (effective_cfg.get("battery", {}) if isinstance(effective_cfg, dict) else {}) or {}
+    car_charger_cfg = (effective_cfg.get("car_charger", {}) if isinstance(effective_cfg, dict) else {}) or {}
+    ev_cfg = (effective_cfg.get("ev_vehicle_data", {}) if isinstance(effective_cfg, dict) else {}) or {}
+    weather_cfg = (effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}) or {}
+    load_profile_cfg = (effective_cfg.get("load_profile", {}) if isinstance(effective_cfg, dict) else {}) or {}
+
+    tariff_source = tariff_cfg.get("offpeak_windows_by_dow", core.DEFAULT_CONFIG["tariff"]["offpeak_windows_by_dow"])
+    tariff_by_day = core.parse_offpeak_windows_by_dow(tariff_source)
+    default_tariff_by_day = core.parse_offpeak_windows_by_dow(core.DEFAULT_CONFIG["tariff"]["offpeak_windows_by_dow"])
+    tariff_inputs = [
+        tuple((tariff_by_day.get(day_idx) or default_tariff_by_day.get(day_idx, [("00:00", "24:00")]))[0])
+        for day_idx in range(7)
+    ]
+
+    snapshot: dict[str, Any] = {
+        "day_names": day_names,
+        "tariff_inputs": tariff_inputs,
+        "tariff_by_day": tariff_by_day,
+        "cfg_latitude": _safe_float(st.session_state.get("loc_latitude"), _safe_float((effective_cfg.get("location", {}) or {}).get("latitude"), core.LATITUDE)),
+        "cfg_longitude": _safe_float(st.session_state.get("loc_longitude"), _safe_float((effective_cfg.get("location", {}) or {}).get("longitude"), core.LONGITUDE)),
+        "cfg_peak_price_input": float(tariff_cfg.get("peak_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["peak_grid_price_eur_per_kwh"])),
+        "cfg_offpeak_price_input": float(tariff_cfg.get("offpeak_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["offpeak_grid_price_eur_per_kwh"])),
+        "cfg_injection_price_input": float(tariff_cfg.get("injection_grid_price_eur_per_kwh", core.DEFAULT_CONFIG["tariff"]["injection_grid_price_eur_per_kwh"])),
+        "cfg_allow_injection_to_grid": bool(tariff_cfg.get("allow_injection_to_grid", core.DEFAULT_CONFIG["tariff"].get("allow_injection_to_grid", True))),
+        "cfg_max_grid_import_kw": float(tariff_cfg.get("max_grid_import_kw", core.DEFAULT_CONFIG["tariff"].get("max_grid_import_kw", 0.0))),
+        "cfg_panel_wp": int(pv_cfg.get("panel_wp", core.DEFAULT_CONFIG["pv"]["panel_wp"])),
+        "cfg_array_south_panels": int(pv_cfg.get("array_south_panels", core.DEFAULT_CONFIG["pv"]["array_south_panels"])),
+        "cfg_array_east_panels": int(pv_cfg.get("array_east_panels", core.DEFAULT_CONFIG["pv"]["array_east_panels"])),
+        "cfg_tilt_east_deg": float(pv_cfg.get("tilt_east_deg", core.DEFAULT_CONFIG["pv"]["tilt_east_deg"])),
+        "cfg_tilt_south_deg": float(pv_cfg.get("tilt_south_deg", core.DEFAULT_CONFIG["pv"]["tilt_south_deg"])),
+        "cfg_azimuth_east_deg": float(pv_cfg.get("azimuth_east_deg", core.DEFAULT_CONFIG["pv"]["azimuth_east_deg"])),
+        "cfg_azimuth_south_deg": float(pv_cfg.get("azimuth_south_deg", core.DEFAULT_CONFIG["pv"]["azimuth_south_deg"])),
+        "cfg_performance_ratio": float(pv_cfg.get("performance_ratio", core.DEFAULT_CONFIG["pv"]["performance_ratio"])),
+        "cfg_pv_calibration_factor_east": float(pv_cfg.get("pv_calibration_factor_east", core.DEFAULT_CONFIG["pv"]["pv_calibration_factor_east"])),
+        "cfg_pv_calibration_factor_south": float(pv_cfg.get("pv_calibration_factor_south", core.DEFAULT_CONFIG["pv"]["pv_calibration_factor_south"])),
+        "cfg_inverter_ac_kw_limit": float(pv_cfg.get("inverter_ac_kw_limit", core.DEFAULT_CONFIG["pv"]["inverter_ac_kw_limit"])),
+        "cfg_battery_kwh": float(battery_cfg.get("battery_kwh", core.DEFAULT_CONFIG["battery"]["battery_kwh"])),
+        "cfg_min_soc_percent": float(battery_cfg.get("min_soc_percent", core.DEFAULT_CONFIG["battery"]["min_soc_percent"])),
+        "cfg_max_cutoff_soc_percent": float(battery_cfg.get("max_cutoff_soc_percent", core.DEFAULT_CONFIG["battery"]["max_cutoff_soc_percent"])),
+        "cfg_battery_max_charge_kw": float(battery_cfg.get("battery_max_charge_kw", core.DEFAULT_CONFIG["battery"]["battery_max_charge_kw"])),
+        "cfg_battery_max_discharge_kw": float(battery_cfg.get("battery_max_discharge_kw", core.DEFAULT_CONFIG["battery"]["battery_max_discharge_kw"])),
+        "cfg_max_ac_charge_kw_hard_limit": float(battery_cfg.get("max_ac_charge_kw_hard_limit", core.DEFAULT_CONFIG["battery"]["max_ac_charge_kw_hard_limit"])),
+        "cfg_cc_enabled": bool(car_charger_cfg.get("enabled", False)),
+        "cfg_cc_user": str(car_charger_cfg.get("basic_user", "")),
+        "cfg_cc_pass": str(car_charger_cfg.get("basic_pass", "")),
+        "cfg_ev_enabled": bool(ev_cfg.get("enabled", False)),
+        "cfg_bmw_client_id": str(ev_cfg.get("bmw_client_id", "")),
+        "cfg_bmw_active_vehicle_id": str(ev_cfg.get("bmw_active_vehicle_id") or ""),
+        "cfg_petrol_price_eur_per_l": "" if ev_cfg.get("petrol_price_eur_per_l") in (None, "") else str(ev_cfg.get("petrol_price_eur_per_l")),
+        "cfg_petrol_consumption_l_per_100km": "" if ev_cfg.get("petrol_consumption_l_per_100km") in (None, "") else str(ev_cfg.get("petrol_consumption_l_per_100km")),
+        "cfg_ev_charge_deadline_time": str(ev_cfg.get("ev_charge_deadline_time") or ""),
+        "cfg_load_profile": [float(v) for v in load_profile_cfg.get("load_profile_24h", core.DEFAULT_CONFIG["load_profile"]["load_profile_24h"])],
+        "saved_sat": bool(weather_cfg.get("use_satellite_nowcast_0_6h", False)),
+        "cfg_max_grid_charge_power_kw": float(user_max_ac_kw),
+    }
+
+    existing_snapshot = st.session_state.get("_cfg_ui_snapshot")
+    if isinstance(existing_snapshot, dict):
+        snapshot.update(existing_snapshot)
+    if isinstance(overrides, dict):
+        snapshot.update(overrides)
+    return snapshot
+
+
 def validate_sidebar_readiness(
     ui: dict,
     *,
@@ -433,15 +506,31 @@ def validate_sidebar_readiness(
     if yesterday_kwh < 2.0 or yesterday_kwh > 60.0:
         issues["Inputs"].append("Yesterday usage must be between 2.0 and 60.0 kWh.")
 
-    lat = float(ui["cfg_latitude"])
-    lon = float(ui["cfg_longitude"])
-    if not (-90.0 <= lat <= 90.0):
+    def _read_float(key: str, section: str, message: str) -> float | None:
+        raw = ui.get(key)
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            issues[section].append(message)
+            return None
+
+    lat = _read_float("cfg_latitude", "Location", "Latitude is missing or invalid.")
+    lon = _read_float("cfg_longitude", "Location", "Longitude is missing or invalid.")
+    if lat is not None and not (-90.0 <= lat <= 90.0):
         issues["Location"].append("Latitude must be between -90 and 90.")
-    if not (-180.0 <= lon <= 180.0):
+    if lon is not None and not (-180.0 <= lon <= 180.0):
         issues["Location"].append("Longitude must be between -180 and 180.")
 
     day_names = ui.get("day_names", [])
-    for day_idx, (from_value, to_value) in enumerate(ui.get("tariff_inputs", [])):
+    tariff_inputs = ui.get("tariff_inputs", [])
+    if not tariff_inputs:
+        issues["Tariffs"].append("Off-peak hours are missing.")
+    for day_idx, raw_window in enumerate(tariff_inputs):
+        if not isinstance(raw_window, (list, tuple)) or len(raw_window) < 2:
+            day = day_names[day_idx] if day_idx < len(day_names) else f"Day {day_idx + 1}"
+            issues["Tariffs"].append(f"{day}: off-peak window is missing From/To values")
+            continue
+        from_value, to_value = raw_window[0], raw_window[1]
         try:
             start_min = parse_hhmm(from_value, allow_24_end=False)
             end_min = parse_hhmm(to_value, allow_24_end=True)
@@ -450,28 +539,36 @@ def validate_sidebar_readiness(
             day = day_names[day_idx] if day_idx < len(day_names) else f"Day {day_idx + 1}"
             issues["Tariffs"].append(f"{day}: {exc}")
 
-    if float(ui["cfg_panel_wp"]) <= 0:
+    panel_wp = _read_float("cfg_panel_wp", "PV", "Panel power is missing or invalid.")
+    if panel_wp is not None and panel_wp <= 0:
         issues["PV"].append("Panel power must be > 0.")
-    if int(ui["cfg_array_south_panels"]) + int(ui["cfg_array_east_panels"]) <= 0:
+    south_panels = _read_float("cfg_array_south_panels", "PV", "South panel count is missing or invalid.")
+    east_panels = _read_float("cfg_array_east_panels", "PV", "East panel count is missing or invalid.")
+    if south_panels is not None and east_panels is not None and int(south_panels) + int(east_panels) <= 0:
         issues["PV"].append("Total east + south panels must be > 0.")
-    if float(ui["cfg_inverter_ac_kw_limit"]) <= 0:
+    inverter_limit = _read_float("cfg_inverter_ac_kw_limit", "PV", "Inverter AC limit is missing or invalid.")
+    if inverter_limit is not None and inverter_limit <= 0:
         issues["PV"].append("Inverter AC limit must be > 0.")
 
-    if float(ui["cfg_battery_kwh"]) <= 0:
+    battery_kwh = _read_float("cfg_battery_kwh", "Battery", "Battery capacity is missing or invalid.")
+    if battery_kwh is not None and battery_kwh <= 0:
         issues["Battery"].append("Battery capacity must be > 0.")
-    min_soc = float(ui["cfg_min_soc_percent"])
-    cutoff_soc = float(ui["cfg_max_cutoff_soc_percent"])
-    if not (0 <= min_soc <= 100):
+    min_soc = _read_float("cfg_min_soc_percent", "Battery", "Min SOC is missing or invalid.")
+    cutoff_soc = _read_float("cfg_max_cutoff_soc_percent", "Battery", "Cutoff SOC is missing or invalid.")
+    if min_soc is not None and not (0 <= min_soc <= 100):
         issues["Battery"].append("Min SOC must be between 0 and 100.")
-    if not (0 <= cutoff_soc <= 100):
+    if cutoff_soc is not None and not (0 <= cutoff_soc <= 100):
         issues["Battery"].append("Cutoff SOC must be between 0 and 100.")
-    if cutoff_soc < min_soc:
+    if cutoff_soc is not None and min_soc is not None and cutoff_soc < min_soc:
         issues["Battery"].append("Cutoff SOC must be greater than or equal to Min SOC.")
-    if float(ui["cfg_battery_max_charge_kw"]) <= 0:
+    max_charge_kw = _read_float("cfg_battery_max_charge_kw", "Battery", "Max charge power is missing or invalid.")
+    if max_charge_kw is not None and max_charge_kw <= 0:
         issues["Battery"].append("Max charge power must be > 0.")
-    if float(ui["cfg_battery_max_discharge_kw"]) <= 0:
+    max_discharge_kw = _read_float("cfg_battery_max_discharge_kw", "Battery", "Max discharge power is missing or invalid.")
+    if max_discharge_kw is not None and max_discharge_kw <= 0:
         issues["Battery"].append("Max discharge power must be > 0.")
-    if float(ui.get("cfg_max_grid_charge_power_kw", 0.0)) <= 0:
+    max_grid_charge_kw = _read_float("cfg_max_grid_charge_power_kw", "Battery", "Max grid charge power is missing or invalid.")
+    if max_grid_charge_kw is not None and max_grid_charge_kw <= 0:
         issues["Battery"].append("Max grid charge power must be > 0.")
 
     if forecast_mode == "expert" and not selected_models:
@@ -3766,6 +3863,17 @@ user_max_ac_kw = float(
     )
 )
 
+st.session_state["_cfg_ui_snapshot"] = resolve_cfg_ui_snapshot(effective_cfg, user_max_ac_kw=user_max_ac_kw)
+current_settings_payload, settings_error = build_settings_payload(effective_cfg, valid_model_ids)
+saved_settings_payload = normalize_effective_cfg_to_payload(effective_cfg, valid_model_ids)
+settings_valid = settings_error is None and current_settings_payload is not None
+if settings_valid:
+    current_payload_hash = json.dumps(current_settings_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    saved_payload_hash = json.dumps(saved_settings_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    settings_dirty = current_payload_hash != saved_payload_hash
+else:
+    settings_dirty = True
+
 TOP_LEVEL_TABS = ["Inputs", "Results", "Car & Charger", "Settings", "History", "Errors"]
 TAB_HELP_DISABLED = {
     "Results": "Run forecast first",
@@ -4454,47 +4562,51 @@ if active_top_tab == "Settings":
         st.success(st.session_state["_geo_success"])
     if st.session_state.get("_geo_error"):
         st.error(st.session_state["_geo_error"])
-    st.session_state["_cfg_ui_snapshot"] = {
-        "day_names": day_names,
-        "tariff_inputs": tariff_inputs,
-        "tariff_by_day": tariff_by_day,
-        "cfg_latitude": cfg_latitude,
-        "cfg_longitude": cfg_longitude,
-        "cfg_peak_price_input": cfg_peak_price_input,
-        "cfg_offpeak_price_input": cfg_offpeak_price_input,
-        "cfg_injection_price_input": cfg_injection_price_input,
-        "cfg_allow_injection_to_grid": cfg_allow_injection_to_grid,
-        "cfg_max_grid_import_kw": cfg_max_grid_import_kw,
-        "cfg_panel_wp": cfg_panel_wp,
-        "cfg_array_south_panels": cfg_array_south_panels,
-        "cfg_array_east_panels": cfg_array_east_panels,
-        "cfg_tilt_east_deg": cfg_tilt_east_deg,
-        "cfg_tilt_south_deg": cfg_tilt_south_deg,
-        "cfg_azimuth_east_deg": cfg_azimuth_east_deg,
-        "cfg_azimuth_south_deg": cfg_azimuth_south_deg,
-        "cfg_performance_ratio": cfg_performance_ratio,
-        "cfg_pv_calibration_factor_east": cfg_pv_calibration_factor_east,
-        "cfg_pv_calibration_factor_south": cfg_pv_calibration_factor_south,
-        "cfg_inverter_ac_kw_limit": cfg_inverter_ac_kw_limit,
-        "cfg_battery_kwh": cfg_battery_kwh,
-        "cfg_min_soc_percent": cfg_min_soc_percent,
-        "cfg_max_cutoff_soc_percent": cfg_max_cutoff_soc_percent,
-        "cfg_battery_max_charge_kw": cfg_battery_max_charge_kw,
-        "cfg_battery_max_discharge_kw": cfg_battery_max_discharge_kw,
-        "cfg_max_ac_charge_kw_hard_limit": cfg_max_ac_charge_kw_hard_limit,
-        "cfg_cc_enabled": bool(cfg_cc_enabled),
-        "cfg_cc_user": str(cfg_cc_user),
-        "cfg_cc_pass": str(cfg_cc_pass),
-        "cfg_ev_enabled": bool(cfg_ev_enabled),
-        "cfg_bmw_client_id": str(cfg_bmw_client_id),
-        "cfg_bmw_active_vehicle_id": str(selected_vehicle_id),
-        "cfg_petrol_price_eur_per_l": str(cfg_petrol_price_eur_per_l),
-        "cfg_petrol_consumption_l_per_100km": str(cfg_petrol_consumption_l_per_100km),
-        "cfg_ev_charge_deadline_time": str(cfg_ev_charge_deadline_time),
-        "cfg_load_profile": cfg_load_profile,
-        "saved_sat": bool((effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}).get("use_satellite_nowcast_0_6h", False)),
-        "cfg_max_grid_charge_power_kw": float(user_max_ac_kw),
-    }
+    st.session_state["_cfg_ui_snapshot"] = resolve_cfg_ui_snapshot(
+        effective_cfg,
+        user_max_ac_kw=user_max_ac_kw,
+        overrides={
+            "day_names": day_names,
+            "tariff_inputs": tariff_inputs,
+            "tariff_by_day": tariff_by_day,
+            "cfg_latitude": cfg_latitude,
+            "cfg_longitude": cfg_longitude,
+            "cfg_peak_price_input": cfg_peak_price_input,
+            "cfg_offpeak_price_input": cfg_offpeak_price_input,
+            "cfg_injection_price_input": cfg_injection_price_input,
+            "cfg_allow_injection_to_grid": cfg_allow_injection_to_grid,
+            "cfg_max_grid_import_kw": cfg_max_grid_import_kw,
+            "cfg_panel_wp": cfg_panel_wp,
+            "cfg_array_south_panels": cfg_array_south_panels,
+            "cfg_array_east_panels": cfg_array_east_panels,
+            "cfg_tilt_east_deg": cfg_tilt_east_deg,
+            "cfg_tilt_south_deg": cfg_tilt_south_deg,
+            "cfg_azimuth_east_deg": cfg_azimuth_east_deg,
+            "cfg_azimuth_south_deg": cfg_azimuth_south_deg,
+            "cfg_performance_ratio": cfg_performance_ratio,
+            "cfg_pv_calibration_factor_east": cfg_pv_calibration_factor_east,
+            "cfg_pv_calibration_factor_south": cfg_pv_calibration_factor_south,
+            "cfg_inverter_ac_kw_limit": cfg_inverter_ac_kw_limit,
+            "cfg_battery_kwh": cfg_battery_kwh,
+            "cfg_min_soc_percent": cfg_min_soc_percent,
+            "cfg_max_cutoff_soc_percent": cfg_max_cutoff_soc_percent,
+            "cfg_battery_max_charge_kw": cfg_battery_max_charge_kw,
+            "cfg_battery_max_discharge_kw": cfg_battery_max_discharge_kw,
+            "cfg_max_ac_charge_kw_hard_limit": cfg_max_ac_charge_kw_hard_limit,
+            "cfg_cc_enabled": bool(cfg_cc_enabled),
+            "cfg_cc_user": str(cfg_cc_user),
+            "cfg_cc_pass": str(cfg_cc_pass),
+            "cfg_ev_enabled": bool(cfg_ev_enabled),
+            "cfg_bmw_client_id": str(cfg_bmw_client_id),
+            "cfg_bmw_active_vehicle_id": str(selected_vehicle_id),
+            "cfg_petrol_price_eur_per_l": str(cfg_petrol_price_eur_per_l),
+            "cfg_petrol_consumption_l_per_100km": str(cfg_petrol_consumption_l_per_100km),
+            "cfg_ev_charge_deadline_time": str(cfg_ev_charge_deadline_time),
+            "cfg_load_profile": cfg_load_profile,
+            "saved_sat": bool((effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}).get("use_satellite_nowcast_0_6h", False)),
+            "cfg_max_grid_charge_power_kw": float(user_max_ac_kw),
+        },
+    )
     current_settings_payload, settings_error = build_settings_payload(effective_cfg, valid_model_ids)
     saved_settings_payload = normalize_effective_cfg_to_payload(effective_cfg, valid_model_ids)
     settings_valid = settings_error is None and current_settings_payload is not None
