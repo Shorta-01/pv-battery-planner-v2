@@ -3908,6 +3908,10 @@ def render_top_nav(active_tab: str, availability: dict[str, bool]) -> str:
     st.markdown("#### Navigation")
     cols = st.columns(len(TOP_LEVEL_TABS))
     selected = active_tab
+    for tab_name in TOP_LEVEL_TABS:
+        if bool(st.session_state.get(f"top_nav_{tab_name}", False)) and bool(availability.get(tab_name, False)):
+            selected = tab_name
+            break
     for idx, tab_name in enumerate(TOP_LEVEL_TABS):
         enabled = bool(availability.get(tab_name, False))
         help_text = None if enabled else TAB_HELP_DISABLED.get(tab_name)
@@ -3915,7 +3919,7 @@ def render_top_nav(active_tab: str, availability: dict[str, bool]) -> str:
             if st.button(
                 tab_name,
                 key=f"top_nav_{tab_name}",
-                type="primary" if tab_name == active_tab else "secondary",
+                type="primary" if tab_name == selected else "secondary",
                 use_container_width=True,
                 disabled=not enabled,
                 help=help_text,
