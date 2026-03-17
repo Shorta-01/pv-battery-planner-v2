@@ -2478,6 +2478,59 @@ def _parse_json_dict_maybe(payload: object) -> dict:
     return {}
 
 
+def _settings_snapshot_from_detail(detail_payload: dict) -> dict:
+    if not isinstance(detail_payload, dict):
+        return {}
+    if isinstance(detail_payload.get("settings_used"), dict):
+        return detail_payload.get("settings_used")
+    if isinstance(detail_payload.get("config"), dict):
+        return detail_payload.get("config")
+    return _parse_json_dict_maybe(detail_payload.get("config_json"))
+
+
+def _models_summary_from_sources(detail_payload: dict, row_payload: object | None = None) -> tuple[dict, dict]:
+    detail_payload = detail_payload if isinstance(detail_payload, dict) else {}
+    row_payload = row_payload if isinstance(row_payload, dict) else {}
+
+    models_summary = detail_payload.get("models_summary") if isinstance(detail_payload.get("models_summary"), dict) else {}
+    row_models_summary = row_payload.get("models_summary_raw") if isinstance(row_payload, dict) and isinstance(row_payload.get("models_summary_raw"), dict) else {}
+
+    weather_ensemble = _parse_json_dict_maybe(detail_payload.get("weather_ensemble_json"))
+    if not weather_ensemble:
+        weather_ensemble = detail_payload.get("weather_ensemble") if isinstance(detail_payload.get("weather_ensemble"), dict) else {}
+
+    selected_models = models_summary.get("selected_models")
+    if not isinstance(selected_models, list):
+        selected_models = row_models_summary.get("selected_models") if isinstance(row_models_summary.get("selected_models"), list) else []
+    if not selected_models:
+        selected_models = weather_ensemble.get("selected_models") if isinstance(weather_ensemble.get("selected_models"), list) else []
+    if not selected_models:
+        selected_models = weather_ensemble.get("models_used") if isinstance(weather_ensemble.get("models_used"), list) else []
+
+    failed_models = models_summary.get("failed_models")
+    if not isinstance(failed_models, list):
+        failed_models = row_models_summary.get("failed_models") if isinstance(row_models_summary.get("failed_models"), list) else []
+    if not failed_models:
+        failed_models = weather_ensemble.get("failed_models") if isinstance(weather_ensemble.get("failed_models"), list) else []
+        if not failed_models and isinstance(weather_ensemble.get("failed_model_reasons"), dict):
+            failed_models = [str(k) for k in weather_ensemble.get("failed_model_reasons", {}).keys()]
+
+    weights_used = models_summary.get("weights_used")
+    if not isinstance(weights_used, dict):
+        weights_used = row_models_summary.get("weights_used") if isinstance(row_models_summary.get("weights_used"), dict) else {}
+    if not weights_used:
+        weights_used = weather_ensemble.get("weights_used") if isinstance(weather_ensemble.get("weights_used"), dict) else {}
+    if not weights_used:
+        weights_used = weather_ensemble.get("normalized_weights") if isinstance(weather_ensemble.get("normalized_weights"), dict) else {}
+
+    summary = {
+        "selected_models": [str(m) for m in selected_models if str(m).strip()],
+        "failed_models": [str(m) for m in failed_models if str(m).strip()],
+        "weights_used": {str(k): v for k, v in weights_used.items()} if isinstance(weights_used, dict) else {},
+    }
+    return summary, weather_ensemble
+
+
 @st.cache_data(ttl=30, show_spinner=False)
 def run_history_from_backend(show_all_runs: bool = False, days: int = 30) -> pd.DataFrame:
     history_columns = [
@@ -2862,13 +2915,10 @@ def _render_run_inspector(filtered_df: pd.DataFrame) -> None:
                 st.success("No warnings recorded.")
 
         with tab_models:
-            models_summary = detail.get("models_summary") if isinstance(detail.get("models_summary"), dict) else row.get("models_summary_raw", {})
+            models_summary, weather_ensemble = _models_summary_from_sources(detail, row)
             selected_models = models_summary.get("selected_models", []) if isinstance(models_summary, dict) else []
             failed_models = models_summary.get("failed_models", []) if isinstance(models_summary, dict) else []
             weights_used = models_summary.get("weights_used", {}) if isinstance(models_summary, dict) else {}
-            weather_ensemble = _parse_json_dict_maybe(detail.get("weather_ensemble_json"))
-            if not weather_ensemble:
-                weather_ensemble = detail.get("weather_ensemble") if isinstance(detail.get("weather_ensemble"), dict) else {}
 
             failed_models_set = set(str(m) for m in failed_models)
             failed_reasons = weather_ensemble.get("failed_model_reasons") if isinstance(weather_ensemble.get("failed_model_reasons"), dict) else {}
@@ -2888,6 +2938,18 @@ def _render_run_inspector(filtered_df: pd.DataFrame) -> None:
             for model_id in failed_models_set:
                 if model_id and model_id not in model_ids:
                     model_ids.append(model_id)
+            for model_id in failed_reasons.keys() if isinstance(failed_reasons, dict) else []:
+                model_text = str(model_id)
+                if model_text and model_text not in model_ids:
+                    model_ids.append(model_text)
+            for model_id in missing_by_model.keys() if isinstance(missing_by_model, dict) else []:
+                model_text = str(model_id)
+                if model_text and model_text not in model_ids:
+                    model_ids.append(model_text)
+            for model_id in derived_by_model.keys() if isinstance(derived_by_model, dict) else []:
+                model_text = str(model_id)
+                if model_text and model_text not in model_ids:
+                    model_ids.append(model_text)
 
             st.caption("Short status in History keeps the table readable. Full per-model diagnostics are shown below.")
             if not model_ids:
@@ -2934,7 +2996,7 @@ def _render_run_inspector(filtered_df: pd.DataFrame) -> None:
                 st.info("Inputs snapshot is not available for this run.")
 
         with tab_settings:
-            settings_used = detail.get("settings_used") if isinstance(detail.get("settings_used"), dict) else {}
+            settings_used = _settings_snapshot_from_detail(detail)
             if settings_used:
                 st.json(settings_used, expanded=False)
             else:
@@ -3198,8 +3260,8 @@ def _render_compare_runs_block(filtered_df: pd.DataFrame) -> None:
                 key="compare_settings_diff_include_noisy",
                 help="Show technical/transient fields (run_id, timestamps, metadata, session/UI state) for debugging.",
             )
-            settings_a = detail_a.get("settings_used") if isinstance(detail_a.get("settings_used"), dict) else {}
-            settings_b = detail_b.get("settings_used") if isinstance(detail_b.get("settings_used"), dict) else {}
+            settings_a = _settings_snapshot_from_detail(detail_a)
+            settings_b = _settings_snapshot_from_detail(detail_b)
             settings_diff_df = _diff_table(settings_a, settings_b, include_noisy=include_noisy_settings)
             if settings_diff_df.empty:
                 st.success("No settings differences found.")
@@ -3224,8 +3286,8 @@ def _render_compare_runs_block(filtered_df: pd.DataFrame) -> None:
                         detail_b.get("inputs_used") if isinstance(detail_b.get("inputs_used"), dict) else {},
                     ).to_dict(orient="records"),
                     "settings": _diff_table(
-                        detail_a.get("settings_used") if isinstance(detail_a.get("settings_used"), dict) else {},
-                        detail_b.get("settings_used") if isinstance(detail_b.get("settings_used"), dict) else {},
+                        _settings_snapshot_from_detail(detail_a),
+                        _settings_snapshot_from_detail(detail_b),
                         include_noisy=include_noisy_settings,
                     ).to_dict(orient="records"),
                 },
