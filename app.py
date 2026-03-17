@@ -2307,6 +2307,7 @@ def api_post(path: str, payload: dict, *, correlation_id: str | None = None, act
     url = f"{API_BASE_URL}{path}"
     delays = [0.5, 1.0, 2.0]
     request_correlation_id = str(correlation_id or _new_ui_correlation_id(action=action))
+    busy_message = "Backend is busy running a forecast. Try again."
 
     for attempt, delay in enumerate([0.0] + delays):
         if delay:
@@ -2322,7 +2323,7 @@ def api_post(path: str, payload: dict, *, correlation_id: str | None = None, act
             if response.status_code == 423:
                 if attempt < len(delays):
                     continue
-                raise RuntimeError("Backend is busy running a forecast. Try again.")
+                raise RuntimeError(busy_message)
 
             response.raise_for_status()
             return response.json()
@@ -2340,6 +2341,10 @@ def api_delete(path: str, *, params: dict | None = None) -> dict:
     if response.text.strip():
         return response.json()
     return {}
+
+
+def is_backend_busy_runtime_error(exc: RuntimeError) -> bool:
+    return str(exc).strip() == "Backend is busy running a forecast. Try again."
 
 
 def _on_toggle_fixed(error_id: str, key: str) -> None:
@@ -3912,6 +3917,8 @@ yesterday_kwh = float(st.session_state.get("last_kwh", 18.0))
 run_clicked = False
 save_clicked = False
 settings_valid = True
+if "run_forecast_in_flight" not in st.session_state:
+    st.session_state["run_forecast_in_flight"] = False
 settings_dirty = False
 settings_error = None
 current_settings_payload = {}
@@ -5179,14 +5186,17 @@ if active_top_tab == "Inputs":
                 help="Store your current settings so future runs use them.",
             )
         with top_action_run:
+            run_button_disabled = (not run_allowed) or bool(st.session_state.get("run_forecast_in_flight", False))
             run_clicked = st.button(
-                "Run forecast",
+                "Running..." if st.session_state.get("run_forecast_in_flight", False) else "Run forecast",
                 type="primary",
-                disabled=(not run_allowed),
+                disabled=run_button_disabled,
                 key="btn_run_forecast",
                 width="stretch",
                 help="Start the planner for tomorrow using current inputs and saved settings.",
             )
+            if st.session_state.get("run_forecast_in_flight", False):
+                st.caption("Forecast request in progress…")
 
     save_badge_visibility = "visible" if save_label_active else "hidden"
     save_badge_opacity = "1" if save_label_active else "0"
@@ -5491,6 +5501,10 @@ if True:
         result = st.session_state.get("last_run_result") or {}
         hard_stop = False
         if run_clicked:
+            if st.session_state.get("run_forecast_in_flight", False):
+                ui_warning("A forecast run request is already in progress. Please wait a moment.")
+                st.stop()
+            st.session_state["run_forecast_in_flight"] = True
             run_correlation_id = _set_active_ui_request_context(UIActions.RUN_FORECAST)
             if settings_dirty:
                 if not settings_valid:
@@ -5912,8 +5926,19 @@ if True:
         log_frontend_error(severity="error", error_type="network", where="app.py:run_forecast", title="Frontend error: backend unreachable", exc=exc, context={"action": UIActions.RUN_FORECAST, "endpoint": "/v1/run/now"})
         st.error("Backend unreachable. Is backend running?")
     except RuntimeError as exc:
-        log_frontend_error(severity="error", error_type="http_error", where="app.py:run_forecast", title="Frontend error: HTTP failure", exc=exc, context={"action": UIActions.RUN_FORECAST, "endpoint": "/v1/run/now"})
-        st.error(str(exc))
+        if is_backend_busy_runtime_error(exc):
+            log_frontend_error(
+                severity="warning",
+                error_type="busy",
+                where="app.py:run_forecast",
+                title="Frontend info: forecast already running",
+                exc=exc,
+                context={"action": UIActions.RUN_FORECAST, "endpoint": "/v1/run/now"},
+            )
+            ui_warning("A forecast is already running. Please wait a moment and try again.")
+        else:
+            log_frontend_error(severity="error", error_type="http_error", where="app.py:run_forecast", title="Frontend error: HTTP failure", exc=exc, context={"action": UIActions.RUN_FORECAST, "endpoint": "/v1/run/now"})
+            st.error(str(exc))
     except requests.RequestException as exc:
         log_frontend_error(severity="error", error_type="http_error", where="app.py:run_forecast", title="Frontend error: HTTP failure", exc=exc, context={"action": UIActions.RUN_FORECAST, "endpoint": "/v1/run/now"})
         st.error(f"Backend API call failed: {exc}")
@@ -5930,3 +5955,4 @@ if True:
     finally:
         if run_correlation_id is not None:
             _clear_active_ui_request_context()
+        st.session_state["run_forecast_in_flight"] = False
