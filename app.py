@@ -3239,6 +3239,20 @@ def _render_compare_runs_block(filtered_df: pd.DataFrame) -> None:
             )
 
 
+def _build_user_mode_recent_runs_df(source_df: pd.DataFrame) -> pd.DataFrame:
+    """Return the User-mode History table with a stable, unique display schema."""
+    return pd.DataFrame(
+        {
+            "Date": source_df.get("Date", pd.Series(dtype=object)).astype(str),
+            "Status": source_df.get("Status label", pd.Series(dtype=object)).fillna("—").astype(str),
+            "PV": pd.to_numeric(source_df.get("PV p50", pd.Series(dtype=float)), errors="coerce"),
+            "Load": pd.to_numeric(source_df.get("Load (estimated)", pd.Series(dtype=float)), errors="coerce"),
+            "Charge kW": pd.to_numeric(source_df.get("Charge", pd.Series(dtype=float)), errors="coerce"),
+            "Warnings": pd.to_numeric(source_df.get("warnings_count", pd.Series(dtype=float)), errors="coerce").fillna(0).astype(int),
+        }
+    )
+
+
 def _render_history_log_block() -> None:
     tooltip_heading("History log", TABLE_TOOLTIPS["History log"])
 
@@ -3363,11 +3377,8 @@ def _render_history_log_block() -> None:
             s6.metric("Warnings", str(latest_warnings))
 
             st.markdown("**Recent runs**")
-            user_recent_df = filtered.tail(8).copy()
-            user_recent_df["Date"] = user_recent_df["Date"].astype(str)
-            user_recent_df["Warnings"] = pd.to_numeric(user_recent_df["warnings_count"], errors="coerce").fillna(0).astype(int)
-            user_recent_df = user_recent_df.rename(columns={"Status label": "Status", "PV p50": "PV", "Load (estimated)": "Load", "Charge": "Charge kW"})
-            recent_cols = [c for c in ["Date", "Status", "PV", "Load", "Charge kW", "Warnings"] if c in user_recent_df.columns]
+            user_recent_df = _build_user_mode_recent_runs_df(filtered.tail(8).copy())
+            recent_cols = list(user_recent_df.columns)
             st.dataframe(user_recent_df[recent_cols], width="stretch", hide_index=True)
 
             run_pick_options: list[tuple[str, str]] = []
@@ -3394,6 +3405,8 @@ def _render_history_log_block() -> None:
                 key="history_log_export_csv",
             )
             return
+
+
 
         st.caption("Open Run Inspector to see full model reasons and settings snapshot.")
         st.markdown("**Last run summary**")
