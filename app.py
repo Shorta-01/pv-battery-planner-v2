@@ -3816,7 +3816,6 @@ def get_ui_mode() -> str:
 
 
 def render_global_ui_mode_selector() -> str:
-    st.markdown("##### UI mode")
     options = ["User", "Expert", "Debug"]
     current = get_ui_mode()
     if hasattr(st, "segmented_control"):
@@ -4025,7 +4024,7 @@ st.session_state["previous_top_tab"] = active_top_tab
 
 if active_top_tab == "Inputs":
     st.header("Inputs")
-    st.caption("Quick setup for tomorrow")
+    st.caption("Check readiness, then run tomorrow's plan.")
     effective_cfg = backend_settings.get("config", core.DEFAULT_CONFIG)
     loc_cfg = effective_cfg["location"]
     apply_pending_location_state()
@@ -4052,31 +4051,6 @@ if active_top_tab == "Inputs":
         st.session_state["loc_country"] = str(loc_structured.get("country", ""))
     if "loc_lookup_validated" not in st.session_state:
         st.session_state["loc_lookup_validated"] = False
-    with st.container(border=True):
-        st.markdown("##### Quick inputs")
-        inputs_soc_col, inputs_kwh_col = st.columns([2, 3], vertical_alignment="bottom")
-        with inputs_soc_col:
-            soc_percent = st.number_input(
-                    "Battery now (%)",
-                    min_value=0.0,
-                    max_value=100.0,
-                    value=float(st.session_state.last_soc),
-                    step=1.0,
-                    format="%.0f",
-                    help=get_help("soc_percent"),
-                )
-        with inputs_kwh_col:
-            yesterday_kwh = st.number_input(
-                    "Yesterday total (kWh)",
-                    min_value=0.1,
-                    value=float(st.session_state.last_kwh),
-                    step=0.1,
-                    format="%.1f",
-                    help=get_help("yesterday_kwh"),
-                )
-            if yesterday_kwh < 2.0 or yesterday_kwh > 60.0:
-                st.error("Run forecast is blocked: Yesterday total consumption must be between 2.0 and 60.0 kWh. Enter a typical day such as 12.0 kWh if yesterday was unusual.")
-
 if active_top_tab == "Settings":
     ui_mode_settings = get_ui_mode()
     is_user_mode_settings = ui_mode_settings == "User"
@@ -4216,6 +4190,9 @@ if active_top_tab == "Settings":
             tuple((tariff_by_day.get(i) or default_tariff_by_day.get(i, [("00:00", "24:00")]))[0])
             for i in range(7)
         ]
+        weekday_window = tariff_inputs[0] if tariff_inputs else ("00:00", "24:00")
+        weekend_window = tariff_inputs[5] if len(tariff_inputs) > 5 else weekday_window
+        st.caption(f"Off-peak summary: Weekdays {weekday_window[0]}–{weekday_window[1]} · Weekend {weekend_window[0]}–{weekend_window[1]}")
     else:
         header_cols = st.columns([1.0, 1.2, 1.6], vertical_alignment="bottom")
         header_cols[0].markdown("**Day**")
@@ -4266,6 +4243,13 @@ if active_top_tab == "Settings":
     cfg_tilt_south_deg = float(cfg_pv["tilt_south_deg"])
     cfg_azimuth_south_deg = float(cfg_pv["azimuth_south_deg"])
     cfg_pv_calibration_factor_south = float(cfg_pv.get("pv_calibration_factor_south", 1.0))
+
+    if is_user_mode_settings:
+        total_panels = int(cfg_array_east_panels) + int(cfg_array_south_panels)
+        st.caption(
+            f"PV summary: {total_panels} panels total ({int(cfg_array_east_panels)} east / {int(cfg_array_south_panels)} south) · "
+            f"{float(cfg_inverter_ac_kw_limit):.1f} kW inverter limit"
+        )
 
     if not is_user_mode_settings:
         st.markdown("#### PV")
@@ -4634,6 +4618,24 @@ if active_top_tab == "Settings":
     else:
         settings_dirty = True
 
+    with st.container(border=True):
+        save_settings_from_settings_tab = st.button(
+            "Save settings",
+            type="primary",
+            disabled=(not settings_valid) or (not settings_dirty),
+            key="btn_save_settings_settings_tab",
+            width="stretch",
+            help="Save all changes made in Settings.",
+        )
+        if not settings_dirty:
+            st.caption("Settings are up to date.")
+        elif settings_valid:
+            st.caption("Unsaved changes in Settings.")
+        else:
+            st.caption("Fix validation issues before saving settings.")
+        if save_settings_from_settings_tab:
+            save_clicked = True
+
 wm_latitude = float(st.session_state.get("loc_latitude", core.LATITUDE))
 wm_longitude = float(st.session_state.get("loc_longitude", core.LONGITUDE))
 wm_timezone = str(st.session_state.get("loc_timezone", core.TIMEZONE))
@@ -4941,10 +4943,11 @@ def render_ev_car_status_panel(container=None) -> None:
     )
 
     range_state = ((ev_status.get("field_states") or {}).get("range_km"))
+    user_mode_ui = get_ui_mode() == "User"
     if range_state == "bmw_missing":
         range_label = "BMW did not provide range"
     elif range_state == "setup_incomplete":
-        range_label = "Range not available from current BMW setup"
+        range_label = "Range unavailable" if user_mode_ui else "Range not available from current BMW setup"
     else:
         range_label = format_ev_km(ev_status.get("range_km"), unknown_label="Unavailable")
 
@@ -4957,7 +4960,7 @@ def render_ev_car_status_panel(container=None) -> None:
     elif power_state == "waiting_for_bmw_power":
         charge_power_label = "BMW did not provide charge power"
     elif power_state == "setup_incomplete":
-        charge_power_label = "Charge power not available from current BMW setup"
+        charge_power_label = "Charge power unavailable" if user_mode_ui else "Charge power not available from current BMW setup"
     elif power_state == "waiting_for_bmw_status":
         charge_power_label = "Waiting for BMW status"
     else:
@@ -4995,7 +4998,7 @@ def render_ev_car_status_panel(container=None) -> None:
 
     metric_items = [
         ("Plugged in", format_ev_bool(is_plugged, true_label="Yes", false_label="No", unknown_label="Unknown")),
-        ("Charging now", "Charging status not available from current BMW setup" if ((ev_status.get("field_states") or {}).get("charging_setup") != "ready" and is_charging is None) else format_ev_bool(is_charging, true_label="Yes", false_label="No", unknown_label="BMW did not provide charging status")),
+        ("Charging now", ("Charging status unavailable" if user_mode_ui else "Charging status not available from current BMW setup") if ((ev_status.get("field_states") or {}).get("charging_setup") != "ready" and is_charging is None) else format_ev_bool(is_charging, true_label="Yes", false_label="No", unknown_label="BMW did not provide charging status")),
         ("Charge power", charge_power_label),
         ("Full charge at", expected_full_label),
         ("Deadline", deadline_label),
@@ -5014,6 +5017,10 @@ def render_ev_car_status_panel(container=None) -> None:
     power_source = str(ev_status.get("charge_power_source") or "unavailable")
     if power_source == "bmw":
         helper_parts.append("Power from BMW telematics")
+    if range_state == "setup_incomplete":
+        helper_parts.append("Range detail: current BMW setup does not expose range")
+    if power_state == "setup_incomplete":
+        helper_parts.append("Charge-power detail: current BMW setup does not expose live charge power")
     for warning in (ev_status.get("warnings") or []):
         helper_parts.append(str(warning))
 
@@ -5129,7 +5136,7 @@ if active_top_tab == "Inputs":
         st.markdown("##### Planner readiness")
         st.markdown("".join(["<div style='display:flex;gap:0.35rem;flex-wrap:wrap;margin:0.2rem 0 0.55rem;'>", *strip, "</div>"]), unsafe_allow_html=True)
 
-        st.markdown("##### View mode")
+        st.markdown("##### UI mode")
         ui_mode = render_global_ui_mode_selector()
         blocking_items = [msg for msgs in readiness_issues.values() for msg in msgs][:4]
         if blocking_items and ui_mode in {"Expert", "Debug"}:
@@ -5209,6 +5216,50 @@ if active_top_tab == "Inputs":
     if reset_clicked:
         st.session_state["confirm_reset_repo_defaults_open"] = True
 
+    with st.container(border=True):
+        st.markdown("##### Quick inputs")
+        inputs_soc_col, inputs_kwh_col = st.columns([2, 3], vertical_alignment="bottom")
+        with inputs_soc_col:
+            soc_percent = st.number_input(
+                "Battery now (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=float(st.session_state.last_soc),
+                step=1.0,
+                format="%.0f",
+                help=get_help("soc_percent"),
+            )
+        with inputs_kwh_col:
+            yesterday_kwh = st.number_input(
+                "Yesterday total (kWh)",
+                min_value=0.1,
+                value=float(st.session_state.last_kwh),
+                step=0.1,
+                format="%.1f",
+                help=get_help("yesterday_kwh"),
+            )
+            if yesterday_kwh < 2.0 or yesterday_kwh > 60.0:
+                st.error("Run forecast is blocked: Yesterday total consumption must be between 2.0 and 60.0 kWh. Enter a typical day such as 12.0 kWh if yesterday was unusual.")
+
+    with st.container(border=True):
+        st.markdown("##### Planner context")
+        tariff_snapshot = st.session_state.get("_cfg_ui_snapshot", {}).get("tariff_by_day", {})
+        today_idx = dt.datetime.now().weekday()
+        today_windows = tariff_snapshot.get(today_idx) if isinstance(tariff_snapshot, dict) else None
+        next_offpeak = "—"
+        if today_windows and isinstance(today_windows, list) and today_windows:
+            first_window = today_windows[0]
+            if isinstance(first_window, tuple) and len(first_window) == 2:
+                next_offpeak = f"{first_window[0]}–{first_window[1]}"
+        weather_summary = f"Auto profile ({len(available_ids)} models)" if forecast_mode == "auto" else f"Custom profile ({len(selected_models)} models)"
+        vehicle_freshness = first_vehicle.get("freshness_seconds") if isinstance(first_vehicle, dict) else None
+        freshness_summary = format_ev_freshness(vehicle_freshness, unknown_label="Waiting for BMW data")
+        ctx_col1, ctx_col2, ctx_col3, ctx_col4 = st.columns(4)
+        ctx_col1.metric("Off-peak window", next_offpeak)
+        ctx_col2.metric("Battery now", f"{soc_percent:.0f}%")
+        ctx_col3.metric("Weather profile", weather_summary)
+        ctx_col4.metric("BMW data", freshness_summary)
+
     if st.session_state.get("confirm_reset_repo_defaults_open"):
         with st.container(border=True):
             ui_warning("Factory settings will restore default settings, but will keep your Off-peak hours time windows.")
@@ -5273,6 +5324,7 @@ if active_top_tab == "Errors":
     except Exception:
         unresolved_count = 0
 
+    st.caption("Review open issues first, then inspect full error details when needed.")
     error_logging_label = f"Error logging 🔴{unresolved_count}" if unresolved_count > 0 else "Error logging"
     with st.expander(error_logging_label, expanded=True):
         error_items: list[dict] = []
@@ -5422,9 +5474,16 @@ if active_top_tab == "Inputs":
         else:
             save_settings_payload(current_settings_payload)
 
+if active_top_tab == "Settings" and save_clicked:
+    if not settings_valid:
+        st.error(settings_error or "Could not save settings.")
+    else:
+        save_settings_payload(current_settings_payload)
+
 
 if active_top_tab == "History":
     st.header("History")
+    st.caption("Recent planner runs at a glance, with deeper inspection below.")
     render_history_fragment()
 if True:
     run_correlation_id: str | None = None
