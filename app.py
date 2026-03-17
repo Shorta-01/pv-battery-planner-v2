@@ -3754,7 +3754,12 @@ settings_error = None
 current_settings_payload = {}
 buffer_percent = 0.0
 ensemble_method = "weighted"
-user_max_ac_kw = float((effective_cfg.get("battery", {}) or {}).get("max_grid_charge_power_kw", core.MAX_GRID_CHARGE_POWER_KW))
+user_max_ac_kw = float(
+    backend_settings.get(
+        "max_ac_charge_power_kw_default",
+        (effective_cfg.get("battery", {}) or {}).get("max_ac_charge_kw_hard_limit", core.MAX_AC_CHARGE_KW_HARD_LIMIT),
+    )
+)
 
 TOP_LEVEL_TABS = ["Inputs", "Results", "Car & Charger", "Settings", "History", "Errors"]
 TAB_HELP_DISABLED = {
