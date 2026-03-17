@@ -11,6 +11,7 @@ import traceback
 import uuid
 from io import StringIO
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -3754,6 +3755,10 @@ settings_error = None
 current_settings_payload = {}
 buffer_percent = 0.0
 ensemble_method = "weighted"
+provider_status: dict[str, Any] = {}
+vehicle_map: dict[str, Any] = {}
+vehicle_list: list[dict[str, Any]] = []
+first_vehicle: dict[str, Any] = {}
 user_max_ac_kw = float(
     backend_settings.get(
         "max_ac_charge_power_kw_default",
@@ -4520,6 +4525,41 @@ if not initial_selected:
 current_mode = str(effective_cfg.get("forecast_mode", "auto")).strip().lower()
 mode_label_default = "Custom" if current_mode == "expert" else "Auto"
 
+
+def resolve_weather_run_state() -> tuple[str, list[str], bool]:
+    weather_cfg = effective_cfg.get("weather", {}) if isinstance(effective_cfg, dict) else {}
+    saved_sat = bool(weather_cfg.get("use_satellite_nowcast_0_6h", False))
+
+    ui_mode_value = str(st.session_state.get("forecast_mode_select", "")).strip()
+    if ui_mode_value in {"Auto", "Custom"}:
+        forecast_mode = FORECAST_MODE_OPTIONS.get(ui_mode_value, "auto")
+    else:
+        forecast_mode = current_mode if current_mode in {"auto", "expert"} else "auto"
+
+    auto_selected = set(auto_select_models_for_location(wm_latitude, wm_longitude, requested_days=1)) & available_ids
+    if not auto_selected:
+        auto_selected = (WEATHER_MODEL_DEFAULT & available_ids) or available_ids.copy()
+
+    if forecast_mode == "auto":
+        selected_models: list[str] = []
+        sat_nowcast_for_run = should_use_satellite_nowcast_auto(
+            latitude=wm_latitude,
+            longitude=wm_longitude,
+            timezone_name=wm_timezone,
+            requested_days=1,
+        )
+    else:
+        existing_wm_keys = any(f"wm_{mid}" in st.session_state for mid in available_ids)
+        if existing_wm_keys:
+            selected_models = get_selected_weather_models(available_ids)
+        else:
+            selected_models = [mid for mid in initial_selected if mid in available_ids]
+        if not selected_models:
+            selected_models = sorted(list(WEATHER_MODEL_DEFAULT & available_ids)) or sorted(list(available_ids))
+        sat_nowcast_for_run = bool(st.session_state.get("use_sat_nowcast_expert", saved_sat))
+
+    return forecast_mode, selected_models, sat_nowcast_for_run
+
 def render_weather_models_panel() -> tuple[str, list[str], bool]:
     st.markdown("#### Weather")
     st.caption("Pick how tomorrow's weather is built.")
@@ -4871,7 +4911,10 @@ def render_ev_car_status_panel(container=None) -> None:
             }, expanded=False)
 
 
-forecast_mode, selected_models, sat_nowcast_for_run = render_weather_models_panel()
+forecast_mode, selected_models, sat_nowcast_for_run = resolve_weather_run_state()
+
+if active_top_tab == "Settings":
+    forecast_mode, selected_models, sat_nowcast_for_run = render_weather_models_panel()
 
 if active_top_tab == "Car & Charger":
     st.header("Car & Charger")
