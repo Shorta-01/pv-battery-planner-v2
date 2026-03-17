@@ -3244,12 +3244,13 @@ def _render_history_log_block() -> None:
 
     with st.expander("History log", expanded=True):
         mode_col, c1, c2 = st.columns([1.3, 1.2, 1.2])
-
         with mode_col:
             ui_mode = get_ui_mode()
             st.caption(f"Mode: {ui_mode}")
 
-        history_debug_mode = get_ui_mode() == "Debug"
+        history_debug_mode = ui_mode == "Debug"
+        history_expert_mode = ui_mode in {"Expert", "Debug"}
+
         if history_debug_mode:
             with c1:
                 st.toggle(
@@ -3257,7 +3258,6 @@ def _render_history_log_block() -> None:
                     key="history_all_runs",
                     help="Off = only the latest run per forecast day. On = show every run you made.",
                 )
-
             with c2:
                 if st.session_state.get("history_all_runs", False):
                     st.checkbox(
@@ -3272,8 +3272,6 @@ def _render_history_log_block() -> None:
             st.session_state["history_all_runs"] = False
             st.session_state["history_show_run_at"] = False
 
-        st.caption("Open Run Inspector to see full model reasons and settings snapshot.")
-
         raw = run_history_from_backend(show_all_runs=st.session_state["history_all_runs"], days=365)
         prepared = _prepare_history_df(
             raw,
@@ -3281,17 +3279,25 @@ def _render_history_log_block() -> None:
             show_run_at=st.session_state["history_show_run_at"],
         )
 
-        if not prepared.empty:
+        if prepared.empty:
+            st.info("No history records yet. Run a forecast to create the first record.")
+            return
+
+        filtered = prepared.copy()
+        selected_date_range: tuple[dt.date, dt.date] | None = None
+
+        if history_expert_mode:
             date_min = _to_py_date(prepared["Date"].min())
             date_max = _to_py_date(prepared["Date"].max())
             if date_min is None or date_max is None:
                 date_min = dt.date.today()
                 date_max = dt.date.today()
+
             f1, f2 = st.columns([1.2, 1.2])
             with f1:
                 selected_date_range = st.date_input("Date range", value=(date_min, date_max), min_value=date_min, max_value=date_max)
             with f2:
-                status_options = ["\u2705 OK", "\u26A0 Degraded", "\u274C Error"]
+                status_options = ["✅ OK", "⚠ Degraded", "❌ Error"]
                 status_filter = st.multiselect("Status", options=status_options, default=status_options)
 
             run_type_filter: list[str] | None = None
@@ -3311,7 +3317,6 @@ def _render_history_log_block() -> None:
                     model_options = sorted(all_models)
                     model_filter = st.selectbox("Model filter (optional)", ["All models", *model_options], index=0)
 
-            filtered = prepared.copy()
             if isinstance(selected_date_range, tuple) and len(selected_date_range) == 2:
                 start_date, end_date = selected_date_range
                 filtered = filtered[(filtered["Date"].dt.date >= start_date) & (filtered["Date"].dt.date <= end_date)]
@@ -3326,133 +3331,181 @@ def _render_history_log_block() -> None:
                     filtered = filtered[filtered["warnings_count"] == 0]
                 if model_filter != "All models":
                     filtered = filtered[filtered["models_raw"].str.contains(model_filter, na=False)]
-            filtered = filtered.reset_index(drop=True)
-        else:
-            filtered = prepared
 
+        filtered = filtered.reset_index(drop=True)
         if filtered.empty:
-            st.info("No history records yet. Run a forecast to create the first record.")
-        else:
-            latest_row = filtered.iloc[-1]
-            latest_date = latest_row.get("Date")
-            if pd.isna(latest_date):
-                latest_date_text = "—"
-            elif hasattr(latest_date, "strftime"):
-                latest_date_text = latest_date.strftime("%Y-%m-%d")
-            else:
-                latest_date_text = str(latest_date)
-            latest_cutoff_raw = pd.to_numeric(pd.Series([latest_row.get("cutoff_soc")]), errors="coerce").iloc[0]
-            latest_cutoff_pct = (latest_cutoff_raw * 100.0) if pd.notna(latest_cutoff_raw) else None
-            latest_warnings = int(pd.to_numeric(pd.Series([latest_row.get("warnings_count")]), errors="coerce").fillna(0).iloc[0])
+            st.info("No history records match the selected filters.")
+            return
 
-            st.markdown("**Last run summary**")
-            s1, s2, s3, s4, s5, s6, s7 = st.columns(7)
-            s1.metric("Target date", latest_date_text)
+        latest_row = filtered.iloc[-1]
+        latest_date = latest_row.get("Date")
+        if pd.isna(latest_date):
+            latest_date_text = "—"
+        elif hasattr(latest_date, "strftime"):
+            latest_date_text = latest_date.strftime("%Y-%m-%d")
+        else:
+            latest_date_text = str(latest_date)
+        latest_cutoff_raw = pd.to_numeric(pd.Series([latest_row.get("cutoff_soc")]), errors="coerce").iloc[0]
+        latest_cutoff_pct = (latest_cutoff_raw * 100.0) if pd.notna(latest_cutoff_raw) else None
+        latest_warnings = int(pd.to_numeric(pd.Series([latest_row.get("warnings_count")]), errors="coerce").fillna(0).iloc[0])
+
+        if ui_mode == "User":
+            st.markdown("**History**")
+            st.caption("Simple view of your recent runs.")
+
+            st.markdown("**Last run**")
+            s1, s2, s3, s4, s5, s6 = st.columns(6)
+            s1.metric("Date", latest_date_text)
             s2.metric("Status", str(latest_row.get("Status label") or "—"))
             s3.metric("PV p50", f"{float(pd.to_numeric(pd.Series([latest_row.get('PV p50')]), errors='coerce').fillna(0).iloc[0]):.2f} kWh")
-            s4.metric("Load (estimated)", f"{float(pd.to_numeric(pd.Series([latest_row.get('Load (estimated)')]), errors='coerce').fillna(0).iloc[0]):.2f} kWh")
-            s5.metric("Allowed AC charge power (kW)", f"{float(pd.to_numeric(pd.Series([latest_row.get('Charge')]), errors='coerce').fillna(0).iloc[0]):.2f} kW")
-            s6.metric("Cutoff SOC (%)", f"{latest_cutoff_pct:.1f}%" if latest_cutoff_pct is not None else "—")
-            s7.metric("Warnings count", str(latest_warnings))
+            s4.metric("Load", f"{float(pd.to_numeric(pd.Series([latest_row.get('Load (estimated)')]), errors='coerce').fillna(0).iloc[0]):.2f} kWh")
+            s5.metric("Charge", f"{float(pd.to_numeric(pd.Series([latest_row.get('Charge')]), errors='coerce').fillna(0).iloc[0]):.2f} kW")
+            s6.metric("Warnings", str(latest_warnings))
 
-            display_df = filtered.copy()
-            display_df["Date"] = display_df["Date"].astype(str)
-            if "Run at" in display_df.columns:
-                display_df["Run at"] = display_df["Run at"].dt.strftime("%Y-%m-%d %H:%M:%S").fillna("")
-                if not st.session_state.get("history_show_run_at", False):
-                    display_df = display_df.drop(columns=["Run at"])
+            st.markdown("**Recent runs**")
+            user_recent_df = filtered.tail(8).copy()
+            user_recent_df["Date"] = user_recent_df["Date"].astype(str)
+            user_recent_df["Warnings"] = pd.to_numeric(user_recent_df["warnings_count"], errors="coerce").fillna(0).astype(int)
+            user_recent_df = user_recent_df.rename(columns={"Status label": "Status", "PV p50": "PV", "Load (estimated)": "Load", "Charge": "Charge kW"})
+            recent_cols = [c for c in ["Date", "Status", "PV", "Load", "Charge kW", "Warnings"] if c in user_recent_df.columns]
+            st.dataframe(user_recent_df[recent_cols], width="stretch", hide_index=True)
 
-            display_df["Allowed AC charge power"] = display_df["Charge"]
-            display_df["Warnings badge"] = display_df["warnings_count"].apply(lambda n: f"\u26A0 {int(n)}" if int(n or 0) > 0 else "\u2705 0")
-            pv_p10_vals = pd.to_numeric(display_df["PV p10"], errors="coerce")
-            pv_p90_vals = pd.to_numeric(display_df["PV p90"], errors="coerce")
-            pv_range_width = (pv_p90_vals - pv_p10_vals).round(2)
-            display_df["PV range width"] = pv_range_width.where(pv_p10_vals.notna() & pv_p90_vals.notna(), None)
-            cutoff_soc_pct = pd.to_numeric(display_df.get("cutoff_soc", pd.Series([None] * len(display_df))), errors="coerce") * 100.0
-            display_df["Cutoff SOC"] = cutoff_soc_pct.round(1)
-            display_df["Run duration"] = pd.to_numeric(display_df["Duration (ms)"], errors="coerce").round(0)
-            display_df["Run type"] = display_df["run_type"].fillna("manual")
-            display_df["Run id"] = display_df["run_id"].fillna("")
+            run_pick_options: list[tuple[str, str]] = []
+            for _, row in filtered.tail(12).iterrows():
+                run_id = str(row.get("run_id") or "").strip()
+                label = f"{str(row.get('Date'))[:10]} · {str(row.get('Status label') or '—')}"
+                if run_id:
+                    run_pick_options.append((label, run_id))
+            if run_pick_options:
+                labels = [x[0] for x in run_pick_options]
+                selected_label = st.selectbox("Inspect selected run", options=labels, key="history_user_inspect_pick")
+                selected_run_id = dict(run_pick_options).get(selected_label, "")
+                if selected_run_id:
+                    st.session_state["history_inspector_selected_run_id"] = selected_run_id
+                    st.caption("Selected run saved. Switch to Expert/Debug mode to open full Run Inspector tools.")
 
-            display_df = display_df.rename(columns={"Status label": "Status", "Models": "Models summary"})
-
-            simple_columns = ["Date", "Status", "PV quality", "PV p50", "Load (estimated)", "Allowed AC charge power", "Warnings badge"]
-            debug_columns = [
-                "Date",
-                "Status",
-                "PV quality",
-                "pv_quality_label",
-                "pv_quality_score",
-                "PV p50",
-                "PV p10",
-                "PV p90",
-                "PV range width",
-                "Load (estimated)",
-                "Allowed AC charge power",
-                "Warnings badge",
-                "Models summary",
-                "Cutoff SOC",
-                "Run duration",
-                "Run type",
-                "Run id",
-            ]
-            active_columns = debug_columns if history_debug_mode else simple_columns
-            keep_columns = [c for c in active_columns if c in display_df.columns]
-
-            drop_cols = [c for c in display_df.columns if c not in keep_columns]
-            display_df = display_df.drop(columns=[c for c in drop_cols if c in display_df.columns])
-
-            start_date_for_filename: object = filtered["Date"].min()
-            end_date_for_filename: object = filtered["Date"].max()
-            if isinstance(selected_date_range, tuple) and len(selected_date_range) == 2:
-                start_date_for_filename, end_date_for_filename = selected_date_range
-            date_range_part = (
-                f"{_target_date_for_filename(start_date_for_filename)}"
-                f"-{_target_date_for_filename(end_date_for_filename)}"
-            )
-            mode_part = _safe_filename_part(( "Debug" if get_ui_mode() == "Debug" else "Simple"), "simple")
-            csv_bytes = display_df.to_csv(index=False).encode("utf-8")
+            export_df = user_recent_df[recent_cols]
+            csv_bytes = export_df.to_csv(index=False).encode("utf-8")
             st.download_button(
                 "Export CSV",
                 data=csv_bytes,
-                file_name=f"history_{date_range_part}_{mode_part}.csv",
+                file_name="history_user_recent.csv",
                 mime="text/csv",
                 key="history_log_export_csv",
             )
+            return
 
-            history_column_config = build_column_config(
-                display_df,
-                {
-                    "pv_quality_label": st.column_config.TextColumn("PV quality label"),
-                    "pv_quality_score": st.column_config.NumberColumn("PV quality score", format="%.0f/100"),
-                    "PV p50": st.column_config.NumberColumn(format="%.2f kWh"),
-                    "PV p10": st.column_config.NumberColumn(format="%.2f kWh"),
-                    "PV p90": st.column_config.NumberColumn(format="%.2f kWh"),
-                    "PV range width": st.column_config.NumberColumn(format="%.2f kWh"),
-                    "Load (estimated)": st.column_config.NumberColumn(format="%.2f kWh"),
-                    "Allowed AC charge power": st.column_config.NumberColumn(format="%.2f kW"),
-                    "Run duration": st.column_config.NumberColumn(format="%.0f ms"),
-                    "Cutoff SOC": st.column_config.NumberColumn(format="%.1f%%"),
-                },
-            )
-            selected_history_row = render_selectable_table(
-                display_df,
-                key="history_log_table",
-                column_config=history_column_config,
-            )
-            if selected_history_row is not None and 0 <= selected_history_row < len(filtered):
-                selected_row = filtered.iloc[selected_history_row]
-                selected_run_id = str(selected_row.get("run_id") or "").strip()
-                if selected_run_id:
-                    st.session_state["history_inspector_selected_run_id"] = selected_run_id
-            if history_debug_mode and not filtered.empty:
-                run_id_options = [str(v) for v in filtered["run_id"].dropna().tolist() if str(v).strip()]
-                if run_id_options:
-                    selected_copy_run_id = st.selectbox("Run id", options=run_id_options, key="history_copy_run_id")
-                    st.code(selected_copy_run_id, language="text")
-                    st.caption("Use the copy button in the code block to copy the selected run id.")
-            _render_run_inspector(filtered)
-            _render_compare_runs_block(filtered)
+        st.caption("Open Run Inspector to see full model reasons and settings snapshot.")
+        st.markdown("**Last run summary**")
+        s1, s2, s3, s4, s5, s6, s7 = st.columns(7)
+        s1.metric("Target date", latest_date_text)
+        s2.metric("Status", str(latest_row.get("Status label") or "—"))
+        s3.metric("PV p50", f"{float(pd.to_numeric(pd.Series([latest_row.get('PV p50')]), errors='coerce').fillna(0).iloc[0]):.2f} kWh")
+        s4.metric("Load (estimated)", f"{float(pd.to_numeric(pd.Series([latest_row.get('Load (estimated)')]), errors='coerce').fillna(0).iloc[0]):.2f} kWh")
+        s5.metric("Allowed AC charge power (kW)", f"{float(pd.to_numeric(pd.Series([latest_row.get('Charge')]), errors='coerce').fillna(0).iloc[0]):.2f} kW")
+        s6.metric("Cutoff SOC (%)", f"{latest_cutoff_pct:.1f}%" if latest_cutoff_pct is not None else "—")
+        s7.metric("Warnings count", str(latest_warnings))
+
+        display_df = filtered.copy()
+        display_df["Date"] = display_df["Date"].astype(str)
+        if "Run at" in display_df.columns:
+            display_df["Run at"] = display_df["Run at"].dt.strftime("%Y-%m-%d %H:%M:%S").fillna("")
+            if not st.session_state.get("history_show_run_at", False):
+                display_df = display_df.drop(columns=["Run at"])
+
+        display_df["Allowed AC charge power"] = display_df["Charge"]
+        display_df["Warnings badge"] = display_df["warnings_count"].apply(lambda n: f"⚠ {int(n)}" if int(n or 0) > 0 else "✅ 0")
+        pv_p10_vals = pd.to_numeric(display_df["PV p10"], errors="coerce")
+        pv_p90_vals = pd.to_numeric(display_df["PV p90"], errors="coerce")
+        pv_range_width = (pv_p90_vals - pv_p10_vals).round(2)
+        display_df["PV range width"] = pv_range_width.where(pv_p10_vals.notna() & pv_p90_vals.notna(), None)
+        cutoff_soc_pct = pd.to_numeric(display_df.get("cutoff_soc", pd.Series([None] * len(display_df))), errors="coerce") * 100.0
+        display_df["Cutoff SOC"] = cutoff_soc_pct.round(1)
+        display_df["Run duration"] = pd.to_numeric(display_df["Duration (ms)"], errors="coerce").round(0)
+        display_df["Run type"] = display_df["run_type"].fillna("manual")
+        display_df["Run id"] = display_df["run_id"].fillna("")
+
+        display_df = display_df.rename(columns={"Status label": "Status", "Models": "Models summary"})
+
+        expert_columns = ["Date", "Status", "PV quality", "PV p50", "Load (estimated)", "Allowed AC charge power", "Warnings badge", "Models summary", "Cutoff SOC"]
+        debug_columns = [
+            "Date",
+            "Status",
+            "PV quality",
+            "pv_quality_label",
+            "pv_quality_score",
+            "PV p50",
+            "PV p10",
+            "PV p90",
+            "PV range width",
+            "Load (estimated)",
+            "Allowed AC charge power",
+            "Warnings badge",
+            "Models summary",
+            "Cutoff SOC",
+            "Run duration",
+            "Run type",
+            "Run id",
+        ]
+        active_columns = debug_columns if history_debug_mode else expert_columns
+        keep_columns = [c for c in active_columns if c in display_df.columns]
+
+        drop_cols = [c for c in display_df.columns if c not in keep_columns]
+        display_df = display_df.drop(columns=[c for c in drop_cols if c in display_df.columns])
+
+        start_date_for_filename: object = filtered["Date"].min()
+        end_date_for_filename: object = filtered["Date"].max()
+        if isinstance(selected_date_range, tuple) and len(selected_date_range) == 2:
+            start_date_for_filename, end_date_for_filename = selected_date_range
+        date_range_part = (
+            f"{_target_date_for_filename(start_date_for_filename)}"
+            f"-{_target_date_for_filename(end_date_for_filename)}"
+        )
+        mode_part = _safe_filename_part(("Debug" if history_debug_mode else "Expert"), "expert")
+        csv_bytes = display_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "Export CSV",
+            data=csv_bytes,
+            file_name=f"history_{date_range_part}_{mode_part}.csv",
+            mime="text/csv",
+            key="history_log_export_csv",
+        )
+
+        history_column_config = build_column_config(
+            display_df,
+            {
+                "pv_quality_label": st.column_config.TextColumn("PV quality label"),
+                "pv_quality_score": st.column_config.NumberColumn("PV quality score", format="%.0f/100"),
+                "PV p50": st.column_config.NumberColumn(format="%.2f kWh"),
+                "PV p10": st.column_config.NumberColumn(format="%.2f kWh"),
+                "PV p90": st.column_config.NumberColumn(format="%.2f kWh"),
+                "PV range width": st.column_config.NumberColumn(format="%.2f kWh"),
+                "Load (estimated)": st.column_config.NumberColumn(format="%.2f kWh"),
+                "Allowed AC charge power": st.column_config.NumberColumn(format="%.2f kW"),
+                "Run duration": st.column_config.NumberColumn(format="%.0f ms"),
+                "Cutoff SOC": st.column_config.NumberColumn(format="%.1f%%"),
+            },
+        )
+        selected_history_row = render_selectable_table(
+            display_df,
+            key="history_log_table",
+            column_config=history_column_config,
+        )
+        if selected_history_row is not None and 0 <= selected_history_row < len(filtered):
+            selected_row = filtered.iloc[selected_history_row]
+            selected_run_id = str(selected_row.get("run_id") or "").strip()
+            if selected_run_id:
+                st.session_state["history_inspector_selected_run_id"] = selected_run_id
+
+        if history_debug_mode and not filtered.empty:
+            run_id_options = [str(v) for v in filtered["run_id"].dropna().tolist() if str(v).strip()]
+            if run_id_options:
+                selected_copy_run_id = st.selectbox("Run id", options=run_id_options, key="history_copy_run_id")
+                st.code(selected_copy_run_id, language="text")
+                st.caption("Use the copy button in the code block to copy the selected run id.")
+
+        _render_run_inspector(filtered)
+        _render_compare_runs_block(filtered)
 
 
 if hasattr(st, "fragment"):
